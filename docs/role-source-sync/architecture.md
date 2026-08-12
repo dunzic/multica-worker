@@ -1,0 +1,148 @@
+# Pluggable Role Sources and Auditable Sync
+
+Status: accepted for implementation
+
+Feature flag: `role_source_sync` (server-side until the first end-to-end slice is ready)
+
+Initial adapter: `agentwaker_directory`
+Target: production use by organisations with an aggregate user population of at least 10,000
+
+## Product outcome
+
+A workspace administrator can register a role source, scan it without changing the workspace, review an evidence-backed plan, apply the plan atomically, and later compare or roll back versions. The source remains authoritative for source-managed fields; workspace-managed fields remain under human control.
+
+“Pluggable” means the control plane and normalized manifest do not depend on AgentWaker directory layout. AgentWaker is the first trusted adapter. Git repositories, signed archives, registries, and managed role catalogs can be added through the same adapter contract without adding source-specific tables or application flows.
+
+“Auditable” means every scan, plan, approval, apply, rollback, secret mutation, and external delivery has an immutable actor, input digest, output digest, timestamp, result, and receipt. An operator can answer who changed which role, from which source version, with which review decision, and what was actually materialized.
+
+## Non-negotiable invariants
+
+1. Scan is read-only. It never mutates agents, skills, capabilities, automations, MCP configuration, or secrets.
+2. A snapshot contains no plaintext secret, source credential, or unrestricted absolute path.
+3. Apply accepts a persisted plan digest, not a mutable live source. The source is rescanned to create a new snapshot when content changes.
+4. Apply is serialized per source and idempotent by `(source_id, snapshot_digest, plan_digest, request_key)`.
+5. Source identity, not display name, owns mappings. Same-name unmanaged objects are conflicts unless an administrator records an explicit adoption decision.
+6. One database transaction applies all workspace mutations and appends the apply audit receipt. A failed audit write fails the apply.
+7. No-change plans perform no domain writes and create no new capability versions.
+8. Required dependency failures block only affected roles and leave the last-known-good version active.
+9. User-managed bindings, fields, secrets, and lifecycle state survive synchronization unless an explicit policy delegates them to the source.
+10. Runtime claims pin exact skill, capability, configuration, and adapter digests so later synchronization cannot alter running work.
+11. Imported scripts and adapters are data during scan and apply; they are never executed as validation.
+12. Database changes follow repository rules: no foreign keys or cascades, and every index is built concurrently in its own migration.
+
+## Architecture
+
+```text
+Administrator / CLI
+        |
+        | register, scan, approve plan, apply, rollback
+        v
+Multica control plane
+  source registry -> immutable snapshot -> deterministic plan
+        |                                      |
+        | queued scan                          | atomic apply + audit receipt
+        v                                      v
+Selected daemon                         Workspace materialization
+  trusted adapter registry              agents / skills / capabilities /
+  path and source boundary              automations / MCP / secret refs
+        |
+        | content digests + bounded blobs; no plaintext secret in snapshot
+        v
+Content-addressed artifact store + one-time secret transfer channel
+```
+
+### Trusted adapter model
+
+The first release uses compile-time registered Go adapters. It does not load arbitrary shared libraries or execute source-provided code. Each adapter declares:
+
+- stable `kind`, adapter version, and normalized contract version;
+- supported source operations and limits;
+- whether it can resolve secrets, binary artifacts, change hints, and provenance;
+- configuration validation and redaction behavior;
+- a deterministic scan implementation that returns the normalized manifest.
+
+An out-of-process adapter protocol can be added later, but only with process isolation, signed packages, resource quotas, and an authenticated protocol. Dynamic code loading is not required to call the first release “pluggable.”
+
+### Normalized manifest
+
+Every adapter emits the same source-neutral model:
+
+- roles with stable IDs, lifecycle intent, instructions artifact, profile artifact, runtime hints, and source fields;
+- role-owned skills and supporting artifact digests;
+- shared capabilities with versions, profiles, permission envelopes, schemas, and artifacts;
+- role-to-capability bindings with version constraints and fallbacks;
+- environment declarations and non-reversible value-change digests, never values;
+- MCP declarations with secret references, not expanded credentials;
+- source-managed automations;
+- diagnostics, excluded objects, and source provenance.
+
+The control plane validates and canonicalizes this model before it computes the snapshot digest. Adapter-specific fields are allowed only inside a bounded, namespaced extension object and cannot drive generic authorization.
+
+### Persistence model
+
+The final schema keeps distinct responsibilities:
+
+- `role_source`: tenant-scoped source configuration, adapter kind/version, owning runtime, policy, and state.
+- `role_source_snapshot`: immutable normalized manifest metadata and content references.
+- `role_source_plan`: immutable from/to diff, decisions, blockers, and plan digest.
+- `role_source_apply`: one idempotent apply or rollback attempt with actor, request key, outcome, and receipt digest.
+- `role_source_object_mapping`: stable source object ID to Multica object ID, object kind, ownership mask, and last applied digest.
+- `role_source_audit_event`: append-only, secret-free lifecycle events and receipts.
+- `role_source_secret_binding`: metadata and encrypted value reference; values are stored outside snapshots and ordinary APIs.
+- shared capability identity, immutable versions, content-addressed artifacts, and runtime claim pins.
+
+Relationships are enforced in application transactions and teardown code, not by database foreign keys.
+
+### Scan and secret boundary
+
+The daemon adapter may read only paths allowed by the source configuration and adapter policy. It must reject symlinks, hard-link surprises where detectable, traversal, device files, sockets, forbidden roots, file-count/size overruns, and content that changes while being read.
+
+Scanning secrets produces only declaration metadata and keyed change digests. Apply uses a separate, short-lived secret transfer request bound to workspace, source, snapshot, role, nonce, expiry, and target server key. The resulting encrypted values are written through the same transaction and fail-closed audit path as other mutations. Snapshot, plan, diagnostics, logs, analytics, events, caches, and receipts never contain plaintext values.
+
+### Deterministic plan and atomic apply
+
+The plan engine compares normalized object IDs and digests. It emits create, update, unchanged, conflict, detach-candidate, archive-candidate, blocked, and policy-decision actions. Every action records the affected fields, ownership, reason, and risk level.
+
+An apply rechecks membership, adapter compatibility, snapshot state, plan digest, approval policy, source lock, object conflicts, and secret-transfer freshness before entering the transaction. Domain writes and the apply receipt commit together. Events are published only after commit and carry redacted summaries.
+
+### Last-known-good and rollback
+
+An applied snapshot is never mutated. New snapshots and plans may fail without changing runtime state. Rollback creates a new forward apply referencing a prior snapshot; it does not rewrite history or merely toggle an old row. Secret rollback is explicit: values are versioned through encrypted references or reported as non-restorable when policy forbids retention.
+
+## Feature slices
+
+| ID | Feature | User value | Production completion |
+| --- | --- | --- | --- |
+| RS-01 | Adapter registry and source registration | Add new role ecosystems without product forks | Trusted adapter contract, source CRUD, tenant authorization, config redaction, feature flag, lifecycle state |
+| RS-02 | Bounded scan and contract validation | Know what will be imported before any change | Daemon scan queue, canonical manifest, immutable snapshot, diagnostics, path/content limits, no-secret proof |
+| RS-03 | Snapshot, diff, approval, atomic apply | Safe repeatable synchronization | Deterministic plan, conflict decisions, per-source lock, idempotency, one transaction, no-op proof |
+| RS-04 | Role, skill, capability and automation materialization | Turn source definitions into runnable digital workers | Stable mappings, ownership masks, capability resolution, runtime digest pins, user-managed preservation |
+| RS-05 | Secret and MCP synchronization | Configure non-coding workers without leaking credentials | Separate one-time transfer, encrypted storage, key metadata, audited reveal/update, runtime-only decryption |
+| RS-06 | Versioning, provenance and rollback | Upgrade many roles with a safe recovery path | Immutable versions, affected-consumer preview, last-known-good, forward rollback, retention and GC |
+| RS-07 | Delivery receipts and external readback | Prove the worker performed the intended action | Generic receipt schema, evidence attachments, connector readback, correlation IDs, retry/dedup semantics |
+
+## Production scale and reliability gates
+
+The following are release gates, not claims about current measured capacity:
+
+- load profile includes at least 10,000 accounts, 2,000 active workspaces, 5,000 configured sources, 100 concurrent scans, and 50 concurrent applies across distinct sources;
+- one source supports at least 1,000 roles, 10,000 skills/bindings, and 10 GiB of referenced artifacts without placing bodies in heartbeat metadata;
+- metadata APIs meet p95 500 ms and p99 1 s under the target profile; queue wait and scan duration have separate service-level indicators;
+- applying one source is serialized, while unrelated sources scale horizontally;
+- worker crash, daemon disconnect, server restart, duplicate delivery, stale plan, and transaction retry are covered by fault-injection tests;
+- audit event loss is zero by design: mutation is fail-closed when its receipt cannot commit;
+- snapshot and artifact retention, garbage collection, backup restore, and disaster-recovery exercises are documented and tested;
+- security review covers tenant isolation, path traversal, symlinks, manifest bombs, HTML/script content, MCP commands, SSRF, secret replay, log redaction, and privilege escalation;
+- the feature ships behind staged workspace cohorts with kill switches for scan scheduling and apply separately.
+
+## Delivery order
+
+1. Generic contract, registry, canonical validation, and review gates.
+2. AgentWaker adapter using the reusable parser/hash fixtures from `code2rich/multica`, with the secret leak removed.
+3. Source/snapshot persistence and daemon scan protocol.
+4. Deterministic plan, conflict decisions, idempotent atomic apply, and audit receipt.
+5. Materialization and runtime pins.
+6. One-time encrypted secret synchronization and MCP binding.
+7. Continuous detection, rollback, receipt/readback, scale tests, and staged production rollout.
+
+No intermediate milestone may be described as the completed feature unless all seven slices and production gates are evidenced.
