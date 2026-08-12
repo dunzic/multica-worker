@@ -101,3 +101,76 @@ func TestRoleSourcePersistenceNeverStoresRawSourceConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestRoleSourceTaskPinsAreContentFreeAndRetryStable(t *testing.T) {
+	schemaBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "316_role_source_task_pin.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(schemaBody))
+	for _, forbidden := range []string{"instructions", "custom_env", "mcp_config", "secret_value", "artifact_body", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("task pin schema contains forbidden runtime content %q", forbidden)
+		}
+	}
+	for _, required := range []string{"snapshot_digest", "role_object_digest", "target_state_digest", "capability_pins", "inherited_from_task_id"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("task pin schema is missing %q", required)
+		}
+	}
+
+	triggerBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "319_role_source_task_pin_trigger.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger := string(triggerBody)
+	for _, required := range []string{
+		"WHERE parent.task_id = NEW.parent_task_id",
+		"parent.snapshot_digest",
+		"parent.capability_pins",
+		"mapping.last_snapshot_digest",
+		"role_source_agent_state_digest",
+		"role_source_capability_version",
+		"unresolved capability provenance",
+		"role source task pins are immutable",
+		"role_source_version_stale",
+		"task.status IN ('queued', 'deferred', 'dispatched')",
+	} {
+		if !strings.Contains(trigger, required) {
+			t.Fatalf("task pin trigger is missing contract %q", required)
+		}
+	}
+}
+
+func TestRoleSourceClaimFinalizationUsesConsistentLockOrder(t *testing.T) {
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleSourceQuery := string(queries)
+	start := strings.Index(roleSourceQuery, "-- name: IsRoleSourceTaskPinCurrent ")
+	if start < 0 {
+		t.Fatal("role source claim validation query is missing")
+	}
+	section := roleSourceQuery[start:]
+	if next := strings.Index(section[1:], "\n-- name: "); next >= 0 {
+		section = section[:next+1]
+	}
+	for _, required := range []string{"WITH locked_mapping AS MATERIALIZED", "FOR UPDATE OF mapping", "role_source_agent_state_digest"} {
+		if !strings.Contains(section, required) {
+			t.Fatalf("role source claim validation does not contain %q", required)
+		}
+	}
+
+	serviceBody, err := os.ReadFile(filepath.Join("..", "service", "task.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := string(serviceBody)
+	validateAt := strings.Index(service, "qtx.IsRoleSourceTaskPinCurrent")
+	lockTaskAt := strings.Index(service, "qtx.LockAgentTaskClaim")
+	createTokenAt := strings.Index(service, "qtx.CreateTaskToken")
+	if validateAt < 0 || lockTaskAt < 0 || createTokenAt < 0 || !(validateAt < lockTaskAt && lockTaskAt < createTokenAt) {
+		t.Fatal("claim finalization must lock role mapping, then exact task generation, before creating a token")
+	}
+}

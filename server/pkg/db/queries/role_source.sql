@@ -346,6 +346,66 @@ WHERE source_id = @source_id
   AND version = @version
   AND object_digest = @object_digest;
 
+-- name: GetRoleSourceTaskPin :one
+SELECT * FROM role_source_task_pin
+WHERE task_id = @task_id;
+
+-- name: ListRoleSourceTaskPins :many
+SELECT * FROM role_source_task_pin
+WHERE workspace_id = @workspace_id
+  AND source_id = @source_id
+  AND (
+      sqlc.narg('before_created_at')::timestamptz IS NULL
+      OR (created_at, task_id) < (sqlc.narg('before_created_at')::timestamptz, sqlc.narg('before_task_id')::uuid)
+  )
+ORDER BY created_at DESC, task_id DESC
+LIMIT @result_limit;
+
+-- name: IsRoleSourceTaskPinCurrent :one
+-- A claim must never silently execute the mutable agent row after a later
+-- source apply changed its managed fields. The task keeps its immutable pin;
+-- the caller fails closed and asks for an explicit new run when this returns
+-- false. Locking the mapping serializes final claim commit with a concurrent
+-- source apply; both paths then lock the task row in the same mapping -> task
+-- order, avoiding a stale-delivery window and lock-order deadlocks.
+WITH locked_mapping AS MATERIALIZED (
+    SELECT mapping.*
+    FROM role_source_task_pin pin
+    JOIN role_source_object_mapping mapping
+      ON mapping.workspace_id = pin.workspace_id
+     AND mapping.source_id = pin.source_id
+     AND mapping.source_kind = 'role'
+     AND mapping.source_parent_id = ''
+     AND mapping.source_object_id = pin.source_role_id
+     AND mapping.target_kind = 'agent'
+     AND mapping.target_id = pin.agent_id
+    WHERE pin.task_id = @task_id
+    FOR UPDATE OF mapping
+)
+SELECT EXISTS (
+    SELECT 1
+    FROM role_source_task_pin pin
+    JOIN locked_mapping mapping
+      ON mapping.workspace_id = pin.workspace_id
+     AND mapping.source_id = pin.source_id
+     AND mapping.archived_at IS NULL
+     AND mapping.last_snapshot_digest = pin.snapshot_digest
+     AND mapping.last_applied_digest = pin.role_object_digest
+    WHERE pin.task_id = @task_id
+      AND pin.target_state_digest = role_source_agent_state_digest(
+          pin.agent_id, pin.source_id, pin.source_role_id
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM role_source_snapshot snapshot,
+               jsonb_array_elements(snapshot.manifest->'roles') AS role
+          WHERE snapshot.workspace_id = pin.workspace_id
+            AND snapshot.source_id = pin.source_id
+            AND snapshot.snapshot_digest = pin.snapshot_digest
+            AND role->>'id' = pin.source_role_id
+      )
+);
+
 -- name: InsertRoleSourceSecretTransfer :one
 INSERT INTO role_source_secret_transfer (
     id, workspace_id, source_id, runtime_id, plan_digest, approval_id,

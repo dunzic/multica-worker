@@ -220,6 +220,9 @@ cleared_role_source_snapshots AS (
 cleared_role_source_scans AS (
     DELETE FROM role_source_scan_request WHERE role_source_scan_request.workspace_id = $1
 ),
+cleared_role_source_task_pins AS (
+    DELETE FROM role_source_task_pin WHERE role_source_task_pin.workspace_id = $1
+),
 cleared_role_source_mappings AS (
     DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
 ),

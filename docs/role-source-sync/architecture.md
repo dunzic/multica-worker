@@ -126,6 +126,12 @@ An apply rechecks membership, adapter compatibility, snapshot state, plan digest
 
 An applied snapshot is never mutated. New snapshots and plans may fail without changing runtime state. Rollback creates a new forward apply referencing a prior snapshot; it does not rewrite history or merely toggle an old row. Secret rollback is explicit: values are versioned through encrypted references or reported as non-restorable when policy forbids retention.
 
+### Runtime task pins
+
+A source-managed task captures immutable source, role, snapshot, normalized role-object, target-state and resolved capability evidence when it is first enqueued. System retries inherit the original pin. The pin is content-free: it contains identifiers, versions and digests, never prompts, environment values, MCP definitions, artifact bodies or local paths.
+
+The materialized Agent remains the execution target. Until old encrypted runtime configuration can be reconstructed, drift is fail-closed. Apply advances even unchanged role mappings to the new snapshot and invalidates queued/deferred/not-yet-finalized dispatched tasks bearing the previous pin in the same transaction. Running tasks continue. Claim revalidates the mapping and a digest of all source-managed execution state before returning the typed pin to the daemon. Final claim commit locks the role mapping before the exact task dispatch generation; apply uses the same mapping-to-task lock order, so a concurrent version advance and old task-token commit cannot cross. A stale task must be explicitly re-enqueued against the new version; it is never executed under a misleading old provenance label.
+
 ## Feature slices
 
 | ID | Feature | User value | Production completion |

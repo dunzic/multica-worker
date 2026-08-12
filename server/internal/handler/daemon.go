@@ -1386,6 +1386,96 @@ func parseRuntimeConnectedAppsForClaim(raw []byte, taskID pgtype.UUID) []runtime
 	return apps
 }
 
+func decodeRoleSourceTaskPin(row db.RoleSourceTaskPin) (*protocol.RoleSourceTaskPin, error) {
+	capabilities := []protocol.RoleSourceCapabilityPin{}
+	if len(row.CapabilityPins) > 0 {
+		if err := json.Unmarshal(row.CapabilityPins, &capabilities); err != nil {
+			return nil, fmt.Errorf("decode capability pins: %w", err)
+		}
+	}
+	return &protocol.RoleSourceTaskPin{
+		SourceID:            uuidToString(row.SourceID),
+		SourceRoleID:        row.SourceRoleID,
+		SnapshotDigest:      row.SnapshotDigest,
+		RoleObjectDigest:    row.RoleObjectDigest,
+		CapabilityPins:      capabilities,
+		InheritedFromTaskID: uuidToString(row.InheritedFromTaskID),
+	}, nil
+}
+
+// attachCurrentRoleSourceTaskPin proves that the mutable materialized agent
+// still represents the exact source snapshot captured at enqueue. Until the
+// runtime can reconstruct old encrypted configuration versions, drift is
+// fail-closed: the old task is cancelled rather than silently running newer
+// instructions, skills, MCP, or environment under an older provenance label.
+func (h *Handler) attachCurrentRoleSourceTaskPin(ctx context.Context, task *db.AgentTaskQueue, workspaceID string, resp *AgentTaskResponse) *claimBuildFailure {
+	row, err := h.Queries.GetRoleSourceTaskPin(ctx, task.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return &claimBuildFailure{
+			outcome: "error_role_source_pin",
+			status:  http.StatusInternalServerError,
+			message: "failed to load role source provenance",
+		}
+	}
+	if row.AgentID != task.AgentID || uuidToString(row.WorkspaceID) != workspaceID {
+		slog.Error("task claim: role source pin scope mismatch",
+			"task_id", uuidToString(task.ID),
+			"task_agent_id", uuidToString(task.AgentID),
+			"pin_agent_id", uuidToString(row.AgentID),
+			"task_workspace_id", workspaceID,
+			"pin_workspace_id", uuidToString(row.WorkspaceID),
+		)
+		if _, cancelErr := h.TaskService.CancelTask(ctx, task.ID); cancelErr != nil {
+			slog.Error("task claim: cancel after role source pin scope mismatch failed", "task_id", uuidToString(task.ID), "error", cancelErr)
+		}
+		return &claimBuildFailure{
+			outcome: "error_role_source_pin_scope",
+			status:  http.StatusConflict,
+			message: "role source provenance does not match task scope",
+		}
+	}
+	current, err := h.Queries.IsRoleSourceTaskPinCurrent(ctx, task.ID)
+	if err != nil {
+		return &claimBuildFailure{
+			outcome: "error_role_source_pin",
+			status:  http.StatusInternalServerError,
+			message: "failed to validate role source provenance",
+		}
+	}
+	if !current {
+		slog.Info("task claim: source-managed role changed after enqueue; cancelling stale task",
+			"task_id", uuidToString(task.ID),
+			"source_id", uuidToString(row.SourceID),
+			"source_role_id", row.SourceRoleID,
+			"snapshot_digest", row.SnapshotDigest,
+		)
+		if _, cancelErr := h.TaskService.CancelTask(ctx, task.ID); cancelErr != nil {
+			slog.Error("task claim: cancel stale role source task failed", "task_id", uuidToString(task.ID), "error", cancelErr)
+		}
+		return &claimBuildFailure{
+			outcome: "stale_role_source_pin",
+			status:  http.StatusConflict,
+			message: "source-managed role changed after this task was queued; create a new task",
+		}
+	}
+	pin, err := decodeRoleSourceTaskPin(row)
+	if err != nil {
+		if _, cancelErr := h.TaskService.CancelTask(ctx, task.ID); cancelErr != nil {
+			slog.Error("task claim: cancel malformed role source pin failed", "task_id", uuidToString(task.ID), "error", cancelErr)
+		}
+		return &claimBuildFailure{
+			outcome: "error_role_source_pin",
+			status:  http.StatusInternalServerError,
+			message: "role source provenance is malformed",
+		}
+	}
+	resp.RoleSourcePin = pin
+	return nil
+}
+
 // repairStaleCommentPlanIfNeeded handles the edit/delete race where a claimed
 // task's trigger_comment_id was cleared but coalesced_comment_ids survive: such
 // a task must never be dispatched as a generic assignment — its user-scoped MCP
@@ -1606,7 +1696,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID: parseUUID(resp.WorkspaceID),
 			UserID:      rt.OwnerID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-		}, deliveredCommentIDs, commentBackedTask)
+		}, deliveredCommentIDs, commentBackedTask, resp.RoleSourcePin != nil)
 		if ferr != nil {
 			slog.Error("batch claim: finalize task claim failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", ferr)
@@ -2600,6 +2690,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		)
 	}
 
+	// Validate source provenance only after every mutable execution field has
+	// been read. FinalizeTaskClaim repeats the check under the mapping/task
+	// locks, bracketing response construction so concurrent source or user
+	// edits cannot silently cross the payload build window.
+	if failure := h.attachCurrentRoleSourceTaskPin(r.Context(), task, runtimeWorkspaceID, &resp); failure != nil {
+		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, failure
+	}
+
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
 }
 
@@ -2729,7 +2827,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: parseUUID(resp.WorkspaceID),
 		UserID:      runtime.OwnerID,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-	}, deliveredCommentIDs, commentBackedTask)
+	}, deliveredCommentIDs, commentBackedTask, resp.RoleSourcePin != nil)
 	if ferr != nil {
 		outcome = "error_claim_finalize"
 		slog.Error("task claim: failed to finalize token and comment delivery receipt",

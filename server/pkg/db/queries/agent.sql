@@ -702,6 +702,18 @@ WHERE id = @task_id
   )
 RETURNING delivered_comment_ids;
 
+-- name: LockAgentTaskClaim :one
+-- Final claim construction may perform several writes (task token, delivery
+-- receipt, and source-provenance validation). Lock the exact dispatch
+-- generation first so cancellation/reclaim cannot cross that transaction.
+SELECT * FROM agent_task_queue
+WHERE id = @task_id
+  AND runtime_id = @runtime_id
+  AND status = 'dispatched'
+  AND started_at IS NULL
+  AND dispatched_at = @dispatched_at
+FOR UPDATE;
+
 -- name: RequeueAgentTaskAfterClaimFailure :one
 -- Claim finalization (task token + optional comment receipt) failed before any
 -- response bytes were written. Return only that exact claim generation to the

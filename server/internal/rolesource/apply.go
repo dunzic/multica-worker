@@ -908,7 +908,7 @@ func (s *materializationState) materializeRole(ctx context.Context, role Role) e
 	action := s.actions[objectKey(ref)]
 	if action.Operation == PlanUnchanged {
 		s.receipt.Counts.Unchanged++
-		return s.appendExistingMapping(ref)
+		return s.advanceExistingMappingSnapshot(ctx, ref)
 	}
 	if action.Operation == PlanArchiveCandidate {
 		return nil
@@ -959,7 +959,7 @@ func (s *materializationState) materializeSkill(ctx context.Context, role Role, 
 	action := s.actions[objectKey(ref)]
 	if action.Operation == PlanUnchanged {
 		s.receipt.Counts.Unchanged++
-		return s.appendExistingMapping(ref)
+		return s.advanceExistingMappingSnapshot(ctx, ref)
 	}
 	if action.Operation == PlanArchiveCandidate {
 		return nil
@@ -1016,7 +1016,7 @@ func (s *materializationState) materializeAutomation(ctx context.Context, role R
 	action := s.actions[objectKey(ref)]
 	if action.Operation == PlanUnchanged {
 		s.receipt.Counts.Unchanged++
-		return s.appendExistingMapping(ref)
+		return s.advanceExistingMappingSnapshot(ctx, ref)
 	}
 	if action.Operation == PlanArchiveCandidate {
 		return nil
@@ -1171,12 +1171,29 @@ func (s *materializationState) upsertMapping(ctx context.Context, ref ObjectRef,
 	return nil
 }
 
-func (s *materializationState) appendExistingMapping(ref ObjectRef) error {
+func (s *materializationState) advanceExistingMappingSnapshot(ctx context.Context, ref ObjectRef) error {
 	mapping, ok := s.mappings[objectKey(ref)]
 	if !ok {
 		return fmt.Errorf("%w: unchanged object has no materialization mapping", ErrApplyConflict)
 	}
-	s.receipt.Mappings = append(s.receipt.Mappings, ApplyMapping{Source: ref, Target: mapping.TargetKind, ID: util.UUIDToString(mapping.TargetID)})
+	// Even when this object is byte-identical, advance its snapshot provenance.
+	// Runtime pins use the snapshot as the transitive role dependency boundary:
+	// a skill/capability change elsewhere in the new source snapshot must not
+	// leave the role mapping pointing at the previous source state.
+	return s.upsertMapping(ctx, ref, mapping.TargetKind, mapping.TargetID, mapping.LastAppliedDigest, ownershipMask(mapping), mapping.ArchivedAt)
+}
+
+func (s *materializationState) appendExistingMapping(ref ObjectRef) error {
+	mapping, ok := s.mappings[objectKey(ref)]
+	if !ok {
+		return fmt.Errorf("%w: retained object has no materialization mapping", ErrApplyConflict)
+	}
+	// A retained archive candidate no longer exists in the destination
+	// snapshot. Keep its last_snapshot_digest pointing at the last snapshot
+	// that actually contained it; advancing would create dangling provenance.
+	s.receipt.Mappings = append(s.receipt.Mappings, ApplyMapping{
+		Source: ref, Target: mapping.TargetKind, ID: util.UUIDToString(mapping.TargetID),
+	})
 	return nil
 }
 

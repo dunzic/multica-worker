@@ -1118,6 +1118,20 @@ type RoleSourceSnapshot struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
+type RoleSourceTaskPin struct {
+	TaskID              pgtype.UUID        `json:"task_id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	AgentID             pgtype.UUID        `json:"agent_id"`
+	SourceID            pgtype.UUID        `json:"source_id"`
+	SourceRoleID        string             `json:"source_role_id"`
+	SnapshotDigest      string             `json:"snapshot_digest"`
+	RoleObjectDigest    string             `json:"role_object_digest"`
+	TargetStateDigest   string             `json:"target_state_digest"`
+	CapabilityPins      []byte             `json:"capability_pins"`
+	InheritedFromTaskID pgtype.UUID        `json:"inherited_from_task_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
 type RuntimeProfile struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`

@@ -1416,6 +1416,30 @@ func (q *Queries) GetRoleSourceSnapshot(ctx context.Context, arg GetRoleSourceSn
 	return i, err
 }
 
+const getRoleSourceTaskPin = `-- name: GetRoleSourceTaskPin :one
+SELECT task_id, workspace_id, agent_id, source_id, source_role_id, snapshot_digest, role_object_digest, target_state_digest, capability_pins, inherited_from_task_id, created_at FROM role_source_task_pin
+WHERE task_id = $1
+`
+
+func (q *Queries) GetRoleSourceTaskPin(ctx context.Context, taskID pgtype.UUID) (RoleSourceTaskPin, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceTaskPin, taskID)
+	var i RoleSourceTaskPin
+	err := row.Scan(
+		&i.TaskID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.SourceID,
+		&i.SourceRoleID,
+		&i.SnapshotDigest,
+		&i.RoleObjectDigest,
+		&i.TargetStateDigest,
+		&i.CapabilityPins,
+		&i.InheritedFromTaskID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertRoleSourceApply = `-- name: InsertRoleSourceApply :one
 INSERT INTO role_source_apply (
     id, source_id, workspace_id, request_key, mode, snapshot_digest,
@@ -1853,6 +1877,59 @@ func (q *Queries) InsertRoleSourceSnapshot(ctx context.Context, arg InsertRoleSo
 	return i, err
 }
 
+const isRoleSourceTaskPinCurrent = `-- name: IsRoleSourceTaskPinCurrent :one
+WITH locked_mapping AS MATERIALIZED (
+    SELECT mapping.source_id, mapping.workspace_id, mapping.source_kind, mapping.source_parent_id, mapping.source_object_id, mapping.target_kind, mapping.target_id, mapping.ownership_mask, mapping.last_applied_digest, mapping.last_snapshot_digest, mapping.archived_at, mapping.created_at, mapping.updated_at
+    FROM role_source_task_pin pin
+    JOIN role_source_object_mapping mapping
+      ON mapping.workspace_id = pin.workspace_id
+     AND mapping.source_id = pin.source_id
+     AND mapping.source_kind = 'role'
+     AND mapping.source_parent_id = ''
+     AND mapping.source_object_id = pin.source_role_id
+     AND mapping.target_kind = 'agent'
+     AND mapping.target_id = pin.agent_id
+    WHERE pin.task_id = $1
+    FOR UPDATE OF mapping
+)
+SELECT EXISTS (
+    SELECT 1
+    FROM role_source_task_pin pin
+    JOIN locked_mapping mapping
+      ON mapping.workspace_id = pin.workspace_id
+     AND mapping.source_id = pin.source_id
+     AND mapping.archived_at IS NULL
+     AND mapping.last_snapshot_digest = pin.snapshot_digest
+     AND mapping.last_applied_digest = pin.role_object_digest
+    WHERE pin.task_id = $1
+      AND pin.target_state_digest = role_source_agent_state_digest(
+          pin.agent_id, pin.source_id, pin.source_role_id
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM role_source_snapshot snapshot,
+               jsonb_array_elements(snapshot.manifest->'roles') AS role
+          WHERE snapshot.workspace_id = pin.workspace_id
+            AND snapshot.source_id = pin.source_id
+            AND snapshot.snapshot_digest = pin.snapshot_digest
+            AND role->>'id' = pin.source_role_id
+      )
+)
+`
+
+// A claim must never silently execute the mutable agent row after a later
+// source apply changed its managed fields. The task keeps its immutable pin;
+// the caller fails closed and asks for an explicit new run when this returns
+// false. Locking the mapping serializes final claim commit with a concurrent
+// source apply; both paths then lock the task row in the same mapping -> task
+// order, avoiding a stale-delivery window and lock-order deadlocks.
+func (q *Queries) IsRoleSourceTaskPinCurrent(ctx context.Context, taskID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, isRoleSourceTaskPinCurrent, taskID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listRoleSourceArtifactsByDigests = `-- name: ListRoleSourceArtifactsByDigests :many
 SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
 WHERE workspace_id = $1
@@ -2120,6 +2197,64 @@ func (q *Queries) ListRoleSourceSnapshots(ctx context.Context, arg ListRoleSourc
 			&i.Diagnostics,
 			&i.SourceEvidence,
 			&i.ReportedByRuntimeID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourceTaskPins = `-- name: ListRoleSourceTaskPins :many
+SELECT task_id, workspace_id, agent_id, source_id, source_role_id, snapshot_digest, role_object_digest, target_state_digest, capability_pins, inherited_from_task_id, created_at FROM role_source_task_pin
+WHERE workspace_id = $1
+  AND source_id = $2
+  AND (
+      $3::timestamptz IS NULL
+      OR (created_at, task_id) < ($3::timestamptz, $4::uuid)
+  )
+ORDER BY created_at DESC, task_id DESC
+LIMIT $5
+`
+
+type ListRoleSourceTaskPinsParams struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	SourceID        pgtype.UUID        `json:"source_id"`
+	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
+	BeforeTaskID    pgtype.UUID        `json:"before_task_id"`
+	ResultLimit     int32              `json:"result_limit"`
+}
+
+func (q *Queries) ListRoleSourceTaskPins(ctx context.Context, arg ListRoleSourceTaskPinsParams) ([]RoleSourceTaskPin, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceTaskPins,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.BeforeCreatedAt,
+		arg.BeforeTaskID,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceTaskPin{}
+	for rows.Next() {
+		var i RoleSourceTaskPin
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.SourceID,
+			&i.SourceRoleID,
+			&i.SnapshotDigest,
+			&i.RoleObjectDigest,
+			&i.TargetStateDigest,
+			&i.CapabilityPins,
+			&i.InheritedFromTaskID,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

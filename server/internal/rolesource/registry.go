@@ -404,6 +404,9 @@ func validateUniqueIDs(kind string, ids []string) error {
 }
 
 func validateCapability(capability *Capability) error {
+	if _, ok := parseSemanticVersion(capability.Version); !ok {
+		return fmt.Errorf("capability %q has invalid semantic version %q", capability.ID, capability.Version)
+	}
 	if err := validateUniqueIDs("profile", capability.Profiles); err != nil {
 		return err
 	}
@@ -483,6 +486,9 @@ func validateBindings(role *Role, skills map[string]Skill, capabilities map[stri
 		}
 		if !contains(capability.PermissionModes, binding.PermissionMode) {
 			return fmt.Errorf("role %q binding requests unsupported permission mode %q on capability %q", role.ID, binding.PermissionMode, binding.CapabilityID)
+		}
+		if !semanticVersionSatisfies(capability.Version, binding.VersionConstraint) {
+			return fmt.Errorf("role %q binding constraint %q does not resolve capability %q version %q", role.ID, binding.VersionConstraint, binding.CapabilityID, capability.Version)
 		}
 	}
 	return nil

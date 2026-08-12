@@ -274,6 +274,44 @@ func TestRegistryScanRejectsBindingToUnknownObjects(t *testing.T) {
 	}
 }
 
+func TestRegistryScanRequiresCapabilityConstraintToResolve(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		constraint string
+		wantError  bool
+	}{
+		{name: "matching caret", constraint: "^1.2.0"},
+		{name: "different major", constraint: "^2.0.0", wantError: true},
+		{name: "missing constraint", constraint: "", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := validFakeAdapter("fake_source")
+			adapter.manifest.Capabilities = []Capability{{
+				ID: "browser", Name: "Browser", Version: "1.2.3",
+				Profiles: []string{"default"}, PermissionModes: []string{"read-only"},
+				Entrypoint: testArtifact("capabilities/browser/SKILL.md"),
+			}}
+			adapter.manifest.Roles[0].Skills = []Skill{{
+				ID: "draft", Name: "Draft", Entrypoint: testArtifact("skills/draft/SKILL.md"),
+			}}
+			adapter.manifest.Roles[0].CapabilityBindings = []CapabilityBinding{{
+				CapabilityID: "browser", SkillID: "draft", Profile: "default",
+				VersionConstraint: test.constraint, PermissionMode: "read-only",
+			}}
+			registry, err := NewRegistry(adapter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = registry.Scan(context.Background(), "fake_source", ScanRequest{
+				WorkspaceID: "workspace-1", SourceID: "source-1", Config: json.RawMessage(`{}`),
+			})
+			if (err != nil) != test.wantError {
+				t.Fatalf("Scan error = %v, wantError %v", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestRegistryScanRejectsUnsafeSourceEvidence(t *testing.T) {
 	adapter := validFakeAdapter("fake_source")
 	adapter.evidence = SourceEvidence{}

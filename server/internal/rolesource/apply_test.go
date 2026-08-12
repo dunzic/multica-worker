@@ -43,8 +43,8 @@ func TestValidateMaterializationScopeBlocksFieldsWithoutOwnershipContract(t *tes
 			manifest.Roles[0].Profile = &value
 		}},
 		{"capability binding", func(manifest *Manifest) {
-			manifest.Capabilities = []Capability{{ID: "browser", Name: "Browser", Version: "1", Profiles: []string{"default"}, PermissionModes: []string{"private"}, Entrypoint: testArtifact("capability.md")}}
-			manifest.Roles[0].CapabilityBindings = []CapabilityBinding{{CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "1", PermissionMode: "private"}}
+			manifest.Capabilities = []Capability{{ID: "browser", Name: "Browser", Version: "1.0.0", Profiles: []string{"default"}, PermissionModes: []string{"private"}, Entrypoint: testArtifact("capability.md")}}
+			manifest.Roles[0].CapabilityBindings = []CapabilityBinding{{CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "^1.0.0", PermissionMode: "private"}}
 		}},
 		{"supporting skill file", func(manifest *Manifest) {
 			manifest.Roles[0].Skills[0].Artifacts = []ArtifactRef{testArtifact("helper.txt")}
@@ -184,6 +184,29 @@ func TestSnapshotCASMatchesNullAndExactDigestOnly(t *testing.T) {
 	}
 	if snapshotCASMatches(pgtype.Text{}, digest) || snapshotCASMatches(pgtype.Text{String: digest, Valid: true}, "") || snapshotCASMatches(pgtype.Text{String: digest, Valid: true}, testSHA256("b")) {
 		t.Fatal("stale snapshot CAS matched")
+	}
+}
+
+func TestRetainedArchiveCandidateKeepsLastContainingSnapshot(t *testing.T) {
+	ref := ObjectRef{Kind: "role", ID: "writer"}
+	lastSnapshot := testSHA256("last-containing-snapshot")
+	state := materializationState{
+		receipt: &ApplyReceipt{},
+		mappings: map[string]db.RoleSourceObjectMapping{
+			objectKey(ref): {
+				TargetKind: "agent", TargetID: util.MustParseUUID("00000000-0000-4000-8000-000000000009"),
+				LastSnapshotDigest: lastSnapshot,
+			},
+		},
+	}
+	if err := state.appendExistingMapping(ref); err != nil {
+		t.Fatal(err)
+	}
+	if state.mappings[objectKey(ref)].LastSnapshotDigest != lastSnapshot {
+		t.Fatal("retained removed object advanced to a snapshot that cannot contain it")
+	}
+	if len(state.receipt.Mappings) != 1 || state.receipt.Mappings[0].Source != ref {
+		t.Fatalf("retained mapping receipt = %+v", state.receipt.Mappings)
 	}
 }
 

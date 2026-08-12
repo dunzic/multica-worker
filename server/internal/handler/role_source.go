@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -136,6 +138,19 @@ type roleSourceSecretTransferResponse struct {
 	PublicKey   string                          `json:"public_key"`
 	Claims      rolesource.SecretEnvelopeClaims `json:"claims"`
 	ExpiresAt   string                          `json:"expires_at"`
+}
+
+type roleSourceTaskPinResponse struct {
+	TaskID      string                     `json:"task_id"`
+	WorkspaceID string                     `json:"workspace_id"`
+	AgentID     string                     `json:"agent_id"`
+	Pin         protocol.RoleSourceTaskPin `json:"pin"`
+	CreatedAt   string                     `json:"created_at"`
+}
+
+type roleSourceTaskPinCursor struct {
+	CreatedAt string `json:"created_at"`
+	TaskID    string `json:"task_id"`
 }
 
 func (h *Handler) roleSourceFeatureEnabled(r *http.Request, workspaceID, key string) bool {
@@ -637,6 +652,99 @@ func (h *Handler) ListRoleSourceApplyHistory(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"applies": responses})
+}
+
+// ListRoleSourceTaskPins exposes content-free execution provenance to workspace
+// members. Capability entries contain immutable identifiers and digests only;
+// source manifests, prompts, MCP definitions, environment values and artifact
+// bodies are never serialized here.
+func (h *Handler) ListRoleSourceTaskPins(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	workspaceUUID, err := util.ParseUUID(workspaceID)
+	if err != nil || !workspaceUUID.Valid {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+	sourceID, err := util.ParseUUID(chi.URLParam(r, "sourceId"))
+	if err != nil || !sourceID.Valid {
+		writeError(w, http.StatusBadRequest, "invalid source id")
+		return
+	}
+	if _, err := h.RoleSources.GetSource(r.Context(), workspaceID, chi.URLParam(r, "sourceId")); err != nil {
+		writeRoleSourceReadError(w, err, "failed to load source")
+		return
+	}
+
+	limit := int32(50)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = int32(parsed)
+	}
+	var beforeCreatedAt pgtype.Timestamptz
+	var beforeTaskID pgtype.UUID
+	rawCreatedAt := r.URL.Query().Get("before_created_at")
+	rawTaskID := r.URL.Query().Get("before_task_id")
+	if (rawCreatedAt == "") != (rawTaskID == "") {
+		writeError(w, http.StatusBadRequest, "before_created_at and before_task_id must be set together")
+		return
+	}
+	if rawCreatedAt != "" {
+		parsedTime, err := time.Parse(time.RFC3339Nano, rawCreatedAt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid before_created_at")
+			return
+		}
+		parsedTaskID, err := util.ParseUUID(rawTaskID)
+		if err != nil || !parsedTaskID.Valid {
+			writeError(w, http.StatusBadRequest, "invalid before_task_id")
+			return
+		}
+		beforeCreatedAt = pgtype.Timestamptz{Time: parsedTime, Valid: true}
+		beforeTaskID = parsedTaskID
+	}
+
+	rows, err := h.Queries.ListRoleSourceTaskPins(r.Context(), db.ListRoleSourceTaskPinsParams{
+		WorkspaceID:     workspaceUUID,
+		SourceID:        sourceID,
+		BeforeCreatedAt: beforeCreatedAt,
+		BeforeTaskID:    beforeTaskID,
+		ResultLimit:     limit + 1,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list role source task provenance")
+		return
+	}
+	hasMore := len(rows) > int(limit)
+	if hasMore {
+		rows = rows[:limit]
+	}
+	items := make([]roleSourceTaskPinResponse, 0, len(rows))
+	for _, row := range rows {
+		pin, err := decodeRoleSourceTaskPin(row)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "role source task provenance is malformed")
+			return
+		}
+		items = append(items, roleSourceTaskPinResponse{
+			TaskID: util.UUIDToString(row.TaskID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+			AgentID: util.UUIDToString(row.AgentID), Pin: *pin, CreatedAt: row.CreatedAt.Time.UTC().Format(timeFormat),
+		})
+	}
+	response := map[string]any{"task_pins": items}
+	if hasMore && len(rows) > 0 {
+		last := rows[len(rows)-1]
+		response["next_cursor"] = roleSourceTaskPinCursor{
+			CreatedAt: last.CreatedAt.Time.UTC().Format(timeFormat), TaskID: util.UUIDToString(last.TaskID),
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) RequestRoleSourceSecretTransfer(w http.ResponseWriter, r *http.Request) {
