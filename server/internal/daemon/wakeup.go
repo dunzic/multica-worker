@@ -305,11 +305,14 @@ func (d *Daemon) sendWSHeartbeats(ctx context.Context, runtimeIDs []string, writ
 			return
 		}
 		supportsRoleSourceScan := d.roleSources != nil
+		attestation := d.pendingRoleSourceConfigAttestation(rid)
 		frame, err := json.Marshal(protocol.Message{
 			Type: protocol.EventDaemonHeartbeat,
 			Payload: marshalRaw(protocol.DaemonHeartbeatRequestPayload{
 				RuntimeID: rid, SupportsBatchImport: true, SupportsRoleSourceScan: supportsRoleSourceScan,
-				SupportsRoleSourceSecretTransfer: supportsRoleSourceScan,
+				SupportsRoleSourceSecretTransfer:    supportsRoleSourceScan,
+				SupportsRoleSourceConfigAttestation: true,
+				RoleSourceConfigAttestation:         attestation,
 			}),
 		})
 		if err != nil {

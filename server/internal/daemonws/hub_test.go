@@ -3,8 +3,10 @@ package daemonws
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +16,33 @@ import (
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+func TestDaemonWSReadLimitFitsMaximumRoleSourceAttestation(t *testing.T) {
+	sources := make([]protocol.RoleSourceLoadedConfig, 0, protocol.MaxRoleSourceAttestedConfigs)
+	for index := 0; index < protocol.MaxRoleSourceAttestedConfigs; index++ {
+		digest, err := protocol.RoleSourceConfigIDDigest("runtime-max", fmt.Sprintf("source-%03d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, protocol.RoleSourceLoadedConfig{
+			ConfigIDDigest: digest, Kind: "manifest_directory", AdapterVersion: strings.Repeat("v", 100),
+		})
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].ConfigIDDigest < sources[j].ConfigIDDigest })
+	attestation, err := protocol.NewRoleSourceConfigAttestation(true, "sha256:"+strings.Repeat("a", 64), sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(protocol.Message{Type: protocol.EventDaemonHeartbeat, Payload: mustMarshalRaw(protocol.DaemonHeartbeatRequestPayload{
+		RuntimeID: "runtime-max", SupportsRoleSourceConfigAttestation: true, RoleSourceConfigAttestation: &attestation,
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 64<<10 || len(body) > maxDaemonWSMessageBytes {
+		t.Fatalf("maximum attestation frame size=%d, read limit=%d", len(body), maxDaemonWSMessageBytes)
+	}
+}
 
 func TestNotifyTaskAvailable(t *testing.T) {
 	M.Reset()
@@ -433,21 +462,29 @@ func TestHeartbeatRoundTrip(t *testing.T) {
 	defer M.Reset()
 
 	hub := NewHub()
+	attestation, err := protocol.NewRoleSourceConfigAttestation(false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var calls atomic.Int32
-	hub.SetHeartbeatHandler(func(_ context.Context, identity ClientIdentity, runtimeID string, _ bool, supportsRoleSourceScan, pollRoleSourceScan, supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+	hub.SetHeartbeatHandler(func(_ context.Context, identity ClientIdentity, request protocol.DaemonHeartbeatRequestPayload) (*protocol.DaemonHeartbeatAckPayload, error) {
 		calls.Add(1)
+		runtimeID := request.RuntimeID
 		if identity.WorkspaceID != "ws-1" {
 			t.Errorf("identity workspace = %q, want ws-1", identity.WorkspaceID)
 		}
-		if !supportsRoleSourceScan || !pollRoleSourceScan {
-			t.Errorf("role source negotiation = supports:%v poll:%v, want true/true", supportsRoleSourceScan, pollRoleSourceScan)
+		if !request.SupportsRoleSourceScan || !request.PollRoleSourceScan {
+			t.Errorf("role source negotiation = supports:%v poll:%v, want true/true", request.SupportsRoleSourceScan, request.PollRoleSourceScan)
 		}
-		if !supportsRoleSourceSecretTransfer || !pollRoleSourceSecretTransfer {
-			t.Errorf("role source secret negotiation = supports:%v poll:%v, want true/true", supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer)
+		if !request.SupportsRoleSourceSecretTransfer || !request.PollRoleSourceSecretTransfer {
+			t.Errorf("role source secret negotiation = supports:%v poll:%v, want true/true", request.SupportsRoleSourceSecretTransfer, request.PollRoleSourceSecretTransfer)
+		}
+		if !request.SupportsRoleSourceConfigAttestation || request.RoleSourceConfigAttestation == nil || request.RoleSourceConfigAttestation.AttestationID != attestation.AttestationID {
+			t.Errorf("role source config attestation = %+v", request.RoleSourceConfigAttestation)
 		}
 		return &protocol.DaemonHeartbeatAckPayload{
-			RuntimeID: runtimeID,
-			Status:    "ok",
+			RuntimeID: runtimeID, Status: "ok",
+			AcceptedRoleSourceConfigAttestationID: attestation.AttestationID,
 			PendingUpdate: &protocol.DaemonHeartbeatPendingUpdate{
 				ID:            "update-1",
 				TargetVersion: "0.1.99",
@@ -475,6 +512,7 @@ func TestHeartbeatRoundTrip(t *testing.T) {
 		Payload: mustMarshalRaw(protocol.DaemonHeartbeatRequestPayload{
 			RuntimeID: "runtime-1", SupportsRoleSourceScan: true, PollRoleSourceScan: true,
 			SupportsRoleSourceSecretTransfer: true, PollRoleSourceSecretTransfer: true,
+			SupportsRoleSourceConfigAttestation: true, RoleSourceConfigAttestation: &attestation,
 		}),
 	})
 	if err != nil {
@@ -503,6 +541,9 @@ func TestHeartbeatRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(msg.Payload, &ack); err != nil {
 		t.Fatalf("unmarshal ack payload: %v", err)
 	}
+	if ack.AcceptedRoleSourceConfigAttestationID != attestation.AttestationID {
+		t.Fatalf("accepted attestation = %q, want %q", ack.AcceptedRoleSourceConfigAttestationID, attestation.AttestationID)
+	}
 	if ack.RuntimeID != "runtime-1" {
 		t.Fatalf("ack runtime_id = %q, want runtime-1", ack.RuntimeID)
 	}
@@ -525,7 +566,7 @@ func TestHeartbeatHandlerCtxNotTimeBounded(t *testing.T) {
 
 	hub := NewHub()
 	const stall = 250 * time.Millisecond
-	hub.SetHeartbeatHandler(func(ctx context.Context, _ ClientIdentity, runtimeID string, _, _, _, _, _ bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+	hub.SetHeartbeatHandler(func(ctx context.Context, _ ClientIdentity, request protocol.DaemonHeartbeatRequestPayload) (*protocol.DaemonHeartbeatAckPayload, error) {
 		select {
 		case <-time.After(stall):
 		case <-ctx.Done():
@@ -535,7 +576,7 @@ func TestHeartbeatHandlerCtxNotTimeBounded(t *testing.T) {
 		if _, ok := ctx.Deadline(); ok {
 			t.Errorf("handler ctx must not carry a deadline; PopPending side effects cannot be safely un-run")
 		}
-		return &protocol.DaemonHeartbeatAckPayload{RuntimeID: runtimeID, Status: "ok"}, nil
+		return &protocol.DaemonHeartbeatAckPayload{RuntimeID: request.RuntimeID, Status: "ok"}, nil
 	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -586,7 +627,7 @@ func TestHeartbeatRejectsUnauthorizedRuntime(t *testing.T) {
 
 	hub := NewHub()
 	var called atomic.Bool
-	hub.SetHeartbeatHandler(func(context.Context, ClientIdentity, string, bool, bool, bool, bool, bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+	hub.SetHeartbeatHandler(func(context.Context, ClientIdentity, protocol.DaemonHeartbeatRequestPayload) (*protocol.DaemonHeartbeatAckPayload, error) {
 		called.Store(true)
 		return &protocol.DaemonHeartbeatAckPayload{Status: "ok"}, nil
 	})

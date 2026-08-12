@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS role_source_runtime_attestation_observation;
+DROP TABLE IF EXISTS role_source_runtime_attestation;

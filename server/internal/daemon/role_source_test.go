@@ -65,6 +65,31 @@ func TestLoadRoleSourceScannerRequiresPrivateBoundedConfiguration(t *testing.T) 
 	if err != nil || scanner == nil {
 		t.Fatalf("valid role source config: scanner=%v err=%v", scanner, err)
 	}
+	body, err := os.ReadFile(validPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attestation, err := scanner.attestationForRuntime("runtime-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedRevision, err := protocol.RoleSourceConfigRevisionDigest("runtime-1", roleSourceConfigRevision(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !attestation.Loaded || attestation.Revision != expectedRevision || len(attestation.Sources) != 1 {
+		t.Fatalf("loaded attestation = %+v", attestation)
+	}
+	expectedConfigDigest, err := protocol.RoleSourceConfigIDDigest("runtime-1", "agentwaker-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source := attestation.Sources[0]; source.ConfigIDDigest != expectedConfigDigest || source.Kind != string(agentwaker.Kind) || source.AdapterVersion != agentwaker.Descriptor().AdapterVersion {
+		t.Fatalf("attested source = %+v", source)
+	}
+	if err := protocol.ValidateRoleSourceConfigAttestation(attestation); err != nil {
+		t.Fatalf("loaded attestation invalid: %v", err)
+	}
 
 	publicPath := writeRoleSourceConfigForTest(t, root, root, 0o644)
 	if _, err := loadRoleSourceScanner(publicPath); err == nil || !strings.Contains(err.Error(), "permissions") {
@@ -321,11 +346,26 @@ func TestRoleSourceHeartbeatPollingIsThrottledAndCapacityAware(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon := &Daemon{roleSources: scanner, roleSourceLastPoll: make(map[string]time.Time)}
+	attestation, err := scanner.attestationForRuntime("runtime-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	first := daemon.roleSourceHeartbeatOptions("runtime-1", false)
 	second := daemon.roleSourceHeartbeatOptions("runtime-1", false)
 	forced := daemon.roleSourceHeartbeatOptions("runtime-1", true)
 	if !first.SupportsRoleSourceScan || !first.SupportsRoleSourceSecretTransfer || !first.PollRoleSourceScan || !first.PollRoleSourceSecretTransfer || second.PollRoleSourceScan || second.PollRoleSourceSecretTransfer || !forced.PollRoleSourceScan || !forced.PollRoleSourceSecretTransfer {
 		t.Fatalf("poll options: first=%+v second=%+v forced=%+v", first, second, forced)
+	}
+	if !first.SupportsRoleSourceConfigAttestation || first.RoleSourceConfigAttestation == nil || first.RoleSourceConfigAttestation.AttestationID != attestation.AttestationID {
+		t.Fatalf("first attestation negotiation = %+v", first)
+	}
+	daemon.acceptRoleSourceConfigAttestation("runtime-1", attestation.AttestationID)
+	if option := daemon.roleSourceHeartbeatOptions("runtime-1", false); option.RoleSourceConfigAttestation != nil {
+		t.Fatalf("acknowledged attestation was resent: %+v", option.RoleSourceConfigAttestation)
+	}
+	daemon.acceptRoleSourceConfigAttestation("runtime-2", "sha256:"+strings.Repeat("f", 64))
+	if option := daemon.roleSourceHeartbeatOptions("runtime-2", false); option.RoleSourceConfigAttestation == nil {
+		t.Fatal("mismatched acknowledgement suppressed attestation")
 	}
 	if option := daemon.roleSourceHeartbeatOptions("runtime-2", true); !option.SupportsRoleSourceScan || !option.SupportsRoleSourceSecretTransfer || option.PollRoleSourceScan || option.PollRoleSourceSecretTransfer {
 		t.Fatalf("capacity-full option = %+v", option)
@@ -372,9 +412,14 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 	client.client = httpClient
 	client.bundleClient = httpClient
 
+	attestation, err := protocol.NewRoleSourceConfigAttestation(false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.SendHeartbeat(t.Context(), "runtime-1", HeartbeatOptions{
 		SupportsRoleSourceScan: true, PollRoleSourceScan: true,
 		SupportsRoleSourceSecretTransfer: true, PollRoleSourceSecretTransfer: true,
+		SupportsRoleSourceConfigAttestation: true, RoleSourceConfigAttestation: &attestation,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -404,8 +449,13 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 	}
 	heartbeat := requests["/api/daemon/heartbeat"]
 	if heartbeat["supports_role_source_scan"] != true || heartbeat["poll_role_source_scan"] != true ||
-		heartbeat["supports_role_source_secret_transfer"] != true || heartbeat["poll_role_source_secret_transfer"] != true {
+		heartbeat["supports_role_source_secret_transfer"] != true || heartbeat["poll_role_source_secret_transfer"] != true ||
+		heartbeat["supports_role_source_config_attestation"] != true {
 		t.Fatalf("heartbeat negotiation body = %#v", heartbeat)
+	}
+	attestedBody, ok := heartbeat["role_source_config_attestation"].(map[string]any)
+	if !ok || attestedBody["loaded"] != false || attestedBody["attestation_id"] != attestation.AttestationID {
+		t.Fatalf("heartbeat attestation body = %#v", heartbeat["role_source_config_attestation"])
 	}
 	leaseBody := requests["/api/daemon/runtimes/runtime-1/role-sources/source-1/scans/request-1/lease"]
 	if leaseBody["lease_token"] != "lease-1" {

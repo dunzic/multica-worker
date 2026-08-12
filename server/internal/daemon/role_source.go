@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -59,9 +60,10 @@ type roleSourceLocalConfig = RoleSourceManagedSource
 // an opaque config ID; resolving it to a path and invoking a filesystem adapter
 // happens exclusively in this daemon process.
 type roleSourceScanner struct {
-	registry  *rolesource.Registry
-	configs   map[string]roleSourceLocalConfig
-	semaphore chan struct{}
+	registry       *rolesource.Registry
+	configs        map[string]roleSourceLocalConfig
+	configRevision string
+	semaphore      chan struct{}
 }
 
 func loadRoleSourceScanner(configPath string) (*roleSourceScanner, error) {
@@ -79,7 +81,38 @@ func loadRoleSourceScanner(configPath string) (*roleSourceScanner, error) {
 		return nil, err
 	}
 	defer clear(document.DigestKey)
-	return buildRoleSourceScanner(document)
+	scanner, err := buildRoleSourceScanner(document)
+	if err != nil {
+		return nil, err
+	}
+	scanner.configRevision = roleSourceConfigRevision(body)
+	return scanner, nil
+}
+
+func (s *roleSourceScanner) attestationForRuntime(runtimeID string) (protocol.RoleSourceConfigAttestation, error) {
+	if s == nil {
+		return protocol.NewRoleSourceConfigAttestation(false, "", nil)
+	}
+	attestedSources := make([]protocol.RoleSourceLoadedConfig, 0, len(s.configs))
+	for configID, config := range s.configs {
+		descriptor, ok := s.registry.Descriptor(config.Kind)
+		if !ok {
+			return protocol.RoleSourceConfigAttestation{}, fmt.Errorf("role source config %q adapter descriptor is unavailable", configID)
+		}
+		configIDDigest, err := protocol.RoleSourceConfigIDDigest(runtimeID, configID)
+		if err != nil {
+			return protocol.RoleSourceConfigAttestation{}, err
+		}
+		attestedSources = append(attestedSources, protocol.RoleSourceLoadedConfig{
+			ConfigIDDigest: configIDDigest, Kind: string(config.Kind), AdapterVersion: descriptor.AdapterVersion,
+		})
+	}
+	sort.Slice(attestedSources, func(i, j int) bool { return attestedSources[i].ConfigIDDigest < attestedSources[j].ConfigIDDigest })
+	revision, err := protocol.RoleSourceConfigRevisionDigest(runtimeID, s.configRevision)
+	if err != nil {
+		return protocol.RoleSourceConfigAttestation{}, err
+	}
+	return protocol.NewRoleSourceConfigAttestation(true, revision, attestedSources)
 }
 
 func readRoleSourceConfigFile(configPath string) ([]byte, error) {
@@ -376,10 +409,15 @@ func (s *roleSourceScanner) sealSecretTransfer(ctx context.Context, pending prot
 }
 
 func (d *Daemon) roleSourceHeartbeatOptions(runtimeID string, forcePoll bool) HeartbeatOptions {
-	if d.roleSources == nil {
-		return HeartbeatOptions{}
+	option := HeartbeatOptions{
+		SupportsRoleSourceConfigAttestation: true,
+		RoleSourceConfigAttestation:         d.pendingRoleSourceConfigAttestation(runtimeID),
 	}
-	option := HeartbeatOptions{SupportsRoleSourceScan: true, SupportsRoleSourceSecretTransfer: true}
+	if d.roleSources == nil {
+		return option
+	}
+	option.SupportsRoleSourceScan = true
+	option.SupportsRoleSourceSecretTransfer = true
 	now := time.Now()
 	d.roleSourcePollMu.Lock()
 	last := d.roleSourceLastPoll[runtimeID]
@@ -390,6 +428,40 @@ func (d *Daemon) roleSourceHeartbeatOptions(runtimeID string, forcePoll bool) He
 	}
 	d.roleSourcePollMu.Unlock()
 	return option
+}
+
+func (d *Daemon) pendingRoleSourceConfigAttestation(runtimeID string) *protocol.RoleSourceConfigAttestation {
+	attestation, err := d.roleSources.attestationForRuntime(runtimeID)
+	if err != nil {
+		d.logger.Warn("build role source config attestation failed", "runtime_id", runtimeID, "error", err)
+		return nil
+	}
+	d.roleSourceAttestationMu.Lock()
+	defer d.roleSourceAttestationMu.Unlock()
+	if d.roleSourceAttestationAccepted == nil {
+		d.roleSourceAttestationAccepted = make(map[string]string)
+	}
+	if d.roleSourceAttestationAccepted[runtimeID] == attestation.AttestationID {
+		return nil
+	}
+	attestation.Sources = append([]protocol.RoleSourceLoadedConfig(nil), attestation.Sources...)
+	return &attestation
+}
+
+func (d *Daemon) acceptRoleSourceConfigAttestation(runtimeID, attestationID string) {
+	if runtimeID == "" || attestationID == "" {
+		return
+	}
+	attestation, err := d.roleSources.attestationForRuntime(runtimeID)
+	if err != nil || attestationID != attestation.AttestationID {
+		return
+	}
+	d.roleSourceAttestationMu.Lock()
+	defer d.roleSourceAttestationMu.Unlock()
+	if d.roleSourceAttestationAccepted == nil {
+		d.roleSourceAttestationAccepted = make(map[string]string)
+	}
+	d.roleSourceAttestationAccepted[runtimeID] = attestationID
 }
 
 func (d *Daemon) releaseRoleSourcePollReservation(option HeartbeatOptions) {

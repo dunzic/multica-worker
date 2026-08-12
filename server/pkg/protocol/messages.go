@@ -320,12 +320,14 @@ type ChatSessionUpdatedPayload struct {
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
 // identical semantics.
 type DaemonHeartbeatRequestPayload struct {
-	RuntimeID                        string `json:"runtime_id"`
-	SupportsBatchImport              bool   `json:"supports_batch_import,omitempty"`
-	SupportsRoleSourceScan           bool   `json:"supports_role_source_scan,omitempty"`
-	PollRoleSourceScan               bool   `json:"poll_role_source_scan,omitempty"`
-	SupportsRoleSourceSecretTransfer bool   `json:"supports_role_source_secret_transfer,omitempty"`
-	PollRoleSourceSecretTransfer     bool   `json:"poll_role_source_secret_transfer,omitempty"`
+	RuntimeID                           string                       `json:"runtime_id"`
+	SupportsBatchImport                 bool                         `json:"supports_batch_import,omitempty"`
+	SupportsRoleSourceScan              bool                         `json:"supports_role_source_scan,omitempty"`
+	PollRoleSourceScan                  bool                         `json:"poll_role_source_scan,omitempty"`
+	SupportsRoleSourceSecretTransfer    bool                         `json:"supports_role_source_secret_transfer,omitempty"`
+	PollRoleSourceSecretTransfer        bool                         `json:"poll_role_source_secret_transfer,omitempty"`
+	SupportsRoleSourceConfigAttestation bool                         `json:"supports_role_source_config_attestation,omitempty"`
+	RoleSourceConfigAttestation         *RoleSourceConfigAttestation `json:"role_source_config_attestation,omitempty"`
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
@@ -351,6 +353,10 @@ type DaemonHeartbeatAckPayload struct {
 	PendingLocalSkillImport         *DaemonHeartbeatPendingLocalSkillImport         `json:"pending_local_skill_import,omitempty"`
 	PendingRoleSourceScan           *DaemonHeartbeatPendingRoleSourceScan           `json:"pending_role_source_scan,omitempty"`
 	PendingRoleSourceSecretTransfer *DaemonHeartbeatPendingRoleSourceSecretTransfer `json:"pending_role_source_secret_transfer,omitempty"`
+	// AcceptedRoleSourceConfigAttestationID is returned only after the server
+	// durably records the supplied statement. The daemon then suppresses the
+	// same statement for this runtime until its loaded configuration changes.
+	AcceptedRoleSourceConfigAttestationID string `json:"accepted_role_source_config_attestation_id,omitempty"`
 	// PendingLocalSkillImports carries multiple import requests in a single
 	// heartbeat so the daemon can process them concurrently. Old daemons
 	// that don't know this field silently ignore it (standard JSON behavior)

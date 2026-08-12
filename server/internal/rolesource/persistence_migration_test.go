@@ -191,6 +191,101 @@ func TestRoleSourceArtifactDeleteIntentSurvivesTenantTeardownWithoutContent(t *t
 	}
 }
 
+func TestRoleSourceRuntimeAttestationIsBoundedRedactedAndExplicitlyDeleted(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "334_role_source_runtime_attestation.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"root_path", "allowed_roots jsonb", "config_raw", "config_plaintext", "digest_key", "secret_value", "credential_value"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("runtime attestation schema contains private field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"attestation_id", "config_revision", "sources jsonb", "observed_at", "changed_at", "observation_count", "jsonb_array_length(sources) between 1 and 512"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("runtime attestation schema is missing %q", required)
+		}
+	}
+
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	for _, required := range []string{"RecordRoleSourceRuntimeAttestation", "ON CONFLICT (runtime_id)", "ON CONFLICT (runtime_id, attestation_id)", "observation_count + 1"} {
+		if !strings.Contains(queryText, required) {
+			t.Fatalf("runtime attestation persistence is missing %q", required)
+		}
+	}
+	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
+		cleanup, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, table := range []string{"role_source_runtime_attestation_observation", "role_source_runtime_attestation"} {
+			if !strings.Contains(string(cleanup), "DELETE FROM "+table) {
+				t.Fatalf("%s does not explicitly delete %s", name, table)
+			}
+		}
+	}
+	for _, name := range []string{"runtime.sql", "runtime_profile.sql"} {
+		cleanup, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, table := range []string{"role_source_runtime_attestation_observation", "role_source_runtime_attestation"} {
+			if !strings.Contains(string(cleanup), "DELETE FROM "+table) {
+				t.Fatalf("%s does not explicitly delete %s on runtime teardown", name, table)
+			}
+		}
+	}
+	runtimeQueries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "runtime.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runtimeQueries), "role_source.runtime_id = agent_runtime.id") {
+		t.Fatal("stale runtime GC does not preserve role-source-bound runtimes")
+	}
+	roleSourceQueries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"CountRoleSourcesByRuntime", "CountRoleSourcesByRuntimes", "ReassignRoleSourcesToRuntime", "LockRoleSourceRuntimeForRegistration", "FOR KEY SHARE"} {
+		if !strings.Contains(string(roleSourceQueries), required) {
+			t.Fatalf("runtime relationship guard is missing %q", required)
+		}
+	}
+	controlBody, err := os.ReadFile("controlplane.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := string(controlBody)
+	lockAt := strings.Index(control, "qtx.LockRoleSourceRuntimeForRegistration(ctx")
+	createAt := strings.Index(control, "qtx.CreateRoleSource(ctx")
+	if lockAt < 0 || createAt < 0 || lockAt > createAt {
+		t.Fatal("role-source registration must lock its runtime before creating the source")
+	}
+	handlerBody, err := os.ReadFile(filepath.Join("..", "handler", "daemon.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := string(handlerBody)
+	attestationStart := strings.Index(handler, "func (h *Handler) recordRoleSourceRuntimeAttestation(")
+	if attestationStart < 0 {
+		t.Fatal("runtime attestation persistence handler is missing")
+	}
+	attestation := handler[attestationStart:]
+	workspaceLockAt := strings.Index(attestation, "qtx.LockWorkspaceForRoleSourceMutation(ctx")
+	runtimeLockAt := strings.Index(attestation, "qtx.LockRoleSourceRuntimeForRegistration(ctx")
+	recordAt := strings.Index(attestation, "qtx.RecordRoleSourceRuntimeAttestation(ctx")
+	commitAt := strings.Index(attestation, "tx.Commit(ctx)")
+	if workspaceLockAt < 0 || runtimeLockAt < 0 || recordAt < 0 || commitAt < 0 ||
+		!(workspaceLockAt < runtimeLockAt && runtimeLockAt < recordAt && recordAt < commitAt) {
+		t.Fatal("runtime attestation must lock workspace and runtime before writing and acknowledging durable evidence")
+	}
+}
+
 func TestRoleSourceTaskPinsAreContentFreeAndRetryStable(t *testing.T) {
 	schemaBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "316_role_source_task_pin.up.sql"))
 	if err != nil {

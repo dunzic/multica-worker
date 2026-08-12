@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY role_source_runtime_attestation_observation_index ON role_source_runtime_attestation_observation (workspace_id, runtime_id, last_observed_at DESC);

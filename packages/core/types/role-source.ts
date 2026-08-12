@@ -22,6 +22,31 @@ export interface RoleSource {
   version: number;
   created_at: string;
   updated_at: string;
+  runtime_config: {
+    status:
+      | "unattested"
+      | "not_loaded"
+      | "config_missing"
+      | "kind_mismatch"
+      | "adapter_version_mismatch"
+      | "invalid_attestation"
+      | "loaded";
+    attestation_id: string | null;
+    revision: string | null;
+    observed_at: string | null;
+    changed_at: string | null;
+  };
+}
+
+export interface RoleSourceRuntimeAttestation {
+  status: RoleSource["runtime_config"]["status"];
+  contract_version: string;
+  loaded: boolean;
+  attestation_id: string;
+  revision: string | null;
+  first_observed_at: string;
+  last_observed_at: string;
+  observation_count: number;
 }
 
 export type RoleSourcePlanOperation =

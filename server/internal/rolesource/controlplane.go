@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 var (
@@ -129,8 +130,11 @@ func (c *ControlPlane) RegisterSource(ctx context.Context, input RegisterSourceI
 	if descriptor.AdapterVersion != input.AdapterVersion {
 		return db.RoleSource{}, fmt.Errorf("adapter version %q does not match registered version %q", input.AdapterVersion, descriptor.AdapterVersion)
 	}
-	if strings.TrimSpace(input.Name) == "" || len(input.Name) > 200 || strings.TrimSpace(input.DaemonConfigID) == "" || len(input.DaemonConfigID) > 512 {
+	if strings.TrimSpace(input.Name) == "" || len(input.Name) > 200 || strings.TrimSpace(input.DaemonConfigID) == "" {
 		return db.RoleSource{}, errors.New("role source requires bounded name and daemon_config_id")
+	}
+	if _, err := protocol.RoleSourceConfigIDDigest(input.RuntimeID, strings.TrimSpace(input.DaemonConfigID)); err != nil {
+		return db.RoleSource{}, fmt.Errorf("invalid daemon_config_id: %w", err)
 	}
 	if err := validateConfigSummary(&input.ConfigSummary); err != nil {
 		return db.RoleSource{}, err
@@ -161,7 +165,7 @@ func (c *ControlPlane) RegisterSource(ctx context.Context, input RegisterSourceI
 	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
 		return db.RoleSource{}, err
 	}
-	if _, err := qtx.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{ID: runtimeID, WorkspaceID: workspaceID}); err != nil {
+	if _, err := qtx.LockRoleSourceRuntimeForRegistration(ctx, db.LockRoleSourceRuntimeForRegistrationParams{RuntimeID: runtimeID, WorkspaceID: workspaceID}); err != nil {
 		return db.RoleSource{}, fmt.Errorf("validate role source runtime: %w", err)
 	}
 	source, err := qtx.CreateRoleSource(ctx, db.CreateRoleSourceParams{

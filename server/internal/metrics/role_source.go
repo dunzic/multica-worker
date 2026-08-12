@@ -9,6 +9,7 @@ type RoleSourceMetrics struct {
 	applyErrors           *prometheus.CounterVec
 	failureAuditWrites    *prometheus.CounterVec
 	commitReconciliations *prometheus.CounterVec
+	runtimeAttestations   *prometheus.CounterVec
 }
 
 func NewRoleSourceMetrics() *RoleSourceMetrics {
@@ -25,11 +26,15 @@ func NewRoleSourceMetrics() *RoleSourceMetrics {
 			Namespace: "multica", Subsystem: "role_source", Name: "apply_commit_reconciliations_total",
 			Help: "Independent receipt checks after a role-source apply commit returned an error.",
 		}, []string{"outcome"}),
+		runtimeAttestations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "role_source", Name: "runtime_config_attestations_total",
+			Help: "Bounded outcomes for daemon loaded-configuration attestation attempts.",
+		}, []string{"outcome"}),
 	}
 }
 
 func (m *RoleSourceMetrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.applyErrors, m.failureAuditWrites, m.commitReconciliations}
+	return []prometheus.Collector{m.applyErrors, m.failureAuditWrites, m.commitReconciliations, m.runtimeAttestations}
 }
 
 func (m *RoleSourceMetrics) RecordApplyError(mode, stage, code string) {
@@ -42,6 +47,10 @@ func (m *RoleSourceMetrics) RecordApplyFailureAudit(mode, stage, code, outcome s
 
 func (m *RoleSourceMetrics) RecordApplyCommitReconciliation(outcome string) {
 	m.commitReconciliations.WithLabelValues(roleSourceCommitReconciliationOutcome(outcome)).Inc()
+}
+
+func (m *RoleSourceMetrics) RecordRuntimeConfigAttestation(outcome string) {
+	m.runtimeAttestations.WithLabelValues(roleSourceRuntimeAttestationOutcome(outcome)).Inc()
 }
 
 func roleSourceMode(value string) string {
@@ -88,5 +97,14 @@ func roleSourceCommitReconciliationOutcome(value string) string {
 		return value
 	default:
 		return "unknown"
+	}
+}
+
+func roleSourceRuntimeAttestationOutcome(value string) string {
+	switch value {
+	case "accepted_loaded", "accepted_unloaded", "invalid", "persist_failed":
+		return value
+	default:
+		return "invalid"
 	}
 }

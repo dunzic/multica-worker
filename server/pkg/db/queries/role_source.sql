@@ -4,6 +4,68 @@
 -- from committing child data after the explicit no-FK cleanup sweep.
 SELECT id FROM workspace WHERE id = @workspace_id FOR KEY SHARE;
 
+-- name: LockRoleSourceRuntimeForRegistration :one
+-- Runtime deletion takes FOR UPDATE before checking role_source references.
+-- This shared lock prevents a source from appearing after that check and
+-- becoming orphaned when the runtime row is removed.
+SELECT id FROM agent_runtime
+WHERE id = @runtime_id AND workspace_id = @workspace_id
+FOR KEY SHARE;
+
+-- name: RecordRoleSourceRuntimeAttestation :one
+-- The daemon sends this only until the server acknowledges attestation_id, so
+-- this is a process-start/config-change write rather than a heartbeat hot-path
+-- write. Current evidence is replaced atomically; the observation catalog
+-- retains every distinct state and counts repeated process observations.
+WITH current_evidence AS (
+    INSERT INTO role_source_runtime_attestation (
+        runtime_id, workspace_id, contract_version, loaded,
+        attestation_id, config_revision, sources
+    ) VALUES (
+        @runtime_id, @workspace_id, @contract_version, @loaded,
+        @attestation_id, sqlc.narg('config_revision')::text, @sources
+    )
+    ON CONFLICT (runtime_id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        contract_version = EXCLUDED.contract_version,
+        loaded = EXCLUDED.loaded,
+        attestation_id = EXCLUDED.attestation_id,
+        config_revision = EXCLUDED.config_revision,
+        sources = EXCLUDED.sources,
+        observed_at = now(),
+        changed_at = CASE
+            WHEN role_source_runtime_attestation.attestation_id IS DISTINCT FROM EXCLUDED.attestation_id
+            THEN now()
+            ELSE role_source_runtime_attestation.changed_at
+        END
+    RETURNING *
+), observation AS (
+    INSERT INTO role_source_runtime_attestation_observation (
+        runtime_id, workspace_id, contract_version, loaded,
+        attestation_id, config_revision, sources
+    )
+    SELECT runtime_id, workspace_id, contract_version, loaded,
+           attestation_id, config_revision, sources
+    FROM current_evidence
+    ON CONFLICT (runtime_id, attestation_id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        last_observed_at = now(),
+        observation_count = role_source_runtime_attestation_observation.observation_count + 1
+)
+SELECT * FROM current_evidence;
+
+-- name: ListRoleSourceRuntimeAttestations :many
+SELECT * FROM role_source_runtime_attestation
+WHERE workspace_id = @workspace_id
+  AND runtime_id = ANY(@runtime_ids::uuid[])
+ORDER BY runtime_id;
+
+-- name: ListRoleSourceRuntimeAttestationObservations :many
+SELECT * FROM role_source_runtime_attestation_observation
+WHERE workspace_id = @workspace_id AND runtime_id = @runtime_id
+ORDER BY last_observed_at DESC, attestation_id
+LIMIT @result_limit;
+
 -- name: CreateRoleSource :one
 INSERT INTO role_source (
     id, workspace_id, runtime_id, name, kind, adapter_version,
@@ -27,6 +89,19 @@ FOR UPDATE;
 SELECT * FROM role_source
 WHERE workspace_id = @workspace_id
 ORDER BY created_at DESC, id;
+
+-- name: CountRoleSourcesByRuntime :one
+SELECT count(*) FROM role_source WHERE runtime_id = @runtime_id;
+
+-- name: CountRoleSourcesByRuntimes :one
+SELECT count(*) FROM role_source WHERE runtime_id = ANY(@runtime_ids::uuid[]);
+
+-- name: ReassignRoleSourcesToRuntime :execrows
+UPDATE role_source
+SET runtime_id = @new_runtime_id,
+    version = version + 1,
+    updated_at = now()
+WHERE runtime_id = @old_runtime_id;
 
 -- name: UpdateRoleSourceState :one
 UPDATE role_source

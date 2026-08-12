@@ -246,6 +246,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
+	h.RoleSourceMetrics = opts.RoleSourceMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	roleSourceCatalog, err := rolesource.NewCatalog(agentwaker.Descriptor(), manifestdir.Descriptor())
 	if err != nil {
@@ -1219,6 +1220,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/runtime-profiles/{profileId}", h.GetRuntimeProfile)
 					r.Get("/role-source-adapters", h.ListRoleSourceAdapters)
 					r.Get("/role-sources", h.ListRoleSources)
+					r.Get("/role-sources/{sourceId}/runtime-attestations", h.ListRoleSourceRuntimeAttestations)
 					r.Get("/role-sources/{sourceId}/scans/{scanId}", h.GetRoleSourceScan)
 					r.Get("/role-sources/{sourceId}/snapshots", h.ListRoleSourceSnapshots)
 					r.Get("/role-sources/{sourceId}/plans", h.ListRoleSourcePlans)

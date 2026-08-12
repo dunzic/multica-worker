@@ -396,6 +396,9 @@ func TestCreateRoleSource_ResponseDoesNotExposeDaemonConfiguration(t *testing.T)
 	if !strings.Contains(body, `"root_name":"roles"`) {
 		t.Fatalf("response omitted safe config summary: %s", body)
 	}
+	if !strings.Contains(body, `"runtime_config":{"status":"unattested"`) {
+		t.Fatalf("new source response omitted the explicit unattested runtime state: %s", body)
+	}
 }
 
 func TestRequestRoleSourceScan_MapsActiveScanToConflict(t *testing.T) {

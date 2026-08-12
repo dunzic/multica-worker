@@ -16,6 +16,7 @@ func TestRoleSourceMetricsReportBoundedApplyAndAuditOutcomes(t *testing.T) {
 	m.RecordApplyFailureAudit("apply", "materialization", "state_conflict", "persisted")
 	m.RecordApplyFailureAudit("apply", "materialization", "state_conflict", "persist_failed")
 	m.RecordApplyCommitReconciliation("confirmed_succeeded")
+	m.RecordRuntimeConfigAttestation("accepted_loaded")
 
 	if got := testutil.ToFloat64(m.applyErrors.WithLabelValues("apply", "materialization", "state_conflict")); got != 1 {
 		t.Fatalf("apply error metric=%v, want 1", got)
@@ -28,6 +29,9 @@ func TestRoleSourceMetricsReportBoundedApplyAndAuditOutcomes(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.commitReconciliations.WithLabelValues("confirmed_succeeded")); got != 1 {
 		t.Fatalf("commit reconciliation metric=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.runtimeAttestations.WithLabelValues("accepted_loaded")); got != 1 {
+		t.Fatalf("runtime attestation metric=%v, want 1", got)
 	}
 }
 
@@ -58,6 +62,7 @@ func TestRoleSourceMetricsNormalizeUnboundedCallerValues(t *testing.T) {
 	m.RecordApplyError("workspace-123", "request-456", "private database error for tenant-789")
 	m.RecordApplyFailureAudit("workspace-123", "request-456", "private database error for tenant-789", "source-abc")
 	m.RecordApplyCommitReconciliation("workspace-123")
+	m.RecordRuntimeConfigAttestation("workspace-123")
 
 	if got := testutil.ToFloat64(m.applyErrors.WithLabelValues("unknown", "unknown", "internal_failure")); got != 1 {
 		t.Fatalf("normalized apply error metric=%v, want 1", got)
@@ -68,6 +73,9 @@ func TestRoleSourceMetricsNormalizeUnboundedCallerValues(t *testing.T) {
 	if got := testutil.ToFloat64(m.commitReconciliations.WithLabelValues("unknown")); got != 1 {
 		t.Fatalf("normalized reconciliation metric=%v, want 1", got)
 	}
+	if got := testutil.ToFloat64(m.runtimeAttestations.WithLabelValues("invalid")); got != 1 {
+		t.Fatalf("normalized runtime attestation metric=%v, want 1", got)
+	}
 }
 
 func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.T) {
@@ -75,6 +83,7 @@ func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.
 		"multica_role_source_apply_errors_total":                 {labelMode, labelStage, labelCode},
 		"multica_role_source_apply_failure_audit_writes_total":   {labelMode, labelStage, labelCode, labelOutcome},
 		"multica_role_source_apply_commit_reconciliations_total": {labelOutcome},
+		"multica_role_source_runtime_config_attestations_total":  {labelOutcome},
 	} {
 		got, ok := operationalMetricLabels[metric]
 		if !ok {
@@ -98,6 +107,7 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 	}
 	r.RoleSource.RecordApplyFailureAudit("unknown", "preflight", "capacity_exhausted", "id_generation_failed")
 	r.RoleSource.RecordApplyCommitReconciliation("query_failed")
+	r.RoleSource.RecordRuntimeConfigAttestation("accepted_unloaded")
 	r.RoleSourceArtifactGC.DeleteFailures.Inc()
 
 	families, err := r.Gatherer.Gather()
@@ -107,6 +117,7 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 	wanted := map[string]bool{
 		"multica_role_source_apply_failure_audit_writes_total":   false,
 		"multica_role_source_apply_commit_reconciliations_total": false,
+		"multica_role_source_runtime_config_attestations_total":  false,
 		"multica_role_source_artifact_gc_delete_failures_total":  false,
 	}
 	for _, family := range families {
@@ -132,8 +143,10 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 		"MulticaRoleSourceApplyFailureAuditWriteFailed",
 		"MulticaRoleSourceApplyCommitReconciliationFailed",
 		"MulticaRoleSourceArtifactGCDeleteFailures",
+		"MulticaRoleSourceRuntimeAttestationPersistenceFailed",
 		"multica_role_source_apply_failure_audit_writes_total",
 		"multica_role_source_apply_commit_reconciliations_total",
+		"multica_role_source_runtime_config_attestations_total",
 		`outcome=~"persist_failed|id_generation_failed"`,
 		"roleSourceAuditWriteFailureFor",
 		"roleSourceSeverity",

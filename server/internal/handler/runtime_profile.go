@@ -405,6 +405,19 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "runtime profile not found")
 		return
 	}
+	roleSourceCount, err := qtx.CountRoleSourcesByRuntimes(r.Context(), runtimeIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check profile role sources")
+		return
+	}
+	if roleSourceCount > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "cannot delete a runtime profile while role sources are bound to its runtimes; detach or migrate those sources first.",
+			"code":  "runtime_profile_has_role_sources",
+			"count": roleSourceCount,
+		})
+		return
+	}
 	for _, runtimeID := range runtimeIDs {
 		if _, err := qtx.ListUserAgentsByRuntimeForUpdate(r.Context(), runtimeID); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to lock profile dependencies")

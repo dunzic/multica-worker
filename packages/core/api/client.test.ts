@@ -5,6 +5,37 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient role-source runtime evidence", () => {
+  it("reads the server's sources key and requests bounded runtime attestation history", async () => {
+    const source = { id: "source-1" };
+    const attestation = { attestation_id: "sha256:evidence" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ sources: [source] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ attestations: [attestation] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listRoleSources("workspace-1")).resolves.toEqual([source]);
+    await expect(
+      client.listRoleSourceRuntimeAttestations("workspace-1", "source-1"),
+    ).resolves.toEqual([attestation]);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/runtime-attestations",
+    );
+  });
+});
+
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",

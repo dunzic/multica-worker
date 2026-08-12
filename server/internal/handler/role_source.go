@@ -63,19 +63,39 @@ type roleSourceArtifactStreamStorage interface {
 }
 
 type roleSourceResponse struct {
-	ID                    string                   `json:"id"`
-	WorkspaceID           string                   `json:"workspace_id"`
-	RuntimeID             string                   `json:"runtime_id"`
-	Name                  string                   `json:"name"`
-	Kind                  rolesource.Kind          `json:"kind"`
-	AdapterVersion        string                   `json:"adapter_version"`
-	ConfigSummary         rolesource.ConfigSummary `json:"config_summary"`
-	Policy                json.RawMessage          `json:"policy"`
-	State                 string                   `json:"state"`
-	CurrentSnapshotDigest *string                  `json:"current_snapshot_digest"`
-	Version               int64                    `json:"version"`
-	CreatedAt             string                   `json:"created_at"`
-	UpdatedAt             string                   `json:"updated_at"`
+	ID                    string                          `json:"id"`
+	WorkspaceID           string                          `json:"workspace_id"`
+	RuntimeID             string                          `json:"runtime_id"`
+	Name                  string                          `json:"name"`
+	Kind                  rolesource.Kind                 `json:"kind"`
+	AdapterVersion        string                          `json:"adapter_version"`
+	ConfigSummary         rolesource.ConfigSummary        `json:"config_summary"`
+	Policy                json.RawMessage                 `json:"policy"`
+	State                 string                          `json:"state"`
+	CurrentSnapshotDigest *string                         `json:"current_snapshot_digest"`
+	Version               int64                           `json:"version"`
+	CreatedAt             string                          `json:"created_at"`
+	UpdatedAt             string                          `json:"updated_at"`
+	RuntimeConfig         roleSourceRuntimeConfigResponse `json:"runtime_config"`
+}
+
+type roleSourceRuntimeConfigResponse struct {
+	Status        string  `json:"status"`
+	AttestationID *string `json:"attestation_id"`
+	Revision      *string `json:"revision"`
+	ObservedAt    *string `json:"observed_at"`
+	ChangedAt     *string `json:"changed_at"`
+}
+
+type roleSourceRuntimeAttestationObservationResponse struct {
+	Status           string  `json:"status"`
+	ContractVersion  string  `json:"contract_version"`
+	Loaded           bool    `json:"loaded"`
+	AttestationID    string  `json:"attestation_id"`
+	Revision         *string `json:"revision"`
+	FirstObservedAt  string  `json:"first_observed_at"`
+	LastObservedAt   string  `json:"last_observed_at"`
+	ObservationCount int64   `json:"observation_count"`
 }
 
 type roleSourceScanResponse struct {
@@ -292,6 +312,34 @@ func (h *Handler) ListRoleSources(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list role sources")
 		return
 	}
+	runtimeIDs := make([]pgtype.UUID, 0, len(rows))
+	seenRuntimeIDs := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		runtimeID := util.UUIDToString(row.RuntimeID)
+		if !seenRuntimeIDs[runtimeID] {
+			seenRuntimeIDs[runtimeID] = true
+			runtimeIDs = append(runtimeIDs, row.RuntimeID)
+		}
+	}
+	attestations := make(map[string]db.RoleSourceRuntimeAttestation, len(runtimeIDs))
+	if len(runtimeIDs) > 0 {
+		workspaceUUID, err := util.ParseUUID(workspaceID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid workspace id")
+			return
+		}
+		attestedRows, err := h.Queries.ListRoleSourceRuntimeAttestations(r.Context(), db.ListRoleSourceRuntimeAttestationsParams{
+			WorkspaceID: workspaceUUID, RuntimeIds: runtimeIDs,
+		})
+		if err != nil {
+			slog.Warn("list role source runtime attestations failed", "workspace_id", workspaceID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list role sources")
+			return
+		}
+		for _, attestation := range attestedRows {
+			attestations[util.UUIDToString(attestation.RuntimeID)] = attestation
+		}
+	}
 	items := make([]roleSourceResponse, 0, len(rows))
 	for _, row := range rows {
 		item, err := roleSourceToResponse(row)
@@ -300,9 +348,104 @@ func (h *Handler) ListRoleSources(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list role sources")
 			return
 		}
+		item.RuntimeConfig = roleSourceRuntimeConfigStatus(row, attestations[util.UUIDToString(row.RuntimeID)])
 		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sources": items})
+}
+
+func (h *Handler) ListRoleSourceRuntimeAttestations(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	sourceID := chi.URLParam(r, "sourceId")
+	source, err := h.RoleSources.GetSource(r.Context(), workspaceID, sourceID)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to load role source")
+		return
+	}
+	rows, err := h.Queries.ListRoleSourceRuntimeAttestationObservations(r.Context(), db.ListRoleSourceRuntimeAttestationObservationsParams{
+		WorkspaceID: source.WorkspaceID, RuntimeID: source.RuntimeID, ResultLimit: 100,
+	})
+	if err != nil {
+		slog.Warn("list role source runtime attestation observations failed", "workspace_id", workspaceID, "source_id", sourceID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list runtime config attestations")
+		return
+	}
+	items := make([]roleSourceRuntimeAttestationObservationResponse, 0, len(rows))
+	for _, row := range rows {
+		status := roleSourceRuntimeConfigStatusFromEvidence(source, row.ContractVersion, row.Loaded, row.AttestationID, row.ConfigRevision, row.Sources, row.LastObservedAt, row.FirstObservedAt)
+		items = append(items, roleSourceRuntimeAttestationObservationResponse{
+			Status: status.Status, ContractVersion: row.ContractVersion, Loaded: row.Loaded,
+			AttestationID: row.AttestationID, Revision: textToPtr(row.ConfigRevision),
+			FirstObservedAt: timestampToString(row.FirstObservedAt), LastObservedAt: timestampToString(row.LastObservedAt),
+			ObservationCount: row.ObservationCount,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"attestations": items})
+}
+
+func roleSourceRuntimeConfigStatus(source db.RoleSource, attestation db.RoleSourceRuntimeAttestation) roleSourceRuntimeConfigResponse {
+	if !attestation.RuntimeID.Valid {
+		return roleSourceRuntimeConfigResponse{Status: "unattested"}
+	}
+	return roleSourceRuntimeConfigStatusFromEvidence(source, attestation.ContractVersion, attestation.Loaded, attestation.AttestationID, attestation.ConfigRevision, attestation.Sources, attestation.ObservedAt, attestation.ChangedAt)
+}
+
+func roleSourceRuntimeConfigStatusFromEvidence(source db.RoleSource, contractVersion string, loadedEvidence bool, attestationID string, revision pgtype.Text, sources []byte, observedAt, changedAt pgtype.Timestamptz) roleSourceRuntimeConfigResponse {
+	response := roleSourceRuntimeConfigResponse{
+		Status: "unattested", AttestationID: stringToPtr(attestationID), Revision: textToPtr(revision),
+		ObservedAt: timestampToPtr(observedAt), ChangedAt: timestampToPtr(changedAt),
+	}
+	var loadedConfigs []protocol.RoleSourceLoadedConfig
+	if err := json.Unmarshal(sources, &loadedConfigs); err != nil {
+		response.Status = "invalid_attestation"
+		return response
+	}
+	revisionValue := ""
+	if revision.Valid {
+		revisionValue = revision.String
+	}
+	if err := protocol.ValidateRoleSourceConfigAttestation(protocol.RoleSourceConfigAttestation{
+		ContractVersion: contractVersion, Loaded: loadedEvidence, AttestationID: attestationID,
+		Revision: revisionValue, Sources: loadedConfigs,
+	}); err != nil {
+		response.Status = "invalid_attestation"
+		return response
+	}
+	if !loadedEvidence {
+		response.Status = "not_loaded"
+		return response
+	}
+	expectedConfigDigest, err := protocol.RoleSourceConfigIDDigest(util.UUIDToString(source.RuntimeID), source.DaemonConfigID)
+	if err != nil {
+		response.Status = "invalid_attestation"
+		return response
+	}
+	for _, config := range loadedConfigs {
+		if config.ConfigIDDigest != expectedConfigDigest {
+			continue
+		}
+		switch {
+		case config.Kind != source.Kind:
+			response.Status = "kind_mismatch"
+		case config.AdapterVersion != source.AdapterVersion:
+			response.Status = "adapter_version_mismatch"
+		default:
+			response.Status = "loaded"
+		}
+		return response
+	}
+	response.Status = "config_missing"
+	return response
+}
+
+func stringToPtr(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func (h *Handler) CreateRoleSource(w http.ResponseWriter, r *http.Request) {
@@ -1255,6 +1398,7 @@ func roleSourceToResponse(row db.RoleSource) (roleSourceResponse, error) {
 		ConfigSummary: summary, Policy: policy, State: row.State,
 		CurrentSnapshotDigest: util.TextToPtr(row.CurrentSnapshotDigest), Version: row.Version,
 		CreatedAt: util.TimestampToString(row.CreatedAt), UpdatedAt: util.TimestampToString(row.UpdatedAt),
+		RuntimeConfig: roleSourceRuntimeConfigResponse{Status: "unattested"},
 	}, nil
 }
 

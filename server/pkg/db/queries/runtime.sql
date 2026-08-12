@@ -328,6 +328,11 @@ WHERE runtime_id = $1 AND kind = 'user'
 RETURNING *;
 
 -- name: DeleteAgentRuntime :exec
+WITH deleted_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation WHERE runtime_id = $1
+), deleted_attestation AS (
+    DELETE FROM role_source_runtime_attestation WHERE runtime_id = $1
+)
 DELETE FROM agent_runtime WHERE id = $1;
 
 -- name: DeleteSystemAgentsByRuntime :exec
@@ -387,12 +392,27 @@ WHERE id = $1;
 -- Deletes runtimes that have been offline for longer than the TTL and have
 -- no agents bound (active or archived). The FK constraint on agent.runtime_id
 -- is ON DELETE RESTRICT, so we must exclude all agent references.
-DELETE FROM agent_runtime
-WHERE status = 'offline'
-  AND last_seen_at < now() - make_interval(secs => @stale_seconds::double precision)
-  AND NOT EXISTS (
-    SELECT 1
-    FROM agent
-    WHERE agent.runtime_id = agent_runtime.id
-  )
-RETURNING id, workspace_id;
+WITH candidates AS MATERIALIZED (
+    SELECT id, workspace_id
+    FROM agent_runtime
+    WHERE status = 'offline'
+      AND last_seen_at < now() - make_interval(secs => @stale_seconds::double precision)
+      AND NOT EXISTS (
+        SELECT 1 FROM agent WHERE agent.runtime_id = agent_runtime.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM role_source WHERE role_source.runtime_id = agent_runtime.id
+      )
+    FOR UPDATE
+), deleted_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation observation
+    USING candidates WHERE observation.runtime_id = candidates.id
+), deleted_attestations AS (
+    DELETE FROM role_source_runtime_attestation attestation
+    USING candidates WHERE attestation.runtime_id = candidates.id
+), deleted_runtimes AS (
+    DELETE FROM agent_runtime runtime
+    USING candidates WHERE runtime.id = candidates.id
+    RETURNING runtime.id, runtime.workspace_id
+)
+SELECT * FROM deleted_runtimes;

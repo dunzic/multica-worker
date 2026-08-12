@@ -554,6 +554,28 @@ func (q *Queries) CountRoleSourceArtifactDeleteIntents(ctx context.Context) (Cou
 	return i, err
 }
 
+const countRoleSourcesByRuntime = `-- name: CountRoleSourcesByRuntime :one
+SELECT count(*) FROM role_source WHERE runtime_id = $1
+`
+
+func (q *Queries) CountRoleSourcesByRuntime(ctx context.Context, runtimeID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countRoleSourcesByRuntime, runtimeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countRoleSourcesByRuntimes = `-- name: CountRoleSourcesByRuntimes :one
+SELECT count(*) FROM role_source WHERE runtime_id = ANY($1::uuid[])
+`
+
+func (q *Queries) CountRoleSourcesByRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countRoleSourcesByRuntimes, runtimeIds)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createRoleSource = `-- name: CreateRoleSource :one
 INSERT INTO role_source (
     id, workspace_id, runtime_id, name, kind, adapter_version,
@@ -2593,6 +2615,92 @@ func (q *Queries) ListRoleSourceRoleImpactRows(ctx context.Context, arg ListRole
 	return items, nil
 }
 
+const listRoleSourceRuntimeAttestationObservations = `-- name: ListRoleSourceRuntimeAttestationObservations :many
+SELECT runtime_id, workspace_id, contract_version, loaded, attestation_id, config_revision, sources, first_observed_at, last_observed_at, observation_count FROM role_source_runtime_attestation_observation
+WHERE workspace_id = $1 AND runtime_id = $2
+ORDER BY last_observed_at DESC, attestation_id
+LIMIT $3
+`
+
+type ListRoleSourceRuntimeAttestationObservationsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RuntimeID   pgtype.UUID `json:"runtime_id"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+func (q *Queries) ListRoleSourceRuntimeAttestationObservations(ctx context.Context, arg ListRoleSourceRuntimeAttestationObservationsParams) ([]RoleSourceRuntimeAttestationObservation, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceRuntimeAttestationObservations, arg.WorkspaceID, arg.RuntimeID, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceRuntimeAttestationObservation{}
+	for rows.Next() {
+		var i RoleSourceRuntimeAttestationObservation
+		if err := rows.Scan(
+			&i.RuntimeID,
+			&i.WorkspaceID,
+			&i.ContractVersion,
+			&i.Loaded,
+			&i.AttestationID,
+			&i.ConfigRevision,
+			&i.Sources,
+			&i.FirstObservedAt,
+			&i.LastObservedAt,
+			&i.ObservationCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourceRuntimeAttestations = `-- name: ListRoleSourceRuntimeAttestations :many
+SELECT runtime_id, workspace_id, contract_version, loaded, attestation_id, config_revision, sources, observed_at, changed_at FROM role_source_runtime_attestation
+WHERE workspace_id = $1
+  AND runtime_id = ANY($2::uuid[])
+ORDER BY runtime_id
+`
+
+type ListRoleSourceRuntimeAttestationsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	RuntimeIds  []pgtype.UUID `json:"runtime_ids"`
+}
+
+func (q *Queries) ListRoleSourceRuntimeAttestations(ctx context.Context, arg ListRoleSourceRuntimeAttestationsParams) ([]RoleSourceRuntimeAttestation, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceRuntimeAttestations, arg.WorkspaceID, arg.RuntimeIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceRuntimeAttestation{}
+	for rows.Next() {
+		var i RoleSourceRuntimeAttestation
+		if err := rows.Scan(
+			&i.RuntimeID,
+			&i.WorkspaceID,
+			&i.ContractVersion,
+			&i.Loaded,
+			&i.AttestationID,
+			&i.ConfigRevision,
+			&i.Sources,
+			&i.ObservedAt,
+			&i.ChangedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoleSourceSnapshotArtifacts = `-- name: ListRoleSourceSnapshotArtifacts :many
 SELECT workspace_id, source_id, snapshot_digest, artifact_digest, size_bytes, created_at FROM role_source_snapshot_artifact
 WHERE workspace_id = $1
@@ -2928,6 +3036,27 @@ func (q *Queries) ListSucceededRoleSourceApplies(ctx context.Context, arg ListSu
 	return items, nil
 }
 
+const lockRoleSourceRuntimeForRegistration = `-- name: LockRoleSourceRuntimeForRegistration :one
+SELECT id FROM agent_runtime
+WHERE id = $1 AND workspace_id = $2
+FOR KEY SHARE
+`
+
+type LockRoleSourceRuntimeForRegistrationParams struct {
+	RuntimeID   pgtype.UUID `json:"runtime_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Runtime deletion takes FOR UPDATE before checking role_source references.
+// This shared lock prevents a source from appearing after that check and
+// becoming orphaned when the runtime row is removed.
+func (q *Queries) LockRoleSourceRuntimeForRegistration(ctx context.Context, arg LockRoleSourceRuntimeForRegistrationParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockRoleSourceRuntimeForRegistration, arg.RuntimeID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockWorkspaceForRoleSourceMutation = `-- name: LockWorkspaceForRoleSourceMutation :one
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE
 `
@@ -3036,6 +3165,117 @@ func (q *Queries) QueueNextUnreachableRoleSourceArtifact(ctx context.Context, se
 		&i.NextAttemptAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const reassignRoleSourcesToRuntime = `-- name: ReassignRoleSourcesToRuntime :execrows
+UPDATE role_source
+SET runtime_id = $1,
+    version = version + 1,
+    updated_at = now()
+WHERE runtime_id = $2
+`
+
+type ReassignRoleSourcesToRuntimeParams struct {
+	NewRuntimeID pgtype.UUID `json:"new_runtime_id"`
+	OldRuntimeID pgtype.UUID `json:"old_runtime_id"`
+}
+
+func (q *Queries) ReassignRoleSourcesToRuntime(ctx context.Context, arg ReassignRoleSourcesToRuntimeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, reassignRoleSourcesToRuntime, arg.NewRuntimeID, arg.OldRuntimeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const recordRoleSourceRuntimeAttestation = `-- name: RecordRoleSourceRuntimeAttestation :one
+WITH current_evidence AS (
+    INSERT INTO role_source_runtime_attestation (
+        runtime_id, workspace_id, contract_version, loaded,
+        attestation_id, config_revision, sources
+    ) VALUES (
+        $1, $2, $3, $4,
+        $5, $6::text, $7
+    )
+    ON CONFLICT (runtime_id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        contract_version = EXCLUDED.contract_version,
+        loaded = EXCLUDED.loaded,
+        attestation_id = EXCLUDED.attestation_id,
+        config_revision = EXCLUDED.config_revision,
+        sources = EXCLUDED.sources,
+        observed_at = now(),
+        changed_at = CASE
+            WHEN role_source_runtime_attestation.attestation_id IS DISTINCT FROM EXCLUDED.attestation_id
+            THEN now()
+            ELSE role_source_runtime_attestation.changed_at
+        END
+    RETURNING runtime_id, workspace_id, contract_version, loaded, attestation_id, config_revision, sources, observed_at, changed_at
+), observation AS (
+    INSERT INTO role_source_runtime_attestation_observation (
+        runtime_id, workspace_id, contract_version, loaded,
+        attestation_id, config_revision, sources
+    )
+    SELECT runtime_id, workspace_id, contract_version, loaded,
+           attestation_id, config_revision, sources
+    FROM current_evidence
+    ON CONFLICT (runtime_id, attestation_id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        last_observed_at = now(),
+        observation_count = role_source_runtime_attestation_observation.observation_count + 1
+)
+SELECT runtime_id, workspace_id, contract_version, loaded, attestation_id, config_revision, sources, observed_at, changed_at FROM current_evidence
+`
+
+type RecordRoleSourceRuntimeAttestationParams struct {
+	RuntimeID       pgtype.UUID `json:"runtime_id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ContractVersion string      `json:"contract_version"`
+	Loaded          bool        `json:"loaded"`
+	AttestationID   string      `json:"attestation_id"`
+	ConfigRevision  pgtype.Text `json:"config_revision"`
+	Sources         []byte      `json:"sources"`
+}
+
+type RecordRoleSourceRuntimeAttestationRow struct {
+	RuntimeID       pgtype.UUID        `json:"runtime_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ContractVersion string             `json:"contract_version"`
+	Loaded          bool               `json:"loaded"`
+	AttestationID   string             `json:"attestation_id"`
+	ConfigRevision  pgtype.Text        `json:"config_revision"`
+	Sources         []byte             `json:"sources"`
+	ObservedAt      pgtype.Timestamptz `json:"observed_at"`
+	ChangedAt       pgtype.Timestamptz `json:"changed_at"`
+}
+
+// The daemon sends this only until the server acknowledges attestation_id, so
+// this is a process-start/config-change write rather than a heartbeat hot-path
+// write. Current evidence is replaced atomically; the observation catalog
+// retains every distinct state and counts repeated process observations.
+func (q *Queries) RecordRoleSourceRuntimeAttestation(ctx context.Context, arg RecordRoleSourceRuntimeAttestationParams) (RecordRoleSourceRuntimeAttestationRow, error) {
+	row := q.db.QueryRow(ctx, recordRoleSourceRuntimeAttestation,
+		arg.RuntimeID,
+		arg.WorkspaceID,
+		arg.ContractVersion,
+		arg.Loaded,
+		arg.AttestationID,
+		arg.ConfigRevision,
+		arg.Sources,
+	)
+	var i RecordRoleSourceRuntimeAttestationRow
+	err := row.Scan(
+		&i.RuntimeID,
+		&i.WorkspaceID,
+		&i.ContractVersion,
+		&i.Loaded,
+		&i.AttestationID,
+		&i.ConfigRevision,
+		&i.Sources,
+		&i.ObservedAt,
+		&i.ChangedAt,
 	)
 	return i, err
 }

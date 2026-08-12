@@ -27,6 +27,7 @@ A workspace administrator can register a role source, scan it without changing t
 8. Required dependency failures block only affected roles and leave the last-known-good version active.
 9. User-managed bindings, fields, secrets, and lifecycle state survive synchronization unless an explicit policy delegates them to the source.
 10. Runtime claims pin exact skill, capability, configuration, and adapter digests so later synchronization cannot alter running work.
+11. A persisted config file is not considered loaded evidence. Daemons attest only runtime-scoped config-ID digests and adapter identities actually loaded, retry until durable acknowledgement, and never send raw IDs, paths, raw configuration or keys.
 11. Imported scripts and adapters are data during scan and apply; they are never executed as validation.
 12. Database changes follow repository rules: no foreign keys or cascades, and every index is built concurrently in its own migration.
 

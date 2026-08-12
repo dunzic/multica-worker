@@ -194,6 +194,7 @@ type Handler struct {
 	// every Record* method is nil-safe and obsmetrics.RecordEvent treats a
 	// nil Metrics as "PostHog only".
 	Metrics                      *obsmetrics.BusinessMetrics
+	RoleSourceMetrics            *obsmetrics.RoleSourceMetrics
 	PATCache                     *auth.PATCache
 	DaemonTokenCache             *auth.DaemonTokenCache
 	MembershipCache              *auth.MembershipCache

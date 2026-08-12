@@ -407,6 +407,12 @@ DELETE FROM project WHERE project.workspace_id = $1;
 
 -- name: DeleteWorkspaceRoleSources :exec
 WITH
+deleted_runtime_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation WHERE role_source_runtime_attestation_observation.workspace_id = $1
+),
+deleted_runtime_attestations AS (
+    DELETE FROM role_source_runtime_attestation WHERE role_source_runtime_attestation.workspace_id = $1
+),
 deleted_audit_events AS (
     DELETE FROM role_source_audit_event WHERE role_source_audit_event.workspace_id = $1
 ),

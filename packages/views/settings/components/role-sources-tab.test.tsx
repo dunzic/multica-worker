@@ -8,6 +8,7 @@ const queryFixtures = vi.hoisted(() => ({
   plans: [] as Array<Record<string, unknown>>,
   impact: undefined as Record<string, unknown> | undefined,
   failures: [] as Array<Record<string, unknown>>,
+  attestations: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -25,9 +26,11 @@ vi.mock("@tanstack/react-query", async () => {
         ? queryFixtures.impact
         : options.queryKey.includes("apply-failures")
           ? queryFixtures.failures
-        : options.queryKey.includes("plans")
-          ? queryFixtures.plans
-          : queryFixtures.sources,
+          : options.queryKey.includes("runtime-attestations")
+            ? queryFixtures.attestations
+            : options.queryKey.includes("plans")
+              ? queryFixtures.plans
+              : queryFixtures.sources,
       isLoading: false,
       isError: false,
     }),
@@ -52,6 +55,13 @@ beforeEach(() => {
       version: 3,
       created_at: "2026-08-13T00:00:00Z",
       updated_at: "2026-08-13T00:00:00Z",
+      runtime_config: {
+        status: "loaded",
+        attestation_id: "sha256:attestation1234567890",
+        revision: "sha256:revision1234567890",
+        observed_at: "2026-08-13T00:05:00Z",
+        changed_at: "2026-08-13T00:05:00Z",
+      },
     },
   ];
   queryFixtures.plans = [
@@ -146,6 +156,18 @@ beforeEach(() => {
       occurred_at: "2026-08-13T02:00:00Z",
     },
   ];
+  queryFixtures.attestations = [
+    {
+      status: "loaded",
+      contract_version: "role-source-config-attestation-v1",
+      loaded: true,
+      attestation_id: "sha256:attestation1234567890",
+      revision: "sha256:revision1234567890",
+      first_observed_at: "2026-08-13T00:05:00Z",
+      last_observed_at: "2026-08-13T00:05:00Z",
+      observation_count: 1,
+    },
+  ];
 });
 
 describe("RoleSourcesTab", () => {
@@ -153,6 +175,10 @@ describe("RoleSourcesTab", () => {
     renderWithI18n(<RoleSourcesTab />);
 
     expect(await screen.findByText("AgentWaker production")).toBeInTheDocument();
+    expect(screen.getAllByText("Runtime config loaded")).toHaveLength(2);
+    expect(screen.getByText(/Runtime revision:/)).toBeInTheDocument();
+    expect(screen.getByText("Runtime loaded-config evidence")).toBeInTheDocument();
+    expect(screen.getByText(/observations: 1/)).toBeInTheDocument();
     expect(await screen.findByText("Blocked — no changes can be applied")).toBeInTheDocument();
     expect(screen.getByText("capability.external_write_not_supported")).toBeInTheDocument();
     expect(screen.getByText("Account actions")).toBeInTheDocument();
@@ -174,6 +200,7 @@ describe("RoleSourcesTab", () => {
     queryFixtures.plans = [];
     queryFixtures.impact = undefined;
     queryFixtures.failures = [];
+    queryFixtures.attestations = [];
 
     renderWithI18n(<RoleSourcesTab />);
 

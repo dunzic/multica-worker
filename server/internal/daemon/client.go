@@ -472,10 +472,12 @@ type (
 )
 
 type HeartbeatOptions struct {
-	SupportsRoleSourceScan           bool
-	PollRoleSourceScan               bool
-	SupportsRoleSourceSecretTransfer bool
-	PollRoleSourceSecretTransfer     bool
+	SupportsRoleSourceScan              bool
+	PollRoleSourceScan                  bool
+	SupportsRoleSourceSecretTransfer    bool
+	PollRoleSourceSecretTransfer        bool
+	SupportsRoleSourceConfigAttestation bool
+	RoleSourceConfigAttestation         *protocol.RoleSourceConfigAttestation
 }
 
 func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, options ...HeartbeatOptions) (*HeartbeatResponse, error) {
@@ -484,14 +486,14 @@ func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, options ..
 		option = options[0]
 	}
 	var resp HeartbeatResponse
-	if err := c.postJSON(ctx, "/api/daemon/heartbeat", map[string]any{
-		"runtime_id":                           runtimeID,
-		"supports_batch_import":                true,
-		"supports_role_source_scan":            option.SupportsRoleSourceScan,
-		"poll_role_source_scan":                option.PollRoleSourceScan,
-		"supports_role_source_secret_transfer": option.SupportsRoleSourceSecretTransfer,
-		"poll_role_source_secret_transfer":     option.PollRoleSourceSecretTransfer,
-	}, &resp); err != nil {
+	request := protocol.DaemonHeartbeatRequestPayload{
+		RuntimeID: runtimeID, SupportsBatchImport: true,
+		SupportsRoleSourceScan: option.SupportsRoleSourceScan, PollRoleSourceScan: option.PollRoleSourceScan,
+		SupportsRoleSourceSecretTransfer: option.SupportsRoleSourceSecretTransfer, PollRoleSourceSecretTransfer: option.PollRoleSourceSecretTransfer,
+		SupportsRoleSourceConfigAttestation: option.SupportsRoleSourceConfigAttestation,
+		RoleSourceConfigAttestation:         option.RoleSourceConfigAttestation,
+	}
+	if err := c.postJSON(ctx, "/api/daemon/heartbeat", request, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

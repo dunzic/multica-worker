@@ -10,4 +10,5 @@ export type {
   RoleSourcePlanImpactTask,
   RoleSourcePlanImpactWorker,
   RoleSourceApplyFailure,
+  RoleSourceRuntimeAttestation,
 } from "../types/role-source";

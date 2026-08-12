@@ -10,6 +10,7 @@ import {
   roleSourceListOptions,
   roleSourcePlanImpactOptions,
   roleSourcePlanListOptions,
+  roleSourceRuntimeAttestationListOptions,
   type RoleSourcePlanAction,
 } from "@multica/core/role-sources";
 import { useCurrentWorkspace } from "@multica/core/paths";
@@ -25,6 +26,25 @@ function operationVariant(operation: RoleSourcePlanAction["operation"]) {
   if (operation === "blocked" || operation === "archive_candidate") return "destructive" as const;
   if (operation === "unchanged") return "outline" as const;
   return "secondary" as const;
+}
+
+function runtimeConfigTranslationKey(status: string) {
+  switch (status) {
+    case "loaded":
+      return "runtime_loaded" as const;
+    case "not_loaded":
+      return "runtime_not_loaded" as const;
+    case "config_missing":
+      return "runtime_config_missing" as const;
+    case "kind_mismatch":
+      return "runtime_kind_mismatch" as const;
+    case "adapter_version_mismatch":
+      return "runtime_version_mismatch" as const;
+    case "invalid_attestation":
+      return "runtime_invalid_attestation" as const;
+    default:
+      return "runtime_unattested" as const;
+  }
 }
 
 export function RoleSourcesTab() {
@@ -62,6 +82,10 @@ export function RoleSourcesTab() {
   });
   const applyFailures = useQuery({
     ...roleSourceApplyFailureListOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId),
+  });
+  const runtimeAttestations = useQuery({
+    ...roleSourceRuntimeAttestationListOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId),
   });
 
@@ -109,8 +133,17 @@ export function RoleSourcesTab() {
                   <span className="mt-0.5 block truncate text-caption text-muted-foreground">
                     {source.kind} · {source.adapter_version} · {shortDigest(source.current_snapshot_digest)}
                   </span>
+                  <span className="mt-0.5 block truncate font-mono text-caption text-muted-foreground">
+                    {t(($) => $.role_sources.runtime_revision)}: {shortDigest(source.runtime_config.revision)}
+                    {source.runtime_config.observed_at ? ` · ${source.runtime_config.observed_at}` : ""}
+                  </span>
                 </span>
-                <Badge variant={source.state === "active" ? "secondary" : "outline"}>{source.state}</Badge>
+                <span className="flex shrink-0 flex-col items-end gap-1.5">
+                  <Badge variant={source.state === "active" ? "secondary" : "outline"}>{source.state}</Badge>
+                  <Badge variant={source.runtime_config.status === "loaded" ? "secondary" : "destructive"}>
+                    {t(($) => $.role_sources[runtimeConfigTranslationKey(source.runtime_config.status)])}
+                  </Badge>
+                </span>
               </button>
             ))
           )}
@@ -119,6 +152,49 @@ export function RoleSourcesTab() {
 
       {selected ? (
         <>
+          <SettingsSection
+            title={t(($) => $.role_sources.runtime_attestations_title)}
+            description={t(($) => $.role_sources.runtime_attestations_description)}
+          >
+            <SettingsCard>
+              {runtimeAttestations.isLoading ? (
+                <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t(($) => $.role_sources.loading)}
+                </div>
+              ) : runtimeAttestations.isError ? (
+                <div className="p-4 text-caption text-destructive">
+                  {t(($) => $.role_sources.runtime_attestations_load_failed)}
+                </div>
+              ) : !runtimeAttestations.data?.length ? (
+                <div className="p-4 text-caption text-muted-foreground">
+                  {t(($) => $.role_sources.runtime_attestations_empty)}
+                </div>
+              ) : (
+                <div className="max-h-80 divide-y divide-surface-border overflow-y-auto">
+                  {runtimeAttestations.data.map((attestation) => (
+                    <div key={attestation.attestation_id} className="flex items-start justify-between gap-4 px-4 py-3">
+                      <div className="min-w-0">
+                        <div className="font-mono text-caption text-foreground">
+                          {shortDigest(attestation.revision ?? attestation.attestation_id)}
+                        </div>
+                        <div className="mt-1 text-caption text-muted-foreground">
+                          {t(($) => $.role_sources.runtime_attestation_metadata, {
+                            time: attestation.last_observed_at,
+                            count: attestation.observation_count,
+                          })}
+                        </div>
+                      </div>
+                      <Badge variant={attestation.status === "loaded" ? "secondary" : "destructive"}>
+                        {t(($) => $.role_sources[runtimeConfigTranslationKey(attestation.status)])}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SettingsCard>
+          </SettingsSection>
+
           <SettingsSection
             title={t(($) => $.role_sources.latest_plan_title)}
             description={t(($) => $.role_sources.latest_plan_description, { name: selected.name })}

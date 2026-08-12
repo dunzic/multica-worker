@@ -751,30 +751,60 @@ func (h *Handler) mergeLegacyRuntimes(r *http.Request, registered db.AgentRuntim
 			}
 			merged[oldID] = struct{}{}
 
-			agents, err := h.Queries.ReassignAgentsToRuntime(r.Context(), db.ReassignAgentsToRuntimeParams{
+			tx, err := h.TxStarter.Begin(r.Context())
+			if err != nil {
+				slog.Warn("legacy runtime merge: begin transaction failed", "legacy_daemon_id", legacyID, "old_runtime_id", oldID, "new_runtime_id", newID, "error", err)
+				continue
+			}
+			qtx := h.Queries.WithTx(tx)
+			if _, err := qtx.LockAgentRuntime(r.Context(), old.ID); err != nil {
+				_ = tx.Rollback(r.Context())
+				slog.Warn("legacy runtime merge: lock old runtime failed", "legacy_daemon_id", legacyID, "old_runtime_id", oldID, "new_runtime_id", newID, "error", err)
+				continue
+			}
+
+			agents, err := qtx.ReassignAgentsToRuntime(r.Context(), db.ReassignAgentsToRuntimeParams{
 				NewRuntimeID: registered.ID,
 				OldRuntimeID: old.ID,
 			})
 			if err != nil {
+				_ = tx.Rollback(r.Context())
 				slog.Warn("legacy runtime merge: reassign agents failed", "legacy_daemon_id", legacyID, "old_runtime_id", oldID, "new_runtime_id", newID, "error", err)
 				continue
 			}
-			tasks, err := h.Queries.ReassignTasksToRuntime(r.Context(), db.ReassignTasksToRuntimeParams{
+			tasks, err := qtx.ReassignTasksToRuntime(r.Context(), db.ReassignTasksToRuntimeParams{
 				NewRuntimeID: registered.ID,
 				OldRuntimeID: old.ID,
 			})
 			if err != nil {
+				_ = tx.Rollback(r.Context())
 				slog.Warn("legacy runtime merge: reassign tasks failed", "legacy_daemon_id", legacyID, "old_runtime_id", oldID, "new_runtime_id", newID, "error", err)
 				continue
 			}
-			if err := h.Queries.RecordRuntimeLegacyDaemonID(r.Context(), db.RecordRuntimeLegacyDaemonIDParams{
+			roleSources, err := qtx.ReassignRoleSourcesToRuntime(r.Context(), db.ReassignRoleSourcesToRuntimeParams{
+				NewRuntimeID: registered.ID,
+				OldRuntimeID: old.ID,
+			})
+			if err != nil {
+				_ = tx.Rollback(r.Context())
+				slog.Warn("legacy runtime merge: reassign role sources failed", "legacy_daemon_id", legacyID, "old_runtime_id", oldID, "new_runtime_id", newID, "error", err)
+				continue
+			}
+			if err := qtx.RecordRuntimeLegacyDaemonID(r.Context(), db.RecordRuntimeLegacyDaemonIDParams{
 				ID:             registered.ID,
 				LegacyDaemonID: strToText(legacyID),
 			}); err != nil {
+				_ = tx.Rollback(r.Context())
 				slog.Warn("legacy runtime merge: record legacy daemon_id failed", "legacy_daemon_id", legacyID, "error", err)
+				continue
 			}
-			if err := h.Queries.DeleteAgentRuntime(r.Context(), old.ID); err != nil {
+			if err := qtx.DeleteAgentRuntime(r.Context(), old.ID); err != nil {
+				_ = tx.Rollback(r.Context())
 				slog.Warn("legacy runtime merge: delete old runtime failed", "old_runtime_id", oldID, "error", err)
+				continue
+			}
+			if err := tx.Commit(r.Context()); err != nil {
+				slog.Warn("legacy runtime merge: commit failed", "old_runtime_id", oldID, "new_runtime_id", newID, "error", err)
 				continue
 			}
 
@@ -785,6 +815,7 @@ func (h *Handler) mergeLegacyRuntimes(r *http.Request, registered db.AgentRuntim
 				"provider", provider,
 				"agents_reassigned", agents,
 				"tasks_reassigned", tasks,
+				"role_sources_reassigned", roleSources,
 			)
 		}
 	}
@@ -867,14 +898,7 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-type DaemonHeartbeatRequest struct {
-	RuntimeID                        string `json:"runtime_id"`
-	SupportsBatchImport              bool   `json:"supports_batch_import,omitempty"`
-	SupportsRoleSourceScan           bool   `json:"supports_role_source_scan,omitempty"`
-	PollRoleSourceScan               bool   `json:"poll_role_source_scan,omitempty"`
-	SupportsRoleSourceSecretTransfer bool   `json:"supports_role_source_secret_transfer,omitempty"`
-	PollRoleSourceSecretTransfer     bool   `json:"poll_role_source_secret_transfer,omitempty"`
-}
+type DaemonHeartbeatRequest = protocol.DaemonHeartbeatRequestPayload
 
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
 // heartbeat hot path. Probes are read-only (ZCARD in Redis) so a timeout is
@@ -951,6 +975,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	decodeStart := time.Now()
 	var req DaemonHeartbeatRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
 	decodeErr := json.NewDecoder(r.Body).Decode(&req)
 	decodeMs = time.Since(decodeStart).Milliseconds()
 	if decodeErr != nil {
@@ -1004,8 +1029,20 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	authMs = time.Since(start).Milliseconds()
 
-	ack, m, err := h.processHeartbeat(r.Context(), rt, req.SupportsBatchImport, req.SupportsRoleSourceScan, req.PollRoleSourceScan,
-		req.SupportsRoleSourceSecretTransfer, req.PollRoleSourceSecretTransfer)
+	acceptedAttestationID, err := h.recordRoleSourceRuntimeAttestation(r.Context(), rt, req)
+	if err != nil {
+		if errors.Is(err, errInvalidRoleSourceRuntimeAttestation) {
+			outcome = "bad_role_source_attestation"
+			writeError(w, http.StatusBadRequest, "invalid role source config attestation")
+			return
+		}
+		outcome = "role_source_attestation_error"
+		slog.Warn("record role source runtime attestation failed", "runtime_id", runtimeID, "error", err)
+		writeError(w, http.StatusInternalServerError, "heartbeat failed")
+		return
+	}
+	ack, m, err := h.processHeartbeat(r.Context(), rt, req)
+	ackAcceptedRoleSourceConfigAttestation(ack, acceptedAttestationID)
 	updateMs = m.UpdateMs
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
@@ -1048,6 +1085,9 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if ack.PendingRoleSourceSecretTransfer != nil {
 		resp["pending_role_source_secret_transfer"] = ack.PendingRoleSourceSecretTransfer
 	}
+	if ack.AcceptedRoleSourceConfigAttestationID != "" {
+		resp["accepted_role_source_config_attestation_id"] = ack.AcceptedRoleSourceConfigAttestationID
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1065,7 +1105,8 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 // and tells the daemon to drop the stale runtime and re-register. Other DB
 // errors still propagate as errors so they keep their existing Warn logging
 // and the daemon does not mistake a hiccup for a deletion.
-func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport, supportsRoleSourceScan, pollRoleSourceScan, supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, request protocol.DaemonHeartbeatRequestPayload) (*protocol.DaemonHeartbeatAckPayload, error) {
+	runtimeID := request.RuntimeID
 	runtimeUUID, err := util.ParseUUID(runtimeID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid runtime_id: %w", err)
@@ -1084,9 +1125,98 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 	if !identity.AllowsWorkspace(uuidToString(rt.WorkspaceID)) {
 		return nil, fmt.Errorf("runtime not in connection workspace")
 	}
-	ack, _, err := h.processHeartbeat(ctx, rt, supportsBatchImport, supportsRoleSourceScan, pollRoleSourceScan,
-		supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer)
+	acceptedAttestationID, err := h.recordRoleSourceRuntimeAttestation(ctx, rt, request)
+	if err != nil {
+		return nil, err
+	}
+	ack, _, err := h.processHeartbeat(ctx, rt, request)
+	ackAcceptedRoleSourceConfigAttestation(ack, acceptedAttestationID)
 	return ack, err
+}
+
+var errInvalidRoleSourceRuntimeAttestation = errors.New("invalid role source runtime attestation")
+
+func (h *Handler) recordRoleSourceRuntimeAttestation(ctx context.Context, rt db.AgentRuntime, request protocol.DaemonHeartbeatRequestPayload) (string, error) {
+	attestation := request.RoleSourceConfigAttestation
+	if !request.SupportsRoleSourceConfigAttestation {
+		if attestation != nil {
+			h.recordRoleSourceRuntimeAttestationMetric("invalid")
+			return "", errInvalidRoleSourceRuntimeAttestation
+		}
+		return "", nil
+	}
+	if attestation == nil {
+		return "", nil
+	}
+	if err := protocol.ValidateRoleSourceConfigAttestation(*attestation); err != nil {
+		h.recordRoleSourceRuntimeAttestationMetric("invalid")
+		return "", fmt.Errorf("%w: %v", errInvalidRoleSourceRuntimeAttestation, err)
+	}
+	sources, err := json.Marshal(attestation.Sources)
+	if err != nil {
+		h.recordRoleSourceRuntimeAttestationMetric("persist_failed")
+		return "", fmt.Errorf("encode role source attested configs: %w", err)
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		h.recordRoleSourceRuntimeAttestationMetric("persist_failed")
+		return "", fmt.Errorf("begin role source runtime attestation transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	// Workspace teardown takes FOR UPDATE on the workspace row, while runtime
+	// deletion takes FOR UPDATE on the runtime row. Take the matching shared
+	// locks in the repository-wide order before writing no-FK evidence so a
+	// heartbeat cannot recreate an orphan after either cleanup sweep.
+	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, rt.WorkspaceID); err != nil {
+		h.recordRoleSourceRuntimeAttestationMetric("persist_failed")
+		return "", fmt.Errorf("lock workspace for role source runtime attestation: %w", err)
+	}
+	if _, err := qtx.LockRoleSourceRuntimeForRegistration(ctx, db.LockRoleSourceRuntimeForRegistrationParams{
+		RuntimeID: rt.ID, WorkspaceID: rt.WorkspaceID,
+	}); err != nil {
+		h.recordRoleSourceRuntimeAttestationMetric("persist_failed")
+		return "", fmt.Errorf("lock runtime for role source runtime attestation: %w", err)
+	}
+	configRevision := pgtype.Text{}
+	if attestation.Revision != "" {
+		configRevision = strToText(attestation.Revision)
+	}
+	row, err := qtx.RecordRoleSourceRuntimeAttestation(ctx, db.RecordRoleSourceRuntimeAttestationParams{
+		RuntimeID: rt.ID, WorkspaceID: rt.WorkspaceID,
+		ContractVersion: attestation.ContractVersion, Loaded: attestation.Loaded,
+		AttestationID: attestation.AttestationID, ConfigRevision: configRevision, Sources: sources,
+	})
+	if err != nil {
+		h.recordRoleSourceRuntimeAttestationMetric("persist_failed")
+		return "", fmt.Errorf("record role source runtime attestation: %w", err)
+	}
+	if row.AttestationID != attestation.AttestationID {
+		h.recordRoleSourceRuntimeAttestationMetric("persist_failed")
+		return "", errors.New("recorded role source runtime attestation id mismatch")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		h.recordRoleSourceRuntimeAttestationMetric("persist_failed")
+		return "", fmt.Errorf("commit role source runtime attestation: %w", err)
+	}
+	if attestation.Loaded {
+		h.recordRoleSourceRuntimeAttestationMetric("accepted_loaded")
+	} else {
+		h.recordRoleSourceRuntimeAttestationMetric("accepted_unloaded")
+	}
+	return row.AttestationID, nil
+}
+
+func (h *Handler) recordRoleSourceRuntimeAttestationMetric(outcome string) {
+	if h.RoleSourceMetrics != nil {
+		h.RoleSourceMetrics.RecordRuntimeConfigAttestation(outcome)
+	}
+}
+
+func ackAcceptedRoleSourceConfigAttestation(ack *protocol.DaemonHeartbeatAckPayload, attestationID string) {
+	if ack != nil {
+		ack.AcceptedRoleSourceConfigAttestationID = attestationID
+	}
 }
 
 // recordHeartbeat marks the runtime as alive. When LivenessStore is available
@@ -1146,7 +1276,7 @@ type heartbeatMetrics struct {
 // the WebSocket daemon:heartbeat path: records liveness and pulls any pending
 // actions queued for the runtime. Auth and request decoding live in the
 // caller because they differ between transports.
-func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supportsBatchImport, supportsRoleSourceScan, pollRoleSourceScan, supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer bool) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
+func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, request protocol.DaemonHeartbeatRequestPayload) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
 	var m heartbeatMetrics
 	runtimeID := uuidToString(rt.ID)
 
@@ -1165,8 +1295,8 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 		ServerCapabilities: []string{protocol.DaemonCapabilityRPCV1},
 	}
 	workspaceID := uuidToString(rt.WorkspaceID)
-	h.populateRoleSourceHeartbeat(ctx, ack, runtimeID, workspaceID, supportsRoleSourceScan, pollRoleSourceScan)
-	h.populateRoleSourceSecretTransferHeartbeat(ctx, ack, runtimeID, workspaceID, supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer)
+	h.populateRoleSourceHeartbeat(ctx, ack, runtimeID, workspaceID, request.SupportsRoleSourceScan, request.PollRoleSourceScan)
+	h.populateRoleSourceSecretTransferHeartbeat(ctx, ack, runtimeID, workspaceID, request.SupportsRoleSourceSecretTransfer, request.PollRoleSourceSecretTransfer)
 
 	probeUpdateCtx, cancelProbeUpdate := context.WithTimeout(ctx, heartbeatHasPendingTimeout)
 	hasUpdate, probeUpdateErr := h.UpdateStore.HasPending(probeUpdateCtx, runtimeID)
@@ -1254,7 +1384,7 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 	switch {
 	case probeErr == nil && hasImport:
 		popStart := time.Now()
-		if supportsBatchImport {
+		if request.SupportsBatchImport {
 			pendingImports, popErr := h.LocalSkillImportStore.PopPendingBatch(ctx, runtimeID, maxLocalSkillImportBatch)
 			m.PopImportMs = time.Since(popStart).Milliseconds()
 			if popErr != nil {

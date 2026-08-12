@@ -1086,6 +1086,31 @@ type RoleSourcePlanApproval struct {
 	RequestKey  string             `json:"request_key"`
 }
 
+type RoleSourceRuntimeAttestation struct {
+	RuntimeID       pgtype.UUID        `json:"runtime_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ContractVersion string             `json:"contract_version"`
+	Loaded          bool               `json:"loaded"`
+	AttestationID   string             `json:"attestation_id"`
+	ConfigRevision  pgtype.Text        `json:"config_revision"`
+	Sources         []byte             `json:"sources"`
+	ObservedAt      pgtype.Timestamptz `json:"observed_at"`
+	ChangedAt       pgtype.Timestamptz `json:"changed_at"`
+}
+
+type RoleSourceRuntimeAttestationObservation struct {
+	RuntimeID        pgtype.UUID        `json:"runtime_id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	ContractVersion  string             `json:"contract_version"`
+	Loaded           bool               `json:"loaded"`
+	AttestationID    string             `json:"attestation_id"`
+	ConfigRevision   pgtype.Text        `json:"config_revision"`
+	Sources          []byte             `json:"sources"`
+	FirstObservedAt  pgtype.Timestamptz `json:"first_observed_at"`
+	LastObservedAt   pgtype.Timestamptz `json:"last_observed_at"`
+	ObservationCount int64              `json:"observation_count"`
+}
+
 type RoleSourceScanRequest struct {
 	ID                     pgtype.UUID        `json:"id"`
 	SourceID               pgtype.UUID        `json:"source_id"`

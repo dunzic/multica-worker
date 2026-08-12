@@ -946,6 +946,19 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
 		return
 	}
+	roleSourceCount, err := qtx.CountRoleSourcesByRuntime(r.Context(), rt.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check runtime role sources")
+		return
+	}
+	if roleSourceCount > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "cannot delete a runtime while role sources are bound to it; detach or migrate those sources first.",
+			"code":  "runtime_has_role_sources",
+			"count": roleSourceCount,
+		})
+		return
+	}
 	if _, err := qtx.ListUserAgentsByRuntimeForUpdate(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime dependencies")
 		return
@@ -1139,6 +1152,19 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 	// new actives from appearing between our snapshot and our unbind.
 	if _, err := qtx.LockAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
+		return
+	}
+	roleSourceCount, err := qtx.CountRoleSourcesByRuntime(r.Context(), rt.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check runtime role sources")
+		return
+	}
+	if roleSourceCount > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "cannot delete a runtime while role sources are bound to it; detach or migrate those sources first.",
+			"code":  "runtime_has_role_sources",
+			"count": roleSourceCount,
+		})
 		return
 	}
 	if _, err := qtx.ListUserAgentsByRuntimeForUpdate(r.Context(), rt.ID); err != nil {

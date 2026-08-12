@@ -220,6 +220,12 @@ cleared_role_source_plans AS (
 cleared_role_source_snapshot_artifacts AS (
     DELETE FROM role_source_snapshot_artifact WHERE role_source_snapshot_artifact.workspace_id = $1
 ),
+cleared_role_source_runtime_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation WHERE role_source_runtime_attestation_observation.workspace_id = $1
+),
+cleared_role_source_runtime_attestations AS (
+    DELETE FROM role_source_runtime_attestation WHERE role_source_runtime_attestation.workspace_id = $1
+),
 cleared_role_source_snapshots AS (
     DELETE FROM role_source_snapshot WHERE role_source_snapshot.workspace_id = $1
 ),

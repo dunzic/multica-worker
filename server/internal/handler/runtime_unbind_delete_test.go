@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -165,6 +166,43 @@ func TestDeleteAgentRuntime_StructuredConflict(t *testing.T) {
 	}
 	if len(body.ActiveAgents) != 1 || body.ActiveAgents[0].ID != agentID {
 		t.Fatalf("expected one active agent %s, got %+v", agentID, body.ActiveAgents)
+	}
+}
+
+func TestDeleteAgentRuntime_BlocksBoundRoleSource(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Role Source Bound Runtime")
+	var sourceID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO role_source (
+			id, workspace_id, runtime_id, name, kind, adapter_version,
+			daemon_config_id, config_redacted, policy, created_by, updated_by
+		) VALUES (
+			gen_random_uuid(), $1, $2, 'Runtime delete guard', 'agentwaker_directory', '1.0.0',
+			'production', '{"configured":true,"attributes":[]}'::jsonb, '{}'::jsonb, $3, $3
+		) RETURNING id
+	`, testWorkspaceID, runtimeID, testUserID).Scan(&sourceID); err != nil {
+		t.Fatalf("insert role source: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM role_source WHERE id = $1`, sourceID)
+	})
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodDelete, "/api/runtimes/"+runtimeID, nil), "runtimeId", runtimeID)
+	testHandler.DeleteAgentRuntime(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "runtime_has_role_sources") {
+		t.Fatalf("expected role-source conflict, got %d: %s", w.Code, w.Body.String())
+	}
+	var runtimeRows int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&runtimeRows); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeRows != 1 {
+		t.Fatalf("role-source bound runtime was deleted: rows=%d", runtimeRows)
 	}
 }
 

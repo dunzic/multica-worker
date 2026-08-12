@@ -308,14 +308,16 @@ type repoCacheBackend interface {
 
 // Daemon is the local agent runtime that polls for and executes tasks.
 type Daemon struct {
-	cfg                Config
-	client             *Client
-	repoCache          repoCacheBackend
-	skillCache         *SkillBundleCache
-	logger             *slog.Logger
-	roleSources        *roleSourceScanner
-	roleSourcePollMu   sync.Mutex
-	roleSourceLastPoll map[string]time.Time
+	cfg                           Config
+	client                        *Client
+	repoCache                     repoCacheBackend
+	skillCache                    *SkillBundleCache
+	logger                        *slog.Logger
+	roleSources                   *roleSourceScanner
+	roleSourcePollMu              sync.Mutex
+	roleSourceLastPoll            map[string]time.Time
+	roleSourceAttestationMu       sync.Mutex
+	roleSourceAttestationAccepted map[string]string
 
 	mu           sync.Mutex
 	workspaces   map[string]*workspaceState
@@ -564,36 +566,37 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	// server can split logs/metrics by client version (parallel to the CLI).
 	client.SetVersion(cfg.CLIVersion)
 	d := &Daemon{
-		cfg:                       cfg,
-		client:                    client,
-		repoCache:                 repocache.New(cacheRoot, logger),
-		skillCache:                NewSkillBundleCache(skillCacheRoot),
-		roleSources:               cfg.roleSourceScanner,
-		roleSourceLastPoll:        make(map[string]time.Time),
-		logger:                    logger,
-		workspaces:                make(map[string]*workspaceState),
-		runtimeIndex:              make(map[string]Runtime),
-		profileLaunchSpecs:        make(map[string]profileLaunchSpec),
-		runtimeSet:                newRuntimeSetWatcher(),
-		agentVersions:             make(map[string]string),
-		skippedAgents:             make(map[string]string),
-		resolvedPaths:             make(map[string]healedAgent),
-		wsHBLastAck:               make(map[string]time.Time),
-		activeEnvRoots:            make(map[string]int),
-		deletingEnvRoots:          make(map[string]bool),
-		activeStores:              make(map[string]int),
-		deletingStores:            make(map[string]bool),
-		localPathLocks:            NewLocalPathLocker(),
-		runtimeGoneInflight:       make(map[string]struct{}),
-		pendingWorkInflight:       make(map[string]struct{}),
-		pendingWorkLastRun:        make(map[string]time.Time),
-		reregisterNextAttempt:     make(map[string]time.Time),
-		reregisterLastCompletedAt: make(map[string]time.Time),
-		cancelPollInterval:        5 * time.Second,
-		taskPrepareTimeout:        defaultTaskPrepareTimeout,
-		reconcile:                 newReconcileBroadcaster(),
-		workspaceChanges:          newWorkspaceChangeSignal(),
-		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
+		cfg:                           cfg,
+		client:                        client,
+		repoCache:                     repocache.New(cacheRoot, logger),
+		skillCache:                    NewSkillBundleCache(skillCacheRoot),
+		roleSources:                   cfg.roleSourceScanner,
+		roleSourceLastPoll:            make(map[string]time.Time),
+		roleSourceAttestationAccepted: make(map[string]string),
+		logger:                        logger,
+		workspaces:                    make(map[string]*workspaceState),
+		runtimeIndex:                  make(map[string]Runtime),
+		profileLaunchSpecs:            make(map[string]profileLaunchSpec),
+		runtimeSet:                    newRuntimeSetWatcher(),
+		agentVersions:                 make(map[string]string),
+		skippedAgents:                 make(map[string]string),
+		resolvedPaths:                 make(map[string]healedAgent),
+		wsHBLastAck:                   make(map[string]time.Time),
+		activeEnvRoots:                make(map[string]int),
+		deletingEnvRoots:              make(map[string]bool),
+		activeStores:                  make(map[string]int),
+		deletingStores:                make(map[string]bool),
+		localPathLocks:                NewLocalPathLocker(),
+		runtimeGoneInflight:           make(map[string]struct{}),
+		pendingWorkInflight:           make(map[string]struct{}),
+		pendingWorkLastRun:            make(map[string]time.Time),
+		reregisterNextAttempt:         make(map[string]time.Time),
+		reregisterLastCompletedAt:     make(map[string]time.Time),
+		cancelPollInterval:            5 * time.Second,
+		taskPrepareTimeout:            defaultTaskPrepareTimeout,
+		reconcile:                     newReconcileBroadcaster(),
+		workspaceChanges:              newWorkspaceChangeSignal(),
+		wsRPC:                         newWSRPCClient(wsRPCResponseGrace),
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -3578,6 +3581,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 		}
 		return
 	}
+	d.acceptRoleSourceConfigAttestation(runtimeID, resp.AcceptedRoleSourceConfigAttestationID)
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil || resp.PendingRoleSourceScan != nil || resp.PendingRoleSourceSecretTransfer != nil {
 		d.logger.Debug("heartbeat: pending actions",
 			"runtime_id", runtimeID,

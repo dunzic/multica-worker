@@ -159,7 +159,7 @@ func (c *client) markSeen(eventID string) bool {
 // runtimeID is one of identity.RuntimeIDs (the connection's authenticated
 // scope) and return the ack payload to send back. Returning an error skips
 // the ack and is logged at debug level.
-type HeartbeatHandler func(ctx context.Context, identity ClientIdentity, runtimeID string, supportsBatchImport, supportsRoleSourceScan, pollRoleSourceScan, supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer bool) (*protocol.DaemonHeartbeatAckPayload, error)
+type HeartbeatHandler func(ctx context.Context, identity ClientIdentity, request protocol.DaemonHeartbeatRequestPayload) (*protocol.DaemonHeartbeatAckPayload, error)
 
 // RPCHandler processes a generic daemon:rpc_request (MUL-4257). It dispatches
 // on method (e.g. "tasks.claim"), scoping work to identity (DaemonID +
@@ -168,6 +168,11 @@ type HeartbeatHandler func(ctx context.Context, identity ClientIdentity, runtime
 // RPC response so it can fall back to HTTP. The handler runs in its own
 // goroutine, so it must not assume it owns the read pump.
 type RPCHandler func(ctx context.Context, identity ClientIdentity, method string, body json.RawMessage) (status int, respBody json.RawMessage, err error)
+
+// maxDaemonWSMessageBytes accommodates the bounded 512-entry role-source
+// loaded-config attestation while keeping authenticated daemon input capped at
+// the same 256 KiB boundary as the HTTP heartbeat endpoint.
+const maxDaemonWSMessageBytes = 256 << 10
 
 // maxInFlightRPCPerClient bounds concurrent RPC handlers per connection so a
 // single daemon cannot fan out unbounded goroutines / DB work over one socket.
@@ -705,9 +710,9 @@ func (c *client) readPump() {
 		c.conn.Close()
 	}()
 
-	// Read limit sized for daemon:rpc_request frames carrying a machine's full
-	// runtime_id set (MUL-4257), well above the tiny heartbeat/wakeup frames.
-	c.conn.SetReadLimit(64 * 1024)
+	// Read limit covers bounded RPC frames and the optional role-source
+	// loaded-config attestation carried by a heartbeat.
+	c.conn.SetReadLimit(maxDaemonWSMessageBytes)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -864,8 +869,7 @@ func (c *client) handleHeartbeatFrame(raw json.RawMessage) {
 	// that keeps the HTTP heartbeat from putting a per-call timeout on
 	// PopPending. The natural bound is the read pump's lifetime (the conn
 	// closes if the daemon goes away) plus Redis's own server-side limits.
-	ack, err := handler(context.Background(), c.identity, payload.RuntimeID, payload.SupportsBatchImport, payload.SupportsRoleSourceScan, payload.PollRoleSourceScan,
-		payload.SupportsRoleSourceSecretTransfer, payload.PollRoleSourceSecretTransfer)
+	ack, err := handler(context.Background(), c.identity, payload)
 	if err != nil {
 		slog.Warn("daemon websocket heartbeat handler failed",
 			"error", err,

@@ -72,4 +72,12 @@ spec:
           annotations:
             summary: "Role-source artifact garbage collection cannot delete objects"
             description: "More than 20 role-source artifact object deletes failed in 15 minutes and the failure rate stayed elevated. The durable intents are retained for retry; inspect object-storage availability and deletion permissions before backlog growth exhausts capacity."
+        - alert: MulticaRoleSourceRuntimeAttestationPersistenceFailed
+          expr: increase(multica_role_source_runtime_config_attestations_total{outcome="persist_failed"}[5m]) > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceAuditWriteFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source runtime loaded-configuration evidence could not be persisted"
+            description: "A daemon supplied a valid loaded-configuration attestation but the server could not durably record it. The daemon will retry because no acknowledgement was returned; inspect PostgreSQL availability and migration state before enabling role-source scans."
 {{- end }}

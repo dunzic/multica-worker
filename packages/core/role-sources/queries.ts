@@ -11,12 +11,25 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "impact", sourceId, planDigest] as const,
   applyFailures: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "apply-failures", sourceId] as const,
+  runtimeAttestations: (workspaceId: string, sourceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "runtime-attestations", sourceId] as const,
 };
 
 export function roleSourceListOptions(workspaceId: string) {
   return queryOptions({
     queryKey: roleSourceKeys.list(workspaceId),
     queryFn: () => api.listRoleSources(workspaceId),
+  });
+}
+
+export function roleSourceRuntimeAttestationListOptions(
+  workspaceId: string,
+  sourceId: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.runtimeAttestations(workspaceId, sourceId),
+    queryFn: () => api.listRoleSourceRuntimeAttestations(workspaceId, sourceId),
+    enabled: Boolean(sourceId),
   });
 }
 
