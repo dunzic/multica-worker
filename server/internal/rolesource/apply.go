@@ -11,6 +11,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -19,12 +20,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
 	ApplyReceiptContractVersion = "1.1"
-	maxApplyArtifacts           = 500
-	maxApplyArtifactBytes       = 64 << 20
+	maxApplyArtifacts           = 20_000
+	maxApplyArtifactBytes       = 128 << 20
+	maxConcurrentArtifactReads  = 16
 )
 
 var (
@@ -108,6 +111,26 @@ type materializationState struct {
 	runtimeMode     string
 	now             func() time.Time
 	receipt         *ApplyReceipt
+	pendingMappings map[string]pendingRoleSourceMapping
+}
+
+type pendingRoleSourceMapping struct {
+	SourceKind         string     `json:"source_kind"`
+	SourceParentID     string     `json:"source_parent_id"`
+	SourceObjectID     string     `json:"source_object_id"`
+	TargetKind         string     `json:"target_kind"`
+	TargetID           string     `json:"target_id"`
+	OwnershipMask      []string   `json:"ownership_mask"`
+	LastAppliedDigest  string     `json:"last_applied_digest"`
+	LastSnapshotDigest string     `json:"last_snapshot_digest"`
+	ArchivedAt         *time.Time `json:"archived_at"`
+}
+
+type applyPreflight struct {
+	snapshotDigest string
+	artifacts      map[string]verifiedArtifact
+	existing       *db.RoleSourceApply
+	receipt        *ApplyReceipt
 }
 
 func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.RoleSourceApply, ApplyReceipt, error) {
@@ -137,6 +160,18 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		return db.RoleSourceApply{}, ApplyReceipt{}, ErrMaterializationOverload
 	}
 	defer c.releaseMaterializeSlot()
+
+	// Object storage can be slow and a large source can reference thousands of
+	// small entrypoints. Verify every materialized body before taking
+	// workspace/source row locks; the transaction reloads and revalidates all
+	// authoritative rows and the exact content-addressed snapshot before use.
+	preflight, err := c.preflightApply(ctx, input, workspaceID, sourceID, actorID, approvalID)
+	if err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	if preflight.existing != nil && preflight.receipt != nil {
+		return *preflight.existing, *preflight.receipt, nil
+	}
 
 	tx, err := c.database.Begin(ctx)
 	if err != nil {
@@ -208,6 +243,9 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	if err := validateMaterializationScope(snapshot, plan, decisions); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	if snapshot.SnapshotDigest != preflight.snapshotDigest {
+		return db.RoleSourceApply{}, ApplyReceipt{}, fmt.Errorf("%w: preflight snapshot changed", ErrApplyConflict)
+	}
 	applyMode := "apply"
 	if plan.Mode == PlanModeRollback {
 		applyMode = "rollback"
@@ -250,8 +288,8 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 
-	artifacts, err := c.readAndVerifyArtifacts(ctx, qtx, workspaceID, snapshot)
-	if err != nil {
+	artifacts := preflight.artifacts
+	if err := validatePreflightArtifactLedger(ctx, qtx, workspaceID, artifacts); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	mappingRows, err := qtx.ListRoleSourceObjectMappingsForUpdate(ctx, db.ListRoleSourceObjectMappingsForUpdateParams{SourceID: sourceID, WorkspaceID: workspaceID})
@@ -276,6 +314,7 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		decisions: decisions, actions: actionIndex(plan), artifacts: artifacts, mappings: mappingIndex(mappingRows),
 		secretPayloads: secretPayloads, secretTransfers: secretTransfers,
 		runtimeMode: runtime.RuntimeMode, now: c.now, receipt: &receipt,
+		pendingMappings: make(map[string]pendingRoleSourceMapping),
 	}
 	if err := state.materialize(ctx); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
@@ -616,51 +655,182 @@ func clearSecretPayloadMap(payloads map[string]SecretEnvelopePayload) {
 	}
 }
 
+func (c *ControlPlane) preflightApply(
+	ctx context.Context,
+	input ApplyPlanInput,
+	workspaceID, sourceID, actorID, approvalID pgtype.UUID,
+) (applyPreflight, error) {
+	q := c.queries()
+	planRow, err := q.GetRoleSourcePlan(ctx, db.GetRoleSourcePlanParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, PlanDigest: input.PlanDigest,
+	})
+	if err != nil {
+		return applyPreflight{}, err
+	}
+	plan, err := DecodePersistedPlan(planRow)
+	if err != nil || !plan.Applyable {
+		return applyPreflight{}, fmt.Errorf("%w: plan is invalid or blocked", ErrInvalidApplyRequest)
+	}
+	if existing, existingErr := q.GetRoleSourceApplyByRequest(ctx, db.GetRoleSourceApplyByRequestParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, RequestKey: input.RequestKey,
+	}); existingErr == nil {
+		receipt, matchErr := matchIdempotentApply(existing, plan, input, actorID)
+		if matchErr != nil {
+			return applyPreflight{}, matchErr
+		}
+		return applyPreflight{existing: &existing, receipt: &receipt}, nil
+	} else if !errors.Is(existingErr, pgx.ErrNoRows) {
+		return applyPreflight{}, existingErr
+	}
+	source, err := q.GetRoleSourceInWorkspace(ctx, db.GetRoleSourceInWorkspaceParams{ID: sourceID, WorkspaceID: workspaceID})
+	if err != nil {
+		return applyPreflight{}, err
+	}
+	if source.State == "detached" || source.State == "paused" {
+		return applyPreflight{}, fmt.Errorf("%w: source state %q cannot be applied", ErrApplyConflict, source.State)
+	}
+	if !snapshotCASMatches(source.CurrentSnapshotDigest, plan.FromSnapshotDigest) {
+		return applyPreflight{}, fmt.Errorf("%w: plan base snapshot is stale", ErrApplyConflict)
+	}
+	approval, err := q.GetRoleSourcePlanApprovalByID(ctx, db.GetRoleSourcePlanApprovalByIDParams{
+		ID: approvalID, SourceID: sourceID, WorkspaceID: workspaceID, PlanDigest: plan.PlanDigest,
+	})
+	if err != nil {
+		return applyPreflight{}, err
+	}
+	decisions, err := decodeApprovedDecisions(plan, approval)
+	if err != nil {
+		return applyPreflight{}, fmt.Errorf("%w: %v", ErrInvalidApplyRequest, err)
+	}
+	snapshotRow, err := q.GetRoleSourceSnapshot(ctx, db.GetRoleSourceSnapshotParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: plan.ToSnapshotDigest,
+	})
+	if err != nil {
+		return applyPreflight{}, err
+	}
+	snapshot, err := DecodePersistedSnapshot(snapshotRow)
+	if err != nil {
+		return applyPreflight{}, fmt.Errorf("validate apply snapshot: %w", err)
+	}
+	if err := validateMaterializationScope(snapshot, plan, decisions); err != nil {
+		return applyPreflight{}, err
+	}
+	artifacts, err := c.readAndVerifyArtifacts(ctx, q, workspaceID, snapshot)
+	if err != nil {
+		return applyPreflight{}, err
+	}
+	return applyPreflight{snapshotDigest: snapshot.SnapshotDigest, artifacts: artifacts}, nil
+}
+
 func (c *ControlPlane) readAndVerifyArtifacts(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, snapshot Snapshot) (map[string]verifiedArtifact, error) {
-	refs, err := CollectArtifactRefs(snapshot)
+	refs, err := collectMaterializationArtifactRefs(snapshot)
 	if err != nil {
 		return nil, err
 	}
 	if len(refs) > maxApplyArtifacts {
 		return nil, fmt.Errorf("%w: artifact count exceeds %d", ErrMaterializationBlocked, maxApplyArtifacts)
 	}
-	result := make(map[string]verifiedArtifact, len(refs))
+	digests := make([]string, len(refs))
 	var total int64
-	for _, ref := range refs {
+	for index, ref := range refs {
+		digests[index] = ref.Digest
 		total += ref.SizeBytes
 		if total > maxApplyArtifactBytes {
 			return nil, fmt.Errorf("%w: artifact bytes exceed %d", ErrMaterializationBlocked, maxApplyArtifactBytes)
 		}
-		row, err := q.GetRoleSourceArtifactForApply(ctx, db.GetRoleSourceArtifactForApplyParams{WorkspaceID: workspaceID, Digest: ref.Digest})
-		if err != nil {
-			return nil, fmt.Errorf("artifact ledger %s: %w", ref.Digest, err)
+	}
+	rows, err := q.ListRoleSourceArtifactsByDigests(ctx, db.ListRoleSourceArtifactsByDigestsParams{
+		WorkspaceID: workspaceID, Digests: digests,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load materialization artifact ledger: %w", err)
+	}
+	ledger := make(map[string]db.RoleSourceArtifact, len(rows))
+	for _, row := range rows {
+		ledger[row.Digest] = row
+	}
+	if len(ledger) != len(refs) {
+		return nil, fmt.Errorf("%w: materialization artifact ledger is incomplete", ErrArtifactMissing)
+	}
+	return c.verifyMaterializationArtifactBodies(ctx, refs, ledger)
+}
+
+func (c *ControlPlane) verifyMaterializationArtifactBodies(
+	ctx context.Context,
+	refs []ArtifactRef,
+	ledger map[string]db.RoleSourceArtifact,
+) (map[string]verifiedArtifact, error) {
+	result := make(map[string]verifiedArtifact, len(refs))
+	var resultMu sync.Mutex
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maxConcurrentArtifactReads)
+	for _, ref := range refs {
+		if groupCtx.Err() != nil {
+			break
 		}
-		if row.SizeBytes != ref.SizeBytes {
-			return nil, fmt.Errorf("artifact ledger size mismatch for %s", ref.Digest)
-		}
-		reader, err := c.artifacts.GetReader(ctx, row.StorageKey)
-		if err != nil {
-			return nil, fmt.Errorf("read artifact %s: %w", ref.Digest, err)
-		}
-		body, readErr := io.ReadAll(io.LimitReader(reader, ref.SizeBytes+1))
-		closeErr := reader.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("read artifact %s: %w", ref.Digest, readErr)
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("close artifact %s: %w", ref.Digest, closeErr)
-		}
-		sum := sha256.Sum256(body)
-		actual := "sha256:" + hex.EncodeToString(sum[:])
-		if int64(len(body)) != ref.SizeBytes || actual != ref.Digest {
-			return nil, fmt.Errorf("artifact body mismatch for %s", ref.Digest)
-		}
-		if !utf8.Valid(body) || strings.IndexByte(string(body), 0) >= 0 {
-			return nil, fmt.Errorf("%w: only UTF-8 text artifacts are materialized", ErrMaterializationBlocked)
-		}
-		result[ref.Digest] = verifiedArtifact{ref: ref, storageKey: row.StorageKey, body: string(body)}
+		ref := ref
+		group.Go(func() error {
+			row, ok := ledger[ref.Digest]
+			if !ok {
+				return fmt.Errorf("%w: artifact %s is absent from ledger", ErrArtifactMissing, ref.Digest)
+			}
+			if row.SizeBytes != ref.SizeBytes {
+				return fmt.Errorf("artifact ledger size mismatch for %s", ref.Digest)
+			}
+			reader, err := c.artifacts.GetReader(groupCtx, row.StorageKey)
+			if err != nil {
+				return fmt.Errorf("read artifact %s: %w", ref.Digest, err)
+			}
+			body, readErr := io.ReadAll(io.LimitReader(reader, ref.SizeBytes+1))
+			closeErr := reader.Close()
+			if readErr != nil {
+				return fmt.Errorf("read artifact %s: %w", ref.Digest, readErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close artifact %s: %w", ref.Digest, closeErr)
+			}
+			sum := sha256.Sum256(body)
+			actual := "sha256:" + hex.EncodeToString(sum[:])
+			if int64(len(body)) != ref.SizeBytes || actual != ref.Digest {
+				return fmt.Errorf("artifact body mismatch for %s", ref.Digest)
+			}
+			if !utf8.Valid(body) || bytes.IndexByte(body, 0) >= 0 {
+				return fmt.Errorf("%w: only UTF-8 text artifacts are materialized", ErrMaterializationBlocked)
+			}
+			resultMu.Lock()
+			result[ref.Digest] = verifiedArtifact{ref: ref, storageKey: row.StorageKey, body: string(body)}
+			resultMu.Unlock()
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 	return result, nil
+}
+
+func validatePreflightArtifactLedger(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, artifacts map[string]verifiedArtifact) error {
+	digests := make([]string, 0, len(artifacts))
+	for digest := range artifacts {
+		digests = append(digests, digest)
+	}
+	sort.Strings(digests)
+	rows, err := q.ListRoleSourceArtifactsForApplyByDigests(ctx, db.ListRoleSourceArtifactsForApplyByDigestsParams{
+		WorkspaceID: workspaceID, Digests: digests,
+	})
+	if err != nil {
+		return fmt.Errorf("lock materialization artifact ledger: %w", err)
+	}
+	if len(rows) != len(artifacts) {
+		return fmt.Errorf("%w: materialization artifact ledger changed after preflight", ErrArtifactMissing)
+	}
+	for _, row := range rows {
+		artifact, ok := artifacts[row.Digest]
+		if !ok || row.SizeBytes != artifact.ref.SizeBytes || row.StorageKey != artifact.storageKey {
+			return fmt.Errorf("%w: materialization artifact ledger changed for %s", ErrApplyConflict, row.Digest)
+		}
+	}
+	return nil
 }
 
 func actionIndex(plan Plan) map[string]PlanAction {
@@ -709,7 +879,10 @@ func (s *materializationState) materialize(ctx context.Context) error {
 			}
 		}
 	}
-	return s.materializeArchives(ctx)
+	if err := s.materializeArchives(ctx); err != nil {
+		return err
+	}
+	return s.flushMappings(ctx)
 }
 
 func (s *materializationState) materializeRoleSecrets(ctx context.Context, role Role) error {
@@ -1153,21 +1326,68 @@ func (s *materializationState) consumeSecretTransfers(ctx context.Context) error
 	return nil
 }
 
-func (s *materializationState) upsertMapping(ctx context.Context, ref ObjectRef, targetKind string, targetID pgtype.UUID, digest string, mask []string, archivedAt pgtype.Timestamptz) error {
+func (s *materializationState) upsertMapping(_ context.Context, ref ObjectRef, targetKind string, targetID pgtype.UUID, digest string, mask []string, archivedAt pgtype.Timestamptz) error {
+	key := objectKey(ref)
+	if _, duplicate := s.pendingMappings[key]; duplicate {
+		return fmt.Errorf("%w: duplicate mapping mutation for %s", ErrApplyConflict, key)
+	}
 	body, err := json.Marshal(mask)
 	if err != nil {
 		return err
 	}
-	row, err := s.q.UpsertRoleSourceObjectMapping(ctx, db.UpsertRoleSourceObjectMappingParams{
-		SourceID: s.source.ID, WorkspaceID: s.workspaceID, SourceKind: ref.Kind, SourceParentID: ref.ParentID,
-		SourceObjectID: ref.ID, TargetKind: targetKind, TargetID: targetID, OwnershipMask: body,
-		LastAppliedDigest: digest, LastSnapshotDigest: s.snapshot.SnapshotDigest, ArchivedAt: archivedAt,
+	var archivedAtValue *time.Time
+	if archivedAt.Valid {
+		value := archivedAt.Time.UTC()
+		archivedAtValue = &value
+	}
+	if s.pendingMappings == nil {
+		s.pendingMappings = make(map[string]pendingRoleSourceMapping)
+	}
+	s.pendingMappings[key] = pendingRoleSourceMapping{
+		SourceKind: ref.Kind, SourceParentID: ref.ParentID, SourceObjectID: ref.ID,
+		TargetKind: targetKind, TargetID: util.UUIDToString(targetID), OwnershipMask: mask,
+		LastAppliedDigest: digest, LastSnapshotDigest: s.snapshot.SnapshotDigest, ArchivedAt: archivedAtValue,
+	}
+	row := s.mappings[key]
+	row.SourceID, row.WorkspaceID = s.source.ID, s.workspaceID
+	row.SourceKind, row.SourceParentID, row.SourceObjectID = ref.Kind, ref.ParentID, ref.ID
+	row.TargetKind, row.TargetID, row.OwnershipMask = targetKind, targetID, body
+	row.LastAppliedDigest, row.LastSnapshotDigest, row.ArchivedAt = digest, s.snapshot.SnapshotDigest, archivedAt
+	s.mappings[key] = row
+	s.receipt.Mappings = append(s.receipt.Mappings, ApplyMapping{Source: ref, Target: targetKind, ID: util.UUIDToString(targetID)})
+	return nil
+}
+
+func (s *materializationState) flushMappings(ctx context.Context) error {
+	if len(s.pendingMappings) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(s.pendingMappings))
+	for key := range s.pendingMappings {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	mutations := make([]pendingRoleSourceMapping, 0, len(keys))
+	for _, key := range keys {
+		mutations = append(mutations, s.pendingMappings[key])
+	}
+	body, err := json.Marshal(mutations)
+	if err != nil {
+		return err
+	}
+	rows, err := s.q.UpsertRoleSourceObjectMappings(ctx, db.UpsertRoleSourceObjectMappingsParams{
+		Mappings: body, SourceID: s.source.ID, WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		return err
 	}
-	s.mappings[objectKey(ref)] = row
-	s.receipt.Mappings = append(s.receipt.Mappings, ApplyMapping{Source: ref, Target: targetKind, ID: util.UUIDToString(targetID)})
+	if len(rows) != len(mutations) {
+		return fmt.Errorf("%w: persisted %d of %d mapping mutations", ErrApplyConflict, len(rows), len(mutations))
+	}
+	for _, row := range rows {
+		ref := ObjectRef{Kind: row.SourceKind, ParentID: row.SourceParentID, ID: row.SourceObjectID}
+		s.mappings[objectKey(ref)] = row
+	}
 	return nil
 }
 

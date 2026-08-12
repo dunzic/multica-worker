@@ -1,6 +1,7 @@
 package rolesource
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -207,6 +208,60 @@ func TestRetainedArchiveCandidateKeepsLastContainingSnapshot(t *testing.T) {
 	}
 	if len(state.receipt.Mappings) != 1 || state.receipt.Mappings[0].Source != ref {
 		t.Fatalf("retained mapping receipt = %+v", state.receipt.Mappings)
+	}
+}
+
+func TestMappingMutationsAreStagedAndDeduplicatedBeforeBatchFlush(t *testing.T) {
+	ref := ObjectRef{Kind: "role", ID: "writer"}
+	targetID := util.MustParseUUID("00000000-0000-4000-8000-000000000019")
+	state := materializationState{
+		workspaceID:     util.MustParseUUID("00000000-0000-4000-8000-000000000001"),
+		source:          db.RoleSource{ID: util.MustParseUUID("00000000-0000-4000-8000-000000000002")},
+		snapshot:        Snapshot{SnapshotDigest: testSHA256("a")},
+		mappings:        map[string]db.RoleSourceObjectMapping{},
+		pendingMappings: map[string]pendingRoleSourceMapping{},
+		receipt:         &ApplyReceipt{},
+	}
+	if err := state.upsertMapping(context.Background(), ref, "agent", targetID, testSHA256("b"), []string{"instructions"}, pgtype.Timestamptz{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.pendingMappings) != 1 || len(state.receipt.Mappings) != 1 || state.mappings[objectKey(ref)].TargetID != targetID {
+		t.Fatalf("staged mapping state: pending=%d receipt=%d row=%+v", len(state.pendingMappings), len(state.receipt.Mappings), state.mappings[objectKey(ref)])
+	}
+	if err := state.upsertMapping(context.Background(), ref, "agent", targetID, testSHA256("b"), []string{"instructions"}, pgtype.Timestamptz{}); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("duplicate staged mapping error=%v", err)
+	}
+}
+
+func TestApplyPreflightsObjectStorageBeforeMutationLocks(t *testing.T) {
+	body, err := os.ReadFile("apply.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	preflightAt := strings.Index(source, "c.preflightApply(ctx")
+	beginAt := strings.Index(source, "c.database.Begin(ctx)")
+	if preflightAt < 0 || beginAt < 0 || preflightAt > beginAt {
+		t.Fatal("artifact preflight must complete before the apply transaction begins")
+	}
+	transactionSection := source[beginAt:]
+	if nextFunction := strings.Index(transactionSection, "\nfunc "); nextFunction >= 0 {
+		transactionSection = transactionSection[:nextFunction]
+	}
+	if strings.Contains(transactionSection, "readAndVerifyArtifacts") {
+		t.Fatal("apply transaction performs object-storage reads while mutation locks are held")
+	}
+
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	if !strings.Contains(queryText, "ListRoleSourceArtifactsForApplyByDigests") || !strings.Contains(queryText, "FOR SHARE;") {
+		t.Fatal("apply must recheck and share-lock the preflight artifact ledger in one batch")
+	}
+	if !strings.Contains(queryText, "UpsertRoleSourceObjectMappings") || !strings.Contains(queryText, "jsonb_to_recordset(@mappings::jsonb)") {
+		t.Fatal("large applies must flush mapping mutations through one typed recordset")
 	}
 }
 

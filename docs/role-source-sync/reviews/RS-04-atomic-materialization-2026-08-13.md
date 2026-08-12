@@ -24,7 +24,10 @@ Accepted evidence:
 - exact retries revalidate indexed receipt identity and canonical receipt digest;
 - object mappings use stable source identity, explicit target kind and field ownership masks;
 - no-FK mappings are tenant/kind/target-revalidated in bulk before use;
-- artifact bodies are reread through content-addressed storage, size/SHA-256 checked and limited to 500 artifacts/64 MiB;
+- only bodies copied into mutable runtime tables are loaded; capability/supporting packages remain content-addressed for their later runtime contracts instead of inflating apply memory;
+- materialization preflight batch-loads the tenant artifact ledger and verifies bodies through content-addressed storage with bounded 16-way reads, SHA-256/size/UTF-8 checks and a 20,000-entrypoint/128 MiB ceiling;
+- slow object-storage verification completes before mutation locks; the transaction reloads the exact snapshot and takes one batched shared ledger lock before using the verified bodies;
+- all mapping changes are staged in memory and flushed through one typed JSON recordset; per-row stale-task triggers still execute, but thousands of mapping network round trips are removed;
 - eight server-local materialization slots bound concurrent storage/transaction pressure;
 - agents, skills and automations use narrow SQL that preserves user-owned fields;
 - capability versions are immutable and content-digested;
@@ -32,11 +35,11 @@ Accepted evidence:
 
 Open objections:
 
-- storage reads currently occur while the source transaction is open;
 - failed attempts that roll back are not yet durably recorded in a separate failure ledger;
-- capability consumers and task/runtime digest pins do not exist;
+- capability consumers do not exist; task/runtime provenance pins now do;
 - no outbox publishes post-commit domain refresh events;
 - live PostgreSQL deadlock, timeout and retry behavior is unproven.
+- agent/skill/automation domain materialization still performs per-object writes, so the 1,000-role/10,000-skill transaction SLO is not yet measured or fully optimized.
 
 ## Product expert review
 
@@ -69,13 +72,16 @@ Accepted evidence:
 - workspace cleanup includes mappings and capability versions;
 - migration policy rejects foreign keys, inline indexes and multi-statement concurrent-index migrations;
 - role-source and handler package tests pass after sqlc regeneration.
+- deterministic capacity contracts now cover 1,000 roles plus 10,000 unique skill entrypoints (about 86 MiB declared content) and prove that deferred 10 GiB packages are excluded from apply memory;
+- a source-order regression test proves object storage preflight precedes transaction begin and the in-transaction ledger recheck is one batched `FOR SHARE` query.
+- mapping staging tests reject duplicate mutations, and the SQL contract uses one `jsonb_to_recordset` upsert while preserving row-trigger invalidation.
 
 Open objections:
 
 - no live PostgreSQL all-or-nothing failure injection at every mutation boundary;
 - no concurrent same-key/same-source/different-source apply test;
 - no timeout-after-commit, restart retry or object-store corruption integration test;
-- no 10,000-user load, lock-wait or storage-latency benchmark.
+- no live 1,000-role/10,000-skill apply, 10,000-user load, lock-wait or object-storage latency benchmark.
 
 ## CEO review
 
@@ -90,7 +96,7 @@ Accepted evidence:
 Open objections:
 
 - the supported slice does not yet make a representative AgentWaker package fully runnable;
-- operational cost and sync-time SLOs are unmeasured;
+- operational cost and sync-time SLOs are unmeasured; the new preflight removes avoidable lock time but does not prove the end-to-end SLO;
 - the 10,000-user target and recovery story remain unproven.
 
 ## Security, privacy and data-loss blockers

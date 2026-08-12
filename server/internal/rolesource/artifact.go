@@ -98,3 +98,52 @@ func CollectArtifactRefs(snapshot Snapshot) ([]ArtifactRef, error) {
 	sort.Slice(refs, func(i, j int) bool { return refs[i].Digest < refs[j].Digest })
 	return refs, nil
 }
+
+// collectMaterializationArtifactRefs returns only bodies copied into Multica's
+// mutable execution tables during apply. The complete snapshot artifact set is
+// still transferred and retained by digest, but capability packages and
+// supporting files are consumed later by their dedicated runtime contracts;
+// loading them into every atomic apply would make a 10 GiB referenced source a
+// 10 GiB server-memory event.
+func collectMaterializationArtifactRefs(snapshot Snapshot) ([]ArtifactRef, error) {
+	canonical, err := validatedSnapshotCopy(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	byDigest := make(map[string]ArtifactRef)
+	add := func(ref ArtifactRef) error {
+		existing, ok := byDigest[ref.Digest]
+		if ok {
+			if existing.SizeBytes != ref.SizeBytes {
+				return fmt.Errorf("artifact digest %q has conflicting sizes", ref.Digest)
+			}
+			if ref.Path < existing.Path {
+				byDigest[ref.Digest] = ref
+			}
+			return nil
+		}
+		byDigest[ref.Digest] = ref
+		return nil
+	}
+	for _, role := range canonical.Manifest.Roles {
+		if err := add(role.Instructions); err != nil {
+			return nil, err
+		}
+		for _, skill := range role.Skills {
+			if err := add(skill.Entrypoint); err != nil {
+				return nil, err
+			}
+		}
+		for _, automation := range role.Automations {
+			if err := add(automation.Prompt); err != nil {
+				return nil, err
+			}
+		}
+	}
+	refs := make([]ArtifactRef, 0, len(byDigest))
+	for _, ref := range byDigest {
+		refs = append(refs, ref)
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Digest < refs[j].Digest })
+	return refs, nil
+}

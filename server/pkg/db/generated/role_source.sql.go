@@ -884,33 +884,6 @@ func (q *Queries) GetRoleSourceArtifact(ctx context.Context, arg GetRoleSourceAr
 	return i, err
 }
 
-const getRoleSourceArtifactForApply = `-- name: GetRoleSourceArtifactForApply :one
-SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
-WHERE workspace_id = $1 AND digest = $2
-FOR SHARE
-`
-
-type GetRoleSourceArtifactForApplyParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Digest      string      `json:"digest"`
-}
-
-func (q *Queries) GetRoleSourceArtifactForApply(ctx context.Context, arg GetRoleSourceArtifactForApplyParams) (RoleSourceArtifact, error) {
-	row := q.db.QueryRow(ctx, getRoleSourceArtifactForApply, arg.WorkspaceID, arg.Digest)
-	var i RoleSourceArtifact
-	err := row.Scan(
-		&i.WorkspaceID,
-		&i.Digest,
-		&i.SizeBytes,
-		&i.StorageKey,
-		&i.UploadedByRuntimeID,
-		&i.FirstSourceID,
-		&i.FirstScanRequestID,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getRoleSourceCapabilityVersion = `-- name: GetRoleSourceCapabilityVersion :one
 SELECT workspace_id, source_id, capability_id, version, object_digest, definition, snapshot_digest, created_at FROM role_source_capability_version
 WHERE source_id = $1
@@ -1971,6 +1944,51 @@ func (q *Queries) ListRoleSourceArtifactsByDigests(ctx context.Context, arg List
 	return items, nil
 }
 
+const listRoleSourceArtifactsForApplyByDigests = `-- name: ListRoleSourceArtifactsForApplyByDigests :many
+SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
+WHERE workspace_id = $1
+  AND digest = ANY($2::text[])
+ORDER BY digest
+FOR SHARE
+`
+
+type ListRoleSourceArtifactsForApplyByDigestsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Digests     []string    `json:"digests"`
+}
+
+// Apply preloads verified bodies before its mutation transaction, then takes
+// short shared ledger locks in one batch so concurrent retention/GC cannot
+// remove or retarget those digests before commit.
+func (q *Queries) ListRoleSourceArtifactsForApplyByDigests(ctx context.Context, arg ListRoleSourceArtifactsForApplyByDigestsParams) ([]RoleSourceArtifact, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceArtifactsForApplyByDigests, arg.WorkspaceID, arg.Digests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceArtifact{}
+	for rows.Next() {
+		var i RoleSourceArtifact
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.Digest,
+			&i.SizeBytes,
+			&i.StorageKey,
+			&i.UploadedByRuntimeID,
+			&i.FirstSourceID,
+			&i.FirstScanRequestID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoleSourceAuditEvents = `-- name: ListRoleSourceAuditEvents :many
 SELECT id, source_id, workspace_id, sequence, event_type, actor_type, actor_id, previous_event_digest, event_digest, payload, created_at FROM role_source_audit_event
 WHERE source_id = $1
@@ -2576,16 +2594,31 @@ func (q *Queries) UpdateRoleSourceState(ctx context.Context, arg UpdateRoleSourc
 	return i, err
 }
 
-const upsertRoleSourceObjectMapping = `-- name: UpsertRoleSourceObjectMapping :one
+const upsertRoleSourceObjectMappings = `-- name: UpsertRoleSourceObjectMappings :many
+WITH input AS (
+    SELECT item
+    FROM jsonb_to_recordset($3::jsonb) AS item(
+        source_kind TEXT,
+        source_parent_id TEXT,
+        source_object_id TEXT,
+        target_kind TEXT,
+        target_id UUID,
+        ownership_mask JSONB,
+        last_applied_digest TEXT,
+        last_snapshot_digest TEXT,
+        archived_at TIMESTAMPTZ
+    )
+)
 INSERT INTO role_source_object_mapping (
     source_id, workspace_id, source_kind, source_parent_id, source_object_id,
     target_kind, target_id, ownership_mask, last_applied_digest,
     last_snapshot_digest, archived_at
-) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8, $9,
-    $10, $11
 )
+SELECT
+    $1, $2, source_kind, source_parent_id, source_object_id,
+    target_kind, target_id, ownership_mask, last_applied_digest,
+    last_snapshot_digest, archived_at
+FROM input
 ON CONFLICT (source_id, source_kind, source_parent_id, source_object_id)
 DO UPDATE SET target_kind = EXCLUDED.target_kind,
               target_id = EXCLUDED.target_id,
@@ -2594,52 +2627,48 @@ DO UPDATE SET target_kind = EXCLUDED.target_kind,
               last_snapshot_digest = EXCLUDED.last_snapshot_digest,
               archived_at = EXCLUDED.archived_at,
               updated_at = now()
-RETURNING source_id, workspace_id, source_kind, source_parent_id, source_object_id, target_kind, target_id, ownership_mask, last_applied_digest, last_snapshot_digest, archived_at, created_at, updated_at
+RETURNING role_source_object_mapping.source_id, role_source_object_mapping.workspace_id, role_source_object_mapping.source_kind, role_source_object_mapping.source_parent_id, role_source_object_mapping.source_object_id, role_source_object_mapping.target_kind, role_source_object_mapping.target_id, role_source_object_mapping.ownership_mask, role_source_object_mapping.last_applied_digest, role_source_object_mapping.last_snapshot_digest, role_source_object_mapping.archived_at, role_source_object_mapping.created_at, role_source_object_mapping.updated_at
 `
 
-type UpsertRoleSourceObjectMappingParams struct {
-	SourceID           pgtype.UUID        `json:"source_id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	SourceKind         string             `json:"source_kind"`
-	SourceParentID     string             `json:"source_parent_id"`
-	SourceObjectID     string             `json:"source_object_id"`
-	TargetKind         string             `json:"target_kind"`
-	TargetID           pgtype.UUID        `json:"target_id"`
-	OwnershipMask      []byte             `json:"ownership_mask"`
-	LastAppliedDigest  string             `json:"last_applied_digest"`
-	LastSnapshotDigest string             `json:"last_snapshot_digest"`
-	ArchivedAt         pgtype.Timestamptz `json:"archived_at"`
+type UpsertRoleSourceObjectMappingsParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Mappings    []byte      `json:"mappings"`
 }
 
-func (q *Queries) UpsertRoleSourceObjectMapping(ctx context.Context, arg UpsertRoleSourceObjectMappingParams) (RoleSourceObjectMapping, error) {
-	row := q.db.QueryRow(ctx, upsertRoleSourceObjectMapping,
-		arg.SourceID,
-		arg.WorkspaceID,
-		arg.SourceKind,
-		arg.SourceParentID,
-		arg.SourceObjectID,
-		arg.TargetKind,
-		arg.TargetID,
-		arg.OwnershipMask,
-		arg.LastAppliedDigest,
-		arg.LastSnapshotDigest,
-		arg.ArchivedAt,
-	)
-	var i RoleSourceObjectMapping
-	err := row.Scan(
-		&i.SourceID,
-		&i.WorkspaceID,
-		&i.SourceKind,
-		&i.SourceParentID,
-		&i.SourceObjectID,
-		&i.TargetKind,
-		&i.TargetID,
-		&i.OwnershipMask,
-		&i.LastAppliedDigest,
-		&i.LastSnapshotDigest,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
+// One apply can materialize thousands of objects. Send mapping mutations as a
+// single typed JSON recordset so the transaction does not pay one network
+// round trip per object. Row triggers still execute for every affected mapping.
+func (q *Queries) UpsertRoleSourceObjectMappings(ctx context.Context, arg UpsertRoleSourceObjectMappingsParams) ([]RoleSourceObjectMapping, error) {
+	rows, err := q.db.Query(ctx, upsertRoleSourceObjectMappings, arg.SourceID, arg.WorkspaceID, arg.Mappings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceObjectMapping{}
+	for rows.Next() {
+		var i RoleSourceObjectMapping
+		if err := rows.Scan(
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.SourceKind,
+			&i.SourceParentID,
+			&i.SourceObjectID,
+			&i.TargetKind,
+			&i.TargetID,
+			&i.OwnershipMask,
+			&i.LastAppliedDigest,
+			&i.LastSnapshotDigest,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

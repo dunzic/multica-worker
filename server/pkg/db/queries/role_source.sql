@@ -96,16 +96,21 @@ RETURNING *;
 SELECT * FROM role_source_artifact
 WHERE workspace_id = @workspace_id AND digest = @digest;
 
--- name: GetRoleSourceArtifactForApply :one
-SELECT * FROM role_source_artifact
-WHERE workspace_id = @workspace_id AND digest = @digest
-FOR SHARE;
-
 -- name: ListRoleSourceArtifactsByDigests :many
 SELECT * FROM role_source_artifact
 WHERE workspace_id = @workspace_id
   AND digest = ANY(@digests::text[])
 ORDER BY digest;
+
+-- name: ListRoleSourceArtifactsForApplyByDigests :many
+-- Apply preloads verified bodies before its mutation transaction, then takes
+-- short shared ledger locks in one batch so concurrent retention/GC cannot
+-- remove or retarget those digests before commit.
+SELECT * FROM role_source_artifact
+WHERE workspace_id = @workspace_id
+  AND digest = ANY(@digests::text[])
+ORDER BY digest
+FOR SHARE;
 
 -- name: CreateRoleSourceScanRequest :one
 INSERT INTO role_source_scan_request (
@@ -308,16 +313,34 @@ SELECT id FROM autopilot
 WHERE workspace_id = @workspace_id AND title = @title AND status <> 'archived'
 LIMIT 1;
 
--- name: UpsertRoleSourceObjectMapping :one
+-- name: UpsertRoleSourceObjectMappings :many
+-- One apply can materialize thousands of objects. Send mapping mutations as a
+-- single typed JSON recordset so the transaction does not pay one network
+-- round trip per object. Row triggers still execute for every affected mapping.
+WITH input AS (
+    SELECT *
+    FROM jsonb_to_recordset(@mappings::jsonb) AS item(
+        source_kind TEXT,
+        source_parent_id TEXT,
+        source_object_id TEXT,
+        target_kind TEXT,
+        target_id UUID,
+        ownership_mask JSONB,
+        last_applied_digest TEXT,
+        last_snapshot_digest TEXT,
+        archived_at TIMESTAMPTZ
+    )
+)
 INSERT INTO role_source_object_mapping (
     source_id, workspace_id, source_kind, source_parent_id, source_object_id,
     target_kind, target_id, ownership_mask, last_applied_digest,
     last_snapshot_digest, archived_at
-) VALUES (
-    @source_id, @workspace_id, @source_kind, @source_parent_id, @source_object_id,
-    @target_kind, @target_id, @ownership_mask, @last_applied_digest,
-    @last_snapshot_digest, sqlc.narg('archived_at')
 )
+SELECT
+    @source_id, @workspace_id, source_kind, source_parent_id, source_object_id,
+    target_kind, target_id, ownership_mask, last_applied_digest,
+    last_snapshot_digest, archived_at
+FROM input
 ON CONFLICT (source_id, source_kind, source_parent_id, source_object_id)
 DO UPDATE SET target_kind = EXCLUDED.target_kind,
               target_id = EXCLUDED.target_id,
@@ -326,7 +349,7 @@ DO UPDATE SET target_kind = EXCLUDED.target_kind,
               last_snapshot_digest = EXCLUDED.last_snapshot_digest,
               archived_at = EXCLUDED.archived_at,
               updated_at = now()
-RETURNING *;
+RETURNING role_source_object_mapping.*;
 
 -- name: InsertRoleSourceCapabilityVersion :one
 INSERT INTO role_source_capability_version (

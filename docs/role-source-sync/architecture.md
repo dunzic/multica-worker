@@ -149,7 +149,7 @@ The materialized Agent remains the execution target. Until old encrypted runtime
 The following are release gates, not claims about current measured capacity:
 
 - load profile includes at least 10,000 accounts, 2,000 active workspaces, 5,000 configured sources, 100 concurrent scans, and 50 concurrent applies across distinct sources;
-- one source supports at least 1,000 roles, 10,000 skills/bindings, and 10 GiB of referenced artifacts without placing bodies in heartbeat metadata;
+- one source supports at least 1,000 roles, 10,000 skills/bindings, and 10 GiB of referenced artifacts without placing bodies in heartbeat metadata or loading deferred capability/supporting packages into atomic-apply memory;
 - metadata APIs meet p95 500 ms and p99 1 s under the target profile; queue wait and scan duration have separate service-level indicators;
 - applying one source is serialized, while unrelated sources scale horizontally;
 - worker crash, daemon disconnect, server restart, duplicate delivery, stale plan, and transaction retry are covered by fault-injection tests;
