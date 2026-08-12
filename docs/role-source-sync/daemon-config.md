@@ -2,12 +2,13 @@
 
 Status: internal preview; the scan and sync feature flags remain off by default.
 
-The daemon enables role-source scanning only when `MULTICA_ROLE_SOURCE_CONFIG_FILE` points to a clean absolute path containing a regular, non-symlink file with permissions `0600` or stricter. An invalid configured file fails daemon configuration loading instead of silently advertising a scanner that cannot run.
+The daemon enables role-source scanning when a validated private config exists at the current profile's `role-sources.json`, or when `MULTICA_ROLE_SOURCE_CONFIG_FILE` explicitly selects another clean absolute path. The file must be regular, non-symlink and `0600` or stricter. An invalid configured file fails daemon loading instead of silently advertising a scanner that cannot run.
+
+Administrators manage the file through `multica daemon role-source`. The input is a secret-free complete desired-state document; it deliberately has no `digest_key` field:
 
 ```json
 {
   "version": 1,
-  "digest_key": "BASE64_OF_EXACTLY_32_RANDOM_BYTES",
   "allowed_roots": [
     "/srv/multica-role-sources"
   ],
@@ -28,6 +29,34 @@ The daemon enables role-source scanning only when `MULTICA_ROLE_SOURCE_CONFIG_FI
   }
 }
 ```
+
+Write the desired state to a private file, create with the explicit `absent` revision, and use the returned revision for every later update:
+
+```bash
+chmod 0600 /secure/path/desired-role-sources.json
+multica daemon role-source apply \
+  --document /secure/path/desired-role-sources.json \
+  --expected-revision absent
+
+multica daemon role-source show --output json
+multica daemon role-source apply \
+  --document /secure/path/desired-role-sources.json \
+  --expected-revision sha256:REVISION_FROM_SHOW
+```
+
+`apply` takes a non-blocking sibling-file lock, checks the exact full-private-file revision, validates every root and adapter configuration, writes a `0600` temporary file in the same directory, syncs it, atomically replaces the target and syncs the directory. A stale revision or concurrent manager fails without publishing. The input may be `--document -` for bounded stdin; adapter JSON is never accepted on the command line.
+
+`show` exposes only the revision, validation status/code, final file/root names, source IDs/kinds and adapter-redacted attributes. It does not expose the full path, raw adapter config or digest key. It still returns a usable revision for a malformed or currently invalid file so an administrator can recover it with `apply`.
+
+When the desired state first includes AgentWaker, the manager generates 32 random private bytes. Normal updates preserve that key. Removing the last AgentWaker source removes it. Rotation is a separate disruptive action:
+
+```bash
+multica daemon role-source rotate-key \
+  --expected-revision sha256:REVISION_FROM_SHOW \
+  --confirm-rescan
+```
+
+Rotation changes all keyed environment-value evidence. The command reports `rescan_required`; every AgentWaker source must be rescanned and reviewed before apply.
 
 Minimal `multica-role-source.json` shape (the referenced file must exist beside it and match the declared digest and size):
 
@@ -59,11 +88,11 @@ Minimal `multica-role-source.json` shape (the referenced file must exist beside 
 
 Rules:
 
-- `digest_key` is required only when at least one `agentwaker_directory` source is configured. It is local HMAC material for non-reversible environment-value change evidence, decoded into mutable memory, copied into that adapter and cleared after startup parsing. Rotating it changes sensitive-value evidence and therefore requires an explicit rescan/review workflow. A manifest-directory-only daemon may omit it.
+- the private `digest_key` is manager-owned and must never be added to the desired-state document. It exists only when at least one `agentwaker_directory` source is configured, is decoded into mutable memory, copied into that adapter and cleared after startup parsing.
 - `allowed_roots` contains 1–64 existing, clean, non-root absolute directories. Symlinked roots or parent components are rejected.
 - `sources` contains 1–512 opaque local config IDs. IDs may contain ASCII letters, digits, dot, underscore and dash, up to 128 characters.
 - each `root_path` must be an existing non-symlink directory at or below an allowed root. Raw paths stay in this local file and never enter server persistence, member APIs, heartbeat commands, snapshots, plans, audit events or analytics.
 - the daemon accepts the compile-time registered `agentwaker_directory` and `multica_manifest_directory` kinds. Both use the same queue, lease, root confinement, normalized snapshot validation, artifact reopen and content-addressed upload protocol.
 - `multica_manifest_directory` publishes the normalized `Manifest` JSON contract directly. Artifact references must contain exact SHA-256, size, root-relative path and an approved text/JSON/YAML media type. This adapter deliberately has no secret-transfer authority, so configured environment values and MCP declarations are rejected rather than silently imported without values.
 
-The server source record refers to one of these opaque IDs through `daemon_config_id` and exposes only the selected adapter's safe summary (for example, final directory and manifest file names). The current file workflow is suitable for controlled engineering validation, not broad customer rollout: managed create/rotate/remove commands and config-summary attestation are still required.
+The server source record refers to one of these opaque IDs through `daemon_config_id` and exposes only the selected adapter's safe summary (for example, final directory and manifest file names). Managed local lifecycle is now available, including source addition/removal through complete desired-state apply and explicit key rotation. Broad customer rollout remains blocked on guided configuration UI, remote/signed source trust, live database and failure-injection evidence, and operational recovery exercises.

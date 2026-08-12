@@ -469,7 +469,19 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		autoReloadEnabled = false
 	}
 
-	roleSourceScanner, err := loadRoleSourceScanner(os.Getenv("MULTICA_ROLE_SOURCE_CONFIG_FILE"))
+	roleSourceConfigPath := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_CONFIG_FILE"))
+	if roleSourceConfigPath == "" {
+		defaultPath, pathErr := DefaultRoleSourceConfigPath(profile)
+		if pathErr != nil {
+			return Config{}, fmt.Errorf("resolve default role source config path: %w", pathErr)
+		}
+		if _, statErr := os.Lstat(defaultPath); statErr == nil {
+			roleSourceConfigPath = defaultPath
+		} else if !os.IsNotExist(statErr) {
+			return Config{}, fmt.Errorf("inspect default role source config: %w", statErr)
+		}
+	}
+	roleSourceScanner, err := loadRoleSourceScanner(roleSourceConfigPath)
 	if err != nil {
 		return Config{}, fmt.Errorf("load role source scanner: %w", err)
 	}

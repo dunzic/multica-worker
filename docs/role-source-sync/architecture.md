@@ -100,6 +100,17 @@ The control plane never stores raw adapter configuration. It stores an opaque
 daemon-owned configuration ID and a typed, bounded safe summary. The daemon is
 the only component that resolves that ID to a local path or credential.
 
+Local adapter authority is managed as a complete desired-state document. The
+CLI accepts only a secret-free document from private file or bounded stdin,
+requires the exact current revision (or `absent` for creation), validates every
+adapter before publication, and atomically replaces a `0600` profile-local
+file under a non-writable canonical directory. A cross-process sibling lock
+prevents two managers from both winning the same revision. The manager, not the
+operator document, generates and preserves the AgentWaker evidence key; key
+rotation is a separate confirmed action that forces rescan/review. Recovery
+summary exposes a stable validation code and revision even when a hand-edited
+file is malformed, but never raw config, absolute paths or key material.
+
 ### Scan and secret boundary
 
 The daemon adapter may read only paths allowed by the source configuration and adapter policy. It must reject symlinks, hard-link surprises where detectable, traversal, device files, sockets, forbidden roots, file-count/size overruns, and content that changes while being read.

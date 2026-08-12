@@ -39,16 +39,21 @@ const (
 var roleSourceConfigIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type roleSourceConfigDocument struct {
-	Version      int                              `json:"version"`
-	DigestKey    []byte                           `json:"digest_key"`
-	AllowedRoots []string                         `json:"allowed_roots"`
-	Sources      map[string]roleSourceLocalConfig `json:"sources"`
+	Version      int                                `json:"version"`
+	DigestKey    []byte                             `json:"digest_key"`
+	AllowedRoots []string                           `json:"allowed_roots"`
+	Sources      map[string]RoleSourceManagedSource `json:"sources"`
 }
 
-type roleSourceLocalConfig struct {
+// RoleSourceManagedSource is the source-neutral local adapter configuration
+// accepted by the managed daemon configuration API. Config is intentionally
+// opaque here; the registered adapter owns strict decoding and validation.
+type RoleSourceManagedSource struct {
 	Kind   rolesource.Kind `json:"kind"`
 	Config json.RawMessage `json:"config"`
 }
+
+type roleSourceLocalConfig = RoleSourceManagedSource
 
 // roleSourceScanner owns local source authority. The control plane only sends
 // an opaque config ID; resolving it to a path and invoking a filesystem adapter
@@ -64,6 +69,20 @@ func loadRoleSourceScanner(configPath string) (*roleSourceScanner, error) {
 	if configPath == "" {
 		return nil, nil
 	}
+	body, err := readRoleSourceConfigFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(body)
+	document, err := decodeRoleSourceConfigDocument(body)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(document.DigestKey)
+	return buildRoleSourceScanner(document)
+}
+
+func readRoleSourceConfigFile(configPath string) ([]byte, error) {
 	if !filepath.IsAbs(configPath) || filepath.Clean(configPath) != configPath {
 		return nil, errors.New("role source config file must be a clean absolute path")
 	}
@@ -99,17 +118,26 @@ func loadRoleSourceScanner(configPath string) (*roleSourceScanner, error) {
 	if len(body) > maxRoleSourceConfigBytes {
 		return nil, errors.New("role source config file exceeds size limit")
 	}
-	defer clear(body)
+	return body, nil
+}
+
+func decodeRoleSourceConfigDocument(body []byte) (roleSourceConfigDocument, error) {
 	var document roleSourceConfigDocument
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&document); err != nil {
-		return nil, fmt.Errorf("decode role source config file: %w", err)
+		clear(document.DigestKey)
+		return roleSourceConfigDocument{}, fmt.Errorf("decode role source config file: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, errors.New("role source config file contains trailing JSON")
+		clear(document.DigestKey)
+		return roleSourceConfigDocument{}, errors.New("role source config file contains trailing JSON")
 	}
+	return document, nil
+}
+
+func buildRoleSourceScanner(document roleSourceConfigDocument) (*roleSourceScanner, error) {
 	if document.Version != roleSourceConfigVersion {
 		return nil, fmt.Errorf("unsupported role source config version %d", document.Version)
 	}
@@ -123,11 +151,11 @@ func loadRoleSourceScanner(configPath string) (*roleSourceScanner, error) {
 			break
 		}
 	}
-	key := document.DigestKey
+	key := append([]byte(nil), document.DigestKey...)
+	defer clear(key)
 	if (requiresAgentWaker || len(key) != 0) && len(key) != 32 {
 		return nil, errors.New("role source digest_key must be exactly 32 base64-encoded bytes when AgentWaker is configured")
 	}
-	defer clear(key)
 	allowedRoots, err := validateRoleSourceAllowedRoots(document.AllowedRoots)
 	if err != nil {
 		return nil, err
