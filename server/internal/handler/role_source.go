@@ -27,6 +27,7 @@ import (
 
 type RoleSourceControlPlane interface {
 	RegisterSource(context.Context, rolesource.RegisterSourceInput) (db.RoleSource, error)
+	UpdateSourceLifecycle(context.Context, rolesource.UpdateSourceLifecycleInput) (db.RoleSource, error)
 	RequestScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error)
 	ListSources(context.Context, string) ([]db.RoleSource, error)
 	GetSource(context.Context, string, string) (db.RoleSource, error)
@@ -457,46 +458,11 @@ func roleSourceRuntimeConfigStatusFromEvidence(source db.RoleSource, contractVer
 		Status: "unattested", AttestationID: stringToPtr(attestationID), Revision: textToPtr(revision),
 		ObservedAt: timestampToPtr(observedAt), ChangedAt: timestampToPtr(changedAt),
 	}
-	var loadedConfigs []protocol.RoleSourceLoadedConfig
-	if err := json.Unmarshal(sources, &loadedConfigs); err != nil {
-		response.Status = "invalid_attestation"
-		return response
-	}
-	revisionValue := ""
-	if revision.Valid {
-		revisionValue = revision.String
-	}
-	if err := protocol.ValidateRoleSourceConfigAttestation(protocol.RoleSourceConfigAttestation{
+	response.Status = rolesource.RuntimeConfigAttestationStatus(source, db.RoleSourceRuntimeAttestation{
+		RuntimeID: source.RuntimeID, WorkspaceID: source.WorkspaceID,
 		ContractVersion: contractVersion, Loaded: loadedEvidence, AttestationID: attestationID,
-		Revision: revisionValue, Sources: loadedConfigs,
-	}); err != nil {
-		response.Status = "invalid_attestation"
-		return response
-	}
-	if !loadedEvidence {
-		response.Status = "not_loaded"
-		return response
-	}
-	expectedConfigDigest, err := protocol.RoleSourceConfigIDDigest(util.UUIDToString(source.RuntimeID), source.DaemonConfigID)
-	if err != nil {
-		response.Status = "invalid_attestation"
-		return response
-	}
-	for _, config := range loadedConfigs {
-		if config.ConfigIDDigest != expectedConfigDigest {
-			continue
-		}
-		switch {
-		case config.Kind != source.Kind:
-			response.Status = "kind_mismatch"
-		case config.AdapterVersion != source.AdapterVersion:
-			response.Status = "adapter_version_mismatch"
-		default:
-			response.Status = "loaded"
-		}
-		return response
-	}
-	response.Status = "config_missing"
+		ConfigRevision: revision, Sources: sources, ObservedAt: observedAt, ChangedAt: changedAt,
+	})
 	return response
 }
 
@@ -554,6 +520,55 @@ func (h *Handler) CreateRoleSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, response)
+}
+
+func (h *Handler) UpdateRoleSourceLifecycle(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot manage role source lifecycle")
+		return
+	}
+	var request struct {
+		Action          rolesource.SourceLifecycleAction `json:"action"`
+		ExpectedVersion int64                            `json:"expected_version"`
+		RuntimeID       string                           `json:"runtime_id,omitempty"`
+		DaemonConfigID  string                           `json:"daemon_config_id,omitempty"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	_, err := h.RoleSources.UpdateSourceLifecycle(r.Context(), rolesource.UpdateSourceLifecycleInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), ActorUserID: userID,
+		ExpectedVersion: request.ExpectedVersion, Action: request.Action,
+		RuntimeID: request.RuntimeID, DaemonConfigID: request.DaemonConfigID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "role source not found")
+		case errors.Is(err, rolesource.ErrSourceVersionConflict):
+			writeError(w, http.StatusConflict, "role source changed; refresh before retrying")
+		case errors.Is(err, rolesource.ErrInvalidLifecycleTransition):
+			writeError(w, http.StatusConflict, "role source lifecycle transition is not allowed")
+		case errors.Is(err, rolesource.ErrLifecycleRuntimeUnavailable):
+			writeError(w, http.StatusConflict, "role source runtime is unavailable")
+		case errors.Is(err, rolesource.ErrLifecycleConfigNotLoaded):
+			writeError(w, http.StatusConflict, "role source runtime configuration is not loaded")
+		default:
+			slog.Error("update role source lifecycle failed", "workspace_id", workspaceID, "source_id", chi.URLParam(r, "sourceId"), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update role source lifecycle")
+		}
+		return
+	}
+	// The source row is committed, but a correct runtime_config projection also
+	// requires fresh liveness and attestation reads. Return no partial DTO; the
+	// client invalidates the authoritative list query after this 204.
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) RequestRoleSourceScan(w http.ResponseWriter, r *http.Request) {

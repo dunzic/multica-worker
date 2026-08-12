@@ -34,6 +34,25 @@ describe("ApiClient role-source runtime evidence", () => {
       "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/runtime-attestations",
     );
   });
+
+  it("sends lifecycle changes as a versioned PATCH", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test").updateRoleSourceLifecycle(
+      "workspace-1",
+      "source-1",
+      { action: "pause", expected_version: 3 },
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ action: "pause", expected_version: 3 }),
+      }),
+    );
+  });
 });
 
 describe("ApiClient pull-request response schema", () => {

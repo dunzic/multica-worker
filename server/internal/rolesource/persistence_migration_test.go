@@ -286,6 +286,56 @@ func TestRoleSourceRuntimeAttestationIsBoundedRedactedAndExplicitlyDeleted(t *te
 	}
 }
 
+func TestRoleSourceLifecycleUsesOneLockOrderAndClearsPendingSecrets(t *testing.T) {
+	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycleBody, err := os.ReadFile("lifecycle.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretBody, err := os.ReadFile("secret_controlplane.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queryBody)
+	lifecycle := string(lifecycleBody)
+	secret := string(secretBody)
+	for _, required := range []string{
+		"-- name: CancelActiveRoleSourceScans :execrows",
+		"status IN ('queued', 'claimed')",
+		"-- name: CancelActiveRoleSourceSecretTransfers :execrows",
+		"private_key_ciphertext = decode(repeat('00', 60), 'hex')",
+		"envelope = NULL",
+		"-- name: RebindDetachedRoleSource :one",
+		"config_redacted = @config_redacted",
+		"AND state = 'detached'",
+		"source.state IN ('registered', 'active', 'error')",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("role-source lifecycle persistence is missing %q", required)
+		}
+	}
+	workspaceAt := strings.Index(lifecycle, "qtx.LockWorkspaceForRoleSourceMutation")
+	sourceAt := strings.Index(lifecycle, "qtx.GetRoleSourceForUpdate")
+	cancelScanAt := strings.Index(lifecycle, "qtx.CancelActiveRoleSourceScans")
+	cancelTransferAt := strings.Index(lifecycle, "qtx.CancelActiveRoleSourceSecretTransfers")
+	if workspaceAt < 0 || sourceAt <= workspaceAt || cancelScanAt <= sourceAt || cancelTransferAt <= cancelScanAt {
+		t.Fatalf("lifecycle lock/cancel order is unsafe: workspace=%d source=%d scan=%d transfer=%d", workspaceAt, sourceAt, cancelScanAt, cancelTransferAt)
+	}
+	reportStart := strings.Index(secret, "func (c *ControlPlane) ReportSecretTransfer(")
+	if reportStart < 0 {
+		t.Fatal("ReportSecretTransfer is missing")
+	}
+	report := secret[reportStart:]
+	reportSourceAt := strings.Index(report, "qtx.GetRoleSourceForUpdate")
+	reportTransferAt := strings.Index(report, "qtx.GetRoleSourceSecretTransferForUpdate")
+	if reportSourceAt < 0 || reportTransferAt <= reportSourceAt {
+		t.Fatalf("secret transfer report does not lock source before transfer: source=%d transfer=%d", reportSourceAt, reportTransferAt)
+	}
+}
+
 func TestRoleSourceTaskPinsAreContentFreeAndRetryStable(t *testing.T) {
 	schemaBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "316_role_source_task_pin.up.sql"))
 	if err != nil {

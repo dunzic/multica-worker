@@ -66,6 +66,11 @@ WHERE workspace_id = @workspace_id AND runtime_id = @runtime_id
 ORDER BY last_observed_at DESC, attestation_id
 LIMIT @result_limit;
 
+-- name: GetRoleSourceRuntimeAttestationForShare :one
+SELECT * FROM role_source_runtime_attestation
+WHERE runtime_id = @runtime_id AND workspace_id = @workspace_id
+FOR SHARE;
+
 -- name: CreateRoleSource :one
 INSERT INTO role_source (
     id, workspace_id, runtime_id, name, kind, adapter_version,
@@ -91,17 +96,37 @@ WHERE workspace_id = @workspace_id
 ORDER BY created_at DESC, id;
 
 -- name: CountRoleSourcesByRuntime :one
-SELECT count(*) FROM role_source WHERE runtime_id = @runtime_id;
+-- Detached sources retain their last binding as audit context but no longer
+-- keep that runtime alive. Rebind locks the new runtime before activation.
+SELECT count(*) FROM role_source
+WHERE runtime_id = @runtime_id AND state <> 'detached';
 
 -- name: CountRoleSourcesByRuntimes :one
-SELECT count(*) FROM role_source WHERE runtime_id = ANY(@runtime_ids::uuid[]);
+SELECT count(*) FROM role_source
+WHERE runtime_id = ANY(@runtime_ids::uuid[]) AND state <> 'detached';
 
 -- name: ReassignRoleSourcesToRuntime :execrows
 UPDATE role_source
 SET runtime_id = @new_runtime_id,
     version = version + 1,
     updated_at = now()
-WHERE runtime_id = @old_runtime_id;
+WHERE runtime_id = @old_runtime_id
+  AND state <> 'detached';
+
+-- name: RebindDetachedRoleSource :one
+UPDATE role_source
+SET runtime_id = @new_runtime_id,
+    daemon_config_id = @daemon_config_id,
+    config_redacted = @config_redacted,
+    state = 'paused',
+    updated_by = @actor_user_id,
+    version = version + 1,
+    updated_at = now()
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND version = @expected_version
+  AND state = 'detached'
+RETURNING *;
 
 -- name: UpdateRoleSourceState :one
 UPDATE role_source
@@ -313,6 +338,16 @@ WHERE id = @id AND source_id = @source_id AND workspace_id = @workspace_id;
 SELECT * FROM role_source_scan_request
 WHERE id = @id AND source_id = @source_id AND workspace_id = @workspace_id
 FOR UPDATE;
+
+-- name: CancelActiveRoleSourceScans :execrows
+UPDATE role_source_scan_request
+SET status = 'cancelled',
+    error_code = @error_code,
+    completed_at = now(),
+    lease_expires_at = NULL
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND status IN ('queued', 'claimed');
 
 -- name: ClaimNextRoleSourceScan :one
 WITH source_candidate AS MATERIALIZED (
@@ -750,16 +785,35 @@ WHERE id = @id
 FOR UPDATE;
 
 -- name: ClaimNextRoleSourceSecretTransfer :one
-WITH candidate AS (
-    SELECT id FROM role_source_secret_transfer
-    WHERE runtime_id = @runtime_id
-      AND expires_at > now()
-      AND (
-        status = 'pending'
-        OR (status = 'claimed' AND lease_expires_at < now())
+WITH source_candidate AS MATERIALIZED (
+    SELECT source.id
+    FROM role_source source
+    WHERE source.runtime_id = @runtime_id
+      AND source.state IN ('registered', 'active', 'error')
+      AND EXISTS (
+        SELECT 1 FROM role_source_secret_transfer pending
+        WHERE pending.source_id = source.id
+          AND pending.expires_at > now()
+          AND (
+            pending.status = 'pending'
+            OR (pending.status = 'claimed' AND pending.lease_expires_at < now())
+          )
       )
-    ORDER BY created_at, id
-    FOR UPDATE SKIP LOCKED
+    ORDER BY source.id
+    FOR UPDATE OF source SKIP LOCKED
+    LIMIT 1
+), candidate AS (
+    SELECT transfer.id
+    FROM role_source_secret_transfer transfer
+    JOIN source_candidate source ON source.id = transfer.source_id
+    WHERE transfer.runtime_id = @runtime_id
+      AND transfer.expires_at > now()
+      AND (
+        transfer.status = 'pending'
+        OR (transfer.status = 'claimed' AND transfer.lease_expires_at < now())
+      )
+    ORDER BY transfer.created_at, transfer.id
+    FOR UPDATE OF transfer SKIP LOCKED
     LIMIT 1
 )
 UPDATE role_source_secret_transfer transfer
@@ -772,6 +826,18 @@ SET status = 'claimed',
 FROM candidate
 WHERE transfer.id = candidate.id
 RETURNING transfer.*;
+
+-- name: CancelActiveRoleSourceSecretTransfers :execrows
+UPDATE role_source_secret_transfer
+SET status = 'failed',
+    envelope = NULL,
+    private_key_ciphertext = decode(repeat('00', 60), 'hex'),
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    error_code = @error_code
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND status IN ('pending', 'claimed', 'submitted');
 
 -- name: SubmitRoleSourceSecretTransfer :one
 UPDATE role_source_secret_transfer

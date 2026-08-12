@@ -49,11 +49,13 @@ runtime identifiers.
      falls by the expected count and the alert clears after its hold period;
    - a read-only scan completes before any apply operation is considered.
 
-If the daemon is intentionally retired, do not update PostgreSQL manually and
-do not repoint the source by editing opaque IDs. The current product does not
-yet expose a controlled pause/detach/rebind workflow; leave apply disabled and
-escalate to the role-source control-plane owner. This is an explicit production
-rollout blocker, not an operator workaround.
+If the daemon is intentionally retired, do not update PostgreSQL manually. An
+owner/admin must first **Pause** the source, verify pending work is cancelled,
+then **Detach** it. To migrate, **Rebind** the detached source to the reviewed
+destination runtime and daemon-local config handle. Rebind deliberately leaves
+the source paused; obtain fresh matching loaded evidence and complete a
+read-only scan before **Resume**. A stale version or invalid transition must be
+refreshed and reviewed, never forced.
 
 ## Attestation status recovery
 

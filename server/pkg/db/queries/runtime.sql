@@ -401,7 +401,9 @@ WITH candidates AS MATERIALIZED (
         SELECT 1 FROM agent WHERE agent.runtime_id = agent_runtime.id
       )
       AND NOT EXISTS (
-        SELECT 1 FROM role_source WHERE role_source.runtime_id = agent_runtime.id
+        SELECT 1 FROM role_source
+        WHERE role_source.runtime_id = agent_runtime.id
+          AND role_source.state <> 'detached'
       )
     FOR UPDATE
 ), deleted_attestation_observations AS (

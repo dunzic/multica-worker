@@ -15,12 +15,17 @@ vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "workspace-1", name: "Acme" }),
 }));
 
+vi.mock("@multica/core/permissions", () => ({
+  useCurrentMember: () => ({ role: "owner", userId: "user-1", member: null, isLoading: false }),
+}));
+
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>(
     "@tanstack/react-query",
   );
   return {
     ...actual,
+    useQueryClient: () => ({ invalidateQueries: vi.fn().mockResolvedValue(undefined) }),
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
       data: options.queryKey.includes("impact")
         ? queryFixtures.impact
@@ -176,7 +181,7 @@ describe("RoleSourcesTab", () => {
   it("renders the immutable plan and blockers as a read-only audit surface", async () => {
     renderWithI18n(<RoleSourcesTab />);
 
-    expect(await screen.findByText("AgentWaker production")).toBeInTheDocument();
+    expect(await screen.findAllByText("AgentWaker production")).toHaveLength(2);
     expect(screen.getAllByText("Runtime config loaded")).toHaveLength(2);
     expect(screen.getByText(/Runtime revision:/)).toBeInTheDocument();
     expect(screen.getByText("Runtime loaded-config evidence")).toBeInTheDocument();
@@ -193,7 +198,7 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText("state_conflict")).toBeInTheDocument();
     expect(screen.getByText(/apply · materialization/)).toBeInTheDocument();
     expect(screen.getByText(/automatic receipt check did not confirm/)).toBeInTheDocument();
-    expect(screen.getByText(/This preview is read-only/)).toBeInTheDocument();
+    expect(screen.getByText(/Plan approval and apply remain read-only/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve|apply|retry|recover/i })).not.toBeInTheDocument();
   });
 
@@ -225,5 +230,29 @@ describe("RoleSourcesTab", () => {
 
     expect(await screen.findByText("Runtime offline or stale")).toBeInTheDocument();
     expect(screen.getAllByText("Runtime config loaded")).toHaveLength(2);
+  });
+
+  it("offers pause for an active source and never skips directly to detach", () => {
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Detach" })).not.toBeInTheDocument();
+  });
+
+  it("requires paused state before detach and exposes resume separately", () => {
+    queryFixtures.sources[0] = { ...queryFixtures.sources[0], state: "paused" };
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Detach" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+  });
+
+  it("only offers rebind after detach", () => {
+    queryFixtures.sources[0] = { ...queryFixtures.sources[0], state: "detached" };
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByRole("button", { name: "Rebind" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
   });
 });

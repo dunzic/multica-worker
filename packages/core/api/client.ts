@@ -44,6 +44,7 @@ import type {
   RoleSourcePlanImpact,
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
+  UpdateRoleSourceLifecycleRequest,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -1673,6 +1674,17 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/role-sources/${sourceId}/runtime-attestations`,
     );
     return response.attestations ?? [];
+  }
+
+  async updateRoleSourceLifecycle(
+    workspaceId: string,
+    sourceId: string,
+    request: UpdateRoleSourceLifecycleRequest,
+  ): Promise<void> {
+    await this.fetch<void>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}`,
+      { method: "PATCH", body: JSON.stringify(request) },
+    );
   }
 
   async listRoleSourcePlans(

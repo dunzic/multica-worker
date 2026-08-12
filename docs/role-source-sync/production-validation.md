@@ -76,6 +76,14 @@ Run against the actual staging topology, not a single local process:
 4. Change one adapter version/config entry and restart. Verify a new state, visible drift classification and no raw config ID/path in API or logs.
 5. Force PostgreSQL primary failover while the daemon is retrying an unacknowledged attestation. Verify the daemon continues retrying, one durable state wins and the server acknowledges only after commit.
 6. Hold runtime deletion open, start a first-attestation heartbeat, then commit deletion. Verify the heartbeat fails and no orphan evidence remains.
+7. Queue and claim a scan plus secret transfer, then pause the source while
+   daemon result reports race. Verify one lock order, no deadlock, terminal
+   cancelled/failed work, cleared envelope/private-key ciphertext and one
+   hash-chained `source_paused` event in the same commit.
+8. Verify direct active-to-detached and detached-to-resumed transitions fail;
+   pause then detach releases the old runtime for cleanup without deleting
+   source history. Rebind to another workspace-owned runtime must remain paused
+   and resume must fail until fresh matching destination attestation exists.
 7. Restore the old primary only after fencing it from writes. Verify no duplicate history or split-brain current state appears.
 
 Pass criteria: no lost accepted state, no acknowledgement before durability, no orphan rows, no cross-workspace identifiers, no unbounded retries and no duplicate current row.

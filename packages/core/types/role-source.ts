@@ -46,6 +46,19 @@ export interface RoleSource {
   };
 }
 
+export type RoleSourceLifecycleAction =
+  | "pause"
+  | "resume"
+  | "detach"
+  | "rebind";
+
+export interface UpdateRoleSourceLifecycleRequest {
+  action: RoleSourceLifecycleAction;
+  expected_version: number;
+  runtime_id?: string;
+  daemon_config_id?: string;
+}
+
 export interface RoleSourceRuntimeAttestation {
   status: RoleSourceAttestationStatus;
   contract_version: string;

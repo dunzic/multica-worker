@@ -1249,6 +1249,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Delete("/runtime-profiles/{profileId}", h.DeleteRuntimeProfile)
 					r.Post("/role-sources", h.CreateRoleSource)
+					r.Patch("/role-sources/{sourceId}", h.UpdateRoleSourceLifecycle)
 					r.Post("/role-sources/{sourceId}/scans", h.RequestRoleSourceScan)
 					r.Post("/role-sources/{sourceId}/plans", h.CreateRoleSourcePlan)
 					r.Post("/role-sources/{sourceId}/rollback-plans", h.CreateRoleSourceRollbackPlan)

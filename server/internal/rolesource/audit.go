@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const AuditContractVersion = "1.0"
@@ -21,21 +23,27 @@ type AuditActor struct {
 // extend this typed digest/count vocabulary instead of accepting arbitrary
 // adapter JSON that could leak configuration, paths or credentials.
 type AuditPayload struct {
-	OperationID     string `json:"operation_id,omitempty"`
-	SnapshotDigest  string `json:"snapshot_digest,omitempty"`
-	ManifestDigest  string `json:"manifest_digest,omitempty"`
-	PlanDigest      string `json:"plan_digest,omitempty"`
-	ReceiptDigest   string `json:"receipt_digest,omitempty"`
-	AdapterKind     Kind   `json:"adapter_kind,omitempty"`
-	AdapterVersion  string `json:"adapter_version,omitempty"`
-	Result          string `json:"result,omitempty"`
-	ErrorCode       string `json:"error_code,omitempty"`
-	CreateCount     int    `json:"create_count,omitempty"`
-	UpdateCount     int    `json:"update_count,omitempty"`
-	UnchangedCount  int    `json:"unchanged_count,omitempty"`
-	ArchiveCount    int    `json:"archive_count,omitempty"`
-	BlockedCount    int    `json:"blocked_count,omitempty"`
-	DiagnosticCount int    `json:"diagnostic_count,omitempty"`
+	OperationID            string `json:"operation_id,omitempty"`
+	SnapshotDigest         string `json:"snapshot_digest,omitempty"`
+	ManifestDigest         string `json:"manifest_digest,omitempty"`
+	PlanDigest             string `json:"plan_digest,omitempty"`
+	ReceiptDigest          string `json:"receipt_digest,omitempty"`
+	AdapterKind            Kind   `json:"adapter_kind,omitempty"`
+	AdapterVersion         string `json:"adapter_version,omitempty"`
+	PreviousRuntimeID      string `json:"previous_runtime_id,omitempty"`
+	RuntimeID              string `json:"runtime_id,omitempty"`
+	PreviousState          string `json:"previous_state,omitempty"`
+	State                  string `json:"state,omitempty"`
+	Result                 string `json:"result,omitempty"`
+	ErrorCode              string `json:"error_code,omitempty"`
+	CreateCount            int    `json:"create_count,omitempty"`
+	UpdateCount            int    `json:"update_count,omitempty"`
+	UnchangedCount         int    `json:"unchanged_count,omitempty"`
+	ArchiveCount           int    `json:"archive_count,omitempty"`
+	BlockedCount           int    `json:"blocked_count,omitempty"`
+	DiagnosticCount        int    `json:"diagnostic_count,omitempty"`
+	CancelledScanCount     int    `json:"cancelled_scan_count,omitempty"`
+	CancelledTransferCount int    `json:"cancelled_transfer_count,omitempty"`
 }
 
 // AuditEvent is the application-generated, hash-chained representation stored
@@ -134,16 +142,36 @@ func validateAuditPayload(payload AuditPayload) error {
 		}
 	}
 	for name, value := range map[string]string{
-		"operation_id":    payload.OperationID,
-		"adapter_version": payload.AdapterVersion,
-		"result":          payload.Result,
-		"error_code":      payload.ErrorCode,
+		"operation_id":        payload.OperationID,
+		"adapter_version":     payload.AdapterVersion,
+		"previous_runtime_id": payload.PreviousRuntimeID,
+		"runtime_id":          payload.RuntimeID,
+		"previous_state":      payload.PreviousState,
+		"state":               payload.State,
+		"result":              payload.Result,
+		"error_code":          payload.ErrorCode,
 	} {
 		if len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") {
 			return fmt.Errorf("unsafe or oversized audit payload %s", name)
 		}
 	}
-	counts := []int{payload.CreateCount, payload.UpdateCount, payload.UnchangedCount, payload.ArchiveCount, payload.BlockedCount, payload.DiagnosticCount}
+	for name, runtimeID := range map[string]string{"previous_runtime_id": payload.PreviousRuntimeID, "runtime_id": payload.RuntimeID} {
+		if runtimeID != "" {
+			if _, err := uuid.Parse(runtimeID); err != nil {
+				return fmt.Errorf("invalid audit payload %s", name)
+			}
+		}
+	}
+	for name, state := range map[string]string{"previous_state": payload.PreviousState, "state": payload.State} {
+		if state != "" && !validRoleSourceState(state) {
+			return fmt.Errorf("invalid audit payload %s", name)
+		}
+	}
+	counts := []int{
+		payload.CreateCount, payload.UpdateCount, payload.UnchangedCount,
+		payload.ArchiveCount, payload.BlockedCount, payload.DiagnosticCount,
+		payload.CancelledScanCount, payload.CancelledTransferCount,
+	}
 	for _, count := range counts {
 		if count < 0 || count > maxNormalizedObjects {
 			return errors.New("audit payload count is outside the allowed range")

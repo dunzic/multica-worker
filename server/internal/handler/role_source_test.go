@@ -31,6 +31,9 @@ type fakeRoleSourceControlPlane struct {
 	registerInput             *rolesource.RegisterSourceInput
 	registerRow               db.RoleSource
 	registerErr               error
+	lifecycleInput            *rolesource.UpdateSourceLifecycleInput
+	lifecycleRow              db.RoleSource
+	lifecycleErr              error
 	requestRow                db.RoleSourceScanRequest
 	requestErr                error
 	getScanRow                db.RoleSourceScanRequest
@@ -143,6 +146,12 @@ func (f *fakeRoleSourceControlPlane) RegisterSource(_ context.Context, input rol
 	f.calls++
 	f.registerInput = &input
 	return f.registerRow, f.registerErr
+}
+
+func (f *fakeRoleSourceControlPlane) UpdateSourceLifecycle(_ context.Context, input rolesource.UpdateSourceLifecycleInput) (db.RoleSource, error) {
+	f.calls++
+	f.lifecycleInput = &input
+	return f.lifecycleRow, f.lifecycleErr
 }
 
 func (f *fakeRoleSourceControlPlane) RequestScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error) {
@@ -398,6 +407,75 @@ func TestCreateRoleSource_ResponseDoesNotExposeDaemonConfiguration(t *testing.T)
 	}
 	if !strings.Contains(body, `"runtime_config":{"status":"unattested"`) {
 		t.Fatalf("new source response omitted the explicit unattested runtime state: %s", body)
+	}
+}
+
+func TestUpdateRoleSourceLifecycle_UsesVersionedStrictRequest(t *testing.T) {
+	row := roleSourceTestRow()
+	row.State = "paused"
+	row.Version = 8
+	fake := &fakeRoleSourceControlPlane{lifecycleRow: row}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPatch, "/ignored", map[string]any{
+		"action": "pause", "expected_version": 7,
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.UpdateRoleSourceLifecycle(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("lifecycle update status=%d body=%s", w.Code, w.Body.String())
+	}
+	if fake.lifecycleInput == nil || fake.lifecycleInput.Action != rolesource.SourceLifecyclePause ||
+		fake.lifecycleInput.ExpectedVersion != 7 || fake.lifecycleInput.SourceID != roleSourceTestSourceID {
+		t.Fatalf("lifecycle input=%+v", fake.lifecycleInput)
+	}
+	if w.Body.Len() != 0 {
+		t.Fatalf("lifecycle response must not return a partial runtime projection: %s", w.Body.String())
+	}
+}
+
+func TestUpdateRoleSourceLifecycle_RejectsUnknownFields(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPatch, "/ignored", map[string]any{
+		"action": "pause", "expected_version": 7, "force": true,
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.UpdateRoleSourceLifecycle(w, req)
+
+	if w.Code != http.StatusBadRequest || fake.calls != 0 {
+		t.Fatalf("unknown lifecycle field status=%d calls=%d body=%s", w.Code, fake.calls, w.Body.String())
+	}
+}
+
+func TestUpdateRoleSourceLifecycle_MapsSafeConflicts(t *testing.T) {
+	for name, controlErr := range map[string]error{
+		"version":     rolesource.ErrSourceVersionConflict,
+		"transition":  rolesource.ErrInvalidLifecycleTransition,
+		"runtime":     rolesource.ErrLifecycleRuntimeUnavailable,
+		"attestation": rolesource.ErrLifecycleConfigNotLoaded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeRoleSourceControlPlane{lifecycleErr: controlErr}
+			h := roleSourceTestHandler(t, true, fake)
+			w := httptest.NewRecorder()
+			req := withURLParams(newRequestAs(testUserID, http.MethodPatch, "/ignored", map[string]any{
+				"action": "resume", "expected_version": 7,
+			}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+			h.UpdateRoleSourceLifecycle(w, req)
+
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			for _, forbidden := range []string{"daemon_config_id", roleSourceTestRuntimeID, roleSourceTestSourceID} {
+				if strings.Contains(w.Body.String(), forbidden) {
+					t.Fatalf("conflict response exposed %q: %s", forbidden, w.Body.String())
+				}
+			}
+		})
 	}
 }
 

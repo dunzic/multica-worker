@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/multica-ai/multica/server/internal/rolesource"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -192,6 +194,87 @@ func TestRoleSourceRegistrationLockSerializesRuntimeDelete(t *testing.T) {
 	}
 	if pgError := new(pgconn.PgError); !errors.As(err, &pgError) || pgError.Code != "55P03" {
 		t.Fatalf("runtime delete lock error = %v, want PostgreSQL lock timeout 55P03", err)
+	}
+}
+
+func TestRoleSourceLifecyclePauseResumeDetachAndRebind(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Role Source Lifecycle A")
+	destinationRuntimeID := createCascadeFixtureRuntime(t, ctx, "Role Source Lifecycle B")
+	cleanupRoleSourceRuntimeAttestations(t, runtimeID)
+
+	source, err := testHandler.RoleSources.RegisterSource(ctx, rolesource.RegisterSourceInput{
+		WorkspaceID: testWorkspaceID, RuntimeID: runtimeID, ActorUserID: testUserID,
+		Name: "Lifecycle " + runtimeID, Kind: "agentwaker_directory", AdapterVersion: "0.1.0",
+		DaemonConfigID: "production", ConfigSummary: rolesource.ConfigSummary{Configured: true},
+	})
+	if err != nil {
+		t.Fatalf("register lifecycle source: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source_audit_event WHERE source_id = $1`, source.ID)
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source WHERE id = $1`, source.ID)
+	})
+
+	runtime, err := testHandler.Queries.GetAgentRuntime(ctx, parseUUID(runtimeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := liveRoleSourceAttestationRequest(t, runtimeID, "d", "0.1.0")
+	if _, err := testHandler.recordRoleSourceRuntimeAttestation(ctx, runtime, request); err != nil {
+		t.Fatalf("record lifecycle attestation: %v", err)
+	}
+
+	source, err = testHandler.RoleSources.UpdateSourceLifecycle(ctx, rolesource.UpdateSourceLifecycleInput{
+		WorkspaceID: testWorkspaceID, SourceID: util.UUIDToString(source.ID), ActorUserID: testUserID,
+		ExpectedVersion: source.Version, Action: rolesource.SourceLifecyclePause,
+	})
+	if err != nil || source.State != "paused" {
+		t.Fatalf("pause source: state=%q err=%v", source.State, err)
+	}
+	source, err = testHandler.RoleSources.UpdateSourceLifecycle(ctx, rolesource.UpdateSourceLifecycleInput{
+		WorkspaceID: testWorkspaceID, SourceID: util.UUIDToString(source.ID), ActorUserID: testUserID,
+		ExpectedVersion: source.Version, Action: rolesource.SourceLifecycleResume,
+	})
+	if err != nil || source.State != "registered" {
+		t.Fatalf("resume source: state=%q err=%v", source.State, err)
+	}
+	source, err = testHandler.RoleSources.UpdateSourceLifecycle(ctx, rolesource.UpdateSourceLifecycleInput{
+		WorkspaceID: testWorkspaceID, SourceID: util.UUIDToString(source.ID), ActorUserID: testUserID,
+		ExpectedVersion: source.Version, Action: rolesource.SourceLifecyclePause,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err = testHandler.RoleSources.UpdateSourceLifecycle(ctx, rolesource.UpdateSourceLifecycleInput{
+		WorkspaceID: testWorkspaceID, SourceID: util.UUIDToString(source.ID), ActorUserID: testUserID,
+		ExpectedVersion: source.Version, Action: rolesource.SourceLifecycleDetach,
+	})
+	if err != nil || source.State != "detached" {
+		t.Fatalf("detach source: state=%q err=%v", source.State, err)
+	}
+	count, err := testHandler.Queries.CountRoleSourcesByRuntime(ctx, parseUUID(runtimeID))
+	if err != nil || count != 0 {
+		t.Fatalf("detached source still pins runtime: count=%d err=%v", count, err)
+	}
+	source, err = testHandler.RoleSources.UpdateSourceLifecycle(ctx, rolesource.UpdateSourceLifecycleInput{
+		WorkspaceID: testWorkspaceID, SourceID: util.UUIDToString(source.ID), ActorUserID: testUserID,
+		ExpectedVersion: source.Version, Action: rolesource.SourceLifecycleRebind,
+		RuntimeID: destinationRuntimeID, DaemonConfigID: "destination",
+	})
+	if err != nil || source.State != "paused" || util.UUIDToString(source.RuntimeID) != destinationRuntimeID {
+		t.Fatalf("rebind source: state=%q runtime=%s err=%v", source.State, util.UUIDToString(source.RuntimeID), err)
+	}
+	if _, err := testHandler.RoleSources.UpdateSourceLifecycle(ctx, rolesource.UpdateSourceLifecycleInput{
+		WorkspaceID: testWorkspaceID, SourceID: util.UUIDToString(source.ID), ActorUserID: testUserID,
+		ExpectedVersion: source.Version, Action: rolesource.SourceLifecycleResume,
+	}); !errors.Is(err, rolesource.ErrLifecycleConfigNotLoaded) {
+		t.Fatalf("rebound source resumed without destination attestation: %v", err)
 	}
 }
 

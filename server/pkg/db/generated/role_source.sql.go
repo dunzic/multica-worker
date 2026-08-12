@@ -83,6 +83,58 @@ func (q *Queries) AllocateRoleSourceAuditSequence(ctx context.Context, arg Alloc
 	return audit_sequence, err
 }
 
+const cancelActiveRoleSourceScans = `-- name: CancelActiveRoleSourceScans :execrows
+UPDATE role_source_scan_request
+SET status = 'cancelled',
+    error_code = $1,
+    completed_at = now(),
+    lease_expires_at = NULL
+WHERE source_id = $2
+  AND workspace_id = $3
+  AND status IN ('queued', 'claimed')
+`
+
+type CancelActiveRoleSourceScansParams struct {
+	ErrorCode   pgtype.Text `json:"error_code"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) CancelActiveRoleSourceScans(ctx context.Context, arg CancelActiveRoleSourceScansParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelActiveRoleSourceScans, arg.ErrorCode, arg.SourceID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const cancelActiveRoleSourceSecretTransfers = `-- name: CancelActiveRoleSourceSecretTransfers :execrows
+UPDATE role_source_secret_transfer
+SET status = 'failed',
+    envelope = NULL,
+    private_key_ciphertext = decode(repeat('00', 60), 'hex'),
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    error_code = $1
+WHERE source_id = $2
+  AND workspace_id = $3
+  AND status IN ('pending', 'claimed', 'submitted')
+`
+
+type CancelActiveRoleSourceSecretTransfersParams struct {
+	ErrorCode   pgtype.Text `json:"error_code"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) CancelActiveRoleSourceSecretTransfers(ctx context.Context, arg CancelActiveRoleSourceSecretTransfersParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelActiveRoleSourceSecretTransfers, arg.ErrorCode, arg.SourceID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const cancelRoleSourceArtifactDeleteIntent = `-- name: CancelRoleSourceArtifactDeleteIntent :execrows
 DELETE FROM role_source_artifact_delete_intent
 WHERE storage_key = $1 AND state IN ('pending', 'tombstoned')
@@ -211,16 +263,35 @@ func (q *Queries) ClaimNextRoleSourceScan(ctx context.Context, arg ClaimNextRole
 }
 
 const claimNextRoleSourceSecretTransfer = `-- name: ClaimNextRoleSourceSecretTransfer :one
-WITH candidate AS (
-    SELECT id FROM role_source_secret_transfer
-    WHERE runtime_id = $1
-      AND expires_at > now()
-      AND (
-        status = 'pending'
-        OR (status = 'claimed' AND lease_expires_at < now())
+WITH source_candidate AS MATERIALIZED (
+    SELECT source.id
+    FROM role_source source
+    WHERE source.runtime_id = $1
+      AND source.state IN ('registered', 'active', 'error')
+      AND EXISTS (
+        SELECT 1 FROM role_source_secret_transfer pending
+        WHERE pending.source_id = source.id
+          AND pending.expires_at > now()
+          AND (
+            pending.status = 'pending'
+            OR (pending.status = 'claimed' AND pending.lease_expires_at < now())
+          )
       )
-    ORDER BY created_at, id
-    FOR UPDATE SKIP LOCKED
+    ORDER BY source.id
+    FOR UPDATE OF source SKIP LOCKED
+    LIMIT 1
+), candidate AS (
+    SELECT transfer.id
+    FROM role_source_secret_transfer transfer
+    JOIN source_candidate source ON source.id = transfer.source_id
+    WHERE transfer.runtime_id = $1
+      AND transfer.expires_at > now()
+      AND (
+        transfer.status = 'pending'
+        OR (transfer.status = 'claimed' AND transfer.lease_expires_at < now())
+      )
+    ORDER BY transfer.created_at, transfer.id
+    FOR UPDATE OF transfer SKIP LOCKED
     LIMIT 1
 )
 UPDATE role_source_secret_transfer transfer
@@ -555,9 +626,12 @@ func (q *Queries) CountRoleSourceArtifactDeleteIntents(ctx context.Context) (Cou
 }
 
 const countRoleSourcesByRuntime = `-- name: CountRoleSourcesByRuntime :one
-SELECT count(*) FROM role_source WHERE runtime_id = $1
+SELECT count(*) FROM role_source
+WHERE runtime_id = $1 AND state <> 'detached'
 `
 
+// Detached sources retain their last binding as audit context but no longer
+// keep that runtime alive. Rebind locks the new runtime before activation.
 func (q *Queries) CountRoleSourcesByRuntime(ctx context.Context, runtimeID pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countRoleSourcesByRuntime, runtimeID)
 	var count int64
@@ -566,7 +640,8 @@ func (q *Queries) CountRoleSourcesByRuntime(ctx context.Context, runtimeID pgtyp
 }
 
 const countRoleSourcesByRuntimes = `-- name: CountRoleSourcesByRuntimes :one
-SELECT count(*) FROM role_source WHERE runtime_id = ANY($1::uuid[])
+SELECT count(*) FROM role_source
+WHERE runtime_id = ANY($1::uuid[]) AND state <> 'detached'
 `
 
 func (q *Queries) CountRoleSourcesByRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) (int64, error) {
@@ -1243,6 +1318,34 @@ func (q *Queries) GetRoleSourcePlanApprovalByRequest(ctx context.Context, arg Ge
 		&i.ActorUserID,
 		&i.CreatedAt,
 		&i.RequestKey,
+	)
+	return i, err
+}
+
+const getRoleSourceRuntimeAttestationForShare = `-- name: GetRoleSourceRuntimeAttestationForShare :one
+SELECT runtime_id, workspace_id, contract_version, loaded, attestation_id, config_revision, sources, observed_at, changed_at FROM role_source_runtime_attestation
+WHERE runtime_id = $1 AND workspace_id = $2
+FOR SHARE
+`
+
+type GetRoleSourceRuntimeAttestationForShareParams struct {
+	RuntimeID   pgtype.UUID `json:"runtime_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetRoleSourceRuntimeAttestationForShare(ctx context.Context, arg GetRoleSourceRuntimeAttestationForShareParams) (RoleSourceRuntimeAttestation, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceRuntimeAttestationForShare, arg.RuntimeID, arg.WorkspaceID)
+	var i RoleSourceRuntimeAttestation
+	err := row.Scan(
+		&i.RuntimeID,
+		&i.WorkspaceID,
+		&i.ContractVersion,
+		&i.Loaded,
+		&i.AttestationID,
+		&i.ConfigRevision,
+		&i.Sources,
+		&i.ObservedAt,
+		&i.ChangedAt,
 	)
 	return i, err
 }
@@ -3175,6 +3278,7 @@ SET runtime_id = $1,
     version = version + 1,
     updated_at = now()
 WHERE runtime_id = $2
+  AND state <> 'detached'
 `
 
 type ReassignRoleSourcesToRuntimeParams struct {
@@ -3188,6 +3292,65 @@ func (q *Queries) ReassignRoleSourcesToRuntime(ctx context.Context, arg Reassign
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const rebindDetachedRoleSource = `-- name: RebindDetachedRoleSource :one
+UPDATE role_source
+SET runtime_id = $1,
+    daemon_config_id = $2,
+    config_redacted = $3,
+    state = 'paused',
+    updated_by = $4,
+    version = version + 1,
+    updated_at = now()
+WHERE id = $5
+  AND workspace_id = $6
+  AND version = $7
+  AND state = 'detached'
+RETURNING id, workspace_id, runtime_id, name, kind, adapter_version, daemon_config_id, config_redacted, policy, state, current_snapshot_digest, audit_sequence, version, created_by, updated_by, created_at, updated_at
+`
+
+type RebindDetachedRoleSourceParams struct {
+	NewRuntimeID    pgtype.UUID `json:"new_runtime_id"`
+	DaemonConfigID  string      `json:"daemon_config_id"`
+	ConfigRedacted  []byte      `json:"config_redacted"`
+	ActorUserID     pgtype.UUID `json:"actor_user_id"`
+	ID              pgtype.UUID `json:"id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ExpectedVersion int64       `json:"expected_version"`
+}
+
+func (q *Queries) RebindDetachedRoleSource(ctx context.Context, arg RebindDetachedRoleSourceParams) (RoleSource, error) {
+	row := q.db.QueryRow(ctx, rebindDetachedRoleSource,
+		arg.NewRuntimeID,
+		arg.DaemonConfigID,
+		arg.ConfigRedacted,
+		arg.ActorUserID,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.ExpectedVersion,
+	)
+	var i RoleSource
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.RuntimeID,
+		&i.Name,
+		&i.Kind,
+		&i.AdapterVersion,
+		&i.DaemonConfigID,
+		&i.ConfigRedacted,
+		&i.Policy,
+		&i.State,
+		&i.CurrentSnapshotDigest,
+		&i.AuditSequence,
+		&i.Version,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const recordRoleSourceRuntimeAttestation = `-- name: RecordRoleSourceRuntimeAttestation :one

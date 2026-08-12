@@ -1,9 +1,30 @@
 "use client";
 
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2 } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2, PauseCircle, PlayCircle, Repeat2, Unplug } from "lucide-react";
 import { Badge } from "@multica/ui/components/ui/badge";
+import { Button } from "@multica/ui/components/ui/button";
+import { Input } from "@multica/ui/components/ui/input";
+import { Label } from "@multica/ui/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@multica/ui/components/ui/dialog";
 import { cn } from "@multica/ui/lib/utils";
 import {
   roleSourceApplyFailureListOptions,
@@ -11,8 +32,12 @@ import {
   roleSourcePlanImpactOptions,
   roleSourcePlanListOptions,
   roleSourceRuntimeAttestationListOptions,
+  roleSourceKeys,
+  type RoleSourceLifecycleAction,
   type RoleSourcePlanAction,
 } from "@multica/core/role-sources";
+import { api } from "@multica/core/api";
+import { useCurrentMember } from "@multica/core/permissions";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useT } from "../../i18n";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
@@ -52,11 +77,19 @@ function runtimeConfigTranslationKey(status: string) {
 export function RoleSourcesTab() {
   const { t } = useT("settings");
   const workspaceId = useCurrentWorkspace()?.id ?? "";
+  const queryClient = useQueryClient();
+  const { role } = useCurrentMember(workspaceId);
+  const canManage = role === "owner" || role === "admin";
   const sources = useQuery({
     ...roleSourceListOptions(workspaceId),
     enabled: Boolean(workspaceId),
   });
   const [selectedId, setSelectedId] = React.useState("");
+  const [pendingAction, setPendingAction] = React.useState<Exclude<RoleSourceLifecycleAction, "rebind"> | null>(null);
+  const [rebindOpen, setRebindOpen] = React.useState(false);
+  const [rebindRuntimeId, setRebindRuntimeId] = React.useState("");
+  const [rebindConfigId, setRebindConfigId] = React.useState("");
+  const [savingLifecycle, setSavingLifecycle] = React.useState(false);
 
   React.useEffect(() => {
     if (!sources.data?.length) {
@@ -90,6 +123,31 @@ export function RoleSourcesTab() {
     ...roleSourceRuntimeAttestationListOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId),
   });
+
+  async function updateLifecycle(
+    action: RoleSourceLifecycleAction,
+    extra?: { runtime_id: string; daemon_config_id: string },
+  ) {
+    if (!selected || savingLifecycle) return;
+    setSavingLifecycle(true);
+    try {
+      await api.updateRoleSourceLifecycle(
+        workspaceId,
+        selected.id,
+        { action, expected_version: selected.version, ...extra },
+      );
+      await queryClient.invalidateQueries({ queryKey: roleSourceKeys.all(workspaceId) });
+      toast.success(t(($) => $.role_sources.lifecycle_success));
+      setPendingAction(null);
+      setRebindOpen(false);
+      setRebindRuntimeId("");
+      setRebindConfigId("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.lifecycle_failed));
+    } finally {
+      setSavingLifecycle(false);
+    }
+  }
 
   return (
     <SettingsTab
@@ -159,6 +217,52 @@ export function RoleSourcesTab() {
 
       {selected ? (
         <>
+          <SettingsSection
+            title={t(($) => $.role_sources.lifecycle_title)}
+            description={t(($) => $.role_sources.lifecycle_description)}
+          >
+            <SettingsCard>
+              <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+                <div>
+                  <div className="text-body font-medium">{selected.name}</div>
+                  <div className="mt-1 text-caption text-muted-foreground">
+                    {t(($) => $.role_sources.lifecycle_current, { state: selected.state, version: selected.version })}
+                  </div>
+                </div>
+                {canManage ? (
+                  <div className="flex flex-wrap gap-2">
+                    {selected.state === "registered" || selected.state === "active" || selected.state === "error" ? (
+                      <Button variant="outline" size="sm" onClick={() => setPendingAction("pause")}>
+                        <PauseCircle className="h-4 w-4" />
+                        {t(($) => $.role_sources.pause)}
+                      </Button>
+                    ) : null}
+                    {selected.state === "paused" ? (
+                      <>
+                        <Button variant="outline" size="sm" onClick={() => setPendingAction("resume")}>
+                          <PlayCircle className="h-4 w-4" />
+                          {t(($) => $.role_sources.resume)}
+                        </Button>
+                        <Button variant="destructive" size="sm" onClick={() => setPendingAction("detach")}>
+                          <Unplug className="h-4 w-4" />
+                          {t(($) => $.role_sources.detach)}
+                        </Button>
+                      </>
+                    ) : null}
+                    {selected.state === "detached" ? (
+                      <Button variant="outline" size="sm" onClick={() => setRebindOpen(true)}>
+                        <Repeat2 className="h-4 w-4" />
+                        {t(($) => $.role_sources.rebind)}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="text-caption text-muted-foreground">{t(($) => $.role_sources.lifecycle_admin_only)}</div>
+                )}
+              </div>
+            </SettingsCard>
+          </SettingsSection>
+
           <SettingsSection
             title={t(($) => $.role_sources.runtime_attestations_title)}
             description={t(($) => $.role_sources.runtime_attestations_description)}
@@ -408,6 +512,61 @@ export function RoleSourcesTab() {
           </SettingsSection>
         </>
       ) : null}
+
+      <AlertDialog open={pendingAction !== null} onOpenChange={(open) => !open && !savingLifecycle && setPendingAction(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(($) => $.role_sources.lifecycle_confirm_title)}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingAction ? t(($) => $.role_sources[`lifecycle_confirm_${pendingAction}`]) : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={savingLifecycle}>{t(($) => $.role_sources.cancel)}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={savingLifecycle || pendingAction === null}
+              onClick={(event) => {
+                event.preventDefault();
+                if (pendingAction) void updateLifecycle(pendingAction);
+              }}
+            >
+              {savingLifecycle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t(($) => $.role_sources.confirm)}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={rebindOpen} onOpenChange={(open) => !savingLifecycle && setRebindOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.role_sources.rebind_title)}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-caption text-muted-foreground">{t(($) => $.role_sources.rebind_description)}</p>
+            <div className="space-y-2">
+              <Label htmlFor="role-source-runtime-id">{t(($) => $.role_sources.rebind_runtime_id)}</Label>
+              <Input id="role-source-runtime-id" value={rebindRuntimeId} onChange={(event) => setRebindRuntimeId(event.target.value)} autoComplete="off" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="role-source-config-id">{t(($) => $.role_sources.rebind_config_id)}</Label>
+              <Input id="role-source-config-id" value={rebindConfigId} onChange={(event) => setRebindConfigId(event.target.value)} autoComplete="off" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={savingLifecycle} onClick={() => setRebindOpen(false)}>
+              {t(($) => $.role_sources.cancel)}
+            </Button>
+            <Button
+              disabled={savingLifecycle || !rebindRuntimeId.trim() || !rebindConfigId.trim()}
+              onClick={() => void updateLifecycle("rebind", { runtime_id: rebindRuntimeId.trim(), daemon_config_id: rebindConfigId.trim() })}
+            >
+              {savingLifecycle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t(($) => $.role_sources.rebind)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </SettingsTab>
   );
 }

@@ -328,13 +328,13 @@ func (c *ControlPlane) ReportSecretTransfer(ctx context.Context, input ReportSec
 	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
 		return db.RoleSourceSecretTransfer{}, err
 	}
-	row, err := qtx.GetRoleSourceSecretTransferForUpdate(ctx, db.GetRoleSourceSecretTransferForUpdateParams{
-		ID: transferID, SourceID: sourceID, WorkspaceID: workspaceID,
-	})
+	source, err := qtx.GetRoleSourceForUpdate(ctx, db.GetRoleSourceForUpdateParams{ID: sourceID, WorkspaceID: workspaceID})
 	if err != nil {
 		return db.RoleSourceSecretTransfer{}, err
 	}
-	source, err := qtx.GetRoleSourceForUpdate(ctx, db.GetRoleSourceForUpdateParams{ID: sourceID, WorkspaceID: workspaceID})
+	row, err := qtx.GetRoleSourceSecretTransferForUpdate(ctx, db.GetRoleSourceSecretTransferForUpdateParams{
+		ID: transferID, SourceID: sourceID, WorkspaceID: workspaceID,
+	})
 	if err != nil {
 		return db.RoleSourceSecretTransfer{}, err
 	}
