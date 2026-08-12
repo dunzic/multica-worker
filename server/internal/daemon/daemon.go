@@ -3529,7 +3529,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 	// heartbeat goes silent the freshness window expires and HTTP resumes
 	// automatically on the next tick — that is the fallback the WS path
 	// relies on.
-	if d.wsHeartbeatRecentlyAcked(rid) && !roleSourceOptions.PollRoleSourceScan {
+	if d.wsHeartbeatRecentlyAcked(rid) && !roleSourceOptions.PollRoleSourceScan && !roleSourceOptions.PollRoleSourceSecretTransfer {
 		d.logger.Debug("heartbeat: skipping HTTP tick, WS recently acked", "runtime_id", rid)
 		return false
 	}
@@ -3537,7 +3537,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 	resp, err := d.client.SendHeartbeat(ctx, rid, roleSourceOptions)
 	if err != nil {
 		d.releaseRoleSourcePollReservation(roleSourceOptions)
-		if roleSourceOptions.PollRoleSourceScan {
+		if roleSourceOptions.PollRoleSourceScan || roleSourceOptions.PollRoleSourceSecretTransfer {
 			d.resetRoleSourceRecoveryPoll(rid)
 		}
 		if ctx.Err() == nil {
@@ -3578,7 +3578,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 		}
 		return
 	}
-	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil || resp.PendingRoleSourceScan != nil {
+	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil || resp.PendingRoleSourceScan != nil || resp.PendingRoleSourceSecretTransfer != nil {
 		d.logger.Debug("heartbeat: pending actions",
 			"runtime_id", runtimeID,
 			"update", resp.PendingUpdate != nil,
@@ -3586,11 +3586,18 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 			"local_skills", resp.PendingLocalSkills != nil,
 			"local_skill_import", resp.PendingLocalSkillImport != nil,
 			"role_source_scan", resp.PendingRoleSourceScan != nil,
+			"role_source_secret_transfer", resp.PendingRoleSourceSecretTransfer != nil,
 		)
 	}
 	if resp.PendingRoleSourceScan != nil {
 		go d.handleRoleSourceScan(ctx, runtimeID, *resp.PendingRoleSourceScan, reserved)
-	} else if reserved && d.roleSources != nil {
+		reserved = false
+	}
+	if resp.PendingRoleSourceSecretTransfer != nil {
+		go d.handleRoleSourceSecretTransfer(ctx, runtimeID, *resp.PendingRoleSourceSecretTransfer, reserved)
+		reserved = false
+	}
+	if reserved && d.roleSources != nil {
 		d.roleSources.release()
 	}
 	if resp.PendingUpdate != nil {
@@ -3691,13 +3698,13 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	forceRoleSourcePoll := kind == protocol.PendingWorkKindRoleSourceScan
+	forceRoleSourcePoll := kind == protocol.PendingWorkKindRoleSourceScan || kind == protocol.PendingWorkKindRoleSourceSecretTransfer
 	roleSourceOptions := d.roleSourceHeartbeatOptions(runtimeID, forceRoleSourcePoll)
 	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, roleSourceOptions)
 	cancel()
 	if err != nil {
 		d.releaseRoleSourcePollReservation(roleSourceOptions)
-		if roleSourceOptions.PollRoleSourceScan {
+		if roleSourceOptions.PollRoleSourceScan || roleSourceOptions.PollRoleSourceSecretTransfer {
 			d.resetRoleSourceRecoveryPoll(runtimeID)
 		}
 		if isRuntimeNotFoundError(err) {

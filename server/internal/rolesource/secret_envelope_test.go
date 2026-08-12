@@ -1,12 +1,26 @@
 package rolesource
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+type testSecretBox struct{ marker byte }
+
+func (b testSecretBox) SealWithAAD(plaintext, aad []byte) ([]byte, error) {
+	return append([]byte{b.marker}, append(append([]byte(nil), aad...), plaintext...)...), nil
+}
+
+func (b testSecretBox) OpenWithAAD(sealed, aad []byte) ([]byte, error) {
+	if len(sealed) < 1+len(aad) || sealed[0] != b.marker || !bytes.Equal(sealed[1:1+len(aad)], aad) {
+		return nil, errors.New("authentication failed")
+	}
+	return append([]byte(nil), sealed[1+len(aad):]...), nil
+}
 
 func secretEnvelopeFixture(t *testing.T) (SecretEnvelopeKeyPair, SecretEnvelopeClaims, SecretEnvelopePayload) {
 	t.Helper()
@@ -75,6 +89,39 @@ func TestSecretEnvelopeClaimsPreventCrossTenantRoleAndSnapshotReplay(t *testing.
 		if _, err := OpenSecretEnvelope(keyPair.PrivateKey, copy, time.Now().UTC()); !errors.Is(err, ErrInvalidSecretEnvelope) {
 			t.Fatalf("mutated claims error = %v", err)
 		}
+	}
+}
+
+func TestSecretKeyringKeepsPreviousDecryptOnlyKeyDuringRotation(t *testing.T) {
+	control := &ControlPlane{}
+	if err := control.SetSecretBox(testSecretBox{marker: 2}, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.AddSecretDecryptionBox(testSecretBox{marker: 1}, "v1"); err != nil {
+		t.Fatal(err)
+	}
+	current, ok := control.secretBoxFor("v2")
+	if !ok {
+		t.Fatal("current key is unavailable")
+	}
+	sealed, err := current.SealWithAAD([]byte("private"), []byte("claims"))
+	if err != nil || sealed[0] != 2 {
+		t.Fatalf("current key seal = %x err=%v", sealed, err)
+	}
+	previous, ok := control.secretBoxFor("v1")
+	if !ok {
+		t.Fatal("previous key is unavailable")
+	}
+	legacy, err := (testSecretBox{marker: 1}).SealWithAAD([]byte("legacy"), []byte("claims"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := previous.OpenWithAAD(legacy, []byte("claims"))
+	if err != nil || string(opened) != "legacy" {
+		t.Fatalf("previous key open = %q err=%v", opened, err)
+	}
+	if err := control.AddSecretDecryptionBox(testSecretBox{marker: 3}, "v2"); err == nil {
+		t.Fatal("duplicate key id accepted")
 	}
 }
 

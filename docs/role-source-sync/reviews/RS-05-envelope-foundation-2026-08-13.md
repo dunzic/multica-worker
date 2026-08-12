@@ -8,6 +8,8 @@ Date: 2026-08-13
 
 Decision: CONDITIONAL — merge as unreachable foundation; do not advertise secret transfer
 
+Status note: this foundation-only decision is superseded by `RS-05-secret-transfer-consumption-2026-08-13.md` for the subsequent protocol and consumption implementation.
+
 ## Delivered boundary
 
 The generic role-source package now defines an authenticated one-time envelope using an ephemeral X25519 sender key, HKDF-SHA256 and AES-256-GCM. Authenticated claims bind transfer ID, workspace, source, role, immutable snapshot and a canonical UTC expiry of at most 15 minutes. Payloads are bounded to environment values and canonical MCP definitions. Plaintext is absent from the serialized envelope.

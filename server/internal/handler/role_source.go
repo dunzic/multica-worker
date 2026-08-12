@@ -35,6 +35,9 @@ type RoleSourceControlPlane interface {
 	CreatePlan(context.Context, rolesource.CreatePlanInput) (db.RoleSourcePlan, error)
 	RecordPlanApproval(context.Context, rolesource.RecordPlanApprovalInput) (db.RoleSourcePlanApproval, error)
 	ApplyPlan(context.Context, rolesource.ApplyPlanInput) (db.RoleSourceApply, rolesource.ApplyReceipt, error)
+	RequestSecretTransfer(context.Context, rolesource.RequestSecretTransferInput) (db.RoleSourceSecretTransfer, error)
+	ClaimNextSecretTransfer(context.Context, string, time.Duration) (rolesource.ClaimedSecretTransfer, error)
+	ReportSecretTransfer(context.Context, rolesource.ReportSecretTransferInput) (db.RoleSourceSecretTransfer, error)
 	GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error)
 	ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error)
 	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
@@ -118,6 +121,19 @@ type roleSourceApplyResponse struct {
 	CompletedAt *string                 `json:"completed_at"`
 }
 
+type roleSourceSecretTransferResponse struct {
+	ID          string                          `json:"id"`
+	SourceID    string                          `json:"source_id"`
+	WorkspaceID string                          `json:"workspace_id"`
+	PlanDigest  string                          `json:"plan_digest"`
+	ApprovalID  string                          `json:"approval_id"`
+	RoleID      string                          `json:"role_id"`
+	Status      string                          `json:"status"`
+	PublicKey   string                          `json:"public_key"`
+	Claims      rolesource.SecretEnvelopeClaims `json:"claims"`
+	ExpiresAt   string                          `json:"expires_at"`
+}
+
 func (h *Handler) roleSourceFeatureEnabled(r *http.Request, workspaceID, key string) bool {
 	ctx := featureflag.WithEvalContext(r.Context(), featureflag.EvalContext{
 		UserID: requestUserID(r), WorkspaceID: workspaceID,
@@ -135,6 +151,15 @@ func (h *Handler) roleSourceDaemonScanEnabled(ctx context.Context, workspaceID s
 		h.FeatureFlags.IsEnabled(ctx, rolesource.FeatureFlagRoleSourceScan, false)
 }
 
+func (h *Handler) roleSourceDaemonSecretTransferEnabled(ctx context.Context, workspaceID string) bool {
+	if h.RoleSources == nil || h.RoleSourceCatalog == nil {
+		return false
+	}
+	ctx = featureflag.WithEvalContext(ctx, featureflag.EvalContext{WorkspaceID: workspaceID})
+	return h.FeatureFlags.IsEnabled(ctx, rolesource.FeatureFlagRoleSourceSync, false) &&
+		h.FeatureFlags.IsEnabled(ctx, rolesource.FeatureFlagRoleSourceApply, false)
+}
+
 func roleSourcePendingScanToProtocol(claimed rolesource.ClaimedScan) *protocol.DaemonHeartbeatPendingRoleSourceScan {
 	previousSnapshotDigest := ""
 	if claimed.Source.CurrentSnapshotDigest.Valid {
@@ -146,6 +171,18 @@ func roleSourcePendingScanToProtocol(claimed rolesource.ClaimedScan) *protocol.D
 		AdapterVersion: claimed.Request.ExpectedAdapterVersion, DaemonConfigID: claimed.Source.DaemonConfigID,
 		LeaseToken: util.UUIDToString(claimed.Request.LeaseToken), LeaseExpiresAt: util.TimestampToString(claimed.Request.LeaseExpiresAt),
 		PreviousSnapshotDigest: previousSnapshotDigest,
+	}
+}
+
+func roleSourcePendingSecretTransferToProtocol(claimed rolesource.ClaimedSecretTransfer) *protocol.DaemonHeartbeatPendingRoleSourceSecretTransfer {
+	return &protocol.DaemonHeartbeatPendingRoleSourceSecretTransfer{
+		TransferID: util.UUIDToString(claimed.Transfer.ID), SourceID: util.UUIDToString(claimed.Transfer.SourceID),
+		WorkspaceID: util.UUIDToString(claimed.Transfer.WorkspaceID), Kind: claimed.Source.Kind,
+		AdapterVersion: claimed.Source.AdapterVersion, DaemonConfigID: claimed.Source.DaemonConfigID,
+		RoleID: claimed.Transfer.RoleID, SnapshotDigest: claimed.Transfer.SnapshotDigest,
+		ContractVersion: claimed.Claims.ContractVersion, PublicKey: claimed.Transfer.PublicKey,
+		ExpiresAt: claimed.Claims.ExpiresAt, LeaseToken: util.UUIDToString(claimed.Transfer.LeaseToken),
+		LeaseExpiresAt: util.TimestampToString(claimed.Transfer.LeaseExpiresAt),
 	}
 }
 
@@ -171,6 +208,26 @@ func (h *Handler) populateRoleSourceHeartbeat(ctx context.Context, ack *protocol
 	default:
 		// Optional scan work must not make a healthy daemon appear offline.
 		slog.Warn("role source scan claim failed", "runtime_id", runtimeID, "error", err)
+	}
+}
+
+func (h *Handler) populateRoleSourceSecretTransferHeartbeat(ctx context.Context, ack *protocol.DaemonHeartbeatAckPayload, runtimeID, workspaceID string, supports, poll bool) {
+	if !supports || !h.roleSourceDaemonSecretTransferEnabled(ctx, workspaceID) {
+		return
+	}
+	ack.ServerCapabilities = append(ack.ServerCapabilities, protocol.DaemonCapabilityRoleSourceSecretTransferV1)
+	if !poll {
+		return
+	}
+	claimed, err := h.RoleSources.ClaimNextSecretTransfer(ctx, runtimeID, 5*time.Minute)
+	switch {
+	case err == nil:
+		ack.PendingRoleSourceSecretTransfer = roleSourcePendingSecretTransferToProtocol(claimed)
+	case errors.Is(err, pgx.ErrNoRows), errors.Is(err, rolesource.ErrSecretStoreUnavailable):
+		// Empty or administratively disabled queues are normal.
+	default:
+		// Optional secret work must not make a healthy daemon appear offline.
+		slog.Warn("role source secret transfer claim failed", "runtime_id", runtimeID, "error", err)
 	}
 }
 
@@ -474,8 +531,9 @@ func (h *Handler) ApplyRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		RequestKey string `json:"request_key"`
-		ApprovalID string `json:"approval_id"`
+		RequestKey        string            `json:"request_key"`
+		ApprovalID        string            `json:"approval_id"`
+		SecretTransferIDs map[string]string `json:"secret_transfer_ids,omitempty"`
 	}
 	if err := decodeStrictRoleSourceJSON(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -483,7 +541,7 @@ func (h *Handler) ApplyRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	row, receipt, err := h.RoleSources.ApplyPlan(r.Context(), rolesource.ApplyPlanInput{
 		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), PlanDigest: chi.URLParam(r, "planDigest"),
-		ApprovalID: body.ApprovalID, RequestKey: body.RequestKey, ActorUserID: userID,
+		ApprovalID: body.ApprovalID, RequestKey: body.RequestKey, ActorUserID: userID, SecretTransferIDs: body.SecretTransferIDs,
 	})
 	if err != nil {
 		switch {
@@ -497,6 +555,10 @@ func (h *Handler) ApplyRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnprocessableEntity, "snapshot uses fields that are not safely materializable")
 		case errors.Is(err, rolesource.ErrMaterializationOverload):
 			writeError(w, http.StatusTooManyRequests, "role source apply capacity is exhausted")
+		case errors.Is(err, rolesource.ErrSecretStoreUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "role source secret transfer is not configured")
+		case errors.Is(err, rolesource.ErrInvalidSecretEnvelope), errors.Is(err, rolesource.ErrExpiredSecretEnvelope):
+			writeError(w, http.StatusBadRequest, "role source secret transfer is invalid or expired")
 		default:
 			slog.Error("apply role source plan failed", "workspace_id", workspaceID, "source_id", chi.URLParam(r, "sourceId"), "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to apply role source plan")
@@ -507,6 +569,54 @@ func (h *Handler) ApplyRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
 		ID: util.UUIDToString(row.ID), SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
 		Status: row.Status, Receipt: receipt, CompletedAt: util.TimestampToPtr(row.CompletedAt),
 	})
+}
+
+func (h *Handler) RequestRoleSourceSecretTransfer(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceApply) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot request role source secret transfers")
+		return
+	}
+	var body struct {
+		RequestKey string `json:"request_key"`
+		ApprovalID string `json:"approval_id"`
+		RoleID     string `json:"role_id"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	row, err := h.RoleSources.RequestSecretTransfer(r.Context(), rolesource.RequestSecretTransferInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), PlanDigest: chi.URLParam(r, "planDigest"),
+		ApprovalID: body.ApprovalID, RoleID: body.RoleID, RequestKey: body.RequestKey, ActorUserID: userID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "role source, plan, approval, snapshot or role not found")
+		case errors.Is(err, rolesource.ErrInvalidSecretTransfer):
+			writeError(w, http.StatusBadRequest, "cannot request role source secret transfer")
+		case errors.Is(err, rolesource.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "request_key was already used for another secret transfer")
+		case errors.Is(err, rolesource.ErrSecretStoreUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "role source secret transfer is not configured")
+		default:
+			slog.Error("request role source secret transfer failed", "workspace_id", workspaceID, "source_id", chi.URLParam(r, "sourceId"), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to request role source secret transfer")
+		}
+		return
+	}
+	response, err := roleSourceSecretTransferToResponse(row)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode role source secret transfer")
+		return
+	}
+	h.requestDaemonPendingWork(util.UUIDToString(row.RuntimeID), protocol.PendingWorkKindRoleSourceSecretTransfer)
+	writeJSON(w, http.StatusAccepted, response)
 }
 
 func (h *Handler) ListRoleSourcePlanApprovals(w http.ResponseWriter, r *http.Request) {
@@ -777,6 +887,64 @@ func (h *Handler) ReportRoleSourceScanResult(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (h *Handler) ReportRoleSourceSecretTransferResult(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+	runtime, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
+	if !ok {
+		return
+	}
+	workspaceID := util.UUIDToString(runtime.WorkspaceID)
+	if !h.roleSourceDaemonSecretTransferEnabled(r.Context(), workspaceID) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	sourceID, transferID := chi.URLParam(r, "sourceId"), chi.URLParam(r, "transferId")
+	if _, err := util.ParseUUID(sourceID); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid source_id")
+		return
+	}
+	if _, err := util.ParseUUID(transferID); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid transfer_id")
+		return
+	}
+	var body struct {
+		Status     string                     `json:"status"`
+		LeaseToken string                     `json:"lease_token"`
+		Envelope   *rolesource.SecretEnvelope `json:"envelope,omitempty"`
+		ErrorCode  string                     `json:"error_code,omitempty"`
+	}
+	if err := decodeStrictRoleSourceJSONLimit(w, r, &body, 400<<10); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if _, err := util.ParseUUID(body.LeaseToken); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid lease_token")
+		return
+	}
+	_, err := h.RoleSources.ReportSecretTransfer(r.Context(), rolesource.ReportSecretTransferInput{
+		WorkspaceID: workspaceID, SourceID: sourceID, TransferID: transferID,
+		RuntimeID: runtimeID, LeaseToken: body.LeaseToken, Status: body.Status,
+		Envelope: body.Envelope, ErrorCode: body.ErrorCode,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, rolesource.ErrSecretTransferLeaseLost), errors.Is(err, rolesource.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "secret transfer lease is stale or result conflicts")
+		case errors.Is(err, rolesource.ErrInvalidSecretTransfer), errors.Is(err, rolesource.ErrInvalidSecretEnvelope), errors.Is(err, rolesource.ErrExpiredSecretEnvelope):
+			writeError(w, http.StatusBadRequest, "invalid secret transfer result")
+		case errors.Is(err, rolesource.ErrSecretStoreUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "role source secret transfer is not configured")
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "secret transfer not found")
+		default:
+			slog.Error("persist role source secret transfer result failed", "runtime_id", runtimeID, "transfer_id", transferID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to persist secret transfer result")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) RenewRoleSourceScanLease(w http.ResponseWriter, r *http.Request) {
 	runtimeID := chi.URLParam(r, "runtimeId")
 	runtime, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
@@ -906,5 +1074,17 @@ func roleSourceApprovalToResponse(row db.RoleSourcePlanApproval) (roleSourceAppr
 		ID: util.UUIDToString(row.ID), SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
 		PlanDigest: row.PlanDigest, Decision: row.Decision, Decisions: decisions,
 		ActorUserID: util.UUIDToString(row.ActorUserID), CreatedAt: util.TimestampToString(row.CreatedAt),
+	}, nil
+}
+
+func roleSourceSecretTransferToResponse(row db.RoleSourceSecretTransfer) (roleSourceSecretTransferResponse, error) {
+	var claims rolesource.SecretEnvelopeClaims
+	if err := json.Unmarshal(row.Claims, &claims); err != nil {
+		return roleSourceSecretTransferResponse{}, err
+	}
+	return roleSourceSecretTransferResponse{
+		ID: util.UUIDToString(row.ID), SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+		PlanDigest: row.PlanDigest, ApprovalID: util.UUIDToString(row.ApprovalID), RoleID: row.RoleID,
+		Status: row.Status, PublicKey: row.PublicKey, Claims: claims, ExpiresAt: util.TimestampToString(row.ExpiresAt),
 	}, nil
 }

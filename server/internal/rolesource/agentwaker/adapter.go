@@ -90,7 +90,7 @@ func Descriptor() rolesource.Descriptor {
 		ContractVersion: rolesource.ContractVersion,
 		Capabilities: rolesource.AdapterCapabilities{
 			ChangeHints:     false,
-			SecretTransfer:  false,
+			SecretTransfer:  true,
 			BinaryArtifacts: false,
 			Provenance:      true,
 		},

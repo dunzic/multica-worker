@@ -36,6 +36,8 @@ type ControlPlane struct {
 	database         controlPlaneDB
 	catalog          DescriptorProvider
 	artifacts        ArtifactReader
+	secretBoxes      map[string]SecretBox
+	secretKeyID      string
 	materializeSlots chan struct{}
 	now              func() time.Time
 }
@@ -55,6 +57,42 @@ func NewControlPlane(database controlPlaneDB, catalog DescriptorProvider) (*Cont
 
 func (c *ControlPlane) SetArtifactReader(reader ArtifactReader) {
 	c.artifacts = reader
+}
+
+type SecretBox interface {
+	SealWithAAD([]byte, []byte) ([]byte, error)
+	OpenWithAAD([]byte, []byte) ([]byte, error)
+}
+
+func (c *ControlPlane) SetSecretBox(box SecretBox, keyID string) error {
+	if box == nil || !kindPattern.MatchString(keyID) {
+		return errors.New("role source secret box requires a valid key id")
+	}
+	if c.secretBoxes == nil {
+		c.secretBoxes = make(map[string]SecretBox)
+	}
+	c.secretBoxes[keyID] = box
+	c.secretKeyID = keyID
+	return nil
+}
+
+func (c *ControlPlane) AddSecretDecryptionBox(box SecretBox, keyID string) error {
+	if box == nil || !kindPattern.MatchString(keyID) {
+		return errors.New("role source secret box requires a valid key id")
+	}
+	if c.secretBoxes == nil {
+		c.secretBoxes = make(map[string]SecretBox)
+	}
+	if _, exists := c.secretBoxes[keyID]; exists {
+		return errors.New("role source secret key id is duplicated")
+	}
+	c.secretBoxes[keyID] = box
+	return nil
+}
+
+func (c *ControlPlane) secretBoxFor(keyID string) (SecretBox, bool) {
+	box, ok := c.secretBoxes[keyID]
+	return box, ok
 }
 
 type RegisterSourceInput struct {

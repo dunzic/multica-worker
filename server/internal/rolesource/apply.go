@@ -1,6 +1,7 @@
 package rolesource
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,12 +35,13 @@ var (
 )
 
 type ApplyPlanInput struct {
-	WorkspaceID string
-	SourceID    string
-	PlanDigest  string
-	ApprovalID  string
-	RequestKey  string
-	ActorUserID string
+	WorkspaceID       string
+	SourceID          string
+	PlanDigest        string
+	ApprovalID        string
+	RequestKey        string
+	ActorUserID       string
+	SecretTransferIDs map[string]string
 }
 
 type ApplyCounts struct {
@@ -57,16 +59,23 @@ type ApplyMapping struct {
 }
 
 type ApplyReceipt struct {
-	ContractVersion string         `json:"contract_version"`
-	ApplyID         string         `json:"apply_id"`
-	SourceID        string         `json:"source_id"`
-	WorkspaceID     string         `json:"workspace_id"`
-	SnapshotDigest  string         `json:"snapshot_digest"`
-	PlanDigest      string         `json:"plan_digest"`
-	ApprovalID      string         `json:"approval_id"`
-	Counts          ApplyCounts    `json:"counts"`
-	Mappings        []ApplyMapping `json:"mappings"`
-	ReceiptDigest   string         `json:"receipt_digest"`
+	ContractVersion string                  `json:"contract_version"`
+	ApplyID         string                  `json:"apply_id"`
+	SourceID        string                  `json:"source_id"`
+	WorkspaceID     string                  `json:"workspace_id"`
+	SnapshotDigest  string                  `json:"snapshot_digest"`
+	PlanDigest      string                  `json:"plan_digest"`
+	ApprovalID      string                  `json:"approval_id"`
+	Counts          ApplyCounts             `json:"counts"`
+	Mappings        []ApplyMapping          `json:"mappings"`
+	SecretTransfers []SecretTransferReceipt `json:"secret_transfers,omitempty"`
+	ReceiptDigest   string                  `json:"receipt_digest"`
+}
+
+type SecretTransferReceipt struct {
+	RoleID         string `json:"role_id"`
+	TransferID     string `json:"transfer_id"`
+	EnvelopeDigest string `json:"envelope_digest"`
 }
 
 type verifiedArtifact struct {
@@ -76,19 +85,22 @@ type verifiedArtifact struct {
 }
 
 type materializationState struct {
-	q           *db.Queries
-	workspaceID pgtype.UUID
-	source      db.RoleSource
-	actorID     pgtype.UUID
-	snapshot    Snapshot
-	plan        Plan
-	decisions   map[string]ArchiveDecision
-	actions     map[string]PlanAction
-	artifacts   map[string]verifiedArtifact
-	mappings    map[string]db.RoleSourceObjectMapping
-	runtimeMode string
-	now         func() time.Time
-	receipt     *ApplyReceipt
+	control         *ControlPlane
+	q               *db.Queries
+	workspaceID     pgtype.UUID
+	source          db.RoleSource
+	actorID         pgtype.UUID
+	snapshot        Snapshot
+	plan            Plan
+	decisions       map[string]ArchiveDecision
+	actions         map[string]PlanAction
+	artifacts       map[string]verifiedArtifact
+	mappings        map[string]db.RoleSourceObjectMapping
+	secretPayloads  map[string]SecretEnvelopePayload
+	secretTransfers map[string]db.RoleSourceSecretTransfer
+	runtimeMode     string
+	now             func() time.Time
+	receipt         *ApplyReceipt
 }
 
 func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.RoleSourceApply, ApplyReceipt, error) {
@@ -108,6 +120,9 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	input.SourceID = util.UUIDToString(sourceID)
 	input.ActorUserID = util.UUIDToString(actorID)
 	input.ApprovalID = util.UUIDToString(approvalID)
+	if err := normalizeApplySecretTransferIDs(&input); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
 	if c.artifacts == nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, errors.New("role source artifact reader is not configured")
 	}
@@ -186,6 +201,11 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	if err := validateMaterializationScope(snapshot, plan, decisions); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	secretPayloads, secretTransfers, err := c.loadApplySecretTransfers(ctx, qtx, source, snapshot, plan, approvalID, input.SecretTransferIDs)
+	if err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	defer clearSecretPayloadMap(secretPayloads)
 
 	applyID, err := newPGUUID()
 	if err != nil {
@@ -237,14 +257,18 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	receipt := ApplyReceipt{
 		ContractVersion: ApplyReceiptContractVersion, ApplyID: util.UUIDToString(applyRow.ID),
 		SourceID: input.SourceID, WorkspaceID: input.WorkspaceID, SnapshotDigest: plan.ToSnapshotDigest,
-		PlanDigest: plan.PlanDigest, ApprovalID: input.ApprovalID, Mappings: []ApplyMapping{},
+		PlanDigest: plan.PlanDigest, ApprovalID: input.ApprovalID, Mappings: []ApplyMapping{}, SecretTransfers: []SecretTransferReceipt{},
 	}
 	state := materializationState{
-		q: qtx, workspaceID: workspaceID, source: source, actorID: actorID, snapshot: snapshot, plan: plan,
+		control: c, q: qtx, workspaceID: workspaceID, source: source, actorID: actorID, snapshot: snapshot, plan: plan,
 		decisions: decisions, actions: actionIndex(plan), artifacts: artifacts, mappings: mappingIndex(mappingRows),
+		secretPayloads: secretPayloads, secretTransfers: secretTransfers,
 		runtimeMode: runtime.RuntimeMode, now: c.now, receipt: &receipt,
 	}
 	if err := state.materialize(ctx); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	if err := state.consumeSecretTransfers(ctx); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	expected := pgtype.Text{}
@@ -263,6 +287,7 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	sort.Slice(receipt.Mappings, func(i, j int) bool {
 		return objectKey(receipt.Mappings[i].Source) < objectKey(receipt.Mappings[j].Source)
 	})
+	sort.Slice(receipt.SecretTransfers, func(i, j int) bool { return receipt.SecretTransfers[i].RoleID < receipt.SecretTransfers[j].RoleID })
 	receiptBody, receiptDigest, err := encodeApplyReceipt(receipt)
 	if err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
@@ -298,10 +323,44 @@ func matchIdempotentApply(existing db.RoleSourceApply, plan Plan, input ApplyPla
 		return ApplyReceipt{}, ErrIdempotencyConflict
 	}
 	receipt, err := decodeApplyReceipt(existing)
-	if err != nil || receipt.ApprovalID != input.ApprovalID || receipt.SourceID != input.SourceID || receipt.WorkspaceID != input.WorkspaceID {
+	if err != nil || receipt.ApprovalID != input.ApprovalID || receipt.SourceID != input.SourceID || receipt.WorkspaceID != input.WorkspaceID ||
+		!receiptSecretTransfersMatchInput(receipt.SecretTransfers, input.SecretTransferIDs) {
 		return ApplyReceipt{}, ErrIdempotencyConflict
 	}
 	return receipt, nil
+}
+
+func normalizeApplySecretTransferIDs(input *ApplyPlanInput) error {
+	if len(input.SecretTransferIDs) > maxSecretEnvelopeValues {
+		return fmt.Errorf("%w: too many secret transfers", ErrInvalidApplyRequest)
+	}
+	normalized := make(map[string]string, len(input.SecretTransferIDs))
+	for roleID, transferIDText := range input.SecretTransferIDs {
+		if !stableIDPattern.MatchString(roleID) {
+			return fmt.Errorf("%w: invalid secret transfer role id", ErrInvalidApplyRequest)
+		}
+		transferID, err := util.ParseUUID(transferIDText)
+		if err != nil {
+			return fmt.Errorf("%w: invalid secret transfer id", ErrInvalidApplyRequest)
+		}
+		normalized[roleID] = util.UUIDToString(transferID)
+	}
+	input.SecretTransferIDs = normalized
+	return nil
+}
+
+func receiptSecretTransfersMatchInput(receipts []SecretTransferReceipt, input map[string]string) bool {
+	if len(receipts) != len(input) {
+		return false
+	}
+	seen := make(map[string]bool, len(receipts))
+	for _, receipt := range receipts {
+		if seen[receipt.RoleID] || input[receipt.RoleID] != receipt.TransferID || !sha256Pattern.MatchString(receipt.EnvelopeDigest) {
+			return false
+		}
+		seen[receipt.RoleID] = true
+	}
+	return true
 }
 
 func (c *ControlPlane) acquireMaterializeSlot() bool {
@@ -349,8 +408,8 @@ func validateMaterializationScope(snapshot Snapshot, plan Plan, decisions map[st
 		if role.Profile != nil {
 			return fmt.Errorf("%w: role profiles require a dedicated target field", ErrMaterializationBlocked)
 		}
-		if len(role.CapabilityBindings) > 0 || len(role.Environment) > 0 || len(role.MCP) > 0 {
-			return fmt.Errorf("%w: capability bindings, environment and MCP require dedicated secure contracts", ErrMaterializationBlocked)
+		if len(role.CapabilityBindings) > 0 {
+			return fmt.Errorf("%w: capability bindings require a dedicated target contract", ErrMaterializationBlocked)
 		}
 		for _, skill := range role.Skills {
 			if len(skill.Artifacts) > 0 {
@@ -361,10 +420,11 @@ func validateMaterializationScope(snapshot Snapshot, plan Plan, decisions map[st
 	for _, action := range plan.Actions {
 		switch action.Ref.Kind {
 		case "role", "skill", "automation", "capability":
-		case "capability_binding", "environment", "mcp":
+		case "capability_binding":
 			if action.Operation == PlanCreate || action.Operation == PlanUpdate {
 				return fmt.Errorf("%w: %s objects do not have a safe target contract", ErrMaterializationBlocked, action.Ref.Kind)
 			}
+		case "environment", "mcp":
 		default:
 			return fmt.Errorf("%w: unsupported object kind %q", ErrMaterializationBlocked, action.Ref.Kind)
 		}
@@ -373,6 +433,142 @@ func validateMaterializationScope(snapshot Snapshot, plan Plan, decisions map[st
 		}
 	}
 	return nil
+}
+
+func (c *ControlPlane) loadApplySecretTransfers(ctx context.Context, q *db.Queries, source db.RoleSource, snapshot Snapshot, plan Plan, approvalID pgtype.UUID, transferIDs map[string]string) (map[string]SecretEnvelopePayload, map[string]db.RoleSourceSecretTransfer, error) {
+	payloads := make(map[string]SecretEnvelopePayload)
+	transfers := make(map[string]db.RoleSourceSecretTransfer)
+	required := 0
+	for _, role := range snapshot.Manifest.Roles {
+		if !roleNeedsSecretTransfer(role) {
+			continue
+		}
+		required++
+		transferIDText, ok := transferIDs[role.ID]
+		if !ok {
+			clearSecretPayloadMap(payloads)
+			return nil, nil, fmt.Errorf("%w: role %s requires a submitted secret transfer", ErrInvalidApplyRequest, role.ID)
+		}
+		if len(c.secretBoxes) == 0 || c.secretKeyID == "" {
+			clearSecretPayloadMap(payloads)
+			return nil, nil, ErrSecretStoreUnavailable
+		}
+		transferID, err := util.ParseUUID(transferIDText)
+		if err != nil {
+			clearSecretPayloadMap(payloads)
+			return nil, nil, fmt.Errorf("%w: invalid secret transfer id", ErrInvalidApplyRequest)
+		}
+		row, err := q.GetRoleSourceSecretTransferForApply(ctx, db.GetRoleSourceSecretTransferForApplyParams{
+			ID: transferID, SourceID: source.ID, WorkspaceID: source.WorkspaceID, PlanDigest: plan.PlanDigest,
+			ApprovalID: approvalID, SnapshotDigest: snapshot.SnapshotDigest, RoleID: role.ID,
+		})
+		if err != nil {
+			clearSecretPayloadMap(payloads)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, nil, fmt.Errorf("%w: secret transfer is missing, expired, consumed or does not match approval", ErrInvalidApplyRequest)
+			}
+			return nil, nil, err
+		}
+		claims, err := validatedStoredSecretTransfer(row)
+		secretBox, keyAvailable := c.secretBoxFor(row.KeyID)
+		if err != nil || claims.SnapshotDigest != snapshot.SnapshotDigest || !keyAvailable {
+			clearSecretPayloadMap(payloads)
+			return nil, nil, fmt.Errorf("%w: secret transfer key or claims are unavailable", ErrInvalidApplyRequest)
+		}
+		envelope, err := decodeApplySecretEnvelope(row.Envelope)
+		if err != nil || envelope.Claims != claims {
+			clearSecretPayloadMap(payloads)
+			return nil, nil, fmt.Errorf("%w: stored secret envelope is invalid", ErrInvalidApplyRequest)
+		}
+		privateKey, err := secretBox.OpenWithAAD(row.PrivateKeyCiphertext, row.Claims)
+		if err != nil {
+			clearSecretPayloadMap(payloads)
+			return nil, nil, fmt.Errorf("open apply secret transfer key: %w", err)
+		}
+		payload, openErr := OpenSecretEnvelope(privateKey, envelope, c.now().UTC())
+		clear(privateKey)
+		if openErr != nil {
+			clearSecretPayloadMap(payloads)
+			return nil, nil, openErr
+		}
+		if err := validateRoleSecretPayload(role, payload); err != nil {
+			ClearSecretEnvelopePayload(&payload)
+			clearSecretPayloadMap(payloads)
+			return nil, nil, err
+		}
+		payloads[role.ID] = payload
+		transfers[role.ID] = row
+	}
+	if len(transferIDs) != required {
+		clearSecretPayloadMap(payloads)
+		return nil, nil, fmt.Errorf("%w: secret transfer set contains an unrelated role", ErrInvalidApplyRequest)
+	}
+	return payloads, transfers, nil
+}
+
+func decodeApplySecretEnvelope(body []byte) (SecretEnvelope, error) {
+	var envelope SecretEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return envelope, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return envelope, errors.New("secret envelope contains trailing JSON")
+	}
+	return envelope, nil
+}
+
+func validateRoleSecretPayload(role Role, payload SecretEnvelopePayload) error {
+	expectedEnvironment := make(map[string]EnvironmentKey)
+	for _, declaration := range role.Environment {
+		if declaration.Configured {
+			expectedEnvironment[declaration.Name] = declaration
+		}
+	}
+	if len(payload.Environment) != len(expectedEnvironment) {
+		return fmt.Errorf("%w: secret environment set does not match snapshot", ErrInvalidSecretEnvelope)
+	}
+	for name := range payload.Environment {
+		if _, ok := expectedEnvironment[name]; !ok {
+			return fmt.Errorf("%w: secret environment key is absent from snapshot", ErrInvalidSecretEnvelope)
+		}
+	}
+	expectedMCP := make(map[string]MCPServer, len(role.MCP))
+	for _, declaration := range role.MCP {
+		expectedMCP[declaration.ID] = declaration
+	}
+	if len(payload.MCPServers) != len(expectedMCP) {
+		return fmt.Errorf("%w: secret MCP set does not match snapshot", ErrInvalidSecretEnvelope)
+	}
+	for id, definition := range payload.MCPServers {
+		declaration, ok := expectedMCP[id]
+		if !ok {
+			return fmt.Errorf("%w: secret MCP server is absent from snapshot", ErrInvalidSecretEnvelope)
+		}
+		var value any
+		if err := json.Unmarshal(definition, &value); err != nil {
+			return fmt.Errorf("%w: invalid MCP definition", ErrInvalidSecretEnvelope)
+		}
+		canonical, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		digestValue := sha256.Sum256(canonical)
+		clear(canonical)
+		if declaration.DefinitionHash != "sha256:"+hex.EncodeToString(digestValue[:]) {
+			return fmt.Errorf("%w: MCP definition does not match snapshot", ErrInvalidSecretEnvelope)
+		}
+	}
+	return nil
+}
+
+func clearSecretPayloadMap(payloads map[string]SecretEnvelopePayload) {
+	for roleID, payload := range payloads {
+		ClearSecretEnvelopePayload(&payload)
+		delete(payloads, roleID)
+	}
 }
 
 func (c *ControlPlane) readAndVerifyArtifacts(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, snapshot Snapshot) (map[string]verifiedArtifact, error) {
@@ -450,6 +646,11 @@ func (s *materializationState) materialize(ctx context.Context) error {
 		}
 	}
 	for _, role := range s.snapshot.Manifest.Roles {
+		if err := s.materializeRoleSecrets(ctx, role); err != nil {
+			return err
+		}
+	}
+	for _, role := range s.snapshot.Manifest.Roles {
 		for _, skill := range role.Skills {
 			if err := s.materializeSkill(ctx, role, skill); err != nil {
 				return err
@@ -464,6 +665,161 @@ func (s *materializationState) materialize(ctx context.Context) error {
 		}
 	}
 	return s.materializeArchives(ctx)
+}
+
+func (s *materializationState) materializeRoleSecrets(ctx context.Context, role Role) error {
+	roleMapping, ok := s.mappings[objectKey(ObjectRef{Kind: "role", ID: role.ID})]
+	if !ok || roleMapping.ArchivedAt.Valid {
+		return fmt.Errorf("%w: role mapping is missing for secure materialization", ErrApplyConflict)
+	}
+	if len(role.Environment) == 0 && len(role.MCP) == 0 {
+		return nil
+	}
+	agent, err := s.q.GetAgentForUpdate(ctx, roleMapping.TargetID)
+	if err != nil {
+		return err
+	}
+	if agent.WorkspaceID != s.workspaceID || agent.Kind != "user" || agent.ArchivedAt.Valid {
+		return fmt.Errorf("%w: secure target agent is missing or cross-tenant", ErrApplyConflict)
+	}
+	environment := map[string]string{}
+	if len(agent.CustomEnv) > 0 && string(agent.CustomEnv) != "null" {
+		if err := json.Unmarshal(agent.CustomEnv, &environment); err != nil {
+			return fmt.Errorf("%w: target custom environment is malformed", ErrApplyConflict)
+		}
+	}
+	mcpRoot, mcpServers, err := decodeTargetMCP(agent.McpConfig)
+	if err != nil {
+		return err
+	}
+	payload := s.secretPayloads[role.ID]
+	needsPayload := roleNeedsSecretTransfer(role)
+	if needsPayload {
+		if _, ok := s.secretPayloads[role.ID]; !ok {
+			return fmt.Errorf("%w: role secret payload is missing", ErrInvalidApplyRequest)
+		}
+	}
+
+	for _, declaration := range role.Environment {
+		ref := ObjectRef{Kind: "environment", ParentID: role.ID, ID: declaration.Name}
+		action, ok := s.actions[objectKey(ref)]
+		if !ok || action.Operation == PlanArchiveCandidate || action.Operation == PlanBlocked {
+			return fmt.Errorf("%w: current environment declaration has no applicable plan action", ErrApplyConflict)
+		}
+		mapping, mapped := s.mappings[objectKey(ref)]
+		owned := mapped && !mapping.ArchivedAt.Valid && mapping.TargetKind == "agent" && mapping.TargetID == agent.ID
+		if mapped && !mapping.ArchivedAt.Valid && !owned {
+			return fmt.Errorf("%w: environment mapping targets another object", ErrApplyConflict)
+		}
+		if declaration.Configured {
+			value, exists := payload.Environment[declaration.Name]
+			if !exists {
+				return fmt.Errorf("%w: configured environment value is absent", ErrInvalidSecretEnvelope)
+			}
+			if _, collision := environment[declaration.Name]; collision && !owned {
+				return fmt.Errorf("%w: environment key %s is already user-owned", ErrApplyConflict, declaration.Name)
+			}
+			environment[declaration.Name] = value
+		} else if owned {
+			delete(environment, declaration.Name)
+		}
+	}
+	for _, declaration := range role.MCP {
+		ref := ObjectRef{Kind: "mcp", ParentID: role.ID, ID: declaration.ID}
+		action, ok := s.actions[objectKey(ref)]
+		if !ok || action.Operation == PlanArchiveCandidate || action.Operation == PlanBlocked {
+			return fmt.Errorf("%w: current MCP declaration has no applicable plan action", ErrApplyConflict)
+		}
+		mapping, mapped := s.mappings[objectKey(ref)]
+		owned := mapped && !mapping.ArchivedAt.Valid && mapping.TargetKind == "agent" && mapping.TargetID == agent.ID
+		if mapped && !mapping.ArchivedAt.Valid && !owned {
+			return fmt.Errorf("%w: MCP mapping targets another object", ErrApplyConflict)
+		}
+		definition, exists := payload.MCPServers[declaration.ID]
+		if !exists {
+			return fmt.Errorf("%w: MCP definition is absent", ErrInvalidSecretEnvelope)
+		}
+		if _, collision := mcpServers[declaration.ID]; collision && !owned {
+			return fmt.Errorf("%w: MCP server %s is already user-owned", ErrApplyConflict, declaration.ID)
+		}
+		mcpServers[declaration.ID] = append(json.RawMessage(nil), definition...)
+	}
+	environmentBody, err := json.Marshal(environment)
+	if err != nil {
+		return err
+	}
+	mcpBody := append([]byte(nil), agent.McpConfig...)
+	if len(role.MCP) > 0 {
+		mcpBody, err = encodeTargetMCP(mcpRoot, mcpServers)
+		if err != nil {
+			return err
+		}
+	}
+	if _, err := s.q.UpdateRoleSourceAgentSecrets(ctx, db.UpdateRoleSourceAgentSecretsParams{
+		CustomEnv: environmentBody, McpConfig: mcpBody, ID: agent.ID, WorkspaceID: s.workspaceID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrApplyConflict
+		}
+		return err
+	}
+	for _, declaration := range role.Environment {
+		ref := ObjectRef{Kind: "environment", ParentID: role.ID, ID: declaration.Name}
+		action := s.actions[objectKey(ref)]
+		mask := []string{}
+		if declaration.Configured {
+			mask = []string{"custom_env:" + declaration.Name}
+		}
+		if err := s.upsertMapping(ctx, ref, "agent", agent.ID, action.AfterDigest, mask, pgtype.Timestamptz{}); err != nil {
+			return err
+		}
+		s.incrementAppliedAction(action.Operation)
+	}
+	for _, declaration := range role.MCP {
+		ref := ObjectRef{Kind: "mcp", ParentID: role.ID, ID: declaration.ID}
+		action := s.actions[objectKey(ref)]
+		if err := s.upsertMapping(ctx, ref, "agent", agent.ID, action.AfterDigest, []string{"mcp_config:mcpServers:" + declaration.ID}, pgtype.Timestamptz{}); err != nil {
+			return err
+		}
+		s.incrementAppliedAction(action.Operation)
+	}
+	return nil
+}
+
+func decodeTargetMCP(body []byte) (map[string]json.RawMessage, map[string]json.RawMessage, error) {
+	root := map[string]json.RawMessage{}
+	if len(body) > 0 && string(body) != "null" {
+		if err := json.Unmarshal(body, &root); err != nil {
+			return nil, nil, fmt.Errorf("%w: target MCP configuration is malformed", ErrApplyConflict)
+		}
+	}
+	servers := map[string]json.RawMessage{}
+	if raw, ok := root["mcpServers"]; ok {
+		if err := json.Unmarshal(raw, &servers); err != nil {
+			return nil, nil, fmt.Errorf("%w: target MCP server map is malformed", ErrApplyConflict)
+		}
+	}
+	return root, servers, nil
+}
+
+func encodeTargetMCP(root map[string]json.RawMessage, servers map[string]json.RawMessage) ([]byte, error) {
+	serverBody, err := json.Marshal(servers)
+	if err != nil {
+		return nil, err
+	}
+	root["mcpServers"] = serverBody
+	return json.Marshal(root)
+}
+
+func (s *materializationState) incrementAppliedAction(operation PlanOperation) {
+	switch operation {
+	case PlanCreate:
+		s.receipt.Counts.Created++
+	case PlanUpdate:
+		s.receipt.Counts.Updated++
+	case PlanUnchanged:
+		s.receipt.Counts.Unchanged++
+	}
 }
 
 func (s *materializationState) materializeCapability(ctx context.Context, capability Capability) error {
@@ -679,7 +1035,18 @@ func (s *materializationState) materializeArchives(ctx context.Context) error {
 		}
 		if s.decisions[objectKey(action.Ref)] == ArchiveDecisionRetain {
 			s.receipt.Counts.Retained++
-			_ = s.appendExistingMapping(action.Ref)
+			mapping, ok := s.mappings[objectKey(action.Ref)]
+			if !ok {
+				return fmt.Errorf("%w: retained object has no materialization mapping", ErrApplyConflict)
+			}
+			if action.Ref.Kind == "environment" || action.Ref.Kind == "mcp" {
+				archivedAt := pgtype.Timestamptz{Time: s.now().UTC(), Valid: true}
+				if err := s.upsertMapping(ctx, action.Ref, mapping.TargetKind, mapping.TargetID, action.BeforeDigest, ownershipMask(mapping), archivedAt); err != nil {
+					return err
+				}
+			} else if err := s.appendExistingMapping(action.Ref); err != nil {
+				return err
+			}
 			continue
 		}
 		mapping, ok := s.mappings[objectKey(action.Ref)]
@@ -703,6 +1070,40 @@ func (s *materializationState) materializeArchives(ctx context.Context) error {
 			return err
 		}
 		s.receipt.Counts.Archived++
+	}
+	return nil
+}
+
+func (s *materializationState) consumeSecretTransfers(ctx context.Context) error {
+	roleIDs := make([]string, 0, len(s.secretTransfers))
+	for roleID := range s.secretTransfers {
+		roleIDs = append(roleIDs, roleID)
+	}
+	sort.Strings(roleIDs)
+	for _, roleID := range roleIDs {
+		transfer := s.secretTransfers[roleID]
+		consumed, err := s.q.ConsumeRoleSourceSecretTransfer(ctx, db.ConsumeRoleSourceSecretTransferParams{
+			ID: transfer.ID, SourceID: s.source.ID, WorkspaceID: s.workspaceID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: secret transfer expired or was already consumed", ErrApplyConflict)
+		}
+		if err != nil {
+			return err
+		}
+		digest := ""
+		if transfer.EnvelopeDigest.Valid {
+			digest = transfer.EnvelopeDigest.String
+		}
+		s.receipt.SecretTransfers = append(s.receipt.SecretTransfers, SecretTransferReceipt{
+			RoleID: roleID, TransferID: util.UUIDToString(transfer.ID), EnvelopeDigest: digest,
+		})
+		if err := s.control.appendAudit(ctx, s.q, s.source, "secret_transfer_consumed", AuditActor{Type: "user", ID: util.UUIDToString(s.actorID)}, AuditPayload{
+			OperationID: util.UUIDToString(consumed.ID), SnapshotDigest: consumed.SnapshotDigest,
+			PlanDigest: consumed.PlanDigest, Result: digest,
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

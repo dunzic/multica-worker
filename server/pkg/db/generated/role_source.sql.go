@@ -153,6 +153,71 @@ func (q *Queries) ClaimNextRoleSourceScan(ctx context.Context, arg ClaimNextRole
 	return i, err
 }
 
+const claimNextRoleSourceSecretTransfer = `-- name: ClaimNextRoleSourceSecretTransfer :one
+WITH candidate AS (
+    SELECT id FROM role_source_secret_transfer
+    WHERE runtime_id = $1
+      AND expires_at > now()
+      AND (
+        status = 'pending'
+        OR (status = 'claimed' AND lease_expires_at < now())
+      )
+    ORDER BY created_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_secret_transfer transfer
+SET status = 'claimed',
+    claimed_by_runtime_id = $1,
+    lease_token = $2,
+    lease_expires_at = LEAST(expires_at, now() + $3::interval),
+    claimed_at = COALESCE(claimed_at, now()),
+    error_code = NULL
+FROM candidate
+WHERE transfer.id = candidate.id
+RETURNING transfer.id, transfer.workspace_id, transfer.source_id, transfer.runtime_id, transfer.plan_digest, transfer.approval_id, transfer.snapshot_digest, transfer.role_id, transfer.request_key, transfer.status, transfer.public_key, transfer.private_key_ciphertext, transfer.key_id, transfer.claims, transfer.envelope, transfer.envelope_digest, transfer.claimed_by_runtime_id, transfer.lease_token, transfer.lease_expires_at, transfer.expires_at, transfer.created_by, transfer.created_at, transfer.claimed_at, transfer.submitted_at, transfer.consumed_at, transfer.error_code
+`
+
+type ClaimNextRoleSourceSecretTransferParams struct {
+	RuntimeID     pgtype.UUID     `json:"runtime_id"`
+	LeaseToken    pgtype.UUID     `json:"lease_token"`
+	LeaseDuration pgtype.Interval `json:"lease_duration"`
+}
+
+func (q *Queries) ClaimNextRoleSourceSecretTransfer(ctx context.Context, arg ClaimNextRoleSourceSecretTransferParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, claimNextRoleSourceSecretTransfer, arg.RuntimeID, arg.LeaseToken, arg.LeaseDuration)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
+	)
+	return i, err
+}
+
 const completeRoleSourceApply = `-- name: CompleteRoleSourceApply :one
 UPDATE role_source_apply
 SET status = $1,
@@ -308,6 +373,59 @@ func (q *Queries) CompleteRoleSourceScanSuccess(ctx context.Context, arg Complet
 	return i, err
 }
 
+const consumeRoleSourceSecretTransfer = `-- name: ConsumeRoleSourceSecretTransfer :one
+UPDATE role_source_secret_transfer
+SET status = 'consumed', envelope = NULL,
+    private_key_ciphertext = decode(repeat('00', 60), 'hex'),
+    lease_token = NULL, lease_expires_at = NULL, consumed_at = now()
+WHERE id = $1
+  AND source_id = $2
+  AND workspace_id = $3
+  AND status = 'submitted'
+  AND expires_at > now()
+RETURNING id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code
+`
+
+type ConsumeRoleSourceSecretTransferParams struct {
+	ID          pgtype.UUID `json:"id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) ConsumeRoleSourceSecretTransfer(ctx context.Context, arg ConsumeRoleSourceSecretTransferParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, consumeRoleSourceSecretTransfer, arg.ID, arg.SourceID, arg.WorkspaceID)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
+	)
+	return i, err
+}
+
 const countInvalidRoleSourceObjectMappings = `-- name: CountInvalidRoleSourceObjectMappings :one
 SELECT count(*) FROM role_source_object_mapping mapping
 WHERE mapping.source_id = $1
@@ -443,6 +561,109 @@ func (q *Queries) CreateRoleSourceScanRequest(ctx context.Context, arg CreateRol
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const expireRoleSourceSecretTransfers = `-- name: ExpireRoleSourceSecretTransfers :many
+WITH expired AS MATERIALIZED (
+    SELECT id
+    FROM role_source_secret_transfer
+    WHERE expires_at <= now()
+      AND status IN ('pending', 'claimed', 'submitted')
+    ORDER BY expires_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT $1
+)
+UPDATE role_source_secret_transfer transfer
+SET status = 'expired', envelope = NULL,
+    private_key_ciphertext = decode(repeat('00', 60), 'hex'),
+    lease_token = NULL, lease_expires_at = NULL, error_code = 'expired'
+FROM expired
+WHERE transfer.id = expired.id
+RETURNING transfer.id
+`
+
+func (q *Queries) ExpireRoleSourceSecretTransfers(ctx context.Context, batchLimit int32) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, expireRoleSourceSecretTransfers, batchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const failRoleSourceSecretTransfer = `-- name: FailRoleSourceSecretTransfer :one
+UPDATE role_source_secret_transfer
+SET status = 'failed', error_code = $1, lease_expires_at = NULL
+WHERE id = $2
+  AND source_id = $3
+  AND workspace_id = $4
+  AND claimed_by_runtime_id = $5
+  AND lease_token = $6
+  AND status = 'claimed'
+  AND expires_at > now()
+  AND lease_expires_at > now()
+RETURNING id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code
+`
+
+type FailRoleSourceSecretTransferParams struct {
+	ErrorCode   pgtype.Text `json:"error_code"`
+	ID          pgtype.UUID `json:"id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RuntimeID   pgtype.UUID `json:"runtime_id"`
+	LeaseToken  pgtype.UUID `json:"lease_token"`
+}
+
+func (q *Queries) FailRoleSourceSecretTransfer(ctx context.Context, arg FailRoleSourceSecretTransferParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, failRoleSourceSecretTransfer,
+		arg.ErrorCode,
+		arg.ID,
+		arg.SourceID,
+		arg.WorkspaceID,
+		arg.RuntimeID,
+		arg.LeaseToken,
+	)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
 	)
 	return i, err
 }
@@ -922,6 +1143,208 @@ func (q *Queries) GetRoleSourceScanRequestForUpdate(ctx context.Context, arg Get
 	return i, err
 }
 
+const getRoleSourceSecretTransfer = `-- name: GetRoleSourceSecretTransfer :one
+SELECT id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code FROM role_source_secret_transfer
+WHERE id = $1 AND source_id = $2 AND workspace_id = $3
+`
+
+type GetRoleSourceSecretTransferParams struct {
+	ID          pgtype.UUID `json:"id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetRoleSourceSecretTransfer(ctx context.Context, arg GetRoleSourceSecretTransferParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceSecretTransfer, arg.ID, arg.SourceID, arg.WorkspaceID)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
+	)
+	return i, err
+}
+
+const getRoleSourceSecretTransferByRequest = `-- name: GetRoleSourceSecretTransferByRequest :one
+SELECT id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code FROM role_source_secret_transfer
+WHERE source_id = $1 AND workspace_id = $2 AND request_key = $3
+`
+
+type GetRoleSourceSecretTransferByRequestParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RequestKey  string      `json:"request_key"`
+}
+
+func (q *Queries) GetRoleSourceSecretTransferByRequest(ctx context.Context, arg GetRoleSourceSecretTransferByRequestParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceSecretTransferByRequest, arg.SourceID, arg.WorkspaceID, arg.RequestKey)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
+	)
+	return i, err
+}
+
+const getRoleSourceSecretTransferForApply = `-- name: GetRoleSourceSecretTransferForApply :one
+SELECT id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code FROM role_source_secret_transfer
+WHERE id = $1
+  AND source_id = $2
+  AND workspace_id = $3
+  AND plan_digest = $4
+  AND approval_id = $5
+  AND snapshot_digest = $6
+  AND role_id = $7
+  AND status = 'submitted'
+  AND expires_at > now()
+FOR UPDATE
+`
+
+type GetRoleSourceSecretTransferForApplyParams struct {
+	ID             pgtype.UUID `json:"id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	PlanDigest     string      `json:"plan_digest"`
+	ApprovalID     pgtype.UUID `json:"approval_id"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+	RoleID         string      `json:"role_id"`
+}
+
+func (q *Queries) GetRoleSourceSecretTransferForApply(ctx context.Context, arg GetRoleSourceSecretTransferForApplyParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceSecretTransferForApply,
+		arg.ID,
+		arg.SourceID,
+		arg.WorkspaceID,
+		arg.PlanDigest,
+		arg.ApprovalID,
+		arg.SnapshotDigest,
+		arg.RoleID,
+	)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
+	)
+	return i, err
+}
+
+const getRoleSourceSecretTransferForUpdate = `-- name: GetRoleSourceSecretTransferForUpdate :one
+SELECT id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code FROM role_source_secret_transfer
+WHERE id = $1 AND source_id = $2 AND workspace_id = $3
+FOR UPDATE
+`
+
+type GetRoleSourceSecretTransferForUpdateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetRoleSourceSecretTransferForUpdate(ctx context.Context, arg GetRoleSourceSecretTransferForUpdateParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceSecretTransferForUpdate, arg.ID, arg.SourceID, arg.WorkspaceID)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
+	)
+	return i, err
+}
+
 const getRoleSourceSnapshot = `-- name: GetRoleSourceSnapshot :one
 SELECT source_id, workspace_id, snapshot_digest, manifest_digest, kind, adapter_version, contract_version, manifest, diagnostics, source_evidence, reported_by_runtime_id, created_at FROM role_source_snapshot
 WHERE source_id = $1
@@ -1246,6 +1669,88 @@ func (q *Queries) InsertRoleSourcePlanApproval(ctx context.Context, arg InsertRo
 		&i.ActorUserID,
 		&i.CreatedAt,
 		&i.RequestKey,
+	)
+	return i, err
+}
+
+const insertRoleSourceSecretTransfer = `-- name: InsertRoleSourceSecretTransfer :one
+INSERT INTO role_source_secret_transfer (
+    id, workspace_id, source_id, runtime_id, plan_digest, approval_id,
+    snapshot_digest, role_id, request_key, public_key,
+    private_key_ciphertext, key_id, claims, expires_at, created_by
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10,
+    $11, $12, $13, $14, $15
+)
+ON CONFLICT (source_id, request_key) DO NOTHING
+RETURNING id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code
+`
+
+type InsertRoleSourceSecretTransferParams struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	SourceID             pgtype.UUID        `json:"source_id"`
+	RuntimeID            pgtype.UUID        `json:"runtime_id"`
+	PlanDigest           string             `json:"plan_digest"`
+	ApprovalID           pgtype.UUID        `json:"approval_id"`
+	SnapshotDigest       string             `json:"snapshot_digest"`
+	RoleID               string             `json:"role_id"`
+	RequestKey           string             `json:"request_key"`
+	PublicKey            string             `json:"public_key"`
+	PrivateKeyCiphertext []byte             `json:"private_key_ciphertext"`
+	KeyID                string             `json:"key_id"`
+	Claims               []byte             `json:"claims"`
+	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
+	CreatedBy            pgtype.UUID        `json:"created_by"`
+}
+
+func (q *Queries) InsertRoleSourceSecretTransfer(ctx context.Context, arg InsertRoleSourceSecretTransferParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, insertRoleSourceSecretTransfer,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.RuntimeID,
+		arg.PlanDigest,
+		arg.ApprovalID,
+		arg.SnapshotDigest,
+		arg.RoleID,
+		arg.RequestKey,
+		arg.PublicKey,
+		arg.PrivateKeyCiphertext,
+		arg.KeyID,
+		arg.Claims,
+		arg.ExpiresAt,
+		arg.CreatedBy,
+	)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
 	)
 	return i, err
 }
@@ -1728,6 +2233,73 @@ func (q *Queries) RenewRoleSourceScanLease(ctx context.Context, arg RenewRoleSou
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const submitRoleSourceSecretTransfer = `-- name: SubmitRoleSourceSecretTransfer :one
+UPDATE role_source_secret_transfer
+SET status = 'submitted', envelope = $1, envelope_digest = $2,
+    submitted_at = now(), lease_expires_at = NULL
+WHERE id = $3
+  AND source_id = $4
+  AND workspace_id = $5
+  AND claimed_by_runtime_id = $6
+  AND lease_token = $7
+  AND status = 'claimed'
+  AND expires_at > now()
+  AND lease_expires_at > now()
+RETURNING id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code
+`
+
+type SubmitRoleSourceSecretTransferParams struct {
+	Envelope       []byte      `json:"envelope"`
+	EnvelopeDigest pgtype.Text `json:"envelope_digest"`
+	ID             pgtype.UUID `json:"id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	RuntimeID      pgtype.UUID `json:"runtime_id"`
+	LeaseToken     pgtype.UUID `json:"lease_token"`
+}
+
+func (q *Queries) SubmitRoleSourceSecretTransfer(ctx context.Context, arg SubmitRoleSourceSecretTransferParams) (RoleSourceSecretTransfer, error) {
+	row := q.db.QueryRow(ctx, submitRoleSourceSecretTransfer,
+		arg.Envelope,
+		arg.EnvelopeDigest,
+		arg.ID,
+		arg.SourceID,
+		arg.WorkspaceID,
+		arg.RuntimeID,
+		arg.LeaseToken,
+	)
+	var i RoleSourceSecretTransfer
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RuntimeID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.SnapshotDigest,
+		&i.RoleID,
+		&i.RequestKey,
+		&i.Status,
+		&i.PublicKey,
+		&i.PrivateKeyCiphertext,
+		&i.KeyID,
+		&i.Claims,
+		&i.Envelope,
+		&i.EnvelopeDigest,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.SubmittedAt,
+		&i.ConsumedAt,
+		&i.ErrorCode,
 	)
 	return i, err
 }

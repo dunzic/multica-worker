@@ -1,6 +1,8 @@
 package rolesource
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -40,12 +42,6 @@ func TestValidateMaterializationScopeBlocksFieldsWithoutOwnershipContract(t *tes
 			value := testArtifact("roles/writer/profile.md")
 			manifest.Roles[0].Profile = &value
 		}},
-		{"environment", func(manifest *Manifest) {
-			manifest.Roles[0].Environment = []EnvironmentKey{{Name: "TOKEN", Secret: true, Required: true}}
-		}},
-		{"mcp", func(manifest *Manifest) {
-			manifest.Roles[0].MCP = []MCPServer{{ID: "browser", DefinitionHash: testSHA256("a")}}
-		}},
 		{"capability binding", func(manifest *Manifest) {
 			manifest.Capabilities = []Capability{{ID: "browser", Name: "Browser", Version: "1", Profiles: []string{"default"}, PermissionModes: []string{"private"}, Entrypoint: testArtifact("capability.md")}}
 			manifest.Roles[0].CapabilityBindings = []CapabilityBinding{{CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "1", PermissionMode: "private"}}
@@ -67,6 +63,20 @@ func TestValidateMaterializationScopeBlocksFieldsWithoutOwnershipContract(t *tes
 				t.Fatalf("scope error = %v, want materialization blocked", err)
 			}
 		})
+	}
+}
+
+func TestValidateMaterializationScopeAcceptsSecureEnvironmentAndMCP(t *testing.T) {
+	manifest := planTestManifest()
+	manifest.Roles[0].Environment = []EnvironmentKey{{Name: "TOKEN", Secret: true, Required: true, Configured: true, ValueDigest: "hmac-sha256:" + strings.Repeat("a", 64)}}
+	manifest.Roles[0].MCP = []MCPServer{{ID: "browser", DefinitionHash: testSHA256("a")}}
+	snapshot := planTestSnapshot(t, manifest)
+	plan, err := BuildPlan("source-1", nil, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMaterializationScope(snapshot, plan, map[string]ArchiveDecision{}); err != nil {
+		t.Fatalf("secure role fields rejected: %v", err)
 	}
 }
 
@@ -131,6 +141,39 @@ func TestApplyReceiptDigestDetectsTampering(t *testing.T) {
 	row.Receipt, _ = json.Marshal(tampered)
 	if _, err := decodeApplyReceipt(row); err == nil {
 		t.Fatal("tampered receipt accepted")
+	}
+}
+
+func TestValidateRoleSecretPayloadRequiresExactSnapshotSetsAndMCPHash(t *testing.T) {
+	definition := json.RawMessage(`{"command":"safe-mcp","env":{"TOKEN":"${TOKEN}"}}`)
+	var value any
+	if err := json.Unmarshal(definition, &value); err != nil {
+		t.Fatal(err)
+	}
+	canonical, _ := json.Marshal(value)
+	sum := sha256.Sum256(canonical)
+	role := Role{
+		ID: "writer",
+		Environment: []EnvironmentKey{
+			{Name: "TOKEN", Configured: true}, {Name: "OPTIONAL", Configured: false},
+		},
+		MCP: []MCPServer{{ID: "safe", DefinitionHash: "sha256:" + hex.EncodeToString(sum[:])}},
+	}
+	payload := SecretEnvelopePayload{
+		Environment: map[string]string{"TOKEN": "secret"},
+		MCPServers:  map[string]json.RawMessage{"safe": definition},
+	}
+	if err := validateRoleSecretPayload(role, payload); err != nil {
+		t.Fatalf("valid payload rejected: %v", err)
+	}
+	payload.Environment["EXTRA"] = "exfiltration"
+	if err := validateRoleSecretPayload(role, payload); !errors.Is(err, ErrInvalidSecretEnvelope) {
+		t.Fatalf("extra environment error = %v", err)
+	}
+	delete(payload.Environment, "EXTRA")
+	payload.MCPServers["safe"] = json.RawMessage(`{"command":"changed"}`)
+	if err := validateRoleSecretPayload(role, payload); !errors.Is(err, ErrInvalidSecretEnvelope) {
+		t.Fatalf("changed MCP error = %v", err)
 	}
 }
 

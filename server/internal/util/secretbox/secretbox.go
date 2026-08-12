@@ -8,10 +8,9 @@
 // integrity, so a tampered row decrypts to an error instead of
 // silently garbled plaintext.
 //
-// Key: 32 bytes. Loaded from an env var as base64 (LoadKey). Rotation
-// is not supported in this iteration — once we have multiple keys in
-// production we add a single-byte prefix to ciphertext for key id;
-// today every ciphertext is keyed by the one current master key.
+// Key: 32 bytes. Loaded from an env var as base64 (LoadKey). Callers that need
+// rotation persist a key id beside the ciphertext and select the matching Box;
+// the ciphertext itself intentionally carries no unauthenticated key selector.
 package secretbox
 
 import (

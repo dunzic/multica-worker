@@ -6872,3 +6872,66 @@ func (q *Queries) UpdateRoleSourceAgent(ctx context.Context, arg UpdateRoleSourc
 	)
 	return i, err
 }
+
+const updateRoleSourceAgentSecrets = `-- name: UpdateRoleSourceAgentSecrets :one
+UPDATE agent
+SET custom_env = $1,
+    mcp_config = $2,
+    updated_at = now()
+WHERE id = $3
+  AND workspace_id = $4
+  AND kind = 'user'
+  AND archived_at IS NULL
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+type UpdateRoleSourceAgentSecretsParams struct {
+	CustomEnv   []byte      `json:"custom_env"`
+	McpConfig   []byte      `json:"mcp_config"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The caller holds the role-source workspace mutation lock and the mapped
+// agent row lock, merges only source-owned keys, and supplies the complete
+// post-merge values. This query cannot cross workspace or system-agent scope.
+func (q *Queries) UpdateRoleSourceAgentSecrets(ctx context.Context, arg UpdateRoleSourceAgentSecretsParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, updateRoleSourceAgentSecrets,
+		arg.CustomEnv,
+		arg.McpConfig,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+	)
+	return i, err
+}

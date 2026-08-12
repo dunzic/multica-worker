@@ -419,6 +419,9 @@ deleted_applies AS (
 deleted_plans AS (
     DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
 ),
+deleted_secret_transfers AS (
+    DELETE FROM role_source_secret_transfer WHERE role_source_secret_transfer.workspace_id = $1
+),
 deleted_capability_versions AS (
     DELETE FROM role_source_capability_version WHERE role_source_capability_version.workspace_id = $1
 ),

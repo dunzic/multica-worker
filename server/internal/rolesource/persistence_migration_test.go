@@ -10,7 +10,7 @@ import (
 )
 
 func TestRoleSourceMigrationsRespectRepositorySafetyRules(t *testing.T) {
-	matches, err := filepath.Glob(filepath.Join("..", "..", "migrations", "2*_role_source_*.up.sql"))
+	matches, err := filepath.Glob(filepath.Join("..", "..", "migrations", "[0-9]*_role_source_*.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +44,42 @@ func TestRoleSourceMigrationsRespectRepositorySafetyRules(t *testing.T) {
 		}
 		if !indexPattern.MatchString(statementBody) || strings.Count(statementBody, ";") != 1 {
 			t.Fatalf("%s must contain exactly one CREATE INDEX CONCURRENTLY statement", name)
+		}
+	}
+}
+
+func TestRoleSourceSecretTransferPersistenceIsCiphertextOnlyAndSelfClearing(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "304_role_source_secret_transfer.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"environment_value", "secret_value", "mcp_definition", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("secret transfer schema contains plaintext field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"private_key_ciphertext", "key_id", "envelope", "envelope_digest", "expires_at", "consumed_at"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("secret transfer schema is missing %q", required)
+		}
+	}
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	for _, query := range []string{"ConsumeRoleSourceSecretTransfer", "ExpireRoleSourceSecretTransfers"} {
+		start := strings.Index(queryText, "-- name: "+query+" ")
+		if start < 0 {
+			t.Fatalf("query %s is missing", query)
+		}
+		section := queryText[start:]
+		if next := strings.Index(section[1:], "\n-- name: "); next >= 0 {
+			section = section[:next+1]
+		}
+		if !strings.Contains(section, "envelope = NULL") || !strings.Contains(section, "private_key_ciphertext = decode(repeat('00', 60), 'hex')") {
+			t.Fatalf("query %s does not clear recoverable ciphertext: %s", query, section)
 		}
 	}
 }

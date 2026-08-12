@@ -1048,6 +1048,35 @@ type RoleSourceScanRequest struct {
 	CompletedAt            pgtype.Timestamptz `json:"completed_at"`
 }
 
+type RoleSourceSecretTransfer struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	SourceID             pgtype.UUID        `json:"source_id"`
+	RuntimeID            pgtype.UUID        `json:"runtime_id"`
+	PlanDigest           string             `json:"plan_digest"`
+	ApprovalID           pgtype.UUID        `json:"approval_id"`
+	SnapshotDigest       string             `json:"snapshot_digest"`
+	RoleID               string             `json:"role_id"`
+	RequestKey           string             `json:"request_key"`
+	Status               string             `json:"status"`
+	PublicKey            string             `json:"public_key"`
+	PrivateKeyCiphertext []byte             `json:"private_key_ciphertext"`
+	KeyID                string             `json:"key_id"`
+	Claims               []byte             `json:"claims"`
+	Envelope             []byte             `json:"envelope"`
+	EnvelopeDigest       pgtype.Text        `json:"envelope_digest"`
+	ClaimedByRuntimeID   pgtype.UUID        `json:"claimed_by_runtime_id"`
+	LeaseToken           pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt       pgtype.Timestamptz `json:"lease_expires_at"`
+	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
+	CreatedBy            pgtype.UUID        `json:"created_by"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	ClaimedAt            pgtype.Timestamptz `json:"claimed_at"`
+	SubmittedAt          pgtype.Timestamptz `json:"submitted_at"`
+	ConsumedAt           pgtype.Timestamptz `json:"consumed_at"`
+	ErrorCode            pgtype.Text        `json:"error_code"`
+}
+
 type RoleSourceSnapshot struct {
 	SourceID            pgtype.UUID        `json:"source_id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_secret_transfer_request_unique ON role_source_secret_transfer (source_id, request_key);

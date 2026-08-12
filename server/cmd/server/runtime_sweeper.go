@@ -104,7 +104,19 @@ func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handle
 			sweepExpiredQueuedTasks(ctx, queries, taskSvc)
 			sweepDeferredChatFinalizations(ctx, queries, taskSvc)
 			gcRuntimes(ctx, queries, bus)
+			sweepExpiredRoleSourceSecretTransfers(ctx, queries)
 		}
+	}
+}
+
+func sweepExpiredRoleSourceSecretTransfers(ctx context.Context, queries *db.Queries) {
+	rows, err := queries.ExpireRoleSourceSecretTransfers(ctx, 1_000)
+	if err != nil {
+		slog.Warn("role source secret transfer sweeper failed", "error", err)
+		return
+	}
+	if len(rows) > 0 {
+		slog.Info("role source secret transfer sweeper cleared expired ciphertext", "count", len(rows))
 	}
 }
 

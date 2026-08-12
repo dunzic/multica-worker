@@ -281,26 +281,118 @@ func (s *roleSourceScanner) openArtifact(ctx context.Context, pending protocol.D
 	}, ref)
 }
 
+func (s *roleSourceScanner) sealSecretTransfer(ctx context.Context, pending protocol.DaemonHeartbeatPendingRoleSourceSecretTransfer) (rolesource.SecretEnvelope, string) {
+	if s == nil {
+		return rolesource.SecretEnvelope{}, "scanner_unavailable"
+	}
+	config, ok := s.configs[pending.DaemonConfigID]
+	if !ok {
+		return rolesource.SecretEnvelope{}, "config_not_found"
+	}
+	kind := rolesource.Kind(pending.Kind)
+	descriptor, ok := s.registry.Descriptor(kind)
+	if !ok || config.Kind != kind {
+		return rolesource.SecretEnvelope{}, "adapter_not_supported"
+	}
+	if descriptor.AdapterVersion != pending.AdapterVersion || pending.ContractVersion != rolesource.SecretEnvelopeContractVersion {
+		return rolesource.SecretEnvelope{}, "adapter_version_mismatch"
+	}
+	request := rolesource.ScanRequest{
+		WorkspaceID: pending.WorkspaceID, SourceID: pending.SourceID, Config: config.Config, RequestedAt: time.Now().UTC(),
+	}
+	snapshot, err := s.registry.Scan(ctx, kind, request)
+	if err != nil {
+		if ctx.Err() != nil {
+			return rolesource.SecretEnvelope{}, "secret_export_timeout"
+		}
+		return rolesource.SecretEnvelope{}, "source_invalid"
+	}
+	if snapshot.SnapshotDigest != pending.SnapshotDigest {
+		return rolesource.SecretEnvelope{}, "snapshot_changed"
+	}
+	payload, err := s.registry.ExportSecretPayload(ctx, kind, request, snapshot, pending.RoleID)
+	if err != nil {
+		return rolesource.SecretEnvelope{}, "secret_export_failed"
+	}
+	defer rolesource.ClearSecretEnvelopePayload(&payload)
+	claims := rolesource.SecretEnvelopeClaims{
+		ContractVersion: pending.ContractVersion, TransferID: pending.TransferID,
+		WorkspaceID: pending.WorkspaceID, SourceID: pending.SourceID, RoleID: pending.RoleID,
+		SnapshotDigest: pending.SnapshotDigest, ExpiresAt: pending.ExpiresAt,
+	}
+	envelope, err := rolesource.SealSecretEnvelope(pending.PublicKey, claims, payload)
+	if err != nil {
+		if ctx.Err() != nil {
+			return rolesource.SecretEnvelope{}, "secret_export_timeout"
+		}
+		return rolesource.SecretEnvelope{}, "envelope_seal_failed"
+	}
+	return envelope, ""
+}
+
 func (d *Daemon) roleSourceHeartbeatOptions(runtimeID string, forcePoll bool) HeartbeatOptions {
 	if d.roleSources == nil {
 		return HeartbeatOptions{}
 	}
-	option := HeartbeatOptions{SupportsRoleSourceScan: true}
+	option := HeartbeatOptions{SupportsRoleSourceScan: true, SupportsRoleSourceSecretTransfer: true}
 	now := time.Now()
 	d.roleSourcePollMu.Lock()
 	last := d.roleSourceLastPoll[runtimeID]
 	if (forcePoll || last.IsZero() || now.Sub(last) >= roleSourceRecoveryPollInterval) && d.roleSources.tryAcquire() {
 		d.roleSourceLastPoll[runtimeID] = now
 		option.PollRoleSourceScan = true
+		option.PollRoleSourceSecretTransfer = true
 	}
 	d.roleSourcePollMu.Unlock()
 	return option
 }
 
 func (d *Daemon) releaseRoleSourcePollReservation(option HeartbeatOptions) {
-	if option.PollRoleSourceScan && d.roleSources != nil {
+	if (option.PollRoleSourceScan || option.PollRoleSourceSecretTransfer) && d.roleSources != nil {
 		d.roleSources.release()
 	}
+}
+
+func (d *Daemon) handleRoleSourceSecretTransfer(ctx context.Context, runtimeID string, pending PendingRoleSourceSecretTransfer, pollReserved bool) {
+	if d.roleSources == nil {
+		return
+	}
+	if !pollReserved && !d.roleSources.acquire(ctx) {
+		return
+	}
+	defer func() {
+		d.roleSources.release()
+		go d.handlePendingWorkHint(runtimeID, protocol.PendingWorkKindRoleSourceSecretTransfer)
+	}()
+	leaseExpiresAt, err := time.Parse(time.RFC3339Nano, pending.LeaseExpiresAt)
+	if err != nil || !leaseExpiresAt.After(time.Now()) {
+		d.logger.Warn("role source secret transfer has invalid lease expiry", "runtime_id", runtimeID, "transfer_id", pending.TransferID)
+		return
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, pending.ExpiresAt)
+	if err != nil || !expiresAt.After(time.Now()) || expiresAt.Before(leaseExpiresAt) {
+		d.logger.Warn("role source secret transfer has invalid challenge expiry", "runtime_id", runtimeID, "transfer_id", pending.TransferID)
+		return
+	}
+	transferCtx, cancel := context.WithDeadline(ctx, leaseExpiresAt)
+	envelope, errorCode := d.roleSources.sealSecretTransfer(transferCtx, pending)
+	cancel()
+	result := RoleSourceSecretTransferResult{LeaseToken: pending.LeaseToken}
+	if errorCode == "" {
+		result.Status = "completed"
+		result.Envelope = &envelope
+	} else {
+		result.Status = "failed"
+		result.ErrorCode = errorCode
+	}
+	reportCtx, cancelReport := context.WithDeadline(d.recoveryContext(), leaseExpiresAt)
+	err = d.client.ReportRoleSourceSecretTransferResult(reportCtx, runtimeID, pending, result)
+	cancelReport()
+	if err != nil {
+		d.logger.Warn("role source secret transfer report failed", "runtime_id", runtimeID, "transfer_id", pending.TransferID, "status", result.Status, "error_code", result.ErrorCode, "error", err)
+		return
+	}
+	d.logger.Info("role source secret transfer completed", "runtime_id", runtimeID, "transfer_id", pending.TransferID, "status", result.Status, "error_code", result.ErrorCode)
 }
 
 func (d *Daemon) resetRoleSourceRecoveryPoll(runtimeID string) {

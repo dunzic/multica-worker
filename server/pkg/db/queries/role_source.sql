@@ -346,6 +346,126 @@ WHERE source_id = @source_id
   AND version = @version
   AND object_digest = @object_digest;
 
+-- name: InsertRoleSourceSecretTransfer :one
+INSERT INTO role_source_secret_transfer (
+    id, workspace_id, source_id, runtime_id, plan_digest, approval_id,
+    snapshot_digest, role_id, request_key, public_key,
+    private_key_ciphertext, key_id, claims, expires_at, created_by
+) VALUES (
+    @id, @workspace_id, @source_id, @runtime_id, @plan_digest, @approval_id,
+    @snapshot_digest, @role_id, @request_key, @public_key,
+    @private_key_ciphertext, @key_id, @claims, @expires_at, @created_by
+)
+ON CONFLICT (source_id, request_key) DO NOTHING
+RETURNING *;
+
+-- name: GetRoleSourceSecretTransferByRequest :one
+SELECT * FROM role_source_secret_transfer
+WHERE source_id = @source_id AND workspace_id = @workspace_id AND request_key = @request_key;
+
+-- name: GetRoleSourceSecretTransfer :one
+SELECT * FROM role_source_secret_transfer
+WHERE id = @id AND source_id = @source_id AND workspace_id = @workspace_id;
+
+-- name: GetRoleSourceSecretTransferForUpdate :one
+SELECT * FROM role_source_secret_transfer
+WHERE id = @id AND source_id = @source_id AND workspace_id = @workspace_id
+FOR UPDATE;
+
+-- name: GetRoleSourceSecretTransferForApply :one
+SELECT * FROM role_source_secret_transfer
+WHERE id = @id
+  AND source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND plan_digest = @plan_digest
+  AND approval_id = @approval_id
+  AND snapshot_digest = @snapshot_digest
+  AND role_id = @role_id
+  AND status = 'submitted'
+  AND expires_at > now()
+FOR UPDATE;
+
+-- name: ClaimNextRoleSourceSecretTransfer :one
+WITH candidate AS (
+    SELECT id FROM role_source_secret_transfer
+    WHERE runtime_id = @runtime_id
+      AND expires_at > now()
+      AND (
+        status = 'pending'
+        OR (status = 'claimed' AND lease_expires_at < now())
+      )
+    ORDER BY created_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_secret_transfer transfer
+SET status = 'claimed',
+    claimed_by_runtime_id = @runtime_id,
+    lease_token = @lease_token,
+    lease_expires_at = LEAST(expires_at, now() + @lease_duration::interval),
+    claimed_at = COALESCE(claimed_at, now()),
+    error_code = NULL
+FROM candidate
+WHERE transfer.id = candidate.id
+RETURNING transfer.*;
+
+-- name: SubmitRoleSourceSecretTransfer :one
+UPDATE role_source_secret_transfer
+SET status = 'submitted', envelope = @envelope, envelope_digest = @envelope_digest,
+    submitted_at = now(), lease_expires_at = NULL
+WHERE id = @id
+  AND source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND claimed_by_runtime_id = @runtime_id
+  AND lease_token = @lease_token
+  AND status = 'claimed'
+  AND expires_at > now()
+  AND lease_expires_at > now()
+RETURNING *;
+
+-- name: FailRoleSourceSecretTransfer :one
+UPDATE role_source_secret_transfer
+SET status = 'failed', error_code = @error_code, lease_expires_at = NULL
+WHERE id = @id
+  AND source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND claimed_by_runtime_id = @runtime_id
+  AND lease_token = @lease_token
+  AND status = 'claimed'
+  AND expires_at > now()
+  AND lease_expires_at > now()
+RETURNING *;
+
+-- name: ConsumeRoleSourceSecretTransfer :one
+UPDATE role_source_secret_transfer
+SET status = 'consumed', envelope = NULL,
+    private_key_ciphertext = decode(repeat('00', 60), 'hex'),
+    lease_token = NULL, lease_expires_at = NULL, consumed_at = now()
+WHERE id = @id
+  AND source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND status = 'submitted'
+  AND expires_at > now()
+RETURNING *;
+
+-- name: ExpireRoleSourceSecretTransfers :many
+WITH expired AS MATERIALIZED (
+    SELECT id
+    FROM role_source_secret_transfer
+    WHERE expires_at <= now()
+      AND status IN ('pending', 'claimed', 'submitted')
+    ORDER BY expires_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT @batch_limit
+)
+UPDATE role_source_secret_transfer transfer
+SET status = 'expired', envelope = NULL,
+    private_key_ciphertext = decode(repeat('00', 60), 'hex'),
+    lease_token = NULL, lease_expires_at = NULL, error_code = 'expired'
+FROM expired
+WHERE transfer.id = expired.id
+RETURNING transfer.id;
+
 -- name: InsertRoleSourceApply :one
 INSERT INTO role_source_apply (
     id, source_id, workspace_id, request_key, mode, snapshot_digest,

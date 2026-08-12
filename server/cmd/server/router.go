@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -249,6 +251,48 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		panic("build role source control plane: " + err.Error())
 	}
 	roleSourceControlPlane.SetArtifactReader(store)
+	roleSourceSecretKeyConfigured := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_SECRET_KEY")) != ""
+	if roleSourceSecretKey, keyErr := secretbox.LoadKey("MULTICA_ROLE_SOURCE_SECRET_KEY"); keyErr == nil {
+		box, boxErr := secretbox.New(roleSourceSecretKey)
+		clear(roleSourceSecretKey)
+		if boxErr != nil {
+			panic("build role source secret store: " + boxErr.Error())
+		} else {
+			keyID := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_SECRET_KEY_ID"))
+			if keyID == "" {
+				keyID = "v1"
+			}
+			if setErr := roleSourceControlPlane.SetSecretBox(box, keyID); setErr != nil {
+				panic("configure role source secret store: " + setErr.Error())
+			}
+			previousRaw := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS"))
+			if previousRaw != "" {
+				var previous map[string]string
+				if decodeErr := json.Unmarshal([]byte(previousRaw), &previous); decodeErr != nil {
+					panic("decode MULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS: " + decodeErr.Error())
+				}
+				for previousID, encoded := range previous {
+					key, decodeErr := base64.StdEncoding.DecodeString(encoded)
+					if decodeErr != nil || len(key) != secretbox.KeySize {
+						clear(key)
+						panic("decode previous role source secret key " + previousID)
+					}
+					previousBox, newErr := secretbox.New(key)
+					clear(key)
+					if newErr != nil {
+						panic("build previous role source secret key " + previousID + ": " + newErr.Error())
+					}
+					if addErr := roleSourceControlPlane.AddSecretDecryptionBox(previousBox, previousID); addErr != nil {
+						panic("configure previous role source secret key " + previousID + ": " + addErr.Error())
+					}
+				}
+			}
+		}
+	} else if roleSourceSecretKeyConfigured {
+		panic("load role source secret store key: " + keyErr.Error())
+	} else {
+		slog.Info("role source secret transfer disabled (MULTICA_ROLE_SOURCE_SECRET_KEY not set)")
+	}
 	h.RoleSourceCatalog = roleSourceCatalog
 	h.RoleSources = roleSourceControlPlane
 	h.TaskService.FeatureFlags = opts.FeatureFlags
@@ -1065,6 +1109,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/lease", h.RenewRoleSourceScanLease)
 		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/artifacts/check", h.CheckRoleSourceArtifacts)
 		r.Put("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/artifacts/{artifactDigest}", h.UploadRoleSourceArtifact)
+		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/secret-transfers/{transferId}/result", h.ReportRoleSourceSecretTransferResult)
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
@@ -1185,6 +1230,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/role-sources/{sourceId}/plans", h.CreateRoleSourcePlan)
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.RecordRoleSourcePlanApproval)
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/apply", h.ApplyRoleSourcePlan)
+					r.Post("/role-sources/{sourceId}/plans/{planDigest}/secret-transfers", h.RequestRoleSourceSecretTransfer)
 				})
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)

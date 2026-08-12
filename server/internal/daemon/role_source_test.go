@@ -168,6 +168,7 @@ generation:
 		"writer/agent-detail.en.md":           "# Writer\n",
 		"writer/writer-skills/draft/SKILL.md": "# Draft\n",
 		"writer/env/.env.example":             "API_TOKEN=\n",
+		"writer/env/.env":                     "API_TOKEN=super-secret-token\n",
 	}
 	for name, body := range files {
 		fullPath := filepath.Join(root, filepath.FromSlash(name))
@@ -195,6 +196,33 @@ generation:
 	if snapshot.SnapshotDigest == "" || len(snapshot.Manifest.Roles) != 1 || snapshot.Manifest.Roles[0].ID != "writer" {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
+	keyPair, err := rolesource.NewSecretEnvelopeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(keyPair.PrivateKey)
+	expiresAt := time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339Nano)
+	secretPending := protocol.DaemonHeartbeatPendingRoleSourceSecretTransfer{
+		TransferID: "00000000-0000-4000-8000-000000000063", SourceID: pending.SourceID, WorkspaceID: pending.WorkspaceID,
+		Kind: pending.Kind, AdapterVersion: pending.AdapterVersion, DaemonConfigID: pending.DaemonConfigID,
+		RoleID: "writer", SnapshotDigest: snapshot.SnapshotDigest, ContractVersion: rolesource.SecretEnvelopeContractVersion,
+		PublicKey: keyPair.PublicKey, ExpiresAt: expiresAt,
+	}
+	envelope, code := scanner.sealSecretTransfer(t.Context(), secretPending)
+	if code != "" {
+		t.Fatalf("secret transfer failed with code %q", code)
+	}
+	payload, err := rolesource.OpenSecretEnvelope(keyPair.PrivateKey, envelope, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rolesource.ClearSecretEnvelopePayload(&payload)
+	if payload.Environment["API_TOKEN"] != "super-secret-token" {
+		t.Fatalf("decrypted transfer environment keys = %v", payload.Environment)
+	}
+	if envelope.Claims.SnapshotDigest != snapshot.SnapshotDigest || envelope.Claims.RoleID != "writer" {
+		t.Fatalf("envelope claims = %+v", envelope.Claims)
+	}
 }
 
 func TestRoleSourceHeartbeatPollingIsThrottledAndCapacityAware(t *testing.T) {
@@ -207,10 +235,10 @@ func TestRoleSourceHeartbeatPollingIsThrottledAndCapacityAware(t *testing.T) {
 	first := daemon.roleSourceHeartbeatOptions("runtime-1", false)
 	second := daemon.roleSourceHeartbeatOptions("runtime-1", false)
 	forced := daemon.roleSourceHeartbeatOptions("runtime-1", true)
-	if !first.SupportsRoleSourceScan || !first.PollRoleSourceScan || second.PollRoleSourceScan || !forced.PollRoleSourceScan {
+	if !first.SupportsRoleSourceScan || !first.SupportsRoleSourceSecretTransfer || !first.PollRoleSourceScan || !first.PollRoleSourceSecretTransfer || second.PollRoleSourceScan || second.PollRoleSourceSecretTransfer || !forced.PollRoleSourceScan || !forced.PollRoleSourceSecretTransfer {
 		t.Fatalf("poll options: first=%+v second=%+v forced=%+v", first, second, forced)
 	}
-	if option := daemon.roleSourceHeartbeatOptions("runtime-2", true); !option.SupportsRoleSourceScan || option.PollRoleSourceScan {
+	if option := daemon.roleSourceHeartbeatOptions("runtime-2", true); !option.SupportsRoleSourceScan || !option.SupportsRoleSourceSecretTransfer || option.PollRoleSourceScan || option.PollRoleSourceSecretTransfer {
 		t.Fatalf("capacity-full option = %+v", option)
 	}
 	daemon.handleHeartbeatActions(t.Context(), "runtime-1", &HeartbeatResponse{}, first.PollRoleSourceScan)
@@ -255,7 +283,10 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 	client.client = httpClient
 	client.bundleClient = httpClient
 
-	if _, err := client.SendHeartbeat(t.Context(), "runtime-1", HeartbeatOptions{SupportsRoleSourceScan: true, PollRoleSourceScan: true}); err != nil {
+	if _, err := client.SendHeartbeat(t.Context(), "runtime-1", HeartbeatOptions{
+		SupportsRoleSourceScan: true, PollRoleSourceScan: true,
+		SupportsRoleSourceSecretTransfer: true, PollRoleSourceSecretTransfer: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	pending := PendingRoleSourceScan{RequestID: "request-1", SourceID: "source-1", LeaseToken: "lease-1"}
@@ -268,6 +299,12 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
+	secretPending := PendingRoleSourceSecretTransfer{TransferID: "transfer-1", SourceID: "source-1", LeaseToken: "lease-2"}
+	if err := client.ReportRoleSourceSecretTransferResult(t.Context(), "runtime-1", secretPending, RoleSourceSecretTransferResult{
+		Status: "failed", LeaseToken: "lease-2", ErrorCode: "snapshot_changed",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	ref := rolesource.ArtifactRef{Digest: "sha256:" + strings.Repeat("a", 64), Path: "writer/agent.md", MediaType: "text/markdown", SizeBytes: 7}
 	missing, err := client.CheckRoleSourceArtifacts(t.Context(), "runtime-1", pending, []rolesource.ArtifactRef{ref})
 	if err != nil || len(missing) != 1 || missing[0] != ref {
@@ -277,7 +314,8 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 		t.Fatal(err)
 	}
 	heartbeat := requests["/api/daemon/heartbeat"]
-	if heartbeat["supports_role_source_scan"] != true || heartbeat["poll_role_source_scan"] != true {
+	if heartbeat["supports_role_source_scan"] != true || heartbeat["poll_role_source_scan"] != true ||
+		heartbeat["supports_role_source_secret_transfer"] != true || heartbeat["poll_role_source_secret_transfer"] != true {
 		t.Fatalf("heartbeat negotiation body = %#v", heartbeat)
 	}
 	leaseBody := requests["/api/daemon/runtimes/runtime-1/role-sources/source-1/scans/request-1/lease"]
@@ -287,6 +325,10 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 	result := requests["/api/daemon/runtimes/runtime-1/role-sources/source-1/scans/request-1/result"]
 	if result["status"] != "failed" || result["lease_token"] != "lease-1" || result["error_code"] != "source_invalid" {
 		t.Fatalf("result body = %#v", result)
+	}
+	secretResult := requests["/api/daemon/runtimes/runtime-1/role-sources/source-1/secret-transfers/transfer-1/result"]
+	if secretResult["status"] != "failed" || secretResult["lease_token"] != "lease-2" || secretResult["error_code"] != "snapshot_changed" {
+		t.Fatalf("secret result body = %#v", secretResult)
 	}
 	uploadPath := "/api/daemon/runtimes/runtime-1/role-sources/source-1/scans/request-1/artifacts/" + ref.Digest
 	if uploads[uploadPath] != "payload" {

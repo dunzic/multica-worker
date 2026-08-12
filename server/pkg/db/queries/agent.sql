@@ -97,6 +97,20 @@ WHERE id = @id
   AND archived_at IS NULL
 RETURNING *;
 
+-- name: UpdateRoleSourceAgentSecrets :one
+-- The caller holds the role-source workspace mutation lock and the mapped
+-- agent row lock, merges only source-owned keys, and supplies the complete
+-- post-merge values. This query cannot cross workspace or system-agent scope.
+UPDATE agent
+SET custom_env = @custom_env,
+    mcp_config = @mcp_config,
+    updated_at = now()
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND kind = 'user'
+  AND archived_at IS NULL
+RETURNING *;
+
 -- name: CreateAgentBuilder :one
 -- One hidden builder agent per creation session. Keeping the execution carrier
 -- session-scoped freezes its model/runtime configuration when multiple builder

@@ -434,13 +434,16 @@ func TestHeartbeatRoundTrip(t *testing.T) {
 
 	hub := NewHub()
 	var calls atomic.Int32
-	hub.SetHeartbeatHandler(func(_ context.Context, identity ClientIdentity, runtimeID string, _ bool, supportsRoleSourceScan, pollRoleSourceScan bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+	hub.SetHeartbeatHandler(func(_ context.Context, identity ClientIdentity, runtimeID string, _ bool, supportsRoleSourceScan, pollRoleSourceScan, supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer bool) (*protocol.DaemonHeartbeatAckPayload, error) {
 		calls.Add(1)
 		if identity.WorkspaceID != "ws-1" {
 			t.Errorf("identity workspace = %q, want ws-1", identity.WorkspaceID)
 		}
 		if !supportsRoleSourceScan || !pollRoleSourceScan {
 			t.Errorf("role source negotiation = supports:%v poll:%v, want true/true", supportsRoleSourceScan, pollRoleSourceScan)
+		}
+		if !supportsRoleSourceSecretTransfer || !pollRoleSourceSecretTransfer {
+			t.Errorf("role source secret negotiation = supports:%v poll:%v, want true/true", supportsRoleSourceSecretTransfer, pollRoleSourceSecretTransfer)
 		}
 		return &protocol.DaemonHeartbeatAckPayload{
 			RuntimeID: runtimeID,
@@ -471,6 +474,7 @@ func TestHeartbeatRoundTrip(t *testing.T) {
 		Type: protocol.EventDaemonHeartbeat,
 		Payload: mustMarshalRaw(protocol.DaemonHeartbeatRequestPayload{
 			RuntimeID: "runtime-1", SupportsRoleSourceScan: true, PollRoleSourceScan: true,
+			SupportsRoleSourceSecretTransfer: true, PollRoleSourceSecretTransfer: true,
 		}),
 	})
 	if err != nil {
@@ -521,7 +525,7 @@ func TestHeartbeatHandlerCtxNotTimeBounded(t *testing.T) {
 
 	hub := NewHub()
 	const stall = 250 * time.Millisecond
-	hub.SetHeartbeatHandler(func(ctx context.Context, _ ClientIdentity, runtimeID string, _, _, _ bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+	hub.SetHeartbeatHandler(func(ctx context.Context, _ ClientIdentity, runtimeID string, _, _, _, _, _ bool) (*protocol.DaemonHeartbeatAckPayload, error) {
 		select {
 		case <-time.After(stall):
 		case <-ctx.Done():
@@ -582,7 +586,7 @@ func TestHeartbeatRejectsUnauthorizedRuntime(t *testing.T) {
 
 	hub := NewHub()
 	var called atomic.Bool
-	hub.SetHeartbeatHandler(func(context.Context, ClientIdentity, string, bool, bool, bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+	hub.SetHeartbeatHandler(func(context.Context, ClientIdentity, string, bool, bool, bool, bool, bool) (*protocol.DaemonHeartbeatAckPayload, error) {
 		called.Store(true)
 		return &protocol.DaemonHeartbeatAckPayload{Status: "ok"}, nil
 	})

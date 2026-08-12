@@ -14,6 +14,10 @@ const (
 	// role-source scan protocol. A server only claims work for a heartbeat that
 	// explicitly advertises matching daemon support.
 	DaemonCapabilityRoleSourceScanV1 = "role-source-scan-v1"
+	// DaemonCapabilityRoleSourceSecretTransferV1 negotiates a short-lived,
+	// public-key-encrypted role secret transfer. It is independent from scan
+	// support so older read-only daemons can never claim sensitive work.
+	DaemonCapabilityRoleSourceSecretTransferV1 = "role-source-secret-transfer-v1"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:
@@ -101,8 +105,9 @@ type WorkspacesChangedPayload struct{}
 // heartbeat, which claims whatever is queued) — so an unknown value from a
 // newer server stays safe on an older daemon.
 const (
-	PendingWorkKindModelList      = "model_list"
-	PendingWorkKindRoleSourceScan = "role_source_scan"
+	PendingWorkKindModelList                = "model_list"
+	PendingWorkKindRoleSourceScan           = "role_source_scan"
+	PendingWorkKindRoleSourceSecretTransfer = "role_source_secret_transfer"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a
@@ -311,10 +316,12 @@ type ChatSessionUpdatedPayload struct {
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
 // identical semantics.
 type DaemonHeartbeatRequestPayload struct {
-	RuntimeID              string `json:"runtime_id"`
-	SupportsBatchImport    bool   `json:"supports_batch_import,omitempty"`
-	SupportsRoleSourceScan bool   `json:"supports_role_source_scan,omitempty"`
-	PollRoleSourceScan     bool   `json:"poll_role_source_scan,omitempty"`
+	RuntimeID                        string `json:"runtime_id"`
+	SupportsBatchImport              bool   `json:"supports_batch_import,omitempty"`
+	SupportsRoleSourceScan           bool   `json:"supports_role_source_scan,omitempty"`
+	PollRoleSourceScan               bool   `json:"poll_role_source_scan,omitempty"`
+	SupportsRoleSourceSecretTransfer bool   `json:"supports_role_source_secret_transfer,omitempty"`
+	PollRoleSourceSecretTransfer     bool   `json:"poll_role_source_secret_transfer,omitempty"`
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
@@ -330,15 +337,16 @@ type DaemonHeartbeatRequestPayload struct {
 // and re-registers; without it the dead UUID would keep heartbeating until the
 // daemon process restarts.
 type DaemonHeartbeatAckPayload struct {
-	RuntimeID               string                                  `json:"runtime_id"`
-	Status                  string                                  `json:"status"`
-	ServerCapabilities      []string                                `json:"server_capabilities,omitempty"`
-	RuntimeGone             bool                                    `json:"runtime_gone,omitempty"`
-	PendingUpdate           *DaemonHeartbeatPendingUpdate           `json:"pending_update,omitempty"`
-	PendingModelList        *DaemonHeartbeatPendingModelList        `json:"pending_model_list,omitempty"`
-	PendingLocalSkills      *DaemonHeartbeatPendingLocalSkills      `json:"pending_local_skills,omitempty"`
-	PendingLocalSkillImport *DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_import,omitempty"`
-	PendingRoleSourceScan   *DaemonHeartbeatPendingRoleSourceScan   `json:"pending_role_source_scan,omitempty"`
+	RuntimeID                       string                                          `json:"runtime_id"`
+	Status                          string                                          `json:"status"`
+	ServerCapabilities              []string                                        `json:"server_capabilities,omitempty"`
+	RuntimeGone                     bool                                            `json:"runtime_gone,omitempty"`
+	PendingUpdate                   *DaemonHeartbeatPendingUpdate                   `json:"pending_update,omitempty"`
+	PendingModelList                *DaemonHeartbeatPendingModelList                `json:"pending_model_list,omitempty"`
+	PendingLocalSkills              *DaemonHeartbeatPendingLocalSkills              `json:"pending_local_skills,omitempty"`
+	PendingLocalSkillImport         *DaemonHeartbeatPendingLocalSkillImport         `json:"pending_local_skill_import,omitempty"`
+	PendingRoleSourceScan           *DaemonHeartbeatPendingRoleSourceScan           `json:"pending_role_source_scan,omitempty"`
+	PendingRoleSourceSecretTransfer *DaemonHeartbeatPendingRoleSourceSecretTransfer `json:"pending_role_source_secret_transfer,omitempty"`
 	// PendingLocalSkillImports carries multiple import requests in a single
 	// heartbeat so the daemon can process them concurrently. Old daemons
 	// that don't know this field silently ignore it (standard JSON behavior)
@@ -360,6 +368,26 @@ type DaemonHeartbeatPendingRoleSourceScan struct {
 	LeaseToken             string `json:"lease_token"`
 	LeaseExpiresAt         string `json:"lease_expires_at"`
 	PreviousSnapshotDigest string `json:"previous_snapshot_digest,omitempty"`
+}
+
+// DaemonHeartbeatPendingRoleSourceSecretTransfer is a one-time public-key
+// challenge. It contains no source secret or server private key. The daemon
+// must rescan the local source, require the exact snapshot digest, encrypt one
+// role payload to PublicKey, and report it with the lease token before expiry.
+type DaemonHeartbeatPendingRoleSourceSecretTransfer struct {
+	TransferID      string `json:"transfer_id"`
+	SourceID        string `json:"source_id"`
+	WorkspaceID     string `json:"workspace_id"`
+	Kind            string `json:"kind"`
+	AdapterVersion  string `json:"adapter_version"`
+	DaemonConfigID  string `json:"daemon_config_id"`
+	RoleID          string `json:"role_id"`
+	SnapshotDigest  string `json:"snapshot_digest"`
+	ContractVersion string `json:"contract_version"`
+	PublicKey       string `json:"public_key"`
+	ExpiresAt       string `json:"expires_at"`
+	LeaseToken      string `json:"lease_token"`
+	LeaseExpiresAt  string `json:"lease_expires_at"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no

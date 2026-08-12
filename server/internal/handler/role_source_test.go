@@ -28,52 +28,79 @@ const (
 )
 
 type fakeRoleSourceControlPlane struct {
-	registerInput    *rolesource.RegisterSourceInput
-	registerRow      db.RoleSource
-	registerErr      error
-	requestRow       db.RoleSourceScanRequest
-	requestErr       error
-	getScanRow       db.RoleSourceScanRequest
-	getScanErr       error
-	listRows         []db.RoleSource
-	listErr          error
-	getSourceRow     db.RoleSource
-	getSourceErr     error
-	claimRow         rolesource.ClaimedScan
-	claimErr         error
-	claimCalls       int
-	renewRow         db.RoleSourceScanRequest
-	renewErr         error
-	createPlanInput  *rolesource.CreatePlanInput
-	createPlanRow    db.RoleSourcePlan
-	createPlanErr    error
-	approvalInput    *rolesource.RecordPlanApprovalInput
-	approvalRow      db.RoleSourcePlanApproval
-	approvalErr      error
-	applyInput       *rolesource.ApplyPlanInput
-	applyRow         db.RoleSourceApply
-	applyReceipt     rolesource.ApplyReceipt
-	applyErr         error
-	getPlanRow       db.RoleSourcePlan
-	getPlanErr       error
-	planRows         []db.RoleSourcePlan
-	planListErr      error
-	snapshotRows     []db.RoleSourceSnapshot
-	snapshotListErr  error
-	approvalRows     []db.RoleSourcePlanApproval
-	approvalListErr  error
-	missingArtifacts []rolesource.ArtifactRef
-	missingErr       error
-	storedArtifact   db.RoleSourceArtifact
-	storedCreated    bool
-	storeArtifactErr error
-	calls            int
+	registerInput             *rolesource.RegisterSourceInput
+	registerRow               db.RoleSource
+	registerErr               error
+	requestRow                db.RoleSourceScanRequest
+	requestErr                error
+	getScanRow                db.RoleSourceScanRequest
+	getScanErr                error
+	listRows                  []db.RoleSource
+	listErr                   error
+	getSourceRow              db.RoleSource
+	getSourceErr              error
+	claimRow                  rolesource.ClaimedScan
+	claimErr                  error
+	claimCalls                int
+	renewRow                  db.RoleSourceScanRequest
+	renewErr                  error
+	createPlanInput           *rolesource.CreatePlanInput
+	createPlanRow             db.RoleSourcePlan
+	createPlanErr             error
+	approvalInput             *rolesource.RecordPlanApprovalInput
+	approvalRow               db.RoleSourcePlanApproval
+	approvalErr               error
+	applyInput                *rolesource.ApplyPlanInput
+	applyRow                  db.RoleSourceApply
+	applyReceipt              rolesource.ApplyReceipt
+	applyErr                  error
+	secretTransferInput       *rolesource.RequestSecretTransferInput
+	secretTransferRow         db.RoleSourceSecretTransfer
+	secretTransferErr         error
+	claimedSecretTransfer     rolesource.ClaimedSecretTransfer
+	claimSecretTransferErr    error
+	claimSecretTransferCalls  int
+	reportSecretTransferInput *rolesource.ReportSecretTransferInput
+	reportSecretTransferRow   db.RoleSourceSecretTransfer
+	reportSecretTransferErr   error
+	getPlanRow                db.RoleSourcePlan
+	getPlanErr                error
+	planRows                  []db.RoleSourcePlan
+	planListErr               error
+	snapshotRows              []db.RoleSourceSnapshot
+	snapshotListErr           error
+	approvalRows              []db.RoleSourcePlanApproval
+	approvalListErr           error
+	missingArtifacts          []rolesource.ArtifactRef
+	missingErr                error
+	storedArtifact            db.RoleSourceArtifact
+	storedCreated             bool
+	storeArtifactErr          error
+	calls                     int
 }
 
 func (f *fakeRoleSourceControlPlane) ApplyPlan(_ context.Context, input rolesource.ApplyPlanInput) (db.RoleSourceApply, rolesource.ApplyReceipt, error) {
 	f.calls++
 	f.applyInput = &input
 	return f.applyRow, f.applyReceipt, f.applyErr
+}
+
+func (f *fakeRoleSourceControlPlane) RequestSecretTransfer(_ context.Context, input rolesource.RequestSecretTransferInput) (db.RoleSourceSecretTransfer, error) {
+	f.calls++
+	f.secretTransferInput = &input
+	return f.secretTransferRow, f.secretTransferErr
+}
+
+func (f *fakeRoleSourceControlPlane) ClaimNextSecretTransfer(context.Context, string, time.Duration) (rolesource.ClaimedSecretTransfer, error) {
+	f.calls++
+	f.claimSecretTransferCalls++
+	return f.claimedSecretTransfer, f.claimSecretTransferErr
+}
+
+func (f *fakeRoleSourceControlPlane) ReportSecretTransfer(_ context.Context, input rolesource.ReportSecretTransferInput) (db.RoleSourceSecretTransfer, error) {
+	f.calls++
+	f.reportSecretTransferInput = &input
+	return f.reportSecretTransferRow, f.reportSecretTransferErr
 }
 
 type roleSourcePendingWorkRecorder struct {
@@ -477,10 +504,12 @@ func TestApplyRoleSourcePlan_UsesSeparateApplyGateAndReturnsReceipt(t *testing.T
 	plan := roleSourceTestPlanRow(t)
 	applyID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
 	approvalID := "00000000-0000-4000-8000-000000000044"
+	secretTransferID := "00000000-0000-4000-8000-000000000046"
 	receipt := rolesource.ApplyReceipt{
 		ContractVersion: rolesource.ApplyReceiptContractVersion, ApplyID: util.UUIDToString(applyID),
 		SourceID: roleSourceTestSourceID, WorkspaceID: testWorkspaceID, SnapshotDigest: plan.ToSnapshotDigest,
 		PlanDigest: plan.PlanDigest, ApprovalID: approvalID, Mappings: []rolesource.ApplyMapping{},
+		SecretTransfers: []rolesource.SecretTransferReceipt{{RoleID: "writer", TransferID: secretTransferID, EnvelopeDigest: "sha256:" + strings.Repeat("d", 64)}},
 	}
 	fake := &fakeRoleSourceControlPlane{
 		applyRow:     db.RoleSourceApply{ID: applyID, SourceID: util.MustParseUUID(roleSourceTestSourceID), WorkspaceID: util.MustParseUUID(testWorkspaceID), Status: "succeeded"},
@@ -489,7 +518,7 @@ func TestApplyRoleSourcePlan_UsesSeparateApplyGateAndReturnsReceipt(t *testing.T
 	h := roleSourceTestHandler(t, true, fake)
 	w := httptest.NewRecorder()
 	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
-		"request_key": "apply-once", "approval_id": approvalID,
+		"request_key": "apply-once", "approval_id": approvalID, "secret_transfer_ids": map[string]string{"writer": secretTransferID},
 	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", plan.PlanDigest)
 
 	h.ApplyRoleSourcePlan(w, req)
@@ -497,7 +526,7 @@ func TestApplyRoleSourcePlan_UsesSeparateApplyGateAndReturnsReceipt(t *testing.T
 	if w.Code != http.StatusOK {
 		t.Fatalf("apply plan: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if fake.applyInput == nil || fake.applyInput.RequestKey != "apply-once" || fake.applyInput.ApprovalID != approvalID || fake.applyInput.ActorUserID != testUserID {
+	if fake.applyInput == nil || fake.applyInput.RequestKey != "apply-once" || fake.applyInput.ApprovalID != approvalID || fake.applyInput.ActorUserID != testUserID || fake.applyInput.SecretTransferIDs["writer"] != secretTransferID {
 		t.Fatalf("apply input = %+v", fake.applyInput)
 	}
 	if strings.Contains(w.Body.String(), "apply-once") || !strings.Contains(w.Body.String(), approvalID) {
@@ -543,6 +572,56 @@ func TestApplyRoleSourcePlan_MapsUnsafeMaterializationToUnprocessable(t *testing
 	}
 }
 
+func TestRequestRoleSourceSecretTransfer_ReturnsOnlyPublicChallengeAndWakesRuntime(t *testing.T) {
+	plan := roleSourceTestPlanRow(t)
+	transferID := util.MustParseUUID("00000000-0000-4000-8000-000000000046")
+	approvalID := util.MustParseUUID("00000000-0000-4000-8000-000000000044")
+	expiresAt := time.Date(2026, 8, 13, 10, 15, 0, 0, time.UTC)
+	claims := rolesource.SecretEnvelopeClaims{
+		ContractVersion: rolesource.SecretEnvelopeContractVersion, TransferID: util.UUIDToString(transferID),
+		WorkspaceID: testWorkspaceID, SourceID: roleSourceTestSourceID, RoleID: "writer",
+		SnapshotDigest: plan.ToSnapshotDigest, ExpiresAt: expiresAt.Format(time.RFC3339Nano),
+	}
+	claimsBody, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRoleSourceControlPlane{secretTransferRow: db.RoleSourceSecretTransfer{
+		ID: transferID, WorkspaceID: util.MustParseUUID(testWorkspaceID), SourceID: util.MustParseUUID(roleSourceTestSourceID),
+		RuntimeID: util.MustParseUUID(roleSourceTestRuntimeID), PlanDigest: plan.PlanDigest, ApprovalID: approvalID,
+		SnapshotDigest: plan.ToSnapshotDigest, RoleID: "writer", RequestKey: "do-not-expose-request-key", Status: "pending",
+		PublicKey: strings.Repeat("A", 43), PrivateKeyCiphertext: []byte("do-not-expose-private-key"), KeyID: "do-not-expose-key-id",
+		Claims: claimsBody, ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true},
+	}}
+	h := roleSourceTestHandler(t, true, fake)
+	recorder := &roleSourcePendingWorkRecorder{}
+	h.DaemonPendingWork = recorder
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]string{
+		"request_key": "do-not-expose-request-key", "approval_id": util.UUIDToString(approvalID), "role_id": "writer",
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", plan.PlanDigest)
+
+	h.RequestRoleSourceSecretTransfer(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("request secret transfer: expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if fake.secretTransferInput == nil || fake.secretTransferInput.RoleID != "writer" || fake.secretTransferInput.ActorUserID != testUserID {
+		t.Fatalf("secret transfer input = %+v", fake.secretTransferInput)
+	}
+	for _, forbidden := range []string{"request_key", "do-not-expose-request-key", "private_key", "do-not-expose-private-key", "key_id", "do-not-expose-key-id", "envelope"} {
+		if strings.Contains(w.Body.String(), forbidden) {
+			t.Fatalf("secret transfer response exposed %q: %s", forbidden, w.Body.String())
+		}
+	}
+	if !strings.Contains(w.Body.String(), `"public_key"`) || !strings.Contains(w.Body.String(), plan.ToSnapshotDigest) {
+		t.Fatalf("secret transfer response omitted public challenge: %s", w.Body.String())
+	}
+	if recorder.calls != 1 || recorder.runtimeID != roleSourceTestRuntimeID || recorder.kind != protocol.PendingWorkKindRoleSourceSecretTransfer {
+		t.Fatalf("secret transfer wakeup = %+v", recorder)
+	}
+}
+
 func TestPopulateRoleSourceHeartbeat_SeparatesNegotiationFromPolling(t *testing.T) {
 	fake := &fakeRoleSourceControlPlane{}
 	h := roleSourceTestHandler(t, true, fake)
@@ -571,6 +650,45 @@ func TestPopulateRoleSourceHeartbeat_SeparatesNegotiationFromPolling(t *testing.
 	}
 }
 
+func TestPopulateRoleSourceSecretTransferHeartbeat_RequiresIndependentNegotiation(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{}
+	h := roleSourceTestHandler(t, true, fake)
+	ack := &protocol.DaemonHeartbeatAckPayload{}
+
+	h.populateRoleSourceSecretTransferHeartbeat(context.Background(), ack, roleSourceTestRuntimeID, testWorkspaceID, false, true)
+	if fake.claimSecretTransferCalls != 0 || len(ack.ServerCapabilities) != 0 {
+		t.Fatalf("unsupported daemon claimed secret work: calls=%d capabilities=%v", fake.claimSecretTransferCalls, ack.ServerCapabilities)
+	}
+	h.populateRoleSourceSecretTransferHeartbeat(context.Background(), ack, roleSourceTestRuntimeID, testWorkspaceID, true, false)
+	if fake.claimSecretTransferCalls != 0 || len(ack.ServerCapabilities) != 1 || ack.ServerCapabilities[0] != protocol.DaemonCapabilityRoleSourceSecretTransferV1 {
+		t.Fatalf("capability-only secret heartbeat = calls:%d capabilities:%v", fake.claimSecretTransferCalls, ack.ServerCapabilities)
+	}
+
+	transferID := util.MustParseUUID("00000000-0000-4000-8000-000000000046")
+	leaseToken := util.MustParseUUID("00000000-0000-4000-8000-000000000047")
+	expiresAt := time.Date(2026, 8, 13, 10, 15, 0, 0, time.UTC)
+	fake.claimedSecretTransfer = rolesource.ClaimedSecretTransfer{
+		Transfer: db.RoleSourceSecretTransfer{
+			ID: transferID, SourceID: util.MustParseUUID(roleSourceTestSourceID), WorkspaceID: util.MustParseUUID(testWorkspaceID),
+			RoleID: "writer", SnapshotDigest: "sha256:" + strings.Repeat("c", 64), PublicKey: strings.Repeat("A", 43),
+			LeaseToken: leaseToken, LeaseExpiresAt: pgtype.Timestamptz{Time: expiresAt.Add(-time.Minute), Valid: true},
+		},
+		Source: roleSourceTestRow(),
+		Claims: rolesource.SecretEnvelopeClaims{
+			ContractVersion: rolesource.SecretEnvelopeContractVersion, TransferID: util.UUIDToString(transferID),
+			WorkspaceID: testWorkspaceID, SourceID: roleSourceTestSourceID, RoleID: "writer",
+			SnapshotDigest: "sha256:" + strings.Repeat("c", 64), ExpiresAt: expiresAt.Format(time.RFC3339Nano),
+		},
+	}
+	h.populateRoleSourceSecretTransferHeartbeat(context.Background(), ack, roleSourceTestRuntimeID, testWorkspaceID, true, true)
+	if fake.claimSecretTransferCalls != 1 || ack.PendingRoleSourceSecretTransfer == nil {
+		t.Fatalf("secret poll did not claim work: calls=%d pending=%+v", fake.claimSecretTransferCalls, ack.PendingRoleSourceSecretTransfer)
+	}
+	if pending := ack.PendingRoleSourceSecretTransfer; pending.TransferID != util.UUIDToString(transferID) || pending.DaemonConfigID != "local-secret-config-handle" || pending.PublicKey == "" || pending.LeaseToken == "" {
+		t.Fatalf("pending secret transfer = %+v", pending)
+	}
+}
+
 func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -585,7 +703,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		t.Fatalf("create workspace: %v", err)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+		for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 			_, _ = testPool.Exec(context.Background(), "DELETE FROM "+table+" WHERE workspace_id = $1", workspaceID)
 		}
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, workspaceID)
@@ -657,6 +775,23 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 			workspace_id, source_id, capability_id, version, object_digest, definition, snapshot_digest
 		) VALUES ($1, $2, 'delete-capability', '1.0.0', $3, '{}'::jsonb, $3)
 	`, workspaceID, sourceID, digestA)
+	var approvalID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO role_source_plan_approval (id, source_id, workspace_id, plan_digest, request_key, decision, decisions, actor_user_id)
+		VALUES (gen_random_uuid(), $1, $2, $3, 'delete-secret-fixture', 'approved', '{}'::jsonb, $4)
+		RETURNING id
+	`, sourceID, workspaceID, digestB, testUserID).Scan(&approvalID); err != nil {
+		t.Fatalf("create secret transfer approval: %v", err)
+	}
+	execFixture(`
+		INSERT INTO role_source_secret_transfer (
+			id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest,
+			role_id, request_key, public_key, private_key_ciphertext, key_id, claims, expires_at, created_by
+		) VALUES (
+			gen_random_uuid(), $1, $2, $3, $4, $5, $6,
+			'delete-role', 'delete-secret-fixture', repeat('A', 43), convert_to(repeat('x', 60), 'UTF8'), 'v1', '{}'::jsonb, now() + interval '15 minutes', $7
+		)
+	`, workspaceID, sourceID, runtimeID, digestB, approvalID, digestA, testUserID)
 	execFixture(`
 		INSERT INTO role_source_audit_event (id, source_id, workspace_id, sequence, event_type, actor_type, actor_id, event_digest, payload)
 		VALUES (gen_random_uuid(), $1, $2, 1, 'source_registered', 'user', $3, $4, '{}'::jsonb)
@@ -668,7 +803,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("delete workspace: expected 204, got %d: %s", w.Code, w.Body.String())
 	}
-	for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+	for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 		var count int
 		if err := testPool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE workspace_id = $1", workspaceID).Scan(&count); err != nil {
 			t.Fatalf("count %s: %v", table, err)
