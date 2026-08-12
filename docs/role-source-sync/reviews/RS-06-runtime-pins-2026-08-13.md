@@ -62,6 +62,7 @@ Passing evidence:
 - static contract tests prove no runtime plaintext fields are stored in the pin and retries copy parent snapshot/capability evidence;
 - handler tests reject malformed capability evidence and prove the daemon wire shape is content-free;
 - daemon client test proves typed batch-claim decoding with an authoritative empty capability list;
+- execution-environment tests prove nested capability marker/package files survive workspace-native skill materialization across every file-based provider plus Codex and Hermes task homes;
 - role-source/handler/migration race suites and `go vet` pass;
 - the isolated-schema PostgreSQL test now exercises initial capture, retry inheritance, immutable pins and same-transaction stale-task invalidation when PostgreSQL is available;
 - deterministic planning at 10,000 roles completes locally; this is algorithm evidence, not an end-to-end capacity claim.
