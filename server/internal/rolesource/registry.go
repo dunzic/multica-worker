@@ -138,6 +138,7 @@ func (r *Registry) Scan(ctx context.Context, kind Kind, request ScanRequest) (Sn
 	if err := validateDiagnostics(output.Diagnostics); err != nil {
 		return Snapshot{}, fmt.Errorf("validate %s diagnostics: %w", kind, err)
 	}
+	canonicalizeDiagnostics(output.Diagnostics)
 	if err := validateManifest(&output.Manifest); err != nil {
 		return Snapshot{}, fmt.Errorf("validate %s manifest: %w", kind, err)
 	}
@@ -145,7 +146,7 @@ func (r *Registry) Scan(ctx context.Context, kind Kind, request ScanRequest) (Sn
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("digest %s manifest: %w", kind, err)
 	}
-	return Snapshot{
+	snapshot := Snapshot{
 		Kind:            desc.Kind,
 		AdapterVersion:  desc.AdapterVersion,
 		ContractVersion: desc.ContractVersion,
@@ -153,7 +154,13 @@ func (r *Registry) Scan(ctx context.Context, kind Kind, request ScanRequest) (Sn
 		Manifest:        output.Manifest,
 		Diagnostics:     output.Diagnostics,
 		SourceEvidence:  output.SourceEvidence,
-	}, nil
+	}
+	snapshotDigest, err := digestSnapshot(snapshot)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("digest %s snapshot: %w", kind, err)
+	}
+	snapshot.SnapshotDigest = snapshotDigest
+	return snapshot, nil
 }
 
 func validateSourceEvidence(evidence SourceEvidence) error {
@@ -194,6 +201,14 @@ func validateDiagnostics(diagnostics []Diagnostic) error {
 	return nil
 }
 
+func canonicalizeDiagnostics(diagnostics []Diagnostic) {
+	sort.Slice(diagnostics, func(i, j int) bool {
+		a, b := diagnostics[i], diagnostics[j]
+		return string(a.Severity)+"\x00"+a.Code+"\x00"+a.ObjectKind+"\x00"+a.ObjectID+"\x00"+a.Path+"\x00"+a.Message <
+			string(b.Severity)+"\x00"+b.Code+"\x00"+b.ObjectKind+"\x00"+b.ObjectID+"\x00"+b.Path+"\x00"+b.Message
+	})
+}
+
 func validateDescriptor(desc Descriptor) error {
 	if !kindPattern.MatchString(string(desc.Kind)) {
 		return fmt.Errorf("invalid role source adapter kind %q", desc.Kind)
@@ -213,6 +228,24 @@ func validateManifest(manifest *Manifest) error {
 	}
 	if len(manifest.Roles) > 10_000 || len(manifest.Capabilities) > 10_000 {
 		return errors.New("manifest object count exceeds hard limit")
+	}
+	totalObjects := len(manifest.Roles) + len(manifest.Capabilities)
+	totalArtifacts := 0
+	for _, capability := range manifest.Capabilities {
+		totalArtifacts += 1 + len(capability.Artifacts)
+	}
+	for _, role := range manifest.Roles {
+		totalObjects += len(role.Skills) + len(role.CapabilityBindings) + len(role.Environment) + len(role.MCP) + len(role.Automations)
+		totalArtifacts += 1 + len(role.Skills) + len(role.Automations)
+		if role.Profile != nil {
+			totalArtifacts++
+		}
+		for _, skill := range role.Skills {
+			totalArtifacts += len(skill.Artifacts)
+		}
+	}
+	if totalObjects > maxNormalizedObjects || totalArtifacts > maxNormalizedObjects {
+		return errors.New("manifest nested object or artifact count exceeds hard limit")
 	}
 	if err := validateUniqueIDs("role", roleIDs(manifest.Roles)); err != nil {
 		return err
@@ -431,6 +464,16 @@ func canonicalizeManifest(manifest *Manifest) {
 
 func digestManifest(manifest Manifest) (string, error) {
 	body, err := json.Marshal(manifest)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func digestSnapshot(snapshot Snapshot) (string, error) {
+	snapshot.SnapshotDigest = ""
+	body, err := json.Marshal(snapshot)
 	if err != nil {
 		return "", err
 	}

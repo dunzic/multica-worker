@@ -69,6 +69,7 @@ type Snapshot struct {
 	Kind            Kind           `json:"kind"`
 	AdapterVersion  string         `json:"adapter_version"`
 	ContractVersion string         `json:"contract_version"`
+	SnapshotDigest  string         `json:"snapshot_digest"`
 	ManifestDigest  string         `json:"manifest_digest"`
 	Manifest        Manifest       `json:"manifest"`
 	Diagnostics     []Diagnostic   `json:"diagnostics"`
@@ -197,4 +198,75 @@ type ArtifactRef struct {
 	Path      string `json:"path"`
 	MediaType string `json:"media_type"`
 	SizeBytes int64  `json:"size_bytes"`
+}
+
+const PlanContractVersion = "1.0"
+
+// Plan is a deterministic, secret-free comparison between two immutable
+// snapshots. It contains no timestamps or actors: those belong to the
+// persisted approval/apply records and must not make the plan digest unstable.
+type Plan struct {
+	ContractVersion    string        `json:"contract_version"`
+	SourceID           string        `json:"source_id"`
+	FromSnapshotDigest string        `json:"from_snapshot_digest,omitempty"`
+	ToSnapshotDigest   string        `json:"to_snapshot_digest"`
+	PlanDigest         string        `json:"plan_digest"`
+	Applyable          bool          `json:"applyable"`
+	Summary            PlanSummary   `json:"summary"`
+	Actions            []PlanAction  `json:"actions"`
+	Blockers           []PlanBlocker `json:"blockers"`
+}
+
+type PlanSummary struct {
+	Create           int `json:"create"`
+	Update           int `json:"update"`
+	Unchanged        int `json:"unchanged"`
+	ArchiveCandidate int `json:"archive_candidate"`
+	Blocked          int `json:"blocked"`
+}
+
+type PlanOperation string
+
+const (
+	PlanCreate           PlanOperation = "create"
+	PlanUpdate           PlanOperation = "update"
+	PlanUnchanged        PlanOperation = "unchanged"
+	PlanArchiveCandidate PlanOperation = "archive_candidate"
+	PlanBlocked          PlanOperation = "blocked"
+)
+
+type PlanRisk string
+
+const (
+	PlanRiskNone   PlanRisk = "none"
+	PlanRiskLow    PlanRisk = "low"
+	PlanRiskMedium PlanRisk = "medium"
+	PlanRiskHigh   PlanRisk = "high"
+)
+
+// ObjectRef is the stable source identity of one independently materialized
+// object. ParentID scopes role-owned objects such as skills and automations.
+type ObjectRef struct {
+	Kind     string `json:"kind"`
+	ParentID string `json:"parent_id,omitempty"`
+	ID       string `json:"id"`
+}
+
+type PlanAction struct {
+	Ref                 ObjectRef     `json:"ref"`
+	DisplayName         string        `json:"display_name,omitempty"`
+	Operation           PlanOperation `json:"operation"`
+	ProposedOperation   PlanOperation `json:"proposed_operation,omitempty"`
+	Risk                PlanRisk      `json:"risk"`
+	BeforeDigest        string        `json:"before_digest,omitempty"`
+	AfterDigest         string        `json:"after_digest,omitempty"`
+	Reason              string        `json:"reason"`
+	BlockingDiagnostics []string      `json:"blocking_diagnostics,omitempty"`
+}
+
+type PlanBlocker struct {
+	Code    string    `json:"code"`
+	Message string    `json:"message"`
+	Object  ObjectRef `json:"object,omitempty"`
+	Global  bool      `json:"global"`
 }

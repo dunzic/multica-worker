@@ -10,11 +10,12 @@ import (
 )
 
 type fakeAdapter struct {
-	desc      Descriptor
-	manifest  Manifest
-	evidence  SourceEvidence
-	configErr error
-	scanErr   error
+	desc        Descriptor
+	manifest    Manifest
+	evidence    SourceEvidence
+	diagnostics []Diagnostic
+	configErr   error
+	scanErr     error
 }
 
 func (f fakeAdapter) Descriptor() Descriptor               { return f.desc }
@@ -25,8 +26,49 @@ func (f fakeAdapter) RedactConfig(json.RawMessage) (json.RawMessage, error) {
 func (f fakeAdapter) Scan(context.Context, ScanRequest) (ScanOutput, error) {
 	return ScanOutput{
 		Manifest:       f.manifest,
+		Diagnostics:    f.diagnostics,
 		SourceEvidence: f.evidence,
 	}, f.scanErr
+}
+
+func TestRegistrySnapshotDigestCanonicalizesDiagnosticOrder(t *testing.T) {
+	adapter := validFakeAdapter("fake_source")
+	adapter.diagnostics = []Diagnostic{
+		{Severity: DiagnosticWarning, Code: "z_warning", Message: "z"},
+		{Severity: DiagnosticInfo, Code: "a_info", Message: "a"},
+	}
+	registry, err := NewRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := registry.Scan(context.Background(), "fake_source", ScanRequest{WorkspaceID: "workspace-1", SourceID: "source-1", Config: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.diagnostics[0], adapter.diagnostics[1] = adapter.diagnostics[1], adapter.diagnostics[0]
+	registry, err = NewRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := registry.Scan(context.Background(), "fake_source", ScanRequest{WorkspaceID: "workspace-1", SourceID: "source-1", Config: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SnapshotDigest != second.SnapshotDigest {
+		t.Fatalf("snapshot digest changed with diagnostic order: %s != %s", first.SnapshotDigest, second.SnapshotDigest)
+	}
+}
+
+func TestRegistryRejectsNestedManifestBomb(t *testing.T) {
+	adapter := validFakeAdapter("fake_source")
+	adapter.manifest.Roles[0].Environment = make([]EnvironmentKey, maxNormalizedObjects+1)
+	registry, err := NewRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Scan(context.Background(), "fake_source", ScanRequest{WorkspaceID: "workspace-1", SourceID: "source-1", Config: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("Scan accepted more nested objects than the generic contract limit")
+	}
 }
 
 func validFakeAdapter(kind Kind) fakeAdapter {
@@ -121,6 +163,9 @@ func TestRegistryScanCanonicalizesAndHashesManifest(t *testing.T) {
 	if snapshot.ManifestDigest == "" {
 		t.Fatal("manifest digest is empty")
 	}
+	if snapshot.SnapshotDigest == "" {
+		t.Fatal("snapshot digest is empty")
+	}
 	if got := snapshot.Manifest.Roles[0].ID; got != "a-role" {
 		t.Fatalf("first canonical role = %q, want a-role", got)
 	}
@@ -147,6 +192,9 @@ func TestRegistryScanCanonicalizesAndHashesManifest(t *testing.T) {
 	}
 	if snapshot.ManifestDigest != snapshot2.ManifestDigest {
 		t.Fatalf("digest changed with input order: %s != %s", snapshot.ManifestDigest, snapshot2.ManifestDigest)
+	}
+	if snapshot.SnapshotDigest != snapshot2.SnapshotDigest {
+		t.Fatalf("snapshot digest changed with input order: %s != %s", snapshot.SnapshotDigest, snapshot2.SnapshotDigest)
 	}
 }
 
