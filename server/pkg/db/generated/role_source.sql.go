@@ -785,6 +785,44 @@ func (q *Queries) GetLatestRoleSourcePlanApproval(ctx context.Context, arg GetLa
 	return i, err
 }
 
+const getLatestSucceededRoleSourceApplyForSnapshot = `-- name: GetLatestSucceededRoleSourceApplyForSnapshot :one
+SELECT id, source_id, workspace_id, request_key, mode, snapshot_digest, plan_digest, status, actor_user_id, receipt_digest, receipt, error_code, created_at, completed_at FROM role_source_apply
+WHERE source_id = $1
+  AND workspace_id = $2
+  AND snapshot_digest = $3
+  AND status = 'succeeded'
+ORDER BY completed_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLatestSucceededRoleSourceApplyForSnapshotParams struct {
+	SourceID       pgtype.UUID `json:"source_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+func (q *Queries) GetLatestSucceededRoleSourceApplyForSnapshot(ctx context.Context, arg GetLatestSucceededRoleSourceApplyForSnapshotParams) (RoleSourceApply, error) {
+	row := q.db.QueryRow(ctx, getLatestSucceededRoleSourceApplyForSnapshot, arg.SourceID, arg.WorkspaceID, arg.SnapshotDigest)
+	var i RoleSourceApply
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.WorkspaceID,
+		&i.RequestKey,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.Status,
+		&i.ActorUserID,
+		&i.ReceiptDigest,
+		&i.Receipt,
+		&i.ErrorCode,
+		&i.CreatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const getRoleSourceApplyByRequest = `-- name: GetRoleSourceApplyByRequest :one
 SELECT id, source_id, workspace_id, request_key, mode, snapshot_digest, plan_digest, status, actor_user_id, receipt_digest, receipt, error_code, created_at, completed_at FROM role_source_apply
 WHERE source_id = $1
@@ -2127,6 +2165,56 @@ func (q *Queries) ListRoleSourcesInWorkspace(ctx context.Context, workspaceID pg
 			&i.UpdatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSucceededRoleSourceApplies = `-- name: ListSucceededRoleSourceApplies :many
+SELECT id, source_id, workspace_id, request_key, mode, snapshot_digest, plan_digest, status, actor_user_id, receipt_digest, receipt, error_code, created_at, completed_at FROM role_source_apply
+WHERE source_id = $1
+  AND workspace_id = $2
+  AND status = 'succeeded'
+ORDER BY completed_at DESC, id DESC
+LIMIT $3
+`
+
+type ListSucceededRoleSourceAppliesParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+func (q *Queries) ListSucceededRoleSourceApplies(ctx context.Context, arg ListSucceededRoleSourceAppliesParams) ([]RoleSourceApply, error) {
+	rows, err := q.db.Query(ctx, listSucceededRoleSourceApplies, arg.SourceID, arg.WorkspaceID, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceApply{}
+	for rows.Next() {
+		var i RoleSourceApply
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.RequestKey,
+			&i.Mode,
+			&i.SnapshotDigest,
+			&i.PlanDigest,
+			&i.Status,
+			&i.ActorUserID,
+			&i.ReceiptDigest,
+			&i.Receipt,
+			&i.ErrorCode,
+			&i.CreatedAt,
+			&i.CompletedAt,
 		); err != nil {
 			return nil, err
 		}

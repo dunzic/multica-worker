@@ -33,6 +33,7 @@ type RoleSourceControlPlane interface {
 	ReportScanSuccess(context.Context, rolesource.ReportScanSuccessInput) (db.RoleSourceSnapshot, error)
 	ReportScanFailure(context.Context, rolesource.ReportScanFailureInput) (db.RoleSourceScanRequest, error)
 	CreatePlan(context.Context, rolesource.CreatePlanInput) (db.RoleSourcePlan, error)
+	CreateRollbackPlan(context.Context, rolesource.CreateRollbackPlanInput) (db.RoleSourcePlan, error)
 	RecordPlanApproval(context.Context, rolesource.RecordPlanApprovalInput) (db.RoleSourcePlanApproval, error)
 	ApplyPlan(context.Context, rolesource.ApplyPlanInput) (db.RoleSourceApply, rolesource.ApplyReceipt, error)
 	RequestSecretTransfer(context.Context, rolesource.RequestSecretTransferInput) (db.RoleSourceSecretTransfer, error)
@@ -40,6 +41,7 @@ type RoleSourceControlPlane interface {
 	ReportSecretTransfer(context.Context, rolesource.ReportSecretTransferInput) (db.RoleSourceSecretTransfer, error)
 	GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error)
 	ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error)
+	ListApplyHistory(context.Context, string, string, int32) ([]rolesource.ApplyHistoryItem, error)
 	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
 	ListPlanApprovals(context.Context, string, string, string, int32) ([]db.RoleSourcePlanApproval, error)
 	ListMissingArtifacts(context.Context, rolesource.ArtifactLeaseInput, []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error)
@@ -117,6 +119,8 @@ type roleSourceApplyResponse struct {
 	SourceID    string                  `json:"source_id"`
 	WorkspaceID string                  `json:"workspace_id"`
 	Status      string                  `json:"status"`
+	Mode        string                  `json:"mode"`
+	ActorUserID string                  `json:"actor_user_id"`
 	Receipt     rolesource.ApplyReceipt `json:"receipt"`
 	CompletedAt *string                 `json:"completed_at"`
 }
@@ -475,6 +479,49 @@ func (h *Handler) CreateRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, response)
 }
 
+func (h *Handler) CreateRoleSourceRollbackPlan(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceApply) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot create role source rollback plans")
+		return
+	}
+	var body struct {
+		TargetSnapshotDigest string `json:"target_snapshot_digest"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	row, err := h.RoleSources.CreateRollbackPlan(r.Context(), rolesource.CreateRollbackPlanInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"),
+		TargetSnapshotDigest: body.TargetSnapshotDigest, ActorUserID: userID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "role source or rollback snapshot not found")
+		case errors.Is(err, rolesource.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "rollback plan identity conflicts with persisted content")
+		case errors.Is(err, rolesource.ErrInvalidPlanRequest):
+			writeError(w, http.StatusBadRequest, "cannot create rollback plan")
+		default:
+			slog.Error("create role source rollback plan failed", "workspace_id", workspaceID, "source_id", chi.URLParam(r, "sourceId"), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to create rollback plan")
+		}
+		return
+	}
+	response, err := roleSourcePlanToResponse(row)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode rollback plan")
+		return
+	}
+	writeJSON(w, http.StatusCreated, response)
+}
+
 func (h *Handler) RecordRoleSourcePlanApproval(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
@@ -567,8 +614,29 @@ func (h *Handler) ApplyRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, roleSourceApplyResponse{
 		ID: util.UUIDToString(row.ID), SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
-		Status: row.Status, Receipt: receipt, CompletedAt: util.TimestampToPtr(row.CompletedAt),
+		Status: row.Status, Mode: row.Mode, ActorUserID: util.UUIDToString(row.ActorUserID), Receipt: receipt, CompletedAt: util.TimestampToPtr(row.CompletedAt),
 	})
+}
+
+func (h *Handler) ListRoleSourceApplyHistory(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	items, err := h.RoleSources.ListApplyHistory(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), 100)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list apply history")
+		return
+	}
+	responses := make([]roleSourceApplyResponse, 0, len(items))
+	for _, item := range items {
+		responses = append(responses, roleSourceApplyResponse{
+			ID: util.UUIDToString(item.Row.ID), SourceID: util.UUIDToString(item.Row.SourceID), WorkspaceID: util.UUIDToString(item.Row.WorkspaceID),
+			Status: item.Row.Status, Mode: item.Row.Mode, ActorUserID: util.UUIDToString(item.Row.ActorUserID),
+			Receipt: item.Receipt, CompletedAt: util.TimestampToPtr(item.Row.CompletedAt),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"applies": responses})
 }
 
 func (h *Handler) RequestRoleSourceSecretTransfer(w http.ResponseWriter, r *http.Request) {

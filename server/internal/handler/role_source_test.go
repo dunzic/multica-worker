@@ -47,6 +47,9 @@ type fakeRoleSourceControlPlane struct {
 	createPlanInput           *rolesource.CreatePlanInput
 	createPlanRow             db.RoleSourcePlan
 	createPlanErr             error
+	rollbackPlanInput         *rolesource.CreateRollbackPlanInput
+	rollbackPlanRow           db.RoleSourcePlan
+	rollbackPlanErr           error
 	approvalInput             *rolesource.RecordPlanApprovalInput
 	approvalRow               db.RoleSourcePlanApproval
 	approvalErr               error
@@ -67,6 +70,8 @@ type fakeRoleSourceControlPlane struct {
 	getPlanErr                error
 	planRows                  []db.RoleSourcePlan
 	planListErr               error
+	applyHistory              []rolesource.ApplyHistoryItem
+	applyHistoryErr           error
 	snapshotRows              []db.RoleSourceSnapshot
 	snapshotListErr           error
 	approvalRows              []db.RoleSourcePlanApproval
@@ -83,6 +88,17 @@ func (f *fakeRoleSourceControlPlane) ApplyPlan(_ context.Context, input rolesour
 	f.calls++
 	f.applyInput = &input
 	return f.applyRow, f.applyReceipt, f.applyErr
+}
+
+func (f *fakeRoleSourceControlPlane) CreateRollbackPlan(_ context.Context, input rolesource.CreateRollbackPlanInput) (db.RoleSourcePlan, error) {
+	f.calls++
+	f.rollbackPlanInput = &input
+	return f.rollbackPlanRow, f.rollbackPlanErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListApplyHistory(context.Context, string, string, int32) ([]rolesource.ApplyHistoryItem, error) {
+	f.calls++
+	return f.applyHistory, f.applyHistoryErr
 }
 
 func (f *fakeRoleSourceControlPlane) RequestSecretTransfer(_ context.Context, input rolesource.RequestSecretTransferInput) (db.RoleSourceSecretTransfer, error) {
@@ -459,6 +475,25 @@ func TestCreateRoleSourcePlan_ReturnsVerifiedDeterministicPlan(t *testing.T) {
 	}
 }
 
+func TestCreateRoleSourceRollbackPlan_UsesApplyGateAndExactHistoricalTarget(t *testing.T) {
+	plan := roleSourceTestPlanRow(t)
+	fake := &fakeRoleSourceControlPlane{rollbackPlanRow: plan}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]string{
+		"target_snapshot_digest": plan.ToSnapshotDigest,
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.CreateRoleSourceRollbackPlan(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create rollback plan: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if fake.rollbackPlanInput == nil || fake.rollbackPlanInput.TargetSnapshotDigest != plan.ToSnapshotDigest || fake.rollbackPlanInput.ActorUserID != testUserID {
+		t.Fatalf("rollback plan input = %+v", fake.rollbackPlanInput)
+	}
+}
+
 func TestRecordRoleSourcePlanApproval_MapsRequestKeyReuseToConflict(t *testing.T) {
 	plan := roleSourceTestPlanRow(t)
 	fake := &fakeRoleSourceControlPlane{approvalErr: rolesource.ErrIdempotencyConflict}
@@ -506,13 +541,13 @@ func TestApplyRoleSourcePlan_UsesSeparateApplyGateAndReturnsReceipt(t *testing.T
 	approvalID := "00000000-0000-4000-8000-000000000044"
 	secretTransferID := "00000000-0000-4000-8000-000000000046"
 	receipt := rolesource.ApplyReceipt{
-		ContractVersion: rolesource.ApplyReceiptContractVersion, ApplyID: util.UUIDToString(applyID),
+		ContractVersion: rolesource.ApplyReceiptContractVersion, Mode: "apply", ApplyID: util.UUIDToString(applyID),
 		SourceID: roleSourceTestSourceID, WorkspaceID: testWorkspaceID, SnapshotDigest: plan.ToSnapshotDigest,
 		PlanDigest: plan.PlanDigest, ApprovalID: approvalID, Mappings: []rolesource.ApplyMapping{},
 		SecretTransfers: []rolesource.SecretTransferReceipt{{RoleID: "writer", TransferID: secretTransferID, EnvelopeDigest: "sha256:" + strings.Repeat("d", 64)}},
 	}
 	fake := &fakeRoleSourceControlPlane{
-		applyRow:     db.RoleSourceApply{ID: applyID, SourceID: util.MustParseUUID(roleSourceTestSourceID), WorkspaceID: util.MustParseUUID(testWorkspaceID), Status: "succeeded"},
+		applyRow:     db.RoleSourceApply{ID: applyID, SourceID: util.MustParseUUID(roleSourceTestSourceID), WorkspaceID: util.MustParseUUID(testWorkspaceID), Mode: "apply", Status: "succeeded", ActorUserID: util.MustParseUUID(testUserID)},
 		applyReceipt: receipt,
 	}
 	h := roleSourceTestHandler(t, true, fake)
@@ -553,6 +588,35 @@ func TestApplyRoleSourcePlan_DefaultOffDoesNotReachControlPlane(t *testing.T) {
 
 	if w.Code != http.StatusNotFound || fake.calls != 0 {
 		t.Fatalf("default-off apply: status=%d calls=%d body=%s", w.Code, fake.calls, w.Body.String())
+	}
+}
+
+func TestListRoleSourceApplyHistoryExposesProvenanceWithoutIdempotencyKeys(t *testing.T) {
+	applyID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
+	receipt := rolesource.ApplyReceipt{
+		ContractVersion: rolesource.ApplyReceiptContractVersion, Mode: "rollback", ApplyID: util.UUIDToString(applyID),
+		SourceID: roleSourceTestSourceID, WorkspaceID: testWorkspaceID,
+		SnapshotDigest: "sha256:" + strings.Repeat("a", 64), FromSnapshotDigest: "sha256:" + strings.Repeat("b", 64),
+		PlanDigest: "sha256:" + strings.Repeat("c", 64), ApprovalID: "00000000-0000-4000-8000-000000000044",
+	}
+	fake := &fakeRoleSourceControlPlane{applyHistory: []rolesource.ApplyHistoryItem{{
+		Row: db.RoleSourceApply{
+			ID: applyID, SourceID: util.MustParseUUID(roleSourceTestSourceID), WorkspaceID: util.MustParseUUID(testWorkspaceID),
+			RequestKey: "never-expose-history-key", Mode: "rollback", Status: "succeeded", ActorUserID: util.MustParseUUID(testUserID),
+		},
+		Receipt: receipt,
+	}}}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.ListRoleSourceApplyHistory(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"mode":"rollback"`) || !strings.Contains(w.Body.String(), `"actor_user_id":"`+testUserID+`"`) {
+		t.Fatalf("apply history response: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "never-expose-history-key") || strings.Contains(w.Body.String(), "request_key") {
+		t.Fatalf("apply history exposed idempotency key: %s", w.Body.String())
 	}
 }
 

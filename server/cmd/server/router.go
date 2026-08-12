@@ -1208,6 +1208,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/role-sources/{sourceId}/plans", h.ListRoleSourcePlans)
 					r.Get("/role-sources/{sourceId}/plans/{planDigest}", h.GetRoleSourcePlan)
 					r.Get("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.ListRoleSourcePlanApprovals)
+					r.Get("/role-sources/{sourceId}/applies", h.ListRoleSourceApplyHistory)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -1228,6 +1229,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/role-sources", h.CreateRoleSource)
 					r.Post("/role-sources/{sourceId}/scans", h.RequestRoleSourceScan)
 					r.Post("/role-sources/{sourceId}/plans", h.CreateRoleSourcePlan)
+					r.Post("/role-sources/{sourceId}/rollback-plans", h.CreateRoleSourceRollbackPlan)
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.RecordRoleSourcePlanApproval)
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/apply", h.ApplyRoleSourcePlan)
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/secret-transfers", h.RequestRoleSourceSecretTransfer)

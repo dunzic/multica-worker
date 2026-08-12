@@ -483,6 +483,23 @@ WHERE source_id = @source_id
   AND workspace_id = @workspace_id
   AND request_key = @request_key;
 
+-- name: GetLatestSucceededRoleSourceApplyForSnapshot :one
+SELECT * FROM role_source_apply
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND snapshot_digest = @snapshot_digest
+  AND status = 'succeeded'
+ORDER BY completed_at DESC, id DESC
+LIMIT 1;
+
+-- name: ListSucceededRoleSourceApplies :many
+SELECT * FROM role_source_apply
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND status = 'succeeded'
+ORDER BY completed_at DESC, id DESC
+LIMIT @result_limit;
+
 -- name: MarkRoleSourceApplyRunning :one
 UPDATE role_source_apply
 SET status = 'running'

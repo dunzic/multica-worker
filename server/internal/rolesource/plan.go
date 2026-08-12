@@ -105,6 +105,27 @@ func BuildPlan(sourceID string, from *Snapshot, to Snapshot) (Plan, error) {
 	return plan, nil
 }
 
+// BuildRollbackPlan creates a new forward plan whose target is an immutable
+// historical snapshot. Mode participates in the digest so rollback intent can
+// never be confused with an ordinary reconciliation of the same snapshot pair.
+func BuildRollbackPlan(sourceID string, from Snapshot, historicalTarget Snapshot) (Plan, error) {
+	plan, err := BuildPlan(sourceID, &from, historicalTarget)
+	if err != nil {
+		return Plan{}, err
+	}
+	if from.SnapshotDigest == historicalTarget.SnapshotDigest {
+		return Plan{}, errors.New("rollback target is already active")
+	}
+	plan.Mode = PlanModeRollback
+	plan.PlanDigest = ""
+	digest, err := digestPlan(plan)
+	if err != nil {
+		return Plan{}, err
+	}
+	plan.PlanDigest = digest
+	return plan, nil
+}
+
 // ValidatePlan verifies a plan loaded from persistence before approval or
 // apply. It detects corruption/tampering and rejects semantically inconsistent
 // summaries, operations and ordering rather than trusting JSONB fields.
@@ -114,6 +135,9 @@ func ValidatePlan(plan Plan) error {
 	}
 	if !stableIDPattern.MatchString(plan.SourceID) {
 		return fmt.Errorf("invalid source id %q", plan.SourceID)
+	}
+	if plan.Mode != "" && plan.Mode != PlanModeRollback {
+		return fmt.Errorf("invalid plan mode %q", plan.Mode)
 	}
 	if !sha256Pattern.MatchString(plan.ToSnapshotDigest) ||
 		(plan.FromSnapshotDigest != "" && !sha256Pattern.MatchString(plan.FromSnapshotDigest)) ||

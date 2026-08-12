@@ -101,7 +101,7 @@ func TestValidateMaterializationScopeRequiresRetainForSkillRemoval(t *testing.T)
 func TestApplyReceiptDigestDetectsTampering(t *testing.T) {
 	applyID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
 	receipt := ApplyReceipt{
-		ContractVersion: ApplyReceiptContractVersion, ApplyID: util.UUIDToString(applyID),
+		ContractVersion: ApplyReceiptContractVersion, Mode: "apply", ApplyID: util.UUIDToString(applyID),
 		SourceID: "00000000-0000-4000-8000-000000000042", WorkspaceID: "00000000-0000-4000-8000-000000000001",
 		SnapshotDigest: testSHA256("s"), PlanDigest: testSHA256("p"), ApprovalID: "00000000-0000-4000-8000-000000000044",
 		Mappings: []ApplyMapping{},

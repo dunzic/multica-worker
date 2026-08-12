@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	ApplyReceiptContractVersion = "1.0"
+	ApplyReceiptContractVersion = "1.1"
 	maxApplyArtifacts           = 500
 	maxApplyArtifactBytes       = 64 << 20
 )
@@ -59,23 +59,30 @@ type ApplyMapping struct {
 }
 
 type ApplyReceipt struct {
-	ContractVersion string                  `json:"contract_version"`
-	ApplyID         string                  `json:"apply_id"`
-	SourceID        string                  `json:"source_id"`
-	WorkspaceID     string                  `json:"workspace_id"`
-	SnapshotDigest  string                  `json:"snapshot_digest"`
-	PlanDigest      string                  `json:"plan_digest"`
-	ApprovalID      string                  `json:"approval_id"`
-	Counts          ApplyCounts             `json:"counts"`
-	Mappings        []ApplyMapping          `json:"mappings"`
-	SecretTransfers []SecretTransferReceipt `json:"secret_transfers,omitempty"`
-	ReceiptDigest   string                  `json:"receipt_digest"`
+	ContractVersion    string                  `json:"contract_version"`
+	Mode               string                  `json:"mode,omitempty"`
+	ApplyID            string                  `json:"apply_id"`
+	SourceID           string                  `json:"source_id"`
+	WorkspaceID        string                  `json:"workspace_id"`
+	SnapshotDigest     string                  `json:"snapshot_digest"`
+	FromSnapshotDigest string                  `json:"from_snapshot_digest,omitempty"`
+	PlanDigest         string                  `json:"plan_digest"`
+	ApprovalID         string                  `json:"approval_id"`
+	Counts             ApplyCounts             `json:"counts"`
+	Mappings           []ApplyMapping          `json:"mappings"`
+	SecretTransfers    []SecretTransferReceipt `json:"secret_transfers,omitempty"`
+	ReceiptDigest      string                  `json:"receipt_digest"`
 }
 
 type SecretTransferReceipt struct {
 	RoleID         string `json:"role_id"`
 	TransferID     string `json:"transfer_id"`
 	EnvelopeDigest string `json:"envelope_digest"`
+}
+
+type ApplyHistoryItem struct {
+	Row     db.RoleSourceApply
+	Receipt ApplyReceipt
 }
 
 type verifiedArtifact struct {
@@ -201,6 +208,10 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	if err := validateMaterializationScope(snapshot, plan, decisions); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	applyMode := "apply"
+	if plan.Mode == PlanModeRollback {
+		applyMode = "rollback"
+	}
 	secretPayloads, secretTransfers, err := c.loadApplySecretTransfers(ctx, qtx, source, snapshot, plan, approvalID, input.SecretTransferIDs)
 	if err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
@@ -213,7 +224,7 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	}
 	applyRow, err := qtx.InsertRoleSourceApply(ctx, db.InsertRoleSourceApplyParams{
 		ID: applyID, SourceID: sourceID, WorkspaceID: workspaceID, RequestKey: input.RequestKey,
-		Mode: "apply", SnapshotDigest: plan.ToSnapshotDigest, PlanDigest: plan.PlanDigest, ActorUserID: actorID,
+		Mode: applyMode, SnapshotDigest: plan.ToSnapshotDigest, PlanDigest: plan.PlanDigest, ActorUserID: actorID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, loadErr := qtx.GetRoleSourceApplyByRequest(ctx, db.GetRoleSourceApplyByRequestParams{
@@ -255,9 +266,10 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		return db.RoleSourceApply{}, ApplyReceipt{}, fmt.Errorf("%w: %d object mappings have missing, mismatched or cross-tenant targets", ErrApplyConflict, invalidMappings)
 	}
 	receipt := ApplyReceipt{
-		ContractVersion: ApplyReceiptContractVersion, ApplyID: util.UUIDToString(applyRow.ID),
+		ContractVersion: ApplyReceiptContractVersion, Mode: applyMode, ApplyID: util.UUIDToString(applyRow.ID),
 		SourceID: input.SourceID, WorkspaceID: input.WorkspaceID, SnapshotDigest: plan.ToSnapshotDigest,
-		PlanDigest: plan.PlanDigest, ApprovalID: input.ApprovalID, Mappings: []ApplyMapping{}, SecretTransfers: []SecretTransferReceipt{},
+		FromSnapshotDigest: plan.FromSnapshotDigest,
+		PlanDigest:         plan.PlanDigest, ApprovalID: input.ApprovalID, Mappings: []ApplyMapping{}, SecretTransfers: []SecretTransferReceipt{},
 	}
 	state := materializationState{
 		control: c, q: qtx, workspaceID: workspaceID, source: source, actorID: actorID, snapshot: snapshot, plan: plan,
@@ -304,7 +316,11 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	if err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
-	if err := c.appendAudit(ctx, qtx, source, "apply_succeeded", AuditActor{Type: "user", ID: input.ActorUserID}, AuditPayload{
+	eventType := "apply_succeeded"
+	if plan.Mode == PlanModeRollback {
+		eventType = "rollback_succeeded"
+	}
+	if err := c.appendAudit(ctx, qtx, source, eventType, AuditActor{Type: "user", ID: input.ActorUserID}, AuditPayload{
 		OperationID: receipt.ApplyID, SnapshotDigest: receipt.SnapshotDigest, PlanDigest: receipt.PlanDigest,
 		ReceiptDigest: receiptDigest, Result: "succeeded", CreateCount: receipt.Counts.Created,
 		UpdateCount: receipt.Counts.Updated, UnchangedCount: receipt.Counts.Unchanged,
@@ -318,8 +334,37 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	return applyRow, receipt, nil
 }
 
+func (c *ControlPlane) ListApplyHistory(ctx context.Context, workspaceIDText, sourceIDText string, limit int32) ([]ApplyHistoryItem, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > 100 {
+		return nil, errors.New("apply history limit must be between 1 and 100")
+	}
+	rows, err := c.queries().ListSucceededRoleSourceApplies(ctx, db.ListSucceededRoleSourceAppliesParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, ResultLimit: limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]ApplyHistoryItem, 0, len(rows))
+	for _, row := range rows {
+		receipt, err := decodeApplyReceipt(row)
+		if err != nil {
+			return nil, fmt.Errorf("validate apply history receipt %s: %w", util.UUIDToString(row.ID), err)
+		}
+		items = append(items, ApplyHistoryItem{Row: row, Receipt: receipt})
+	}
+	return items, nil
+}
+
 func matchIdempotentApply(existing db.RoleSourceApply, plan Plan, input ApplyPlanInput, actorID pgtype.UUID) (ApplyReceipt, error) {
-	if existing.Mode != "apply" || existing.SnapshotDigest != plan.ToSnapshotDigest || existing.PlanDigest != plan.PlanDigest || existing.ActorUserID != actorID || existing.Status != "succeeded" {
+	expectedMode := "apply"
+	if plan.Mode == PlanModeRollback {
+		expectedMode = "rollback"
+	}
+	if existing.Mode != expectedMode || existing.SnapshotDigest != plan.ToSnapshotDigest || existing.PlanDigest != plan.PlanDigest || existing.ActorUserID != actorID || existing.Status != "succeeded" {
 		return ApplyReceipt{}, ErrIdempotencyConflict
 	}
 	receipt, err := decodeApplyReceipt(existing)
@@ -1218,7 +1263,10 @@ func decodeApplyReceipt(row db.RoleSourceApply) (ApplyReceipt, error) {
 	if err != nil {
 		return receipt, err
 	}
-	if receipt.ReceiptDigest != row.ReceiptDigest.String || digest != row.ReceiptDigest.String || receipt.ApplyID != util.UUIDToString(row.ID) || receipt.PlanDigest != row.PlanDigest || receipt.SnapshotDigest != row.SnapshotDigest {
+	legacyModeValid := receipt.ContractVersion == "1.0" && receipt.Mode == "" && row.Mode == "apply"
+	currentModeValid := receipt.ContractVersion == ApplyReceiptContractVersion && receipt.Mode == row.Mode && (receipt.Mode == "apply" || receipt.Mode == "rollback")
+	if receipt.ReceiptDigest != row.ReceiptDigest.String || digest != row.ReceiptDigest.String || receipt.ApplyID != util.UUIDToString(row.ID) ||
+		receipt.PlanDigest != row.PlanDigest || receipt.SnapshotDigest != row.SnapshotDigest || (!legacyModeValid && !currentModeValid) {
 		return receipt, errors.New("stored apply receipt does not match indexed apply record")
 	}
 	return receipt, nil

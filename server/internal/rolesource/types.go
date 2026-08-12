@@ -243,6 +243,7 @@ const PlanContractVersion = "1.0"
 // persisted approval/apply records and must not make the plan digest unstable.
 type Plan struct {
 	ContractVersion    string        `json:"contract_version"`
+	Mode               PlanMode      `json:"mode,omitempty"`
 	SourceID           string        `json:"source_id"`
 	FromSnapshotDigest string        `json:"from_snapshot_digest,omitempty"`
 	ToSnapshotDigest   string        `json:"to_snapshot_digest"`
@@ -252,6 +253,10 @@ type Plan struct {
 	Actions            []PlanAction  `json:"actions"`
 	Blockers           []PlanBlocker `json:"blockers"`
 }
+
+type PlanMode string
+
+const PlanModeRollback PlanMode = "rollback"
 
 type PlanSummary struct {
 	Create           int `json:"create"`

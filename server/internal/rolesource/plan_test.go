@@ -65,6 +65,35 @@ func TestBuildPlanInitialImportIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestBuildRollbackPlanIsForwardImmutableAndDigestDistinct(t *testing.T) {
+	historical := planTestSnapshot(t, planTestManifest())
+	currentManifest := planTestManifest()
+	currentManifest.Roles[0].DisplayName = "Writer v2"
+	current := planTestSnapshot(t, currentManifest)
+	rollback, err := BuildRollbackPlan("source-1", current, historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, err := BuildPlan("source-1", &current, historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollback.Mode != PlanModeRollback || rollback.PlanDigest == normal.PlanDigest || rollback.FromSnapshotDigest != current.SnapshotDigest || rollback.ToSnapshotDigest != historical.SnapshotDigest {
+		t.Fatalf("rollback plan = %+v normal digest=%s", rollback, normal.PlanDigest)
+	}
+	if err := ValidatePlan(rollback); err != nil {
+		t.Fatalf("rollback validation: %v", err)
+	}
+	if _, err := BuildRollbackPlan("source-1", historical, historical); err == nil {
+		t.Fatal("rollback to active snapshot accepted")
+	}
+	tampered := rollback
+	tampered.Mode = "rewrite_history"
+	if err := ValidatePlan(tampered); err == nil {
+		t.Fatal("invalid rollback mode accepted")
+	}
+}
+
 func TestBuildPlanSeparatesRoleAndSkillChanges(t *testing.T) {
 	baseManifest := planTestManifest()
 	base := planTestSnapshot(t, baseManifest)

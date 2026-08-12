@@ -28,6 +28,13 @@ type CreatePlanInput struct {
 	ActorUserID          string
 }
 
+type CreateRollbackPlanInput struct {
+	WorkspaceID          string
+	SourceID             string
+	TargetSnapshotDigest string
+	ActorUserID          string
+}
+
 func (c *ControlPlane) CreatePlan(ctx context.Context, input CreatePlanInput) (db.RoleSourcePlan, error) {
 	if !sha256Pattern.MatchString(input.TargetSnapshotDigest) {
 		return db.RoleSourcePlan{}, fmt.Errorf("%w: invalid target snapshot digest", ErrInvalidPlanRequest)
@@ -109,6 +116,104 @@ func (c *ControlPlane) CreatePlan(ctx context.Context, input CreatePlanInput) (d
 		return db.RoleSourcePlan{}, err
 	}
 	if err := c.appendAudit(ctx, qtx, source, "plan_created", AuditActor{Type: "user", ID: input.ActorUserID}, AuditPayload{
+		SnapshotDigest: plan.ToSnapshotDigest, PlanDigest: plan.PlanDigest, Result: "created",
+		CreateCount: plan.Summary.Create, UpdateCount: plan.Summary.Update, UnchangedCount: plan.Summary.Unchanged,
+		ArchiveCount: plan.Summary.ArchiveCandidate, BlockedCount: plan.Summary.Blocked,
+	}); err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	return row, nil
+}
+
+func (c *ControlPlane) CreateRollbackPlan(ctx context.Context, input CreateRollbackPlanInput) (db.RoleSourcePlan, error) {
+	if !sha256Pattern.MatchString(input.TargetSnapshotDigest) {
+		return db.RoleSourcePlan{}, fmt.Errorf("%w: invalid rollback target snapshot digest", ErrInvalidPlanRequest)
+	}
+	workspaceID, sourceID, actorID, err := parseThreeUUIDs(input.WorkspaceID, input.SourceID, input.ActorUserID)
+	if err != nil {
+		return db.RoleSourcePlan{}, fmt.Errorf("%w: %v", ErrInvalidPlanRequest, err)
+	}
+	tx, err := c.database.Begin(ctx)
+	if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	qtx := db.New(tx)
+	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	source, err := qtx.GetRoleSourceForUpdate(ctx, db.GetRoleSourceForUpdateParams{ID: sourceID, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	if !source.CurrentSnapshotDigest.Valid || source.CurrentSnapshotDigest.String == input.TargetSnapshotDigest {
+		return db.RoleSourcePlan{}, fmt.Errorf("%w: rollback requires a different active snapshot", ErrInvalidPlanRequest)
+	}
+	historicalApply, err := qtx.GetLatestSucceededRoleSourceApplyForSnapshot(ctx, db.GetLatestSucceededRoleSourceApplyForSnapshotParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: input.TargetSnapshotDigest,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.RoleSourcePlan{}, fmt.Errorf("%w: rollback target was never successfully applied", ErrInvalidPlanRequest)
+		}
+		return db.RoleSourcePlan{}, err
+	}
+	if _, err := decodeApplyReceipt(historicalApply); err != nil {
+		return db.RoleSourcePlan{}, fmt.Errorf("%w: rollback target apply receipt is invalid", ErrInvalidPlanRequest)
+	}
+	currentRow, err := qtx.GetRoleSourceSnapshot(ctx, db.GetRoleSourceSnapshotParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: source.CurrentSnapshotDigest.String,
+	})
+	if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	current, err := DecodePersistedSnapshot(currentRow)
+	if err != nil {
+		return db.RoleSourcePlan{}, fmt.Errorf("validate active rollback snapshot: %w", err)
+	}
+	targetRow, err := qtx.GetRoleSourceSnapshot(ctx, db.GetRoleSourceSnapshotParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: input.TargetSnapshotDigest,
+	})
+	if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	target, err := DecodePersistedSnapshot(targetRow)
+	if err != nil {
+		return db.RoleSourcePlan{}, fmt.Errorf("validate rollback target snapshot: %w", err)
+	}
+	plan, err := BuildRollbackPlan(util.UUIDToString(sourceID), current, target)
+	if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	body, err := json.Marshal(plan)
+	if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	row, err := qtx.InsertRoleSourcePlan(ctx, db.InsertRoleSourcePlanParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, PlanDigest: plan.PlanDigest,
+		FromSnapshotDigest: pgtype.Text{String: plan.FromSnapshotDigest, Valid: true},
+		ToSnapshotDigest:   plan.ToSnapshotDigest, Plan: body, CreatedBy: actorID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		row, err = qtx.GetRoleSourcePlan(ctx, db.GetRoleSourcePlanParams{SourceID: sourceID, WorkspaceID: workspaceID, PlanDigest: plan.PlanDigest})
+		if err != nil {
+			return db.RoleSourcePlan{}, err
+		}
+		stored, decodeErr := DecodePersistedPlan(row)
+		if decodeErr != nil || !reflect.DeepEqual(stored, plan) {
+			return db.RoleSourcePlan{}, ErrIdempotencyConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return db.RoleSourcePlan{}, err
+		}
+		return row, nil
+	} else if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	if err := c.appendAudit(ctx, qtx, source, "rollback_plan_created", AuditActor{Type: "user", ID: input.ActorUserID}, AuditPayload{
 		SnapshotDigest: plan.ToSnapshotDigest, PlanDigest: plan.PlanDigest, Result: "created",
 		CreateCount: plan.Summary.Create, UpdateCount: plan.Summary.Update, UnchangedCount: plan.Summary.Unchanged,
 		ArchiveCount: plan.Summary.ArchiveCandidate, BlockedCount: plan.Summary.Blocked,
