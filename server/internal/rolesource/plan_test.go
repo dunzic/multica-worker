@@ -44,6 +44,39 @@ func planTestManifest() Manifest {
 	}}}
 }
 
+func TestCapabilityBindingObjectIDIsUnambiguous(t *testing.T) {
+	left := capabilityBindingObjectID(CapabilityBinding{CapabilityID: "a/b", SkillID: "c", Profile: "d"})
+	right := capabilityBindingObjectID(CapabilityBinding{CapabilityID: "a", SkillID: "b/c", Profile: "d"})
+	if left == right {
+		t.Fatalf("ambiguous binding identities collided: %s", left)
+	}
+}
+
+func TestBuildPlanSurfacesUnsupportedCapabilityAuthorityBeforeApproval(t *testing.T) {
+	manifest := planTestManifest()
+	manifest.Capabilities = []Capability{{ID: "browser", Name: "Browser", Version: "1.0.0", Profiles: []string{"default"}, PermissionModes: []string{"external-write"}, Entrypoint: testArtifact("capability.md")}}
+	binding := CapabilityBinding{CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "^1.0.0", PermissionMode: "external-write"}
+	manifest.Roles[0].CapabilityBindings = []CapabilityBinding{binding}
+	snapshot := planTestSnapshot(t, manifest)
+	plan, err := BuildPlan("source-1", nil, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Applyable || len(plan.Blockers) != 1 || plan.Blockers[0].Code != "capability_write_boundary_unavailable" {
+		t.Fatalf("unsupported authority plan=%+v", plan)
+	}
+	ref := ObjectRef{Kind: "capability_binding", ParentID: "writer", ID: capabilityBindingObjectID(binding)}
+	found := false
+	for _, action := range plan.Actions {
+		if action.Ref == ref {
+			found = action.Operation == PlanBlocked
+		}
+	}
+	if !found {
+		t.Fatal("capability binding was not blocked in the review plan")
+	}
+}
+
 func TestBuildPlanInitialImportIsDeterministic(t *testing.T) {
 	target := planTestSnapshot(t, planTestManifest())
 	first, err := BuildPlan("source-1", nil, target)

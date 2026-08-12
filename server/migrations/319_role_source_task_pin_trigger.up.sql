@@ -139,7 +139,8 @@ BEGIN
                 'resolved_version', capability->>'version',
                 'object_digest', version.object_digest,
                 'permission_mode', binding->>'permission_mode',
-                'required', COALESCE((binding->>'required')::boolean, false)
+                'required', COALESCE((binding->>'required')::boolean, false),
+                'fallback', COALESCE(binding->>'fallback', '')
             )
             ORDER BY binding->>'capability_id', binding->>'skill_id', binding->>'profile'
         ),
@@ -166,6 +167,21 @@ BEGIN
 	 AND skill_mapping.target_kind = 'skill'
 	 AND skill_mapping.archived_at IS NULL
 	 AND skill_mapping.last_snapshot_digest = snapshot.snapshot_digest
+	JOIN role_source_object_mapping binding_mapping
+	  ON binding_mapping.workspace_id = snapshot.workspace_id
+	 AND binding_mapping.source_id = snapshot.source_id
+	 AND binding_mapping.source_kind = 'capability_binding'
+	 AND binding_mapping.source_parent_id = role->>'id'
+	 AND binding_mapping.source_object_id = 'sha256:' || encode(digest(
+	       convert_to(binding->>'capability_id', 'UTF8') || decode('00', 'hex') ||
+	       convert_to(binding->>'skill_id', 'UTF8') || decode('00', 'hex') ||
+	       convert_to(binding->>'profile', 'UTF8'),
+	       'sha256'
+	   ), 'hex')
+	 AND binding_mapping.target_kind = 'skill'
+	 AND binding_mapping.target_id = skill_mapping.target_id
+	 AND binding_mapping.archived_at IS NULL
+	 AND binding_mapping.last_snapshot_digest = snapshot.snapshot_digest
     WHERE snapshot.workspace_id = managed_mapping.workspace_id
       AND snapshot.source_id = managed_mapping.source_id
       AND snapshot.snapshot_digest = managed_mapping.last_snapshot_digest

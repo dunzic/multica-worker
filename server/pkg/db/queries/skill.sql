@@ -50,6 +50,11 @@ SET name = @name,
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
 
+-- name: GetRoleSourceSkillForUpdate :one
+SELECT * FROM skill
+WHERE id = @id AND workspace_id = @workspace_id
+FOR UPDATE;
+
 -- name: UpdateSkill :one
 UPDATE skill SET
     name = COALESCE(sqlc.narg('name'), name),
@@ -88,6 +93,30 @@ DELETE FROM skill_file WHERE id = $1;
 
 -- name: DeleteSkillFilesBySkill :exec
 DELETE FROM skill_file WHERE skill_id = $1;
+
+-- name: ListRoleSourceSkillFilesForUpdate :many
+SELECT file.*
+FROM skill_file file
+JOIN skill ON skill.id = file.skill_id
+WHERE file.skill_id = @skill_id AND skill.workspace_id = @workspace_id
+ORDER BY file.path
+FOR UPDATE OF file;
+
+-- name: UpsertRoleSourceSkillFiles :many
+WITH input AS (
+    SELECT *
+    FROM jsonb_to_recordset(@files::jsonb) AS item(path TEXT, content TEXT)
+)
+INSERT INTO skill_file (skill_id, path, content)
+SELECT @skill_id, path, content FROM input
+ON CONFLICT (skill_id, path) DO UPDATE SET
+    content = EXCLUDED.content,
+    updated_at = now()
+RETURNING skill_file.*;
+
+-- name: DeleteRoleSourceSkillFiles :execrows
+DELETE FROM skill_file
+WHERE skill_id = @skill_id AND path = ANY(@paths::text[]);
 
 -- Agent-Skill junction
 

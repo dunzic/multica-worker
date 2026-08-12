@@ -86,7 +86,7 @@ func TestCollectArtifactRefsCanonicalizesAndRejectsDigestSizeConflicts(t *testin
 	}
 }
 
-func TestCollectMaterializationArtifactRefsExcludesDeferredPackages(t *testing.T) {
+func TestCollectMaterializationArtifactRefsLoadsSkillFilesButExcludesUnboundCapabilities(t *testing.T) {
 	manifest := planTestManifest()
 	manifest.Roles[0].Skills[0].Entrypoint.Digest = testSHA256("b")
 	profile := testArtifact("roles/writer/profile.md")
@@ -117,17 +117,18 @@ func TestCollectMaterializationArtifactRefsExcludesDeferredPackages(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 7 || len(materialized) != 3 {
+	if len(all) != 7 || len(materialized) != 4 {
 		t.Fatalf("artifact refs: all=%d materialized=%d", len(all), len(materialized))
 	}
 	want := map[string]bool{
 		manifest.Roles[0].Instructions.Digest:         true,
 		manifest.Roles[0].Skills[0].Entrypoint.Digest: true,
-		prompt.Digest: true,
+		supporting.Digest:                             true,
+		prompt.Digest:                                 true,
 	}
 	for _, ref := range materialized {
 		if !want[ref.Digest] {
-			t.Fatalf("deferred package %s was loaded into atomic apply", ref.Path)
+			t.Fatalf("unbound package %s was loaded into atomic apply", ref.Path)
 		}
 	}
 }

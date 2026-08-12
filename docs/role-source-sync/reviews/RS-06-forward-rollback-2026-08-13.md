@@ -28,7 +28,7 @@ Score: 3/3 for history and rollback semantics
 Residual architecture work:
 
 - tasks do not yet persist a role-source snapshot/capability digest pin for historical execution evidence;
-- capability binding resolution remains blocked by RS-04's unfinished runtime-pin contract;
+- read-only capability bindings use RS-04's owned package namespace and RS-06's exact runtime pin; write-capable and required-adapter bindings remain blocked;
 - retention tiers and reachability-aware artifact GC are not implemented.
 
 ## Product expert review

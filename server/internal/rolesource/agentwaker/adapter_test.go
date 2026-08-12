@@ -100,6 +100,50 @@ func TestAdapterScanSecretChangeChangesDigestsWithoutLeakingValue(t *testing.T) 
 	}
 }
 
+func TestAdapterScanNormalizesAccountActionsToExternalWriteAuthority(t *testing.T) {
+	root := writeFixture(t, "secret")
+	capabilityPath := filepath.Join(root, "capabilities/information-collection/CAPABILITY.yaml")
+	capability, err := os.ReadFile(capabilityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, root, "capabilities/information-collection/CAPABILITY.yaml", strings.Replace(string(capability), "supports_account_actions: false", "supports_account_actions: true", 1))
+	bindingPath := filepath.Join(root, "writer/capabilities.yaml")
+	binding, err := os.ReadFile(bindingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, root, "writer/capabilities.yaml", strings.Replace(string(binding), "account_actions: false", "account_actions: true", 1))
+	registry, err := rolesource.NewRegistry(newTestAdapter(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := registry.Scan(t.Context(), Kind, rolesource.ScanRequest{WorkspaceID: "workspace-1", SourceID: "source-1", Config: configJSON(t, root)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Manifest.Roles[0].CapabilityBindings[0].PermissionMode; got != "external-write" {
+		t.Fatalf("account action permission=%q, want external-write", got)
+	}
+}
+
+func TestAdapterScanRejectsUnsupportedAccountActions(t *testing.T) {
+	root := writeFixture(t, "secret")
+	bindingPath := filepath.Join(root, "writer/capabilities.yaml")
+	binding, err := os.ReadFile(bindingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, root, "writer/capabilities.yaml", strings.Replace(string(binding), "account_actions: false", "account_actions: true", 1))
+	registry, err := rolesource.NewRegistry(newTestAdapter(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Scan(t.Context(), Kind, rolesource.ScanRequest{WorkspaceID: "workspace-1", SourceID: "source-1", Config: configJSON(t, root)}); err == nil {
+		t.Fatal("scan accepted account actions that the capability does not support")
+	}
+}
+
 func TestAdapterOpenArtifactRevalidatesBytesAfterScan(t *testing.T) {
 	root := writeFixture(t, "secret")
 	adapter := newTestAdapter(t)

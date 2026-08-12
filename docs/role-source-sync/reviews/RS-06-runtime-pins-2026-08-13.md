@@ -31,7 +31,7 @@ Objections:
 
 - the database function recomputes a role target digest on enqueue and claim; representative workloads must prove this stays inside the claim SLO for roles with many skills/files;
 - runtime reconstruction of an old encrypted configuration is not implemented. The safe behavior is cancellation and explicit re-enqueue, not execution of the old task;
-- capability pins are structurally complete, but capability bindings remain blocked from materialization until their target contract lands;
+- read-only capability bindings materialize into an owned skill namespace; a new daemon capability gate rejects older daemons, and the runtime verifies the exact marker, version, permission and every declared file digest before execution;
 - retention must keep every snapshot/capability version reachable from retained task pins.
 
 ## Product expert review
@@ -71,7 +71,7 @@ Missing evidence:
 - local PostgreSQL was unavailable (`127.0.0.1:5432` connection refused), so the real trigger/migration round trip did not execute in this environment;
 - inject concurrent claim/apply commits around each statement and prove no stale payload crosses finalization;
 - benchmark pin capture/validation with realistic skill/file sizes, 100 concurrent scans and the target task claim rate;
-- rolling-upgrade compatibility test with an old daemon that ignores the new field;
+- live rolling-upgrade deployment proof; the server-side old-daemon rejection path is covered by the negotiated capability contract;
 - retention/GC and backup-restore tests must retain pin-reachable snapshots and capability versions.
 
 ## CEO review
@@ -89,7 +89,7 @@ Release position:
 
 - merge as default-off infrastructure and continue implementation;
 - no production marketing or “safe rollback” claim until live database race evidence, affected-task UX, retention and load gates pass;
-- prioritize versioned capability binding and affected-worker preview next; old-version secret reconstruction is valuable but may follow once the cancellation/re-enqueue workflow is usable.
+- prioritize affected-worker preview and the explicit cancellation/re-enqueue workflow next; hard write-permission and executable-adapter contracts must remain separate safety gates.
 
 ## Exit gates
 
@@ -99,6 +99,6 @@ Release position:
 | Claim/apply atomicity | Deterministic concurrency test around dispatched/finalized/running boundaries | Open |
 | Claim SLO | p95 < 500 ms and p99 < 1 s at target profile with realistic role dependencies | Open |
 | Runtime reconstruction | Either versioned old-config execution or explicit cancellation/re-enqueue UX | Partial — safe cancellation only |
-| Capability execution | Materialized binding and exact version pin consumed by runtime | Open |
+| Capability execution | Materialized binding and exact version pin consumed by runtime | Partial — read-only packages verify marker and file digests; live cross-runtime and write/adapter authority remain open |
 | Audit UX | Source/task/version timeline, affected-task preview and re-enqueue action | Open |
 | Retention/DR | Pin reachability, GC, backup and restore exercise | Open |

@@ -185,6 +185,7 @@ type directoryScanner struct {
 	tree         *treeDigest
 	diagnostics  []rolesource.Diagnostic
 	requirements map[string]rolesource.CapabilityRequirements
+	accountWrite map[string]bool
 }
 
 func (s *directoryScanner) scan() (rolesource.ScanOutput, error) {
@@ -207,6 +208,7 @@ func (s *directoryScanner) scan() (rolesource.ScanOutput, error) {
 		return sourceRegistry.Capabilities[i].ID < sourceRegistry.Capabilities[j].ID
 	})
 	s.requirements = make(map[string]rolesource.CapabilityRequirements, len(sourceRegistry.Capabilities))
+	s.accountWrite = make(map[string]bool, len(sourceRegistry.Capabilities))
 	capabilities := make([]rolesource.Capability, 0, len(sourceRegistry.Capabilities))
 	for _, entry := range sourceRegistry.Capabilities {
 		if err := s.ctx.Err(); err != nil {
@@ -312,6 +314,11 @@ func (s *directoryScanner) scanCapability(entry registryCapability) (rolesource.
 		MCP: append([]string(nil), manifest.Requires.MCP...),
 	}
 	s.requirements[manifest.ID] = requirements
+	s.accountWrite[manifest.ID] = manifest.Permissions.SupportsAccountActions
+	permissionModes := permissionModesThrough(manifest.Permissions.DefaultMode)
+	if manifest.Permissions.SupportsAccountActions && manifest.Permissions.DefaultMode != "external-write" {
+		permissionModes = append(permissionModes, "external-write")
+	}
 	artifacts := []rolesource.ArtifactRef{}
 	for _, relative := range []string{manifest.Contracts.InputSchema, manifest.Contracts.OutputSchema} {
 		artifactPath, err := joinWithin(capabilityDir, relative)
@@ -329,7 +336,7 @@ func (s *directoryScanner) scanCapability(entry registryCapability) (rolesource.
 		Name:            manifest.Name,
 		Version:         manifest.Version,
 		Profiles:        profiles,
-		PermissionModes: permissionModesThrough(manifest.Permissions.DefaultMode),
+		PermissionModes: permissionModes,
 		Requirements:    requirements,
 		Entrypoint:      artifactRef(entrypointPath, entrypointBody),
 		Artifacts:       artifacts,
@@ -567,6 +574,16 @@ func (s *directoryScanner) scanBindings(roleDir, roleID string) ([]rolesource.Ca
 		if binding.Fallback.Behavior != "continue" && binding.Fallback.Behavior != "partial" && binding.Fallback.Behavior != "blocked" {
 			return nil, fmt.Errorf("agentwaker role %q has invalid fallback for %q", roleID, binding.ID)
 		}
+		permissionMode := binding.Permissions.Mode
+		if binding.Permissions.AccountActions {
+			if !s.accountWrite[binding.ID] {
+				return nil, fmt.Errorf("agentwaker role %q requests account actions from capability %q that does not support them", roleID, binding.ID)
+			}
+			// Account actions are externally visible writes regardless of the
+			// base filesystem/network mode. Normalize to the generic authority
+			// boundary so the review plan blocks it until hard enforcement lands.
+			permissionMode = "external-write"
+		}
 		for _, use := range binding.UsedBy {
 			out = append(out, rolesource.CapabilityBinding{
 				CapabilityID:      binding.ID,
@@ -574,7 +591,7 @@ func (s *directoryScanner) scanBindings(roleDir, roleID string) ([]rolesource.Ca
 				Profile:           use.Profile,
 				VersionConstraint: binding.Version,
 				Required:          binding.Required,
-				PermissionMode:    binding.Permissions.Mode,
+				PermissionMode:    permissionMode,
 				Fallback:          binding.Fallback.Behavior,
 			})
 		}

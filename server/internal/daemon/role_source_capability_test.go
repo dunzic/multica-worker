@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -17,7 +20,7 @@ func TestApplyRoleSourceCapabilityContractRequiresExactDeliveredSkill(t *testing
 	}
 	task := Task{
 		RoleSourcePin: &protocol.RoleSourceTaskPin{CapabilityPins: []protocol.RoleSourceCapabilityPin{pin}},
-		Agent:         &AgentData{Instructions: "Base", Skills: []SkillData{{ID: pin.TargetSkillID, Name: "Research"}}},
+		Agent:         &AgentData{Instructions: "Base", Skills: []SkillData{capabilityTestSkill(t, pin)}},
 	}
 	if err := applyRoleSourceCapabilityContract(&task); err != nil {
 		t.Fatal(err)
@@ -31,6 +34,45 @@ func TestApplyRoleSourceCapabilityContractRequiresExactDeliveredSkill(t *testing
 	task.Agent.Skills = nil
 	if err := applyRoleSourceCapabilityContract(&task); !errors.Is(err, errSkillBundleUnavailable) {
 		t.Fatalf("missing target skill error=%v", err)
+	}
+}
+
+func capabilityTestSkill(t *testing.T, pin protocol.RoleSourceCapabilityPin) SkillData {
+	t.Helper()
+	markerPath := protocol.RoleSourceCapabilityMarkerPath(pin.CapabilityID, pin.SkillID, pin.Profile)
+	targetPath := strings.TrimSuffix(markerPath, "manifest.json") + "files/entrypoint.artifact"
+	body := "capability body"
+	digest := sha256.Sum256([]byte(body))
+	bundle := protocol.RoleSourceCapabilityBundle{
+		ContractVersion: protocol.RoleSourceCapabilityBundleContractV1,
+		CapabilityID:    pin.CapabilityID, SourceSkillID: pin.SkillID, Profile: pin.Profile,
+		ResolvedVersion: pin.ResolvedVersion, ObjectDigest: pin.ObjectDigest,
+		PermissionMode: pin.PermissionMode, Required: pin.Required, EntrypointPath: targetPath,
+		Fallback: pin.Fallback,
+		Files: []protocol.RoleSourceCapabilityBundleFile{{
+			SourcePath: "capability/SKILL.md", TargetPath: targetPath,
+			Digest: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: int64(len(body)), MediaType: "text/markdown",
+		}},
+	}
+	marker, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SkillData{ID: pin.TargetSkillID, Name: "Research", Files: []SkillFileData{
+		{Path: markerPath, Content: string(marker)}, {Path: targetPath, Content: body},
+	}}
+}
+
+func TestApplyRoleSourceCapabilityContractRejectsTamperedBundle(t *testing.T) {
+	pin := protocol.RoleSourceCapabilityPin{
+		CapabilityID: "cap", SkillID: "skill", TargetSkillID: "target", Profile: "default",
+		ResolvedVersion: "1.0.0", ObjectDigest: "sha256:" + strings.Repeat("b", 64), PermissionMode: "read-only",
+	}
+	skill := capabilityTestSkill(t, pin)
+	skill.Files[1].Content = "tampered"
+	task := Task{RoleSourcePin: &protocol.RoleSourceTaskPin{CapabilityPins: []protocol.RoleSourceCapabilityPin{pin}}, Agent: &AgentData{Skills: []SkillData{skill}}}
+	if err := applyRoleSourceCapabilityContract(&task); !errors.Is(err, errSkillBundleUnavailable) {
+		t.Fatalf("tampered bundle error=%v", err)
 	}
 }
 

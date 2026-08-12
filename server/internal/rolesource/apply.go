@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -124,6 +125,11 @@ type pendingRoleSourceMapping struct {
 	LastAppliedDigest  string     `json:"last_applied_digest"`
 	LastSnapshotDigest string     `json:"last_snapshot_digest"`
 	ArchivedAt         *time.Time `json:"archived_at"`
+}
+
+type pendingRoleSourceSkillFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
 }
 
 type applyPreflight struct {
@@ -488,31 +494,33 @@ func decodeApprovedDecisions(plan Plan, approval db.RoleSourcePlanApproval) (map
 }
 
 func validateMaterializationScope(snapshot Snapshot, plan Plan, decisions map[string]ArchiveDecision) error {
+	capabilities := make(map[string]Capability, len(snapshot.Manifest.Capabilities))
+	for _, capability := range snapshot.Manifest.Capabilities {
+		capabilities[capability.ID] = capability
+	}
 	for _, role := range snapshot.Manifest.Roles {
 		if role.Profile != nil {
 			return fmt.Errorf("%w: role profiles require a dedicated target field", ErrMaterializationBlocked)
 		}
-		if len(role.CapabilityBindings) > 0 {
-			return fmt.Errorf("%w: capability bindings require a dedicated target contract", ErrMaterializationBlocked)
-		}
-		for _, skill := range role.Skills {
-			if len(skill.Artifacts) > 0 {
-				return fmt.Errorf("%w: supporting skill files require per-file ownership mappings", ErrMaterializationBlocked)
+		for _, binding := range role.CapabilityBindings {
+			if binding.PermissionMode != "read-only" {
+				return fmt.Errorf("%w: capability binding %s requests %s without a hard runtime permission boundary", ErrMaterializationBlocked, binding.CapabilityID, binding.PermissionMode)
+			}
+			for _, requirement := range capabilities[binding.CapabilityID].Requirements.Adapters {
+				if requirement.Required {
+					return fmt.Errorf("%w: capability binding %s requires unresolved adapter %s", ErrMaterializationBlocked, binding.CapabilityID, requirement.ID)
+				}
 			}
 		}
 	}
 	for _, action := range plan.Actions {
 		switch action.Ref.Kind {
-		case "role", "skill", "automation", "capability":
-		case "capability_binding":
-			if action.Operation == PlanCreate || action.Operation == PlanUpdate {
-				return fmt.Errorf("%w: %s objects do not have a safe target contract", ErrMaterializationBlocked, action.Ref.Kind)
-			}
+		case "role", "skill", "automation", "capability", "capability_binding":
 		case "environment", "mcp":
 		default:
 			return fmt.Errorf("%w: unsupported object kind %q", ErrMaterializationBlocked, action.Ref.Kind)
 		}
-		if action.Operation == PlanArchiveCandidate && decisions[objectKey(action.Ref)] == ArchiveDecisionArchive && action.Ref.Kind != "role" && action.Ref.Kind != "automation" {
+		if action.Operation == PlanArchiveCandidate && decisions[objectKey(action.Ref)] == ArchiveDecisionArchive && action.Ref.Kind != "role" && action.Ref.Kind != "automation" && action.Ref.Kind != "capability_binding" {
 			return fmt.Errorf("%w: %s archive is not reversible yet; choose retain", ErrMaterializationBlocked, action.Ref.Kind)
 		}
 	}
@@ -873,6 +881,13 @@ func (s *materializationState) materialize(ctx context.Context) error {
 		}
 	}
 	for _, role := range s.snapshot.Manifest.Roles {
+		for _, binding := range role.CapabilityBindings {
+			if err := s.materializeCapabilityBinding(ctx, role, binding); err != nil {
+				return err
+			}
+		}
+	}
+	for _, role := range s.snapshot.Manifest.Roles {
 		for _, automation := range role.Automations {
 			if err := s.materializeAutomation(ctx, role, automation); err != nil {
 				return err
@@ -1173,7 +1188,20 @@ func (s *materializationState) materializeSkill(ctx context.Context, role Role, 
 	if err := s.q.AddAgentSkill(ctx, db.AddAgentSkillParams{AgentID: roleMapping.TargetID, SkillID: target.ID}); err != nil {
 		return err
 	}
-	if err := s.upsertMapping(ctx, ref, "skill", target.ID, action.AfterDigest, []string{"name", "description", "content", "agent_binding"}, pgtype.Timestamptz{}); err != nil {
+	desiredFiles := make(map[string]string, len(skill.Artifacts))
+	for _, artifact := range skill.Artifacts {
+		verified, ok := s.artifacts[artifact.Digest]
+		if !ok {
+			return fmt.Errorf("%w: supporting skill artifact %s is unavailable", ErrArtifactMissing, artifact.Digest)
+		}
+		desiredFiles[artifact.Path] = verified.body
+	}
+	fileMask, err := s.syncOwnedSkillFiles(ctx, ref, target.ID, desiredFiles)
+	if err != nil {
+		return err
+	}
+	mask := append([]string{"name", "description", "content", "agent_binding"}, fileMask...)
+	if err := s.upsertMapping(ctx, ref, "skill", target.ID, action.AfterDigest, mask, pgtype.Timestamptz{}); err != nil {
 		return err
 	}
 	if mapped {
@@ -1182,6 +1210,162 @@ func (s *materializationState) materializeSkill(ctx context.Context, role Role, 
 		s.receipt.Counts.Created++
 	}
 	return nil
+}
+
+func (s *materializationState) materializeCapabilityBinding(ctx context.Context, role Role, binding CapabilityBinding) error {
+	ref := ObjectRef{Kind: "capability_binding", ParentID: role.ID, ID: capabilityBindingObjectID(binding)}
+	action, ok := s.actions[objectKey(ref)]
+	if !ok || action.Operation == PlanBlocked {
+		return fmt.Errorf("%w: capability binding has no applicable plan action", ErrApplyConflict)
+	}
+	if action.Operation == PlanArchiveCandidate {
+		return nil
+	}
+	if action.Operation == PlanUnchanged {
+		s.receipt.Counts.Unchanged++
+		return s.advanceExistingMappingSnapshot(ctx, ref)
+	}
+	skillMapping, ok := s.mappings[objectKey(ObjectRef{Kind: "skill", ParentID: role.ID, ID: binding.SkillID})]
+	if !ok || skillMapping.ArchivedAt.Valid || skillMapping.TargetKind != "skill" {
+		return fmt.Errorf("%w: capability binding target skill is missing", ErrApplyConflict)
+	}
+	capability, ok := capabilityByID(s.snapshot.Manifest.Capabilities, binding.CapabilityID)
+	if !ok {
+		return fmt.Errorf("%w: capability binding definition is missing", ErrApplyConflict)
+	}
+	capabilityAction, ok := s.actions[objectKey(ObjectRef{Kind: "capability", ID: capability.ID})]
+	if !ok || capabilityAction.AfterDigest == "" {
+		return fmt.Errorf("%w: capability version digest is missing", ErrApplyConflict)
+	}
+	desiredFiles, err := s.capabilityBundleFiles(capability, binding, capabilityAction.AfterDigest)
+	if err != nil {
+		return err
+	}
+	fileMask, err := s.syncOwnedSkillFiles(ctx, ref, skillMapping.TargetID, desiredFiles)
+	if err != nil {
+		return err
+	}
+	if err := s.upsertMapping(ctx, ref, "skill", skillMapping.TargetID, action.AfterDigest, fileMask, pgtype.Timestamptz{}); err != nil {
+		return err
+	}
+	s.incrementAppliedAction(action.Operation)
+	return nil
+}
+
+func capabilityByID(capabilities []Capability, id string) (Capability, bool) {
+	for _, capability := range capabilities {
+		if capability.ID == id {
+			return capability, true
+		}
+	}
+	return Capability{}, false
+}
+
+func (s *materializationState) capabilityBundleFiles(capability Capability, binding CapabilityBinding, objectDigest string) (map[string]string, error) {
+	markerPath := protocol.RoleSourceCapabilityMarkerPath(capability.ID, binding.SkillID, binding.Profile)
+	prefix := strings.TrimSuffix(markerPath, "manifest.json") + "files/"
+	refs := append([]ArtifactRef{capability.Entrypoint}, capability.Artifacts...)
+	bundle := protocol.RoleSourceCapabilityBundle{
+		ContractVersion: protocol.RoleSourceCapabilityBundleContractV1,
+		CapabilityID:    capability.ID, SourceSkillID: binding.SkillID, Profile: binding.Profile,
+		ResolvedVersion: capability.Version, ObjectDigest: objectDigest,
+		PermissionMode: binding.PermissionMode, Required: binding.Required,
+		Fallback: binding.Fallback,
+		Files:    make([]protocol.RoleSourceCapabilityBundleFile, 0, len(refs)),
+	}
+	desired := make(map[string]string, len(refs)+1)
+	for index, ref := range refs {
+		verified, ok := s.artifacts[ref.Digest]
+		if !ok {
+			return nil, fmt.Errorf("%w: capability artifact %s is unavailable", ErrArtifactMissing, ref.Digest)
+		}
+		pathDigest := sha256.Sum256([]byte(ref.Path))
+		targetPath := prefix + hex.EncodeToString(pathDigest[:]) + ".artifact"
+		if index == 0 {
+			bundle.EntrypointPath = targetPath
+		}
+		bundle.Files = append(bundle.Files, protocol.RoleSourceCapabilityBundleFile{
+			SourcePath: ref.Path, TargetPath: targetPath, Digest: ref.Digest,
+			SizeBytes: ref.SizeBytes, MediaType: ref.MediaType,
+		})
+		desired[targetPath] = verified.body
+	}
+	marker, err := json.Marshal(bundle)
+	if err != nil {
+		return nil, err
+	}
+	desired[markerPath] = string(marker)
+	return desired, nil
+}
+
+func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref ObjectRef, targetID pgtype.UUID, desired map[string]string) ([]string, error) {
+	if _, err := s.q.GetRoleSourceSkillForUpdate(ctx, db.GetRoleSourceSkillForUpdateParams{ID: targetID, WorkspaceID: s.workspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: mapped skill target is missing", ErrApplyConflict)
+		}
+		return nil, err
+	}
+	rows, err := s.q.ListRoleSourceSkillFilesForUpdate(ctx, db.ListRoleSourceSkillFilesForUpdateParams{SkillID: targetID, WorkspaceID: s.workspaceID})
+	if err != nil {
+		return nil, err
+	}
+	existing := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		existing[row.Path] = true
+	}
+	owned := map[string]bool{}
+	if mapping, ok := s.mappings[objectKey(ref)]; ok {
+		if mapping.ArchivedAt.Valid || mapping.TargetKind != "skill" || mapping.TargetID != targetID {
+			return nil, fmt.Errorf("%w: skill-file ownership mapping is archived or retargeted", ErrApplyConflict)
+		}
+		for _, item := range ownershipMask(mapping) {
+			if strings.HasPrefix(item, "skill_file:") {
+				owned[strings.TrimPrefix(item, "skill_file:")] = true
+			}
+		}
+	}
+	paths := make([]string, 0, len(desired))
+	for filePath := range desired {
+		if existing[filePath] && !owned[filePath] {
+			return nil, fmt.Errorf("%w: skill file %s is already owned outside this source object", ErrApplyConflict, filePath)
+		}
+		paths = append(paths, filePath)
+	}
+	sort.Strings(paths)
+	remove := make([]string, 0)
+	for filePath := range owned {
+		if _, keep := desired[filePath]; !keep {
+			remove = append(remove, filePath)
+		}
+	}
+	sort.Strings(remove)
+	if len(remove) > 0 {
+		if _, err := s.q.DeleteRoleSourceSkillFiles(ctx, db.DeleteRoleSourceSkillFilesParams{SkillID: targetID, Paths: remove}); err != nil {
+			return nil, err
+		}
+	}
+	if len(paths) > 0 {
+		files := make([]pendingRoleSourceSkillFile, 0, len(paths))
+		for _, filePath := range paths {
+			files = append(files, pendingRoleSourceSkillFile{Path: filePath, Content: desired[filePath]})
+		}
+		body, err := json.Marshal(files)
+		if err != nil {
+			return nil, err
+		}
+		upserted, err := s.q.UpsertRoleSourceSkillFiles(ctx, db.UpsertRoleSourceSkillFilesParams{SkillID: targetID, Files: body})
+		if err != nil {
+			return nil, err
+		}
+		if len(upserted) != len(files) {
+			return nil, fmt.Errorf("%w: persisted %d of %d source-owned skill files", ErrApplyConflict, len(upserted), len(files))
+		}
+	}
+	mask := make([]string, 0, len(paths))
+	for _, filePath := range paths {
+		mask = append(mask, "skill_file:"+filePath)
+	}
+	return mask, nil
 }
 
 func (s *materializationState) materializeAutomation(ctx context.Context, role Role, automation Automation) error {
@@ -1280,11 +1464,19 @@ func (s *materializationState) materializeArchives(ctx context.Context) error {
 			if _, err := s.q.ArchiveAgent(ctx, db.ArchiveAgentParams{ID: mapping.TargetID, ArchivedBy: s.actorID}); err != nil {
 				return err
 			}
+		case "capability_binding":
+			if _, err := s.syncOwnedSkillFiles(ctx, action.Ref, mapping.TargetID, map[string]string{}); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("%w: unsupported archive kind %q", ErrMaterializationBlocked, action.Ref.Kind)
 		}
 		archivedAt := pgtype.Timestamptz{Time: s.now().UTC(), Valid: true}
-		if err := s.upsertMapping(ctx, action.Ref, mapping.TargetKind, mapping.TargetID, action.BeforeDigest, ownershipMask(mapping), archivedAt); err != nil {
+		mask := ownershipMask(mapping)
+		if action.Ref.Kind == "capability_binding" {
+			mask = []string{}
+		}
+		if err := s.upsertMapping(ctx, action.Ref, mapping.TargetKind, mapping.TargetID, action.BeforeDigest, mask, archivedAt); err != nil {
 			return err
 		}
 		s.receipt.Counts.Archived++

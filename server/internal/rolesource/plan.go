@@ -61,6 +61,8 @@ func BuildPlan(sourceID string, from *Snapshot, to Snapshot) (Plan, error) {
 		Actions:          []PlanAction{},
 		Blockers:         blockersFromDiagnostics(canonicalTo.Diagnostics),
 	}
+	plan.Blockers = append(plan.Blockers, materializationPlanBlockers(canonicalTo)...)
+	sortPlanBlockers(plan.Blockers)
 	if canonicalFrom != nil {
 		plan.FromSnapshotDigest = canonicalFrom.SnapshotDigest
 	}
@@ -346,8 +348,9 @@ func flattenSnapshot(snapshot *Snapshot) (map[string]planObject, error) {
 			}
 		}
 		for _, binding := range role.CapabilityBindings {
-			id := binding.CapabilityID + "/" + binding.SkillID + "/" + binding.Profile
-			if err := add(ObjectRef{Kind: "capability_binding", ParentID: role.ID, ID: id}, id, role.ID, binding); err != nil {
+			id := capabilityBindingObjectID(binding)
+			displayName := binding.CapabilityID + "/" + binding.SkillID + "/" + binding.Profile
+			if err := add(ObjectRef{Kind: "capability_binding", ParentID: role.ID, ID: id}, displayName, role.ID, binding); err != nil {
 				return nil, err
 			}
 		}
@@ -368,6 +371,11 @@ func flattenSnapshot(snapshot *Snapshot) (map[string]planObject, error) {
 		}
 	}
 	return objects, nil
+}
+
+func capabilityBindingObjectID(binding CapabilityBinding) string {
+	digest := sha256.Sum256([]byte(binding.CapabilityID + "\x00" + binding.SkillID + "\x00" + binding.Profile))
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func objectKey(ref ObjectRef) string {
@@ -400,11 +408,48 @@ func blockersFromDiagnostics(diagnostics []Diagnostic) []PlanBlocker {
 		}
 		blockers = append(blockers, blocker)
 	}
+	sortPlanBlockers(blockers)
+	return blockers
+}
+
+func sortPlanBlockers(blockers []PlanBlocker) {
 	sort.Slice(blockers, func(i, j int) bool {
 		a, b := blockers[i], blockers[j]
-		return fmt.Sprintf("%t\x00%s\x00%s\x00%s", a.Global, a.Object.Kind, a.Object.ID, a.Code) <
-			fmt.Sprintf("%t\x00%s\x00%s\x00%s", b.Global, b.Object.Kind, b.Object.ID, b.Code)
+		return fmt.Sprintf("%t\x00%s\x00%s\x00%s\x00%s", a.Global, a.Object.Kind, a.Object.ParentID, a.Object.ID, a.Code) <
+			fmt.Sprintf("%t\x00%s\x00%s\x00%s\x00%s", b.Global, b.Object.Kind, b.Object.ParentID, b.Object.ID, b.Code)
 	})
+}
+
+func materializationPlanBlockers(snapshot Snapshot) []PlanBlocker {
+	blockers := []PlanBlocker{}
+	capabilities := make(map[string]Capability, len(snapshot.Manifest.Capabilities))
+	for _, capability := range snapshot.Manifest.Capabilities {
+		capabilities[capability.ID] = capability
+	}
+	for _, role := range snapshot.Manifest.Roles {
+		if role.Profile != nil {
+			blockers = append(blockers, PlanBlocker{
+				Code: "role_profile_target_unsupported", Message: "role profile has no safe Multica target contract", Global: false,
+				Object: ObjectRef{Kind: "role", ID: role.ID},
+			})
+		}
+		for _, binding := range role.CapabilityBindings {
+			ref := ObjectRef{Kind: "capability_binding", ParentID: role.ID, ID: capabilityBindingObjectID(binding)}
+			if binding.PermissionMode != "read-only" {
+				blockers = append(blockers, PlanBlocker{
+					Code: "capability_write_boundary_unavailable", Message: "capability requests write authority without a hard runtime permission boundary", Global: false, Object: ref,
+				})
+			}
+			for _, requirement := range capabilities[binding.CapabilityID].Requirements.Adapters {
+				if requirement.Required {
+					blockers = append(blockers, PlanBlocker{
+						Code: "capability_adapter_unresolved", Message: "capability requires an executable adapter that is not bound to the target runtime", Global: false, Object: ref,
+					})
+					break
+				}
+			}
+		}
+	}
 	return blockers
 }
 

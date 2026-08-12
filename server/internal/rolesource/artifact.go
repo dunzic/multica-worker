@@ -102,9 +102,9 @@ func CollectArtifactRefs(snapshot Snapshot) ([]ArtifactRef, error) {
 // collectMaterializationArtifactRefs returns only bodies copied into Multica's
 // mutable execution tables during apply. The complete snapshot artifact set is
 // still transferred and retained by digest, but capability packages and
-// supporting files are consumed later by their dedicated runtime contracts;
-// loading them into every atomic apply would make a 10 GiB referenced source a
-// 10 GiB server-memory event.
+// supporting files and only bound capability packages are copied into target
+// skills. Unbound catalog packages remain content-addressed in object storage;
+// loading them would make a large catalog an unnecessary server-memory event.
 func collectMaterializationArtifactRefs(snapshot Snapshot) ([]ArtifactRef, error) {
 	canonical, err := validatedSnapshotCopy(snapshot)
 	if err != nil {
@@ -133,9 +133,35 @@ func collectMaterializationArtifactRefs(snapshot Snapshot) ([]ArtifactRef, error
 			if err := add(skill.Entrypoint); err != nil {
 				return nil, err
 			}
+			for _, ref := range skill.Artifacts {
+				if err := add(ref); err != nil {
+					return nil, err
+				}
+			}
 		}
 		for _, automation := range role.Automations {
 			if err := add(automation.Prompt); err != nil {
+				return nil, err
+			}
+		}
+	}
+	capabilities := make(map[string]Capability, len(canonical.Manifest.Capabilities))
+	for _, capability := range canonical.Manifest.Capabilities {
+		capabilities[capability.ID] = capability
+	}
+	bound := make(map[string]bool)
+	for _, role := range canonical.Manifest.Roles {
+		for _, binding := range role.CapabilityBindings {
+			bound[binding.CapabilityID] = true
+		}
+	}
+	for id := range bound {
+		capability := capabilities[id]
+		if err := add(capability.Entrypoint); err != nil {
+			return nil, err
+		}
+		for _, ref := range capability.Artifacts {
+			if err := add(ref); err != nil {
 				return nil, err
 			}
 		}

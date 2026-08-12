@@ -105,6 +105,24 @@ func (q *Queries) CreateSkill(ctx context.Context, arg CreateSkillParams) (Skill
 	return i, err
 }
 
+const deleteRoleSourceSkillFiles = `-- name: DeleteRoleSourceSkillFiles :execrows
+DELETE FROM skill_file
+WHERE skill_id = $1 AND path = ANY($2::text[])
+`
+
+type DeleteRoleSourceSkillFilesParams struct {
+	SkillID pgtype.UUID `json:"skill_id"`
+	Paths   []string    `json:"paths"`
+}
+
+func (q *Queries) DeleteRoleSourceSkillFiles(ctx context.Context, arg DeleteRoleSourceSkillFilesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRoleSourceSkillFiles, arg.SkillID, arg.Paths)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteSkill = `-- name: DeleteSkill :exec
 DELETE FROM skill WHERE id = $1 AND workspace_id = $2
 `
@@ -136,6 +154,34 @@ DELETE FROM skill_file WHERE skill_id = $1
 func (q *Queries) DeleteSkillFilesBySkill(ctx context.Context, skillID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteSkillFilesBySkill, skillID)
 	return err
+}
+
+const getRoleSourceSkillForUpdate = `-- name: GetRoleSourceSkillForUpdate :one
+SELECT id, workspace_id, name, description, content, config, created_by, created_at, updated_at FROM skill
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type GetRoleSourceSkillForUpdateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetRoleSourceSkillForUpdate(ctx context.Context, arg GetRoleSourceSkillForUpdateParams) (Skill, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceSkillForUpdate, arg.ID, arg.WorkspaceID)
+	var i Skill
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Description,
+		&i.Content,
+		&i.Config,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getSkill = `-- name: GetSkill :one
@@ -404,6 +450,47 @@ func (q *Queries) ListAgentSkillsByWorkspace(ctx context.Context, workspaceID pg
 	return items, nil
 }
 
+const listRoleSourceSkillFilesForUpdate = `-- name: ListRoleSourceSkillFilesForUpdate :many
+SELECT file.id, file.skill_id, file.path, file.content, file.created_at, file.updated_at
+FROM skill_file file
+JOIN skill ON skill.id = file.skill_id
+WHERE file.skill_id = $1 AND skill.workspace_id = $2
+ORDER BY file.path
+FOR UPDATE OF file
+`
+
+type ListRoleSourceSkillFilesForUpdateParams struct {
+	SkillID     pgtype.UUID `json:"skill_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) ListRoleSourceSkillFilesForUpdate(ctx context.Context, arg ListRoleSourceSkillFilesForUpdateParams) ([]SkillFile, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceSkillFilesForUpdate, arg.SkillID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SkillFile{}
+	for rows.Next() {
+		var i SkillFile
+		if err := rows.Scan(
+			&i.ID,
+			&i.SkillID,
+			&i.Path,
+			&i.Content,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSkillFiles = `-- name: ListSkillFiles :many
 
 SELECT id, skill_id, path, content, created_at, updated_at FROM skill_file
@@ -653,6 +740,51 @@ func (q *Queries) UpdateSkill(ctx context.Context, arg UpdateSkillParams) (Skill
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const upsertRoleSourceSkillFiles = `-- name: UpsertRoleSourceSkillFiles :many
+WITH input AS (
+    SELECT item
+    FROM jsonb_to_recordset($2::jsonb) AS item(path TEXT, content TEXT)
+)
+INSERT INTO skill_file (skill_id, path, content)
+SELECT $1, path, content FROM input
+ON CONFLICT (skill_id, path) DO UPDATE SET
+    content = EXCLUDED.content,
+    updated_at = now()
+RETURNING skill_file.id, skill_file.skill_id, skill_file.path, skill_file.content, skill_file.created_at, skill_file.updated_at
+`
+
+type UpsertRoleSourceSkillFilesParams struct {
+	SkillID pgtype.UUID `json:"skill_id"`
+	Files   []byte      `json:"files"`
+}
+
+func (q *Queries) UpsertRoleSourceSkillFiles(ctx context.Context, arg UpsertRoleSourceSkillFilesParams) ([]SkillFile, error) {
+	rows, err := q.db.Query(ctx, upsertRoleSourceSkillFiles, arg.SkillID, arg.Files)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SkillFile{}
+	for rows.Next() {
+		var i SkillFile
+		if err := rows.Scan(
+			&i.ID,
+			&i.SkillID,
+			&i.Path,
+			&i.Content,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertSkillFile = `-- name: UpsertSkillFile :one

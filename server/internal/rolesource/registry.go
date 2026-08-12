@@ -16,6 +16,12 @@ import (
 
 var kindPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
 
+const (
+	maxMaterializedSkillFileBytes   int64 = 1 << 20
+	maxMaterializedSkillBundleBytes       = 15 << 19
+	maxMaterializedSkillFiles             = 256
+)
+
 var (
 	stableIDPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`)
 	sha256Pattern     = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -380,8 +386,85 @@ func validateManifest(manifest *Manifest) error {
 		if err := validateBindings(role, skills, capabilities); err != nil {
 			return err
 		}
+		if err := validateBindingRequirementReferences(role, capabilities); err != nil {
+			return err
+		}
 	}
 	canonicalizeManifest(manifest)
+	return nil
+}
+
+func validateBindingRequirementReferences(role *Role, capabilities map[string]Capability) error {
+	environment := make(map[string]bool, len(role.Environment))
+	for _, declaration := range role.Environment {
+		environment[declaration.Name] = declaration.Configured
+	}
+	mcp := make(map[string]bool, len(role.MCP))
+	for _, declaration := range role.MCP {
+		mcp[declaration.ID] = true
+	}
+	for _, binding := range role.CapabilityBindings {
+		capability := capabilities[binding.CapabilityID]
+		for _, name := range capability.Requirements.Environment {
+			configured, ok := environment[name]
+			if !ok {
+				return fmt.Errorf("role %q capability %q requires undeclared environment key %q", role.ID, capability.ID, name)
+			}
+			if !configured {
+				return fmt.Errorf("role %q capability %q has unconfigured environment key %q", role.ID, capability.ID, name)
+			}
+		}
+		for _, id := range capability.Requirements.MCP {
+			if !mcp[id] {
+				return fmt.Errorf("role %q capability %q requires undeclared MCP server %q", role.ID, capability.ID, id)
+			}
+		}
+	}
+	if err := validateMaterializedSkillBudgets(role, capabilities); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateMaterializedSkillBudgets(role *Role, capabilities map[string]Capability) error {
+	type budget struct {
+		files int
+		bytes int64
+	}
+	budgets := make(map[string]budget, len(role.Skills))
+	add := func(skillID string, refs []ArtifactRef, marker bool) error {
+		value := budgets[skillID]
+		value.files += len(refs)
+		if marker {
+			value.files++
+		}
+		for _, ref := range refs {
+			if ref.SizeBytes > maxMaterializedSkillFileBytes {
+				return fmt.Errorf("role %q skill %q materializes file %q above the 1 MiB runtime limit", role.ID, skillID, ref.Path)
+			}
+			value.bytes += ref.SizeBytes
+		}
+		if value.files > maxMaterializedSkillFiles || value.bytes > maxMaterializedSkillBundleBytes {
+			return fmt.Errorf("role %q skill %q exceeds the 256-file or 7.5 MiB materialized bundle limit", role.ID, skillID)
+		}
+		budgets[skillID] = value
+		return nil
+	}
+	for _, skill := range role.Skills {
+		if skill.Entrypoint.SizeBytes > maxMaterializedSkillFileBytes {
+			return fmt.Errorf("role %q skill %q entrypoint exceeds the 1 MiB runtime limit", role.ID, skill.ID)
+		}
+		if err := add(skill.ID, skill.Artifacts, false); err != nil {
+			return err
+		}
+	}
+	for _, binding := range role.CapabilityBindings {
+		capability := capabilities[binding.CapabilityID]
+		refs := append([]ArtifactRef{capability.Entrypoint}, capability.Artifacts...)
+		if err := add(binding.SkillID, refs, true); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -486,6 +569,12 @@ func validateBindings(role *Role, skills map[string]Skill, capabilities map[stri
 		}
 		if !contains(capability.PermissionModes, binding.PermissionMode) {
 			return fmt.Errorf("role %q binding requests unsupported permission mode %q on capability %q", role.ID, binding.PermissionMode, binding.CapabilityID)
+		}
+		if binding.PermissionMode != "read-only" && binding.PermissionMode != "local-write" && binding.PermissionMode != "external-write" {
+			return fmt.Errorf("role %q binding requests unsafe permission mode %q", role.ID, binding.PermissionMode)
+		}
+		if binding.Fallback != "" && binding.Fallback != "continue" && binding.Fallback != "partial" && binding.Fallback != "blocked" {
+			return fmt.Errorf("role %q binding has unsupported fallback %q", role.ID, binding.Fallback)
 		}
 		if !semanticVersionSatisfies(capability.Version, binding.VersionConstraint) {
 			return fmt.Errorf("role %q binding constraint %q does not resolve capability %q version %q", role.ID, binding.VersionConstraint, binding.CapabilityID, capability.Version)

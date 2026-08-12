@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func TestValidateMaterializationScopeAcceptsSafeSourceNeutralObjects(t *testing.T) {
@@ -34,7 +35,7 @@ func TestValidateMaterializationScopeAcceptsSafeSourceNeutralObjects(t *testing.
 	}
 }
 
-func TestValidateMaterializationScopeBlocksFieldsWithoutOwnershipContract(t *testing.T) {
+func TestValidateMaterializationScopeBlocksRoleProfileWithoutTargetContract(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*Manifest)
@@ -42,13 +43,6 @@ func TestValidateMaterializationScopeBlocksFieldsWithoutOwnershipContract(t *tes
 		{"profile", func(manifest *Manifest) {
 			value := testArtifact("roles/writer/profile.md")
 			manifest.Roles[0].Profile = &value
-		}},
-		{"capability binding", func(manifest *Manifest) {
-			manifest.Capabilities = []Capability{{ID: "browser", Name: "Browser", Version: "1.0.0", Profiles: []string{"default"}, PermissionModes: []string{"private"}, Entrypoint: testArtifact("capability.md")}}
-			manifest.Roles[0].CapabilityBindings = []CapabilityBinding{{CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "^1.0.0", PermissionMode: "private"}}
-		}},
-		{"supporting skill file", func(manifest *Manifest) {
-			manifest.Roles[0].Skills[0].Artifacts = []ArtifactRef{testArtifact("helper.txt")}
 		}},
 	}
 	for _, test := range tests {
@@ -64,6 +58,76 @@ func TestValidateMaterializationScopeBlocksFieldsWithoutOwnershipContract(t *tes
 				t.Fatalf("scope error = %v, want materialization blocked", err)
 			}
 		})
+	}
+}
+
+func TestValidateMaterializationScopeAcceptsCapabilityBindingsAndOwnedSkillFiles(t *testing.T) {
+	manifest := planTestManifest()
+	manifest.Capabilities = []Capability{{ID: "browser", Name: "Browser", Version: "1.0.0", Profiles: []string{"default"}, PermissionModes: []string{"read-only"}, Entrypoint: testArtifact("capability.md")}}
+	manifest.Roles[0].CapabilityBindings = []CapabilityBinding{{CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "^1.0.0", PermissionMode: "read-only"}}
+	manifest.Roles[0].Skills[0].Artifacts = []ArtifactRef{testArtifact("helper.txt")}
+	snapshot := planTestSnapshot(t, manifest)
+	plan, err := BuildPlan("source-1", nil, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMaterializationScope(snapshot, plan, map[string]ArchiveDecision{}); err != nil {
+		t.Fatalf("capability materialization rejected: %v", err)
+	}
+}
+
+func TestValidateMaterializationScopeRejectsUnenforcedCapabilityAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		permission string
+		adapter    bool
+	}{
+		{name: "external write", permission: "external-write"},
+		{name: "required adapter", permission: "read-only", adapter: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := planTestManifest()
+			capability := Capability{ID: "browser", Name: "Browser", Version: "1.0.0", Profiles: []string{"default"}, PermissionModes: []string{test.permission}, Entrypoint: testArtifact("capability.md")}
+			if test.adapter {
+				capability.Requirements.Adapters = []AdapterRequirement{{ID: "browser-driver", Required: true}}
+			}
+			manifest.Capabilities = []Capability{capability}
+			manifest.Roles[0].CapabilityBindings = []CapabilityBinding{{CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "^1.0.0", PermissionMode: test.permission}}
+			snapshot := planTestSnapshot(t, manifest)
+			plan, err := BuildPlan("source-1", nil, snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateMaterializationScope(snapshot, plan, map[string]ArchiveDecision{}); !errors.Is(err, ErrMaterializationBlocked) {
+				t.Fatalf("scope error=%v, want blocked", err)
+			}
+		})
+	}
+}
+
+func TestCapabilityBundleFilesCarriesImmutableRuntimeProof(t *testing.T) {
+	entrypoint := testArtifact("capabilities/browser/SKILL.md")
+	supporting := testArtifact("capabilities/browser/schema.json")
+	supporting.Digest = testSHA256("b")
+	state := materializationState{artifacts: map[string]verifiedArtifact{
+		entrypoint.Digest: {ref: entrypoint, body: "0123456789"},
+		supporting.Digest: {ref: supporting, body: "abcdefghij"},
+	}}
+	binding := CapabilityBinding{CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "^1.0.0", PermissionMode: "read-only", Required: true, Fallback: "blocked"}
+	files, err := state.capabilityBundleFiles(Capability{ID: "browser", Version: "1.2.3", Entrypoint: entrypoint, Artifacts: []ArtifactRef{supporting}}, binding, testSHA256("c"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerPath := protocol.RoleSourceCapabilityMarkerPath("browser", "draft", "default")
+	var marker protocol.RoleSourceCapabilityBundle
+	if err := json.Unmarshal([]byte(files[markerPath]), &marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker.ContractVersion != protocol.RoleSourceCapabilityBundleContractV1 || marker.ObjectDigest != testSHA256("c") || marker.Fallback != "blocked" || len(marker.Files) != 2 || marker.EntrypointPath == "" {
+		t.Fatalf("capability marker=%+v", marker)
+	}
+	if _, ok := files[marker.EntrypointPath]; !ok {
+		t.Fatalf("entrypoint %q is not materialized", marker.EntrypointPath)
 	}
 }
 

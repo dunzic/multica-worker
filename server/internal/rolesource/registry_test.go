@@ -312,6 +312,26 @@ func TestRegistryScanRequiresCapabilityConstraintToResolve(t *testing.T) {
 	}
 }
 
+func TestRegistryScanRejectsCapabilityRequirementsMissingFromRole(t *testing.T) {
+	adapter := validFakeAdapter("fake_source")
+	adapter.manifest.Capabilities = []Capability{{
+		ID: "browser", Name: "Browser", Version: "1.0.0", Profiles: []string{"default"}, PermissionModes: []string{"read-only"},
+		Requirements: CapabilityRequirements{Environment: []string{"BROWSER_TOKEN"}, MCP: []string{"browser"}},
+		Entrypoint:   testArtifact("capabilities/browser/SKILL.md"),
+	}}
+	adapter.manifest.Roles[0].Skills = []Skill{{ID: "draft", Name: "Draft", Entrypoint: testArtifact("skills/draft/SKILL.md")}}
+	adapter.manifest.Roles[0].CapabilityBindings = []CapabilityBinding{{
+		CapabilityID: "browser", SkillID: "draft", Profile: "default", VersionConstraint: "^1.0.0", PermissionMode: "read-only", Required: true,
+	}}
+	registry, err := NewRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Scan(context.Background(), "fake_source", ScanRequest{WorkspaceID: "workspace-1", SourceID: "source-1", Config: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("Scan accepted undeclared capability requirements")
+	}
+}
+
 func TestRegistryScanRejectsUnsafeSourceEvidence(t *testing.T) {
 	adapter := validFakeAdapter("fake_source")
 	adapter.evidence = SourceEvidence{}

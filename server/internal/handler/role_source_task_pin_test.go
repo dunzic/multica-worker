@@ -17,13 +17,13 @@ func TestDecodeRoleSourceTaskPinKeepsOnlyDigestProvenance(t *testing.T) {
 		SourceRoleID:     "writer",
 		SnapshotDigest:   "sha256:" + strings.Repeat("a", 64),
 		RoleObjectDigest: "sha256:" + strings.Repeat("b", 64),
-		CapabilityPins:   []byte(`[{"capability_id":"browser","skill_id":"draft","target_skill_id":"00000000-0000-4000-8000-000000000099","profile":"default","version_constraint":"^1.0.0","resolved_version":"1.2.3","object_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","permission_mode":"read-only","required":true}]`),
+		CapabilityPins:   []byte(`[{"capability_id":"browser","skill_id":"draft","target_skill_id":"00000000-0000-4000-8000-000000000099","profile":"default","version_constraint":"^1.0.0","resolved_version":"1.2.3","object_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","permission_mode":"read-only","required":true,"fallback":"blocked"}]`),
 	}
 	pin, err := decodeRoleSourceTaskPin(row)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pin.SourceRoleID != "writer" || len(pin.CapabilityPins) != 1 || pin.CapabilityPins[0].ResolvedVersion != "1.2.3" || pin.CapabilityPins[0].TargetSkillID == "" {
+	if pin.SourceRoleID != "writer" || len(pin.CapabilityPins) != 1 || pin.CapabilityPins[0].ResolvedVersion != "1.2.3" || pin.CapabilityPins[0].TargetSkillID == "" || pin.CapabilityPins[0].Fallback != "blocked" {
 		t.Fatalf("decoded pin = %+v", pin)
 	}
 	body, err := json.Marshal(pin)
