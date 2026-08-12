@@ -458,6 +458,9 @@ deleted_object_mappings AS (
 deleted_artifacts AS (
     DELETE FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
 ),
+deleted_snapshot_artifacts AS (
+    DELETE FROM role_source_snapshot_artifact WHERE role_source_snapshot_artifact.workspace_id = $1
+),
 deleted_snapshots AS (
     DELETE FROM role_source_snapshot WHERE role_source_snapshot.workspace_id = $1
 ),

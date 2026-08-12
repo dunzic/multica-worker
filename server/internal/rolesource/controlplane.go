@@ -413,6 +413,9 @@ func (c *ControlPlane) ReportScanSuccess(ctx context.Context, input ReportScanSu
 	if err != nil {
 		return db.RoleSourceSnapshot{}, err
 	}
+	if err := persistSnapshotArtifactEdges(ctx, qtx, workspaceID, sourceID, snapshot.SnapshotDigest, artifactRefs); err != nil {
+		return db.RoleSourceSnapshot{}, err
+	}
 	if _, err := qtx.CompleteRoleSourceScanSuccess(ctx, db.CompleteRoleSourceScanSuccessParams{
 		SnapshotDigest: pgtype.Text{String: snapshot.SnapshotDigest, Valid: true}, ID: requestID, SourceID: sourceID,
 		WorkspaceID: workspaceID, RuntimeID: runtimeID, LeaseToken: leaseToken,

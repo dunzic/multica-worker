@@ -112,6 +112,38 @@ WHERE workspace_id = @workspace_id
 ORDER BY digest
 FOR SHARE;
 
+-- name: ListRoleSourceArtifactsForSnapshotByDigests :many
+-- Snapshot acceptance locks every ready body before it publishes reachability
+-- edges. A collector uses FOR UPDATE SKIP LOCKED, so exactly one side wins:
+-- either the snapshot commits its edge or the report observes the body absent.
+SELECT * FROM role_source_artifact
+WHERE workspace_id = @workspace_id
+  AND digest = ANY(@digests::text[])
+ORDER BY digest
+FOR SHARE;
+
+-- name: InsertRoleSourceSnapshotArtifacts :execrows
+INSERT INTO role_source_snapshot_artifact (
+    workspace_id, source_id, snapshot_digest, artifact_digest, size_bytes
+)
+SELECT @workspace_id, @source_id, @snapshot_digest, digests.artifact_digest, sizes.size_bytes
+FROM unnest(@artifact_digests::text[]) WITH ORDINALITY AS digests(artifact_digest, position)
+JOIN unnest(@artifact_sizes::bigint[]) WITH ORDINALITY AS sizes(size_bytes, position) USING (position)
+ON CONFLICT (source_id, snapshot_digest, artifact_digest) DO NOTHING;
+
+-- name: DeleteRoleSourceSnapshotArtifacts :exec
+DELETE FROM role_source_snapshot_artifact
+WHERE workspace_id = @workspace_id
+  AND source_id = @source_id
+  AND snapshot_digest = @snapshot_digest;
+
+-- name: ListRoleSourceSnapshotArtifacts :many
+SELECT * FROM role_source_snapshot_artifact
+WHERE workspace_id = @workspace_id
+  AND source_id = @source_id
+  AND snapshot_digest = @snapshot_digest
+ORDER BY artifact_digest;
+
 -- name: CreateRoleSourceScanRequest :one
 INSERT INTO role_source_scan_request (
     id, source_id, workspace_id, requested_by, expected_adapter_version

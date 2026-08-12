@@ -125,6 +125,16 @@ One heartbeat can lease at most one scan. The command contains source/workspace 
 
 After normalization, the daemon sends artifact references in batches of at most 1,000 and uploads only missing digests while the same scan lease remains active. The initial AgentWaker transport accepts at most 8 MiB per artifact. Each server process admits at most 16 simultaneous spools, writes each body to a private temporary file, recomputes exact size and SHA-256 before object storage, and uses `role-source-artifacts/<workspace>/<digest>` as the deterministic key. Only then may the immutable readiness row be inserted. A snapshot is rejected unless every referenced digest/size has a readiness row. A source file changed between scan and reopen fails with `source_changed`; paths and bodies never enter heartbeat JSON, audit payloads or member APIs.
 
+Snapshot acceptance takes a shared database lock on every referenced readiness
+row, inserts the immutable snapshot, and writes one explicit
+`role_source_snapshot_artifact` reachability edge per canonical digest in the
+same transaction. A collector must claim candidate readiness rows with an
+exclusive `SKIP LOCKED` lock, so it cannot race through a snapshot publication:
+the snapshot either publishes its edge first or observes the body unavailable.
+Existing manifests are backfilled across every exact ArtifactRef location.
+This ledger is the prerequisite for retention; its presence alone does not
+authorize deletion until the tombstone/retry state machine is merged.
+
 Every role-source mutation first takes a shared lock on the workspace row. Workspace teardown takes an exclusive lock on the same row, then deletes audit events, approvals, applies, plans, snapshots, scan requests and sources explicitly before runtimes and the workspace. This lock order prevents a concurrent scan report from inserting an orphan after the no-foreign-key cleanup sweep.
 
 ### Deterministic plan and atomic apply

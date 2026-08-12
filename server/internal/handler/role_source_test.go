@@ -849,7 +849,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		t.Fatalf("create workspace: %v", err)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+		for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_snapshot_artifact", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 			_, _ = testPool.Exec(context.Background(), "DELETE FROM "+table+" WHERE workspace_id = $1", workspaceID)
 		}
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, workspaceID)
@@ -949,7 +949,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("delete workspace: expected 204, got %d: %s", w.Code, w.Body.String())
 	}
-	for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+	for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_snapshot_artifact", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 		var count int
 		if err := testPool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE workspace_id = $1", workspaceID).Scan(&count); err != nil {
 			t.Fatalf("count %s: %v", table, err)

@@ -565,6 +565,24 @@ func (q *Queries) CreateRoleSourceScanRequest(ctx context.Context, arg CreateRol
 	return i, err
 }
 
+const deleteRoleSourceSnapshotArtifacts = `-- name: DeleteRoleSourceSnapshotArtifacts :exec
+DELETE FROM role_source_snapshot_artifact
+WHERE workspace_id = $1
+  AND source_id = $2
+  AND snapshot_digest = $3
+`
+
+type DeleteRoleSourceSnapshotArtifactsParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+func (q *Queries) DeleteRoleSourceSnapshotArtifacts(ctx context.Context, arg DeleteRoleSourceSnapshotArtifactsParams) error {
+	_, err := q.db.Exec(ctx, deleteRoleSourceSnapshotArtifacts, arg.WorkspaceID, arg.SourceID, arg.SnapshotDigest)
+	return err
+}
+
 const expireRoleSourceSecretTransfers = `-- name: ExpireRoleSourceSecretTransfers :many
 WITH expired AS MATERIALIZED (
     SELECT id
@@ -1908,6 +1926,38 @@ func (q *Queries) InsertRoleSourceSnapshot(ctx context.Context, arg InsertRoleSo
 	return i, err
 }
 
+const insertRoleSourceSnapshotArtifacts = `-- name: InsertRoleSourceSnapshotArtifacts :execrows
+INSERT INTO role_source_snapshot_artifact (
+    workspace_id, source_id, snapshot_digest, artifact_digest, size_bytes
+)
+SELECT $1, $2, $3, digests.artifact_digest, sizes.size_bytes
+FROM unnest($4::text[]) WITH ORDINALITY AS digests(artifact_digest, position)
+JOIN unnest($5::bigint[]) WITH ORDINALITY AS sizes(size_bytes, position) USING (position)
+ON CONFLICT (source_id, snapshot_digest, artifact_digest) DO NOTHING
+`
+
+type InsertRoleSourceSnapshotArtifactsParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	SourceID        pgtype.UUID `json:"source_id"`
+	SnapshotDigest  string      `json:"snapshot_digest"`
+	ArtifactDigests []string    `json:"artifact_digests"`
+	ArtifactSizes   []int64     `json:"artifact_sizes"`
+}
+
+func (q *Queries) InsertRoleSourceSnapshotArtifacts(ctx context.Context, arg InsertRoleSourceSnapshotArtifactsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertRoleSourceSnapshotArtifacts,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.SnapshotDigest,
+		arg.ArtifactDigests,
+		arg.ArtifactSizes,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const isRoleSourceTaskPinCurrent = `-- name: IsRoleSourceTaskPinCurrent :one
 WITH locked_mapping AS MATERIALIZED (
     SELECT mapping.source_id, mapping.workspace_id, mapping.source_kind, mapping.source_parent_id, mapping.source_object_id, mapping.target_kind, mapping.target_id, mapping.ownership_mask, mapping.last_applied_digest, mapping.last_snapshot_digest, mapping.archived_at, mapping.created_at, mapping.updated_at
@@ -2065,6 +2115,51 @@ type ListRoleSourceArtifactsForApplyByDigestsParams struct {
 // remove or retarget those digests before commit.
 func (q *Queries) ListRoleSourceArtifactsForApplyByDigests(ctx context.Context, arg ListRoleSourceArtifactsForApplyByDigestsParams) ([]RoleSourceArtifact, error) {
 	rows, err := q.db.Query(ctx, listRoleSourceArtifactsForApplyByDigests, arg.WorkspaceID, arg.Digests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceArtifact{}
+	for rows.Next() {
+		var i RoleSourceArtifact
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.Digest,
+			&i.SizeBytes,
+			&i.StorageKey,
+			&i.UploadedByRuntimeID,
+			&i.FirstSourceID,
+			&i.FirstScanRequestID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourceArtifactsForSnapshotByDigests = `-- name: ListRoleSourceArtifactsForSnapshotByDigests :many
+SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
+WHERE workspace_id = $1
+  AND digest = ANY($2::text[])
+ORDER BY digest
+FOR SHARE
+`
+
+type ListRoleSourceArtifactsForSnapshotByDigestsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Digests     []string    `json:"digests"`
+}
+
+// Snapshot acceptance locks every ready body before it publishes reachability
+// edges. A collector uses FOR UPDATE SKIP LOCKED, so exactly one side wins:
+// either the snapshot commits its edge or the report observes the body absent.
+func (q *Queries) ListRoleSourceArtifactsForSnapshotByDigests(ctx context.Context, arg ListRoleSourceArtifactsForSnapshotByDigestsParams) ([]RoleSourceArtifact, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceArtifactsForSnapshotByDigests, arg.WorkspaceID, arg.Digests)
 	if err != nil {
 		return nil, err
 	}
@@ -2367,6 +2462,47 @@ func (q *Queries) ListRoleSourceRoleImpactRows(ctx context.Context, arg ListRole
 			&i.LastSnapshotDigest,
 			&i.CancelOnApply,
 			&i.ContinueCurrentVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourceSnapshotArtifacts = `-- name: ListRoleSourceSnapshotArtifacts :many
+SELECT workspace_id, source_id, snapshot_digest, artifact_digest, size_bytes, created_at FROM role_source_snapshot_artifact
+WHERE workspace_id = $1
+  AND source_id = $2
+  AND snapshot_digest = $3
+ORDER BY artifact_digest
+`
+
+type ListRoleSourceSnapshotArtifactsParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+func (q *Queries) ListRoleSourceSnapshotArtifacts(ctx context.Context, arg ListRoleSourceSnapshotArtifactsParams) ([]RoleSourceSnapshotArtifact, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceSnapshotArtifacts, arg.WorkspaceID, arg.SourceID, arg.SnapshotDigest)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceSnapshotArtifact{}
+	for rows.Next() {
+		var i RoleSourceSnapshotArtifact
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.SourceID,
+			&i.SnapshotDigest,
+			&i.ArtifactDigest,
+			&i.SizeBytes,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

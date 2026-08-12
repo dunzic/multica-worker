@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_snapshot_artifact_unique ON role_source_snapshot_artifact (source_id, snapshot_digest, artifact_digest);

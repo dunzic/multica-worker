@@ -102,6 +102,59 @@ func TestRoleSourcePersistenceNeverStoresRawSourceConfig(t *testing.T) {
 	}
 }
 
+func TestRoleSourceSnapshotArtifactReachabilityIsTransactionalAndBackfilled(t *testing.T) {
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	lockStart := strings.Index(queryText, "-- name: ListRoleSourceArtifactsForSnapshotByDigests ")
+	if lockStart < 0 {
+		t.Fatal("snapshot artifact locking query is missing")
+	}
+	lockSection := queryText[lockStart:]
+	if next := strings.Index(lockSection[1:], "\n-- name: "); next >= 0 {
+		lockSection = lockSection[:next+1]
+	}
+	if !strings.Contains(lockSection, "FOR SHARE") {
+		t.Fatalf("snapshot artifact query does not fence GC: %s", lockSection)
+	}
+	for _, required := range []string{"InsertRoleSourceSnapshotArtifacts", "ON CONFLICT (source_id, snapshot_digest, artifact_digest) DO NOTHING", "ListRoleSourceSnapshotArtifacts"} {
+		if !strings.Contains(queryText, required) {
+			t.Fatalf("reachability query contract is missing %q", required)
+		}
+	}
+
+	controlBody, err := os.ReadFile("controlplane.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := string(controlBody)
+	verifyAt := strings.Index(control, "verifySnapshotArtifacts(ctx")
+	insertSnapshotAt := strings.Index(control, "qtx.InsertRoleSourceSnapshot(ctx")
+	insertEdgesAt := strings.Index(control, "persistSnapshotArtifactEdges(ctx")
+	completeAt := strings.Index(control, "qtx.CompleteRoleSourceScanSuccess(ctx")
+	if verifyAt < 0 || insertSnapshotAt < 0 || insertEdgesAt < 0 || completeAt < 0 ||
+		!(verifyAt < insertSnapshotAt && insertSnapshotAt < insertEdgesAt && insertEdgesAt < completeAt) {
+		t.Fatal("scan success must lock bodies, insert snapshot, persist edges, then complete the request")
+	}
+
+	backfillBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "330_role_source_snapshot_artifact_backfill.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backfill := string(backfillBody)
+	for _, path := range []string{
+		"$.capabilities[*].entrypoint", "$.capabilities[*].artifacts[*]", "$.roles[*].instructions",
+		"$.roles[*].profile", "$.roles[*].skills[*].entrypoint", "$.roles[*].skills[*].artifacts[*]",
+		"$.roles[*].automations[*].prompt",
+	} {
+		if !strings.Contains(backfill, path) {
+			t.Fatalf("reachability backfill is missing manifest path %q", path)
+		}
+	}
+}
+
 func TestRoleSourceApplyFailurePersistenceIsContentFree(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "324_role_source_apply_failure.up.sql"))
 	if err != nil {

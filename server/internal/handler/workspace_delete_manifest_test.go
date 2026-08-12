@@ -99,6 +99,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"role_source_scan_request":        workspaceDelete,
 	"role_source_secret_transfer":     workspaceDelete,
 	"role_source_snapshot":            workspaceDelete,
+	"role_source_snapshot_artifact":   workspaceDelete,
 	"schema_migrations":               workspaceDeleteKeep,
 	"skill":                           workspaceDelete,
 	"skill_file":                      workspaceDelete,

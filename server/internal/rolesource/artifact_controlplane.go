@@ -174,7 +174,7 @@ func verifySnapshotArtifacts(ctx context.Context, q *db.Queries, workspaceID pgt
 			digests = append(digests, ref.Digest)
 			wanted[ref.Digest] = ref.SizeBytes
 		}
-		rows, err := q.ListRoleSourceArtifactsByDigests(ctx, db.ListRoleSourceArtifactsByDigestsParams{WorkspaceID: workspaceID, Digests: digests})
+		rows, err := q.ListRoleSourceArtifactsForSnapshotByDigests(ctx, db.ListRoleSourceArtifactsForSnapshotByDigestsParams{WorkspaceID: workspaceID, Digests: digests})
 		if err != nil {
 			return err
 		}
@@ -185,6 +185,36 @@ func verifySnapshotArtifacts(ctx context.Context, q *db.Queries, workspaceID pgt
 		}
 		if len(wanted) > 0 {
 			return fmt.Errorf("%w: %d missing or mismatched", ErrArtifactMissing, len(wanted))
+		}
+	}
+	return nil
+}
+
+func persistSnapshotArtifactEdges(ctx context.Context, q *db.Queries, workspaceID, sourceID pgtype.UUID, snapshotDigest string, refs []ArtifactRef) error {
+	digests := make([]string, 0, len(refs))
+	sizes := make([]int64, 0, len(refs))
+	for _, ref := range refs {
+		digests = append(digests, ref.Digest)
+		sizes = append(sizes, ref.SizeBytes)
+	}
+	if _, err := q.InsertRoleSourceSnapshotArtifacts(ctx, db.InsertRoleSourceSnapshotArtifactsParams{
+		WorkspaceID: workspaceID, SourceID: sourceID, SnapshotDigest: snapshotDigest,
+		ArtifactDigests: digests, ArtifactSizes: sizes,
+	}); err != nil {
+		return err
+	}
+	stored, err := q.ListRoleSourceSnapshotArtifacts(ctx, db.ListRoleSourceSnapshotArtifactsParams{
+		WorkspaceID: workspaceID, SourceID: sourceID, SnapshotDigest: snapshotDigest,
+	})
+	if err != nil {
+		return err
+	}
+	if len(stored) != len(refs) {
+		return errors.New("snapshot artifact reachability ledger is incomplete")
+	}
+	for index, edge := range stored {
+		if edge.ArtifactDigest != refs[index].Digest || edge.SizeBytes != refs[index].SizeBytes {
+			return errors.New("snapshot artifact reachability ledger conflicts with canonical manifest")
 		}
 	}
 	return nil

@@ -1132,6 +1132,15 @@ type RoleSourceSnapshot struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
+type RoleSourceSnapshotArtifact struct {
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	SourceID       pgtype.UUID        `json:"source_id"`
+	SnapshotDigest string             `json:"snapshot_digest"`
+	ArtifactDigest string             `json:"artifact_digest"`
+	SizeBytes      int64              `json:"size_bytes"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type RoleSourceTaskPin struct {
 	TaskID              pgtype.UUID        `json:"task_id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
