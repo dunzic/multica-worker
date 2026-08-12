@@ -5722,6 +5722,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err := d.ensureTaskSkillBundles(prepareCtx, &task); err != nil {
 		return TaskResult{}, err
 	}
+	if err := applyRoleSourceCapabilityContract(&task); err != nil {
+		return TaskResult{}, err
+	}
 
 	agentName := "agent"
 	var agentID string

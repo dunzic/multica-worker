@@ -18,6 +18,10 @@ const (
 	// public-key-encrypted role secret transfer. It is independent from scan
 	// support so older read-only daemons can never claim sensitive work.
 	DaemonCapabilityRoleSourceSecretTransferV1 = "role-source-secret-transfer-v1"
+	// DaemonCapabilityRoleSourceCapabilitiesV1 proves the daemon validates
+	// source capability pins against the exact resolved workspace skill before
+	// starting a task. Servers fail closed for bound tasks without this support.
+	DaemonCapabilityRoleSourceCapabilitiesV1 = "role-source-capabilities-v1"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:

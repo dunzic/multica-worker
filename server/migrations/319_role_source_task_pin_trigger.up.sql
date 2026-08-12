@@ -133,6 +133,7 @@ BEGIN
             jsonb_build_object(
                 'capability_id', binding->>'capability_id',
                 'skill_id', binding->>'skill_id',
+				'target_skill_id', skill_mapping.target_id,
                 'profile', binding->>'profile',
                 'version_constraint', binding->>'version_constraint',
                 'resolved_version', capability->>'version',
@@ -156,6 +157,15 @@ BEGIN
      AND version.capability_id = capability->>'id'
      AND version.version = capability->>'version'
      AND version.definition = capability
+	JOIN role_source_object_mapping skill_mapping
+	  ON skill_mapping.workspace_id = snapshot.workspace_id
+	 AND skill_mapping.source_id = snapshot.source_id
+	 AND skill_mapping.source_kind = 'skill'
+	 AND skill_mapping.source_parent_id = role->>'id'
+	 AND skill_mapping.source_object_id = binding->>'skill_id'
+	 AND skill_mapping.target_kind = 'skill'
+	 AND skill_mapping.archived_at IS NULL
+	 AND skill_mapping.last_snapshot_digest = snapshot.snapshot_digest
     WHERE snapshot.workspace_id = managed_mapping.workspace_id
       AND snapshot.source_id = managed_mapping.source_id
       AND snapshot.snapshot_digest = managed_mapping.last_snapshot_digest

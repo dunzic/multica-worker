@@ -131,6 +131,8 @@ func TestRoleSourceTaskPinsAreContentFreeAndRetryStable(t *testing.T) {
 		"mapping.last_snapshot_digest",
 		"role_source_agent_state_digest",
 		"role_source_capability_version",
+		"'target_skill_id', skill_mapping.target_id",
+		"skill_mapping.last_snapshot_digest = snapshot.snapshot_digest",
 		"unresolved capability provenance",
 		"role source task pins are immutable",
 		"role_source_version_stale",

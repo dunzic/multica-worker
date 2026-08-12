@@ -1408,7 +1408,7 @@ func decodeRoleSourceTaskPin(row db.RoleSourceTaskPin) (*protocol.RoleSourceTask
 // runtime can reconstruct old encrypted configuration versions, drift is
 // fail-closed: the old task is cancelled rather than silently running newer
 // instructions, skills, MCP, or environment under an older provenance label.
-func (h *Handler) attachCurrentRoleSourceTaskPin(ctx context.Context, task *db.AgentTaskQueue, workspaceID string, resp *AgentTaskResponse) *claimBuildFailure {
+func (h *Handler) attachCurrentRoleSourceTaskPin(ctx context.Context, task *db.AgentTaskQueue, workspaceID string, supportsCapabilities bool, resp *AgentTaskResponse) *claimBuildFailure {
 	row, err := h.Queries.GetRoleSourceTaskPin(ctx, task.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -1470,6 +1470,18 @@ func (h *Handler) attachCurrentRoleSourceTaskPin(ctx context.Context, task *db.A
 			outcome: "error_role_source_pin",
 			status:  http.StatusInternalServerError,
 			message: "role source provenance is malformed",
+		}
+	}
+	if len(pin.CapabilityPins) > 0 && !supportsCapabilities {
+		slog.Info("task claim: daemon does not support pinned role-source capabilities; cancelling task",
+			"task_id", uuidToString(task.ID), "capability_count", len(pin.CapabilityPins))
+		if _, cancelErr := h.TaskService.CancelTask(ctx, task.ID); cancelErr != nil {
+			slog.Error("task claim: cancel unsupported role source capability task failed", "task_id", uuidToString(task.ID), "error", cancelErr)
+		}
+		return &claimBuildFailure{
+			outcome: "unsupported_role_source_capabilities",
+			status:  http.StatusConflict,
+			message: "runtime must be upgraded before executing source capability bindings",
 		}
 	}
 	resp.RoleSourcePin = pin
@@ -2694,7 +2706,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// been read. FinalizeTaskClaim repeats the check under the mapping/task
 	// locks, bracketing response construction so concurrent source or user
 	// edits cannot silently cross the payload build window.
-	if failure := h.attachCurrentRoleSourceTaskPin(r.Context(), task, runtimeWorkspaceID, &resp); failure != nil {
+	if failure := h.attachCurrentRoleSourceTaskPin(
+		r.Context(), task, runtimeWorkspaceID,
+		requestHasClientCapability(r, protocol.DaemonCapabilityRoleSourceCapabilitiesV1), &resp,
+	); failure != nil {
 		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, failure
 	}
 

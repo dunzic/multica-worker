@@ -7,6 +7,7 @@ package protocol
 type RoleSourceCapabilityPin struct {
 	CapabilityID      string `json:"capability_id"`
 	SkillID           string `json:"skill_id"`
+	TargetSkillID     string `json:"target_skill_id"`
 	Profile           string `json:"profile"`
 	VersionConstraint string `json:"version_constraint,omitempty"`
 	ResolvedVersion   string `json:"resolved_version"`
