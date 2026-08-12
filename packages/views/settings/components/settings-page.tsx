@@ -16,11 +16,13 @@ import {
   Keyboard,
   ListTodo,
   Zap,
+  Network,
 } from "lucide-react";
 import { GitHubMark } from "./github-mark";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@multica/ui/components/ui/tabs";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { useCurrentWorkspace } from "@multica/core/paths";
+import { useFlag } from "@multica/core/feature-flags";
 import { useNavigation } from "../../navigation";
 import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
@@ -38,6 +40,7 @@ import { LabelsTab } from "./labels-tab";
 import { PropertiesTab } from "./properties-tab";
 import { QuickActionsTab } from "./quick-actions-tab";
 import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
+import { RoleSourcesTab } from "./role-sources-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -62,6 +65,7 @@ const WORKSPACE_TAB_KEYS = [
   "labels",
   "properties",
   "quick_actions",
+  "role_sources",
 ] as const;
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
@@ -73,6 +77,7 @@ const WORKSPACE_TAB_VALUES = {
   labels: "labels",
   properties: "properties",
   quick_actions: "quick-actions",
+  role_sources: "role-sources",
 } as const;
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
@@ -84,6 +89,7 @@ const WORKSPACE_TAB_ICONS = {
   labels: Tags,
   properties: SlidersHorizontal,
   quick_actions: Zap,
+  role_sources: Network,
 } as const;
 
 const DEFAULT_TAB = "profile";
@@ -117,6 +123,13 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
   const workspaceName = useCurrentWorkspace()?.name;
   const navigation = useNavigation();
   const isMobile = useIsMobile();
+  const roleSourceSyncEnabled = useFlag("role_source_sync", false);
+  const roleSourceScanEnabled = useFlag("role_source_scan", false);
+  const roleSourcesEnabled = roleSourceSyncEnabled && roleSourceScanEnabled;
+  const visibleWorkspaceTabKeys = React.useMemo(
+    () => WORKSPACE_TAB_KEYS.filter((key) => key !== "role_sources" || roleSourcesEnabled),
+    [roleSourcesEnabled],
+  );
 
   // Whitelist of valid tab values; unknown ?tab=… values silently fall back to
   // the default. Whitelisting also blocks junk like ?tab=<script> from
@@ -125,10 +138,10 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
     () =>
       new Set<string>([
         ...ACCOUNT_TAB_KEYS,
-        ...Object.values(WORKSPACE_TAB_VALUES),
+        ...visibleWorkspaceTabKeys.map((key) => WORKSPACE_TAB_VALUES[key]),
         ...(extraAccountTabs?.map((tab) => tab.value) ?? []),
       ]),
-    [extraAccountTabs],
+    [extraAccountTabs, visibleWorkspaceTabKeys],
   );
 
   const tabFromUrl = navigation.searchParams.get(TAB_QUERY_KEY);
@@ -204,7 +217,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <span className="hidden truncate px-2 pb-1 pt-4 text-caption font-medium text-muted-foreground md:block">
             {workspaceName ?? t(($) => $.page.workspace_fallback)}
           </span>
-          {WORKSPACE_TAB_KEYS.map((key) => {
+          {visibleWorkspaceTabKeys.map((key) => {
             const Icon = WORKSPACE_TAB_ICONS[key];
             return (
               <TabsTrigger
@@ -241,6 +254,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="labels"><LabelsTab /></TabsContent>
           <TabsContent value="properties"><PropertiesTab /></TabsContent>
           <TabsContent value="quick-actions"><QuickActionsTab /></TabsContent>
+          {roleSourcesEnabled ? <TabsContent value="role-sources"><RoleSourcesTab /></TabsContent> : null}
           {extraAccountTabs?.map((tab) => (
             <TabsContent key={tab.value} value={tab.value}>{tab.content}</TabsContent>
           ))}

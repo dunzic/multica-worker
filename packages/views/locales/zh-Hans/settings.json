@@ -180,8 +180,27 @@
       "members": "成员",
       "labels": "标签",
       "properties": "属性",
-      "quick_actions": "快捷操作"
+      "quick_actions": "快捷操作",
+      "role_sources": "角色源"
     }
+  },
+  "role_sources": {
+    "title": "角色源",
+    "description": "审计由外部统一管理的数字员工角色、不可变版本和拟议的工作区变更。",
+    "read_only_notice": "当前仅提供只读预览。在真实数据库迁移、受影响工作预览和恢复门禁完成验证前，不开放批准与应用操作。",
+    "sources_title": "已配置的角色源",
+    "loading": "正在加载角色源…",
+    "load_failed": "无法加载角色源。",
+    "empty": "尚未配置角色源",
+    "empty_hint": "服务器管理员需要先配置并扫描角色源，之后才会在这里显示。",
+    "latest_plan_title": "最新拟议变更",
+    "latest_plan_description": "受控批准前，审阅为 {{name}} 生成的确定性变更计划。",
+    "plan_load_failed": "无法加载最新角色源计划。",
+    "no_plan": "该角色源尚无可用的扫描计划。",
+    "plan_ready": "已具备受控批准条件",
+    "plan_blocked": "已阻断——不能应用任何变更",
+    "blockers": "阻断条件",
+    "more_actions": "预览中省略了另外 {{count}} 项操作"
   },
   "properties": {
     "title": "属性",

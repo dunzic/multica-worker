@@ -25,6 +25,16 @@ vi.mock("./labels-tab", stub("LabelsTab"));
 vi.mock("./properties-tab", stub("PropertiesTab"));
 vi.mock("./quick-actions-tab", stub("QuickActionsTab"));
 vi.mock("./keyboard-shortcuts-tab", stub("KeyboardShortcutsTab"));
+vi.mock("./role-sources-tab", stub("RoleSourcesTab"));
+
+const featureFlags = vi.hoisted(() => ({ roleSourceSync: false, roleSourceScan: false }));
+vi.mock("@multica/core/feature-flags", () => ({
+  useFlag: (name: string, fallback: boolean) => {
+    if (name === "role_source_sync") return featureFlags.roleSourceSync;
+    if (name === "role_source_scan") return featureFlags.roleSourceScan;
+    return fallback;
+  },
+}));
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ name: "Acme" }),
@@ -60,6 +70,8 @@ function trigger() {
 
 beforeEach(() => {
   layout.compact = true;
+  featureFlags.roleSourceSync = false;
+  featureFlags.roleSourceScan = false;
   replace.mockClear();
 });
 
@@ -103,5 +115,28 @@ describe("SettingsPage nav trigger", () => {
       screen.queryByRole("button", { name: "Toggle Sidebar" }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("Settings")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage role-source gate", () => {
+  it("does not expose the audit tab by default", () => {
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.queryByRole("tab", { name: "Role Sources" })).not.toBeInTheDocument();
+  });
+
+  it("does not expose the audit tab when scan remains disabled", () => {
+    featureFlags.roleSourceSync = true;
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.queryByRole("tab", { name: "Role Sources" })).not.toBeInTheDocument();
+  });
+
+  it("exposes the audit tab only when both server gates are enabled", () => {
+    featureFlags.roleSourceSync = true;
+    featureFlags.roleSourceScan = true;
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.getByRole("tab", { name: "Role Sources" })).toBeInTheDocument();
   });
 });

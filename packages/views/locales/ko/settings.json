@@ -180,8 +180,27 @@
       "members": "멤버",
       "labels": "레이블",
       "properties": "속성",
-      "quick_actions": "퀵 액션"
+      "quick_actions": "퀵 액션",
+      "role_sources": "역할 소스"
     }
+  },
+  "role_sources": {
+    "title": "역할 소스",
+    "description": "외부에서 관리되는 에이전트 역할, 변경 불가 버전, 제안된 워크스페이스 변경을 감사합니다.",
+    "read_only_notice": "현재는 읽기 전용 미리보기입니다. 실제 데이터베이스 마이그레이션, 영향받는 작업 미리보기, 복구 게이트가 검증될 때까지 승인과 적용은 사용할 수 없습니다.",
+    "sources_title": "설정된 소스",
+    "loading": "역할 소스를 불러오는 중…",
+    "load_failed": "역할 소스를 불러오지 못했습니다.",
+    "empty": "설정된 역할 소스가 없습니다",
+    "empty_hint": "여기에 표시하려면 서버 관리자가 소스를 설정하고 스캔해야 합니다.",
+    "latest_plan_title": "최신 변경 제안",
+    "latest_plan_description": "제어된 승인 전에 {{name}}용으로 생성된 결정적 계획을 검토합니다.",
+    "plan_load_failed": "최신 역할 소스 계획을 불러오지 못했습니다.",
+    "no_plan": "이 소스에는 아직 스캔 계획이 없습니다.",
+    "plan_ready": "제어된 승인 준비 완료",
+    "plan_blocked": "차단됨 — 변경을 적용할 수 없습니다",
+    "blockers": "차단 조건",
+    "more_actions": "이 미리보기에서 추가 작업 {{count}}개를 생략했습니다"
   },
   "properties": {
     "title": "속성",

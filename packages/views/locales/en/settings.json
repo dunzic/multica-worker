@@ -180,8 +180,27 @@
       "members": "Members",
       "labels": "Labels",
       "properties": "Properties",
-      "quick_actions": "Quick Actions"
+      "quick_actions": "Quick Actions",
+      "role_sources": "Role Sources"
     }
+  },
+  "role_sources": {
+    "title": "Role Sources",
+    "description": "Audit externally managed agent roles, immutable versions, and proposed workspace changes.",
+    "read_only_notice": "This preview is read-only. Approval and apply stay unavailable until live database migration, affected-work impact preview, and recovery gates are verified.",
+    "sources_title": "Configured sources",
+    "loading": "Loading role sources…",
+    "load_failed": "Couldn't load role sources.",
+    "empty": "No role sources configured",
+    "empty_hint": "A server administrator must configure and scan a source before it appears here.",
+    "latest_plan_title": "Latest proposed change",
+    "latest_plan_description": "Review the deterministic plan produced for {{name}} before controlled approval.",
+    "plan_load_failed": "Couldn't load the latest role-source plan.",
+    "no_plan": "No scan plan is available for this source yet.",
+    "plan_ready": "Ready for controlled approval",
+    "plan_blocked": "Blocked — no changes can be applied",
+    "blockers": "Blocking conditions",
+    "more_actions": "{{count}} additional actions are omitted from this preview"
   },
   "properties": {
     "title": "Properties",

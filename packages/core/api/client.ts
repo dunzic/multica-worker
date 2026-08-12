@@ -39,6 +39,8 @@ import type {
   WorkspaceWorkingAgent,
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
+  RoleSource,
+  RoleSourcePlanRecord,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -1649,6 +1651,23 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/runtime-profiles`,
     );
     return res.runtime_profiles ?? [];
+  }
+
+  async listRoleSources(workspaceId: string): Promise<RoleSource[]> {
+    const response = await this.fetch<{ role_sources?: RoleSource[] }>(
+      `/api/workspaces/${workspaceId}/role-sources`,
+    );
+    return response.role_sources ?? [];
+  }
+
+  async listRoleSourcePlans(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourcePlanRecord[]> {
+    const response = await this.fetch<{ plans?: RoleSourcePlanRecord[] }>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans`,
+    );
+    return response.plans ?? [];
   }
 
   async getRuntimeProfile(
