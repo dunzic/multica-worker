@@ -28,6 +28,8 @@ type S3Storage struct {
 	usePathStyle bool   // controls path-style S3 addressing
 }
 
+const maxS3ObjectVersionsPerPurge = 10_000
+
 // NewS3StorageFromEnv creates an S3Storage from environment variables.
 // Returns nil if S3_BUCKET is not set.
 //
@@ -315,6 +317,79 @@ func (s *S3Storage) DeleteObject(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	return err
+}
+
+// PurgeObject removes the current object and every retained version/delete
+// marker for exactly one key. Role-source artifact GC uses this stronger
+// contract because DeleteObject alone only creates a delete marker in a
+// versioned bucket and would leave source content recoverable indefinitely.
+//
+// Deployments enabling role-source GC must grant s3:ListBucketVersions,
+// s3:DeleteObject and s3:DeleteObjectVersion. Object Lock/legal holds fail
+// closed: the reconciler keeps its durable intent and retries/alerts.
+func (s *S3Storage) PurgeObject(ctx context.Context, key string) error {
+	if key == "" {
+		return nil
+	}
+	if _, err := s.listObjectVersionsForPurge(ctx, key, maxS3ObjectVersionsPerPurge); err != nil {
+		return err
+	}
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 purge current object: %w", err)
+	}
+	// Re-list after deleting current so the batch includes the new delete
+	// marker and any PUT that raced the preflight inventory. The extra slot is
+	// only for the marker created by DeleteObject; a larger inventory fails and
+	// leaves the durable intent retryable without adding markers on every retry.
+	objects, err := s.listObjectVersionsForPurge(ctx, key, maxS3ObjectVersionsPerPurge+1)
+	if err != nil {
+		return err
+	}
+	for start := 0; start < len(objects); start += 1000 {
+		end := min(start+1000, len(objects))
+		output, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(s.bucket),
+			Delete: &types.Delete{Objects: objects[start:end], Quiet: aws.Bool(true)},
+		})
+		if err != nil {
+			return fmt.Errorf("s3 purge retained object versions: %w", err)
+		}
+		if len(output.Errors) > 0 {
+			first := output.Errors[0]
+			return fmt.Errorf("s3 purge retained object version failed: code=%s key=%s", aws.ToString(first.Code), aws.ToString(first.Key))
+		}
+	}
+	return nil
+}
+
+func (s *S3Storage) listObjectVersionsForPurge(ctx context.Context, key string, limit int) ([]types.ObjectIdentifier, error) {
+	paginator := s3.NewListObjectVersionsPaginator(s.client, &s3.ListObjectVersionsInput{
+		Bucket: aws.String(s.bucket), Prefix: aws.String(key),
+	})
+	objects := make([]types.ObjectIdentifier, 0, 16)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("s3 list object versions for purge: %w", err)
+		}
+		for _, version := range page.Versions {
+			if aws.ToString(version.Key) == key {
+				objects = append(objects, types.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
+			}
+		}
+		for _, marker := range page.DeleteMarkers {
+			if aws.ToString(marker.Key) == key {
+				objects = append(objects, types.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
+			}
+		}
+		if len(objects) > limit {
+			return nil, fmt.Errorf("s3 purge refused: key has more than %d retained versions", maxS3ObjectVersionsPerPurge)
+		}
+	}
+	return objects, nil
 }
 
 // ObjectURL returns the URL a successful Upload/UploadStream of key would

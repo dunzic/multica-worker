@@ -37,6 +37,10 @@ type RoleSourceArtifactReconciler struct {
 	deleteTimeout time.Duration
 }
 
+type roleSourceArtifactObjectPurger interface {
+	PurgeObject(context.Context, string) error
+}
+
 func (r *RoleSourceArtifactReconciler) logger() *slog.Logger {
 	if r.Logger != nil {
 		return r.Logger
@@ -106,7 +110,7 @@ func (r *RoleSourceArtifactReconciler) delete(ctx context.Context, intent db.Rol
 		timeout = roleSourceArtifactGCDelete
 	}
 	deleteCtx, cancel := context.WithTimeout(ctx, timeout)
-	err := r.Storage.DeleteObject(deleteCtx, intent.StorageKey)
+	err := purgeRoleSourceArtifactObject(deleteCtx, r.Storage, intent.StorageKey)
 	cancel()
 	if err != nil {
 		if r.Metrics != nil {
@@ -147,4 +151,11 @@ func (r *RoleSourceArtifactReconciler) delete(ctx context.Context, intent db.Rol
 	if (err != nil || tombstoned != 1) && ctx.Err() == nil {
 		r.logger().Warn("role source artifact GC tombstone failed", "storage_key", intent.StorageKey, "error", err)
 	}
+}
+
+func purgeRoleSourceArtifactObject(ctx context.Context, storage MediaObjectDeleter, key string) error {
+	if purger, ok := storage.(roleSourceArtifactObjectPurger); ok {
+		return purger.PurgeObject(ctx, key)
+	}
+	return errors.New("role source artifact storage does not support permanent object purge")
 }

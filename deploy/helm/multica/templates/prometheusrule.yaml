@@ -70,8 +70,8 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "Role-source artifact garbage collection cannot delete objects"
-            description: "More than 20 role-source artifact object deletes failed in 15 minutes and the failure rate stayed elevated. The durable intents are retained for retry; inspect object-storage availability and deletion permissions before backlog growth exhausts capacity."
+            summary: "Role-source artifact garbage collection cannot permanently purge objects"
+            description: "More than 20 role-source artifact purges failed in 15 minutes and the failure rate stayed elevated. The durable intents are retained for retry; inspect object-storage availability, version-list/version-delete permissions, Object Lock/legal hold and backend purge support before backlog growth exhausts capacity."
         - alert: MulticaRoleSourceRuntimeAttestationPersistenceFailed
           expr: increase(multica_role_source_runtime_config_attestations_total{outcome="persist_failed"}[5m]) > 0
           for: {{ .Values.monitoring.prometheusRule.roleSourceAuditWriteFailureFor | quote }}

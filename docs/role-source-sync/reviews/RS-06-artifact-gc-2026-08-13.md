@@ -17,6 +17,7 @@ Role-source uploads that never become snapshots and object bodies left by worksp
 - Claims use `SKIP LOCKED`, two-minute leases and token-guarded transitions. Storage calls have a 30-second deadline and failed/ambiguous deletes return to bounded backoff.
 - Successful deletes retain a 15-minute, 1-hour, 6-hour and 24-hour idempotent re-delete tail. A new exact upload may cancel pending/tombstoned intent but fails retryably while deletion owns the key.
 - Open objections: no legal-hold/historical-snapshot retention UI, object readback verification or live multi-replica database proof.
+- S3 deletion now uses an exact-key permanent purge: it removes the current object plus every retained version and delete marker, fails closed above 10,000 versions or when list/version-delete permission or Object Lock prevents erasure, and leaves the durable intent retryable. Local storage has no hidden version layer and implements the same purge contract.
 
 ## Product review — 2/3
 
@@ -43,7 +44,7 @@ Role-source uploads that never become snapshots and object bodies left by worksp
 - Delete intents contain storage key, digest, size and lifecycle state only—no workspace ID, path, prompt, body or credential.
 - Snapshot-reachable objects are excluded by indexed edges and row-lock fencing. Actively deleting keys cannot be revived underneath an in-flight delete.
 - Deletion failure retains intent and retries; it never marks success optimistically.
-- Production deletion remains blocked on live fault injection, backup/restore and an operator quarantine runbook. The independent `MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED` gate is default-off.
+- Production deletion remains blocked on live fault injection, version-inventory verification, Object Lock/legal-hold policy, backup/restore and an operator quarantine runbook. The independent `MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED` gate is default-off.
 
 ## Rollout decision
 

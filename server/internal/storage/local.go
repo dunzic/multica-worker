@@ -135,6 +135,12 @@ func (s *LocalStorage) DeleteObject(_ context.Context, key string) error {
 	return nil
 }
 
+// PurgeObject matches the stronger role-source GC contract. Local storage has
+// no hidden version layer, so deleting the current key is a complete purge.
+func (s *LocalStorage) PurgeObject(ctx context.Context, key string) error {
+	return s.DeleteObject(ctx, key)
+}
+
 // ObjectURL returns the URL a successful Upload/UploadStream of key would
 // return — a pure function of configuration, so the media intent ledger can
 // persist it BEFORE the upload.

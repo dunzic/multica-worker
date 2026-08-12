@@ -143,11 +143,14 @@ reachability edge into a durable, workspace-independent deletion intent in one
 SQL statement. Workspace teardown writes the same intent before removing its
 artifact rows, so deleting a tenant does not orphan object-storage bytes. Each
 worker claim has a two-minute lease; storage calls have a 30-second deadline;
-failures return to bounded backoff. A successful delete retains a widening
+failures return to bounded backoff. Storage must implement permanent purge;
+S3 removes the current object plus every retained version/delete marker, and
+permission, Object Lock or version-count failure remains retryable rather than
+being reported as erasure. A successful purge retains a widening
 15-minute, 1-hour, 6-hour and 24-hour tombstone re-delete tail to reclaim a PUT
 that materializes after its client abandoned the upload. Exact re-upload may
 cancel a pending/tombstoned intent, but never an actively deleting one. Metrics
-report queued objects, deletes, failures, active backlog and tombstones.
+report queued objects, purges, failures, active backlog and tombstones.
 
 Every role-source mutation first takes a shared lock on the workspace row. Workspace teardown takes an exclusive lock on the same row, then deletes audit events, approvals, applies, plans, snapshots, scan requests and sources explicitly before runtimes and the workspace. This lock order prevents a concurrent scan report from inserting an orphan after the no-foreign-key cleanup sweep.
 

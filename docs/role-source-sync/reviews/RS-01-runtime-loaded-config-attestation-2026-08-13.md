@@ -33,7 +33,8 @@ The control plane can now distinguish a file that was merely written from the co
 - Daemon tests cover revision derivation from the exact securely opened body, adapter identity enumeration, per-runtime acknowledgement suppression, mismatched acknowledgement retry and HTTP wire shape.
 - Handler tests cover every current-state classification and corrupt evidence fail-closed behavior. Static migration tests cover redacted schema, bounded arrays, distinct-state persistence, lock ordering and explicit teardown.
 - UI tests cover current matching state, revision visibility, historical evidence and continued absence of mutation controls.
-- Open objections: migrations 334–338, concurrent first heartbeat, duplicate restart, runtime deletion races and primary failover have not run on PostgreSQL because no local server is available.
+- Opt-in live PostgreSQL tests now exercise migrations 334–338 through the existing isolated-schema round trip, duplicate restart history, runtime-delete/heartbeat exclusion and registration/delete lock conflict. They compile locally but did not execute because no PostgreSQL server is available.
+- Open objections: those live tests and primary failover still need recorded staging results; the checked-in test is evidence infrastructure, not a passing production gate.
 
 ## CEO review — 2/3
 
@@ -51,4 +52,4 @@ The control plane can now distinguish a file that was merely written from the co
 
 ## Rollout decision
 
-Merge behind `role_source_sync` plus `role_source_scan`. Use the status/history surface in an engineering cohort after applying migrations on a real PostgreSQL staging cluster. Broad rollout still requires live migration rollback, two-server duplicate-heartbeat/failover, daemon restart, runtime deletion, and stale-runtime cleanup evidence plus freshness alerts and a repair runbook.
+Merge behind `role_source_sync` plus `role_source_scan`. Use the status/history surface in an engineering cohort after applying migrations on a real PostgreSQL staging cluster. Execute [production-validation.md](../production-validation.md) and retain its evidence record. Broad rollout still requires live migration rollback, two-server duplicate-heartbeat/failover, daemon restart, runtime deletion, and stale-runtime cleanup evidence plus freshness alerts and a repair runbook.

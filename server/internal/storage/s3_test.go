@@ -2,11 +2,13 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -73,6 +75,105 @@ func TestS3StorageUploadStreamRejectsUnknownLength(t *testing.T) {
 	store := &S3Storage{}
 	if _, err := store.UploadStream(context.Background(), "uploads/media.bin", strings.NewReader("payload"), 0, "application/octet-stream", "media.bin"); err == nil {
 		t.Fatal("UploadStream accepted an unknown content length")
+	}
+}
+
+func TestS3StoragePurgeObjectDeletesEveryExactKeyVersion(t *testing.T) {
+	const key = "role-source/artifact"
+	deletedVersions := make(chan string, 1)
+	var deleteCurrentCalls atomic.Int32
+	var versionListCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			deleteCurrentCalls.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Query().Has("versions"):
+			versionListCalls.Add(1)
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>role-source/artifact</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Version><Key>role-source/artifact</Key><VersionId>v1</VersionId><IsLatest>false</IsLatest><Size>7</Size></Version>
+  <DeleteMarker><Key>role-source/artifact</Key><VersionId>d1</VersionId><IsLatest>true</IsLatest></DeleteMarker>
+  <Version><Key>role-source/artifact-suffix</Key><VersionId>other</VersionId><IsLatest>true</IsLatest><Size>7</Size></Version>
+</ListVersionsResult>`)
+		case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read version delete body: %v", err)
+			}
+			deletedVersions <- string(body)
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>`)
+		default:
+			t.Errorf("unexpected purge request: %s %s", r.Method, r.URL.String())
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+	store := &S3Storage{
+		client: s3.New(s3.Options{
+			Region:       "us-east-1",
+			Credentials:  aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
+			BaseEndpoint: aws.String(server.URL),
+			UsePathStyle: true,
+		}),
+		bucket: "test-bucket", region: "us-east-1", endpointURL: server.URL, usePathStyle: true,
+	}
+	if err := store.PurgeObject(context.Background(), key); err != nil {
+		t.Fatalf("PurgeObject: %v", err)
+	}
+	if calls := deleteCurrentCalls.Load(); calls != 1 {
+		t.Fatalf("current-object delete calls = %d, want 1", calls)
+	}
+	if calls := versionListCalls.Load(); calls != 2 {
+		t.Fatalf("version inventory calls = %d, want preflight plus post-delete inventory", calls)
+	}
+	body := <-deletedVersions
+	for _, required := range []string{"<Key>" + key + "</Key>", "<VersionId>v1</VersionId>", "<VersionId>d1</VersionId>"} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("version delete body omitted %q: %s", required, body)
+		}
+	}
+	if strings.Contains(body, "artifact-suffix") || strings.Contains(body, "other") {
+		t.Fatalf("purge crossed the exact-key boundary: %s", body)
+	}
+}
+
+func TestS3StoragePurgeObjectRefusesUnboundedHistoryBeforeMutation(t *testing.T) {
+	const key = "role-source/unbounded"
+	var unexpectedMutations atomic.Int32
+	var inventory strings.Builder
+	inventory.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>test-bucket</Name><Prefix>role-source/unbounded</Prefix><MaxKeys>20000</MaxKeys><IsTruncated>false</IsTruncated>`)
+	for index := 0; index <= maxS3ObjectVersionsPerPurge; index++ {
+		_, _ = fmt.Fprintf(&inventory, "<Version><Key>%s</Key><VersionId>v%d</VersionId><IsLatest>false</IsLatest><Size>1</Size></Version>", key, index)
+	}
+	inventory.WriteString(`</ListVersionsResult>`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Query().Has("versions") {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = io.WriteString(w, inventory.String())
+			return
+		}
+		unexpectedMutations.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	store := &S3Storage{
+		client: s3.New(s3.Options{
+			Region:       "us-east-1",
+			Credentials:  aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
+			BaseEndpoint: aws.String(server.URL),
+			UsePathStyle: true,
+		}),
+		bucket: "test-bucket", region: "us-east-1", endpointURL: server.URL, usePathStyle: true,
+	}
+	if err := store.PurgeObject(context.Background(), key); err == nil || !strings.Contains(err.Error(), "more than 10000 retained versions") {
+		t.Fatalf("unbounded purge error = %v, want bounded refusal", err)
+	}
+	if calls := unexpectedMutations.Load(); calls != 0 {
+		t.Fatalf("unbounded purge mutated storage %d times before refusing", calls)
 	}
 }
 

@@ -1,12 +1,53 @@
 package service
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type roleSourcePurgeRecordingStorage struct {
+	purges  int
+	deletes int
+}
+
+func (s *roleSourcePurgeRecordingStorage) DeleteObject(context.Context, string) error {
+	s.deletes++
+	return nil
+}
+
+func (s *roleSourcePurgeRecordingStorage) PurgeObject(context.Context, string) error {
+	s.purges++
+	return nil
+}
+
+type roleSourceDeleteOnlyStorage struct{ deletes int }
+
+func (s *roleSourceDeleteOnlyStorage) DeleteObject(context.Context, string) error {
+	s.deletes++
+	return nil
+}
+
+func TestRoleSourceArtifactGCUsesVersionPurgingWhenAvailable(t *testing.T) {
+	versioned := &roleSourcePurgeRecordingStorage{}
+	if err := purgeRoleSourceArtifactObject(context.Background(), versioned, "artifact"); err != nil {
+		t.Fatal(err)
+	}
+	if versioned.purges != 1 || versioned.deletes != 0 {
+		t.Fatalf("version-aware storage calls: purges=%d deletes=%d, want 1/0", versioned.purges, versioned.deletes)
+	}
+
+	legacy := &roleSourceDeleteOnlyStorage{}
+	if err := purgeRoleSourceArtifactObject(context.Background(), legacy, "artifact"); err == nil {
+		t.Fatal("delete-only storage was accepted as a permanent role-source purge")
+	}
+	if legacy.deletes != 0 {
+		t.Fatalf("delete-only storage calls = %d, want 0 fail-closed calls", legacy.deletes)
+	}
+}
 
 func TestRoleSourceArtifactGCDeletionSafetyContract(t *testing.T) {
 	if RoleSourceArtifactGCSettleDelay < 24*time.Hour {
