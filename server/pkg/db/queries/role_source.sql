@@ -81,6 +81,27 @@ WHERE source_id = @source_id AND workspace_id = @workspace_id
 ORDER BY created_at DESC, snapshot_digest
 LIMIT @result_limit;
 
+-- name: InsertRoleSourceArtifact :one
+INSERT INTO role_source_artifact (
+    workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id,
+    first_source_id, first_scan_request_id
+) VALUES (
+    @workspace_id, @digest, @size_bytes, @storage_key, @uploaded_by_runtime_id,
+    @first_source_id, @first_scan_request_id
+)
+ON CONFLICT (workspace_id, digest) DO NOTHING
+RETURNING *;
+
+-- name: GetRoleSourceArtifact :one
+SELECT * FROM role_source_artifact
+WHERE workspace_id = @workspace_id AND digest = @digest;
+
+-- name: ListRoleSourceArtifactsByDigests :many
+SELECT * FROM role_source_artifact
+WHERE workspace_id = @workspace_id
+  AND digest = ANY(@digests::text[])
+ORDER BY digest;
+
 -- name: CreateRoleSourceScanRequest :one
 INSERT INTO role_source_scan_request (
     id, source_id, workspace_id, requested_by, expected_adapter_version

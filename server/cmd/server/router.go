@@ -1062,6 +1062,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/runtimes/{runtimeId}/local-skills/import/{requestId}/result", h.ReportLocalSkillImportResult)
 		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/result", h.ReportRoleSourceScanResult)
 		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/lease", h.RenewRoleSourceScanLease)
+		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/artifacts/check", h.CheckRoleSourceArtifacts)
+		r.Put("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/artifacts/{artifactDigest}", h.UploadRoleSourceArtifact)
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)

@@ -419,6 +419,9 @@ deleted_applies AS (
 deleted_plans AS (
     DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
 ),
+deleted_artifacts AS (
+    DELETE FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
+),
 deleted_snapshots AS (
     DELETE FROM role_source_snapshot WHERE role_source_snapshot.workspace_id = $1
 ),

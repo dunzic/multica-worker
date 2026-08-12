@@ -406,14 +406,14 @@ func validateArtifact(artifact ArtifactRef) error {
 	if !sha256Pattern.MatchString(artifact.Digest) {
 		return fmt.Errorf("invalid digest %q", artifact.Digest)
 	}
-	if artifact.Path == "" || strings.Contains(artifact.Path, "\\") || strings.Contains(artifact.Path, ":") || strings.HasPrefix(artifact.Path, "/") {
+	if artifact.Path == "" || len(artifact.Path) > 1024 || strings.Contains(artifact.Path, "\\") || strings.Contains(artifact.Path, ":") || strings.HasPrefix(artifact.Path, "/") {
 		return fmt.Errorf("invalid relative path %q", artifact.Path)
 	}
 	clean := path.Clean(artifact.Path)
 	if clean != artifact.Path || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return fmt.Errorf("invalid relative path %q", artifact.Path)
 	}
-	if strings.TrimSpace(artifact.MediaType) == "" {
+	if strings.TrimSpace(artifact.MediaType) == "" || len(artifact.MediaType) > 200 || strings.ContainsAny(artifact.MediaType, "\r\n\x00") {
 		return errors.New("media_type is required")
 	}
 	if artifact.SizeBytes < 0 || artifact.SizeBytes > 1<<30 {

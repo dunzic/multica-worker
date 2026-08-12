@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -515,6 +516,46 @@ func (c *Client) RenewRoleSourceScanLease(ctx context.Context, runtimeID string,
 		return nil, err
 	}
 	return &response, nil
+}
+
+type roleSourceArtifactCheckResponse struct {
+	Missing []rolesource.ArtifactRef `json:"missing"`
+}
+
+func (c *Client) CheckRoleSourceArtifacts(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, refs []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error) {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/scans/%s/artifacts/check", runtimeID, pending.SourceID, pending.RequestID)
+	var response roleSourceArtifactCheckResponse
+	if err := c.postJSONWithRetry(ctx, path, map[string]any{"lease_token": pending.LeaseToken, "artifacts": refs}, &response, []time.Duration{time.Second, 2 * time.Second}); err != nil {
+		return nil, err
+	}
+	return response.Missing, nil
+}
+
+func (c *Client) UploadRoleSourceArtifact(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, ref rolesource.ArtifactRef, body io.Reader) error {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/scans/%s/artifacts/%s",
+		runtimeID, pending.SourceID, pending.RequestID, url.PathEscape(ref.Digest))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+path, body)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = ref.SizeBytes
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Role-Source-Lease-Token", pending.LeaseToken)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	c.setIdentityHeaders(req)
+	resp, err := c.bundleClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &requestError{Method: http.MethodPut, Path: path, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(data))}
+	}
+	_, err = io.Copy(io.Discard, resp.Body)
+	return err
 }
 
 // ReportUpdateResult sends the CLI update result back to the server.

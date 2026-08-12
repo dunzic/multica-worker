@@ -267,6 +267,20 @@ func (s *roleSourceScanner) scan(ctx context.Context, pending protocol.DaemonHea
 	return snapshot, ""
 }
 
+func (s *roleSourceScanner) openArtifact(ctx context.Context, pending protocol.DaemonHeartbeatPendingRoleSourceScan, ref rolesource.ArtifactRef) (io.ReadCloser, error) {
+	if s == nil {
+		return nil, errors.New("role source scanner is unavailable")
+	}
+	config, ok := s.configs[pending.DaemonConfigID]
+	if !ok || config.Kind != rolesource.Kind(pending.Kind) {
+		return nil, errors.New("role source artifact configuration is unavailable")
+	}
+	return s.registry.OpenArtifact(ctx, rolesource.Kind(pending.Kind), rolesource.ScanRequest{
+		WorkspaceID: pending.WorkspaceID, SourceID: pending.SourceID, Config: config.Config,
+		PreviousSnapshotDigest: pending.PreviousSnapshotDigest, RequestedAt: time.Now().UTC(),
+	}, ref)
+}
+
 func (d *Daemon) roleSourceHeartbeatOptions(runtimeID string, forcePoll bool) HeartbeatOptions {
 	if d.roleSources == nil {
 		return HeartbeatOptions{}
@@ -330,6 +344,9 @@ func (d *Daemon) handleRoleSourceScan(ctx context.Context, runtimeID string, pen
 		d.renewRoleSourceScanLease(scanCtx, cancelScan, runtimeID, pending, lease, scanDone)
 	}()
 	snapshot, errorCode := d.roleSources.scan(scanCtx, pending)
+	if errorCode == "" {
+		errorCode = d.uploadRoleSourceArtifacts(scanCtx, runtimeID, pending, snapshot)
+	}
 	close(scanDone)
 	cancelScan()
 	<-renewDone
@@ -353,6 +370,68 @@ func (d *Daemon) handleRoleSourceScan(ctx context.Context, runtimeID string, pen
 	d.logger.Info("role source scan completed",
 		"runtime_id", runtimeID, "request_id", pending.RequestID, "status", result.Status,
 		"snapshot_digest", snapshot.SnapshotDigest, "error_code", result.ErrorCode)
+}
+
+func (d *Daemon) uploadRoleSourceArtifacts(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, snapshot rolesource.Snapshot) string {
+	refs, err := rolesource.CollectArtifactRefs(snapshot)
+	if err != nil {
+		return "artifact_manifest_invalid"
+	}
+	for start := 0; start < len(refs); start += 1_000 {
+		end := start + 1_000
+		if end > len(refs) {
+			end = len(refs)
+		}
+		missing, err := d.client.CheckRoleSourceArtifacts(ctx, runtimeID, pending, refs[start:end])
+		if err != nil {
+			return "artifact_preflight_failed"
+		}
+		expected := make(map[string]rolesource.ArtifactRef, end-start)
+		for _, ref := range refs[start:end] {
+			expected[ref.Digest] = ref
+		}
+		for _, ref := range missing {
+			want, ok := expected[ref.Digest]
+			if !ok || want != ref {
+				return "artifact_preflight_invalid"
+			}
+			if err := d.uploadRoleSourceArtifactWithRetry(ctx, runtimeID, pending, ref); err != nil {
+				if errors.Is(err, rolesource.ErrChangedDuringRead) {
+					return "source_changed"
+				}
+				return "artifact_upload_failed"
+			}
+		}
+	}
+	return ""
+}
+
+func (d *Daemon) uploadRoleSourceArtifactWithRetry(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, ref rolesource.ArtifactRef) error {
+	var lastErr error
+	for attempt, delay := range []time.Duration{0, time.Second, 2 * time.Second} {
+		if delay > 0 {
+			if err := retrySleep(ctx, delay); err != nil {
+				return lastErr
+			}
+		}
+		body, err := d.roleSources.openArtifact(ctx, pending, ref)
+		if err != nil {
+			return err
+		}
+		err = d.client.UploadRoleSourceArtifact(ctx, runtimeID, pending, ref, body)
+		closeErr := body.Close()
+		if err == nil && closeErr == nil {
+			return nil
+		}
+		if err == nil {
+			err = closeErr
+		}
+		lastErr = err
+		if !isTransientError(err) || attempt == 2 {
+			return err
+		}
+	}
+	return lastErr
 }
 
 type roleSourceLeaseState struct {

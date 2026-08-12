@@ -956,6 +956,17 @@ type RoleSourceApply struct {
 	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
 }
 
+type RoleSourceArtifact struct {
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	Digest              string             `json:"digest"`
+	SizeBytes           int64              `json:"size_bytes"`
+	StorageKey          string             `json:"storage_key"`
+	UploadedByRuntimeID pgtype.UUID        `json:"uploaded_by_runtime_id"`
+	FirstSourceID       pgtype.UUID        `json:"first_source_id"`
+	FirstScanRequestID  pgtype.UUID        `json:"first_scan_request_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
 type RoleSourceAuditEvent struct {
 	ID                  pgtype.UUID        `json:"id"`
 	SourceID            pgtype.UUID        `json:"source_id"`

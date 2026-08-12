@@ -295,6 +295,10 @@ func (c *ControlPlane) ReportScanSuccess(ctx context.Context, input ReportScanSu
 	if err != nil {
 		return db.RoleSourceSnapshot{}, fmt.Errorf("%w: %v", ErrInvalidScanReport, err)
 	}
+	artifactRefs, err := CollectArtifactRefs(snapshot)
+	if err != nil {
+		return db.RoleSourceSnapshot{}, fmt.Errorf("%w: %v", ErrInvalidScanReport, err)
+	}
 	workspaceID, sourceID, requestID, runtimeID, leaseToken, err := parseFiveUUIDs(input.WorkspaceID, input.SourceID, input.RequestID, input.RuntimeID, input.LeaseToken)
 	if err != nil {
 		return db.RoleSourceSnapshot{}, err
@@ -330,6 +334,9 @@ func (c *ControlPlane) ReportScanSuccess(ctx context.Context, input ReportScanSu
 	}
 	if request.ExpectedAdapterVersion != snapshot.AdapterVersion || source.AdapterVersion != snapshot.AdapterVersion || source.Kind != string(snapshot.Kind) {
 		return db.RoleSourceSnapshot{}, fmt.Errorf("%w: adapter identity does not match source registration", ErrInvalidScanReport)
+	}
+	if err := verifySnapshotArtifacts(ctx, qtx, workspaceID, artifactRefs); err != nil {
+		return db.RoleSourceSnapshot{}, fmt.Errorf("%w: %v", ErrInvalidScanReport, err)
 	}
 	stored, err := qtx.InsertRoleSourceSnapshot(ctx, db.InsertRoleSourceSnapshotParams{
 		SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: snapshot.SnapshotDigest, ManifestDigest: snapshot.ManifestDigest,

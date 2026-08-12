@@ -9,6 +9,7 @@ package rolesource
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"time"
 )
 
@@ -49,6 +50,14 @@ type Adapter interface {
 	ValidateConfig(json.RawMessage) error
 	RedactConfig(json.RawMessage) (ConfigSummary, error)
 	Scan(context.Context, ScanRequest) (ScanOutput, error)
+}
+
+// ArtifactOpener is an optional daemon-side adapter capability. The server
+// never constructs or calls it. Implementations reopen one artifact through
+// the same bounded source authority used by Scan and must verify the returned
+// bytes against the supplied content-addressed reference.
+type ArtifactOpener interface {
+	OpenArtifact(context.Context, ScanRequest, ArtifactRef) (io.ReadCloser, error)
 }
 
 // ConfigSummary is the only source-configuration representation allowed in

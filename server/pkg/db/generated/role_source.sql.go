@@ -511,6 +511,32 @@ func (q *Queries) GetRoleSourceApplyByRequest(ctx context.Context, arg GetRoleSo
 	return i, err
 }
 
+const getRoleSourceArtifact = `-- name: GetRoleSourceArtifact :one
+SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
+WHERE workspace_id = $1 AND digest = $2
+`
+
+type GetRoleSourceArtifactParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Digest      string      `json:"digest"`
+}
+
+func (q *Queries) GetRoleSourceArtifact(ctx context.Context, arg GetRoleSourceArtifactParams) (RoleSourceArtifact, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceArtifact, arg.WorkspaceID, arg.Digest)
+	var i RoleSourceArtifact
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.Digest,
+		&i.SizeBytes,
+		&i.StorageKey,
+		&i.UploadedByRuntimeID,
+		&i.FirstSourceID,
+		&i.FirstScanRequestID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getRoleSourceForUpdate = `-- name: GetRoleSourceForUpdate :one
 SELECT id, workspace_id, runtime_id, name, kind, adapter_version, daemon_config_id, config_redacted, policy, state, current_snapshot_digest, audit_sequence, version, created_by, updated_by, created_at, updated_at FROM role_source
 WHERE id = $1 AND workspace_id = $2
@@ -795,6 +821,52 @@ func (q *Queries) InsertRoleSourceApply(ctx context.Context, arg InsertRoleSourc
 	return i, err
 }
 
+const insertRoleSourceArtifact = `-- name: InsertRoleSourceArtifact :one
+INSERT INTO role_source_artifact (
+    workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id,
+    first_source_id, first_scan_request_id
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7
+)
+ON CONFLICT (workspace_id, digest) DO NOTHING
+RETURNING workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at
+`
+
+type InsertRoleSourceArtifactParams struct {
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	Digest              string      `json:"digest"`
+	SizeBytes           int64       `json:"size_bytes"`
+	StorageKey          string      `json:"storage_key"`
+	UploadedByRuntimeID pgtype.UUID `json:"uploaded_by_runtime_id"`
+	FirstSourceID       pgtype.UUID `json:"first_source_id"`
+	FirstScanRequestID  pgtype.UUID `json:"first_scan_request_id"`
+}
+
+func (q *Queries) InsertRoleSourceArtifact(ctx context.Context, arg InsertRoleSourceArtifactParams) (RoleSourceArtifact, error) {
+	row := q.db.QueryRow(ctx, insertRoleSourceArtifact,
+		arg.WorkspaceID,
+		arg.Digest,
+		arg.SizeBytes,
+		arg.StorageKey,
+		arg.UploadedByRuntimeID,
+		arg.FirstSourceID,
+		arg.FirstScanRequestID,
+	)
+	var i RoleSourceArtifact
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.Digest,
+		&i.SizeBytes,
+		&i.StorageKey,
+		&i.UploadedByRuntimeID,
+		&i.FirstSourceID,
+		&i.FirstScanRequestID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertRoleSourceAuditEvent = `-- name: InsertRoleSourceAuditEvent :one
 INSERT INTO role_source_audit_event (
     id, source_id, workspace_id, sequence, event_type, actor_type, actor_id,
@@ -1002,6 +1074,47 @@ func (q *Queries) InsertRoleSourceSnapshot(ctx context.Context, arg InsertRoleSo
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listRoleSourceArtifactsByDigests = `-- name: ListRoleSourceArtifactsByDigests :many
+SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
+WHERE workspace_id = $1
+  AND digest = ANY($2::text[])
+ORDER BY digest
+`
+
+type ListRoleSourceArtifactsByDigestsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Digests     []string    `json:"digests"`
+}
+
+func (q *Queries) ListRoleSourceArtifactsByDigests(ctx context.Context, arg ListRoleSourceArtifactsByDigestsParams) ([]RoleSourceArtifact, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceArtifactsByDigests, arg.WorkspaceID, arg.Digests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceArtifact{}
+	for rows.Next() {
+		var i RoleSourceArtifact
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.Digest,
+			&i.SizeBytes,
+			&i.StorageKey,
+			&i.UploadedByRuntimeID,
+			&i.FirstSourceID,
+			&i.FirstScanRequestID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRoleSourceAuditEvents = `-- name: ListRoleSourceAuditEvents :many

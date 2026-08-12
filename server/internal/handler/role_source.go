@@ -2,11 +2,15 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -34,6 +38,18 @@ type RoleSourceControlPlane interface {
 	ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error)
 	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
 	ListPlanApprovals(context.Context, string, string, string, int32) ([]db.RoleSourcePlanApproval, error)
+	ListMissingArtifacts(context.Context, rolesource.ArtifactLeaseInput, []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error)
+	StoreArtifactRecord(context.Context, rolesource.StoreArtifactInput) (db.RoleSourceArtifact, bool, error)
+}
+
+const maxRoleSourceArtifactUploadBytes = 8 << 20
+
+var roleSourceArtifactSpoolSlots = make(chan struct{}, 16)
+
+var errRoleSourceArtifactMismatch = errors.New("artifact body does not match declared digest and size")
+
+type roleSourceArtifactStreamStorage interface {
+	UploadStream(context.Context, string, io.Reader, int64, string, string) (string, error)
 }
 
 type roleSourceResponse struct {
@@ -466,6 +482,165 @@ func writeRoleSourceReadError(w http.ResponseWriter, err error, message string) 
 		return
 	}
 	writeError(w, http.StatusInternalServerError, message)
+}
+
+func (h *Handler) CheckRoleSourceArtifacts(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+	runtime, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
+	if !ok {
+		return
+	}
+	workspaceID := util.UUIDToString(runtime.WorkspaceID)
+	if !h.roleSourceDaemonScanEnabled(r.Context(), workspaceID) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var body struct {
+		LeaseToken string                   `json:"lease_token"`
+		Artifacts  []rolesource.ArtifactRef `json:"artifacts"`
+	}
+	if err := decodeStrictRoleSourceJSONLimit(w, r, &body, 2<<20); err != nil || len(body.Artifacts) > 1_000 {
+		writeError(w, http.StatusBadRequest, "invalid artifact preflight")
+		return
+	}
+	missing, err := h.RoleSources.ListMissingArtifacts(r.Context(), rolesource.ArtifactLeaseInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), RequestID: chi.URLParam(r, "requestId"),
+		RuntimeID: runtimeID, LeaseToken: body.LeaseToken,
+	}, body.Artifacts)
+	if err != nil {
+		writeRoleSourceArtifactLeaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"missing": missing})
+}
+
+func (h *Handler) UploadRoleSourceArtifact(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+	runtime, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
+	if !ok {
+		return
+	}
+	workspaceID := util.UUIDToString(runtime.WorkspaceID)
+	if !h.roleSourceDaemonScanEnabled(r.Context(), workspaceID) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	streamStore, ok := h.Storage.(roleSourceArtifactStreamStorage)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "artifact storage unavailable")
+		return
+	}
+	digest := chi.URLParam(r, "artifactDigest")
+	leaseToken := strings.TrimSpace(r.Header.Get("X-Role-Source-Lease-Token"))
+	if !strings.HasPrefix(digest, "sha256:") || len(digest) != 71 || leaseToken == "" ||
+		r.ContentLength < 0 || r.ContentLength > maxRoleSourceArtifactUploadBytes {
+		writeError(w, http.StatusBadRequest, "invalid artifact upload metadata")
+		return
+	}
+	lease := rolesource.ArtifactLeaseInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), RequestID: chi.URLParam(r, "requestId"),
+		RuntimeID: runtimeID, LeaseToken: leaseToken,
+	}
+	probe := rolesource.ArtifactRef{Digest: digest, Path: "artifact", MediaType: "application/octet-stream", SizeBytes: r.ContentLength}
+	missing, err := h.RoleSources.ListMissingArtifacts(r.Context(), lease, []rolesource.ArtifactRef{probe})
+	if err != nil {
+		writeRoleSourceArtifactLeaseError(w, err)
+		return
+	}
+	if len(missing) == 0 {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already_present"})
+		return
+	}
+	select {
+	case roleSourceArtifactSpoolSlots <- struct{}{}:
+		defer func() { <-roleSourceArtifactSpoolSlots }()
+	case <-r.Context().Done():
+		writeError(w, http.StatusRequestTimeout, "artifact upload cancelled")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRoleSourceArtifactUploadBytes)
+	temporary, written, err := spoolRoleSourceArtifact(r.Body, r.ContentLength, digest)
+	if err != nil {
+		if errors.Is(err, errRoleSourceArtifactMismatch) {
+			writeError(w, http.StatusBadRequest, "artifact body does not match declared digest and size")
+		} else {
+			slog.Error("spool role source artifact failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to receive artifact")
+		}
+		return
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName) //nolint:errcheck
+	defer temporary.Close()        //nolint:errcheck
+	storageKey := fmt.Sprintf("role-source-artifacts/%s/%s", workspaceID, strings.TrimPrefix(digest, "sha256:"))
+	var uploadErr error
+	if written == 0 {
+		_, uploadErr = h.Storage.Upload(r.Context(), storageKey, []byte{}, "application/octet-stream", "")
+	} else {
+		_, uploadErr = streamStore.UploadStream(r.Context(), storageKey, temporary, written, "application/octet-stream", "")
+	}
+	if uploadErr != nil {
+		slog.Error("store role source artifact failed", "workspace_id", workspaceID, "digest", digest, "error", uploadErr)
+		writeError(w, http.StatusServiceUnavailable, "failed to store artifact")
+		return
+	}
+	_, created, err := h.RoleSources.StoreArtifactRecord(r.Context(), rolesource.StoreArtifactInput{
+		ArtifactLeaseInput: lease, Digest: digest, SizeBytes: written, StorageKey: storageKey,
+	})
+	if err != nil {
+		writeRoleSourceArtifactLeaseError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]string{"status": "ready"})
+}
+
+func spoolRoleSourceArtifact(body io.Reader, declaredSize int64, declaredDigest string) (*os.File, int64, error) {
+	if declaredSize < 0 || declaredSize > maxRoleSourceArtifactUploadBytes {
+		return nil, 0, errRoleSourceArtifactMismatch
+	}
+	temporary, err := os.CreateTemp("", "multica-role-source-artifact-*")
+	if err != nil {
+		return nil, 0, err
+	}
+	cleanup := func() {
+		name := temporary.Name()
+		temporary.Close() //nolint:errcheck
+		os.Remove(name)   //nolint:errcheck
+	}
+	hasher := sha256.New()
+	written, err := io.Copy(io.MultiWriter(temporary, hasher), io.LimitReader(body, declaredSize+1))
+	if err != nil {
+		cleanup()
+		return nil, written, err
+	}
+	if written != declaredSize || "sha256:"+fmt.Sprintf("%x", hasher.Sum(nil)) != declaredDigest {
+		cleanup()
+		return nil, written, errRoleSourceArtifactMismatch
+	}
+	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, written, err
+	}
+	return temporary, written, nil
+}
+
+func writeRoleSourceArtifactLeaseError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, rolesource.ErrScanLeaseLost):
+		writeError(w, http.StatusConflict, "scan lease is stale or no longer owned")
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusNotFound, "scan not found")
+	case errors.Is(err, rolesource.ErrInvalidArtifactRequest):
+		writeError(w, http.StatusBadRequest, "invalid artifact request")
+	default:
+		slog.Error("role source artifact control-plane request failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "artifact control plane failed")
+	}
 }
 
 // ReportRoleSourceScanResult receives the terminal result for a leased scan.

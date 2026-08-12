@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -96,6 +97,35 @@ func TestAdapterScanSecretChangeChangesDigestsWithoutLeakingValue(t *testing.T) 
 	}
 	if strings.Contains(string(encoded), "second-secret") {
 		t.Fatalf("second snapshot leaked changed secret: %s", encoded)
+	}
+}
+
+func TestAdapterOpenArtifactRevalidatesBytesAfterScan(t *testing.T) {
+	root := writeFixture(t, "secret")
+	adapter := newTestAdapter(t)
+	registry, err := rolesource.NewRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := rolesource.ScanRequest{WorkspaceID: "workspace-1", SourceID: "source-1", Config: configJSON(t, root)}
+	snapshot, err := registry.Scan(t.Context(), Kind, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := snapshot.Manifest.Roles[0].Instructions
+	reader, err := registry.OpenArtifact(t.Context(), Kind, request, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(reader)
+	reader.Close() //nolint:errcheck
+	if err != nil || int64(len(body)) != ref.SizeBytes {
+		t.Fatalf("artifact body length=%d err=%v", len(body), err)
+	}
+
+	writeFixtureFile(t, root, ref.Path, "changed after scan")
+	if _, err := registry.OpenArtifact(t.Context(), Kind, request, ref); !errors.Is(err, rolesource.ErrChangedDuringRead) {
+		t.Fatalf("changed artifact error = %v, want ErrChangedDuringRead", err)
 	}
 }
 

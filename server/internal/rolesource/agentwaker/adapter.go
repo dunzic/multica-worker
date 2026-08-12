@@ -142,6 +142,42 @@ func (a *Adapter) Scan(ctx context.Context, request rolesource.ScanRequest) (rol
 	return scanner.scan()
 }
 
+// OpenArtifact reopens a public file through BoundedFS after scan and verifies
+// exact size and digest. A source mutation between scan and upload therefore
+// fails closed instead of attaching bytes that do not match the snapshot.
+func (a *Adapter) OpenArtifact(ctx context.Context, request rolesource.ScanRequest, ref rolesource.ArtifactRef) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if ref.SizeBytes > maxArtifactBytes {
+		return nil, fmt.Errorf("AgentWaker artifact %q exceeds adapter upload limit", ref.Path)
+	}
+	cfg, err := decodeConfig(request.Config)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.validateRoot(cfg.RootPath); err != nil {
+		return nil, err
+	}
+	sourceFS, err := rolesource.OpenBoundedFS(cfg.RootPath)
+	if err != nil {
+		return nil, err
+	}
+	defer sourceFS.Close() //nolint:errcheck
+	body, err := sourceFS.ReadFile(ref.Path, maxArtifactBytes)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) != ref.SizeBytes {
+		return nil, fmt.Errorf("%w: artifact %q size changed", rolesource.ErrChangedDuringRead, ref.Path)
+	}
+	sum := sha256.Sum256(body)
+	if "sha256:"+hex.EncodeToString(sum[:]) != ref.Digest {
+		return nil, fmt.Errorf("%w: artifact %q digest changed", rolesource.ErrChangedDuringRead, ref.Path)
+	}
+	return io.NopCloser(bytes.NewReader(body)), nil
+}
+
 type directoryScanner struct {
 	ctx          context.Context
 	fs           *rolesource.BoundedFS

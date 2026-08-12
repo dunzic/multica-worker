@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -27,37 +28,42 @@ const (
 )
 
 type fakeRoleSourceControlPlane struct {
-	registerInput   *rolesource.RegisterSourceInput
-	registerRow     db.RoleSource
-	registerErr     error
-	requestRow      db.RoleSourceScanRequest
-	requestErr      error
-	getScanRow      db.RoleSourceScanRequest
-	getScanErr      error
-	listRows        []db.RoleSource
-	listErr         error
-	getSourceRow    db.RoleSource
-	getSourceErr    error
-	claimRow        rolesource.ClaimedScan
-	claimErr        error
-	claimCalls      int
-	renewRow        db.RoleSourceScanRequest
-	renewErr        error
-	createPlanInput *rolesource.CreatePlanInput
-	createPlanRow   db.RoleSourcePlan
-	createPlanErr   error
-	approvalInput   *rolesource.RecordPlanApprovalInput
-	approvalRow     db.RoleSourcePlanApproval
-	approvalErr     error
-	getPlanRow      db.RoleSourcePlan
-	getPlanErr      error
-	planRows        []db.RoleSourcePlan
-	planListErr     error
-	snapshotRows    []db.RoleSourceSnapshot
-	snapshotListErr error
-	approvalRows    []db.RoleSourcePlanApproval
-	approvalListErr error
-	calls           int
+	registerInput    *rolesource.RegisterSourceInput
+	registerRow      db.RoleSource
+	registerErr      error
+	requestRow       db.RoleSourceScanRequest
+	requestErr       error
+	getScanRow       db.RoleSourceScanRequest
+	getScanErr       error
+	listRows         []db.RoleSource
+	listErr          error
+	getSourceRow     db.RoleSource
+	getSourceErr     error
+	claimRow         rolesource.ClaimedScan
+	claimErr         error
+	claimCalls       int
+	renewRow         db.RoleSourceScanRequest
+	renewErr         error
+	createPlanInput  *rolesource.CreatePlanInput
+	createPlanRow    db.RoleSourcePlan
+	createPlanErr    error
+	approvalInput    *rolesource.RecordPlanApprovalInput
+	approvalRow      db.RoleSourcePlanApproval
+	approvalErr      error
+	getPlanRow       db.RoleSourcePlan
+	getPlanErr       error
+	planRows         []db.RoleSourcePlan
+	planListErr      error
+	snapshotRows     []db.RoleSourceSnapshot
+	snapshotListErr  error
+	approvalRows     []db.RoleSourcePlanApproval
+	approvalListErr  error
+	missingArtifacts []rolesource.ArtifactRef
+	missingErr       error
+	storedArtifact   db.RoleSourceArtifact
+	storedCreated    bool
+	storeArtifactErr error
+	calls            int
 }
 
 type roleSourcePendingWorkRecorder struct {
@@ -146,6 +152,16 @@ func (f *fakeRoleSourceControlPlane) ListPlanApprovals(context.Context, string, 
 	return f.approvalRows, f.approvalListErr
 }
 
+func (f *fakeRoleSourceControlPlane) ListMissingArtifacts(context.Context, rolesource.ArtifactLeaseInput, []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error) {
+	f.calls++
+	return f.missingArtifacts, f.missingErr
+}
+
+func (f *fakeRoleSourceControlPlane) StoreArtifactRecord(context.Context, rolesource.StoreArtifactInput) (db.RoleSourceArtifact, bool, error) {
+	f.calls++
+	return f.storedArtifact, f.storedCreated, f.storeArtifactErr
+}
+
 func roleSourceTestHandler(t *testing.T, enabled bool, controlPlane *fakeRoleSourceControlPlane) *Handler {
 	t.Helper()
 	provider := featureflag.NewStaticProvider()
@@ -224,6 +240,33 @@ func roleSourceTestApprovalRow(t *testing.T, plan db.RoleSourcePlan) db.RoleSour
 		ID: util.MustParseUUID("00000000-0000-4000-8000-000000000045"), SourceID: plan.SourceID,
 		WorkspaceID: plan.WorkspaceID, PlanDigest: plan.PlanDigest, RequestKey: "private-client-retry-key",
 		Decision: "approved", Decisions: decisions, ActorUserID: util.MustParseUUID(testUserID), CreatedAt: plan.CreatedAt,
+	}
+}
+
+func TestSpoolRoleSourceArtifactVerifiesDigestSizeAndLimit(t *testing.T) {
+	payload := []byte("verified artifact")
+	sum := sha256.Sum256(payload)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	file, size, err := spoolRoleSourceArtifact(strings.NewReader(string(payload)), int64(len(payload)), digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := file.Name()
+	defer os.Remove(name) //nolint:errcheck
+	defer file.Close()    //nolint:errcheck
+	body, err := os.ReadFile(name)
+	if err != nil || string(body) != string(payload) || size != int64(len(payload)) {
+		t.Fatalf("spooled size=%d body=%q err=%v", size, body, err)
+	}
+
+	if _, _, err := spoolRoleSourceArtifact(strings.NewReader(string(payload)), int64(len(payload)-1), digest); err == nil {
+		t.Fatal("spool accepted a body longer than declared")
+	}
+	if _, _, err := spoolRoleSourceArtifact(strings.NewReader(string(payload)), int64(len(payload)), "sha256:"+strings.Repeat("0", 64)); err == nil {
+		t.Fatal("spool accepted a mismatched digest")
+	}
+	if _, _, err := spoolRoleSourceArtifact(strings.NewReader(""), maxRoleSourceArtifactUploadBytes+1, digest); err == nil {
+		t.Fatal("spool accepted an oversized declaration")
 	}
 }
 
@@ -461,7 +504,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		t.Fatalf("create workspace: %v", err)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+		for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 			_, _ = testPool.Exec(context.Background(), "DELETE FROM "+table+" WHERE workspace_id = $1", workspaceID)
 		}
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, workspaceID)
@@ -495,6 +538,12 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		}
 	}
 	execFixture(`
+		INSERT INTO role_source_artifact (
+			workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id,
+			first_source_id, first_scan_request_id
+		) VALUES ($1, $2, 7, $3, $4, $5, gen_random_uuid())
+	`, workspaceID, digestA, "role-source-artifacts/"+workspaceID+"/"+strings.TrimPrefix(digestA, "sha256:"), runtimeID, sourceID)
+	execFixture(`
 		INSERT INTO role_source_scan_request (id, source_id, workspace_id, requested_by, expected_adapter_version)
 		VALUES (gen_random_uuid(), $1, $2, $3, '0.1.0')
 	`, sourceID, workspaceID, testUserID)
@@ -527,7 +576,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("delete workspace: expected 204, got %d: %s", w.Code, w.Body.String())
 	}
-	for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+	for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 		var count int
 		if err := testPool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE workspace_id = $1", workspaceID).Scan(&count); err != nil {
 			t.Fatalf("count %s: %v", table, err)

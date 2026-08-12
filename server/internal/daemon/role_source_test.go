@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -221,8 +222,20 @@ func TestRoleSourceHeartbeatPollingIsThrottledAndCapacityAware(t *testing.T) {
 
 func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T) {
 	requests := make(map[string]map[string]any)
+	uploads := make(map[string]string)
 	client := NewClient("http://role-source.test")
-	client.client = &http.Client{Transport: roleSourceRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	httpClient := &http.Client{Transport: roleSourceRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPut {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			uploads[request.URL.Path] = string(body)
+			if request.Header.Get("X-Role-Source-Lease-Token") != "lease-1" || request.ContentLength != int64(len(body)) {
+				t.Fatalf("artifact upload headers length=%d lease=%q", request.ContentLength, request.Header.Get("X-Role-Source-Lease-Token"))
+			}
+			return &http.Response{StatusCode: http.StatusCreated, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"status":"ready"}`)), Request: request}, nil
+		}
 		var body map[string]any
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatalf("decode %s request: %v", request.URL.Path, err)
@@ -231,12 +244,16 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 		response := `{"status":"ok"}`
 		if strings.HasSuffix(request.URL.Path, "/lease") {
 			response = `{"lease_expires_at":"2026-08-13T12:15:00Z"}`
+		} else if strings.HasSuffix(request.URL.Path, "/artifacts/check") {
+			response = `{"missing":[{"digest":"sha256:` + strings.Repeat("a", 64) + `","path":"writer/agent.md","media_type":"text/markdown","size_bytes":7}]}`
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK, Header: make(http.Header),
 			Body: io.NopCloser(strings.NewReader(response)), Request: request,
 		}, nil
 	})}
+	client.client = httpClient
+	client.bundleClient = httpClient
 
 	if _, err := client.SendHeartbeat(t.Context(), "runtime-1", HeartbeatOptions{SupportsRoleSourceScan: true, PollRoleSourceScan: true}); err != nil {
 		t.Fatal(err)
@@ -251,6 +268,14 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
+	ref := rolesource.ArtifactRef{Digest: "sha256:" + strings.Repeat("a", 64), Path: "writer/agent.md", MediaType: "text/markdown", SizeBytes: 7}
+	missing, err := client.CheckRoleSourceArtifacts(t.Context(), "runtime-1", pending, []rolesource.ArtifactRef{ref})
+	if err != nil || len(missing) != 1 || missing[0] != ref {
+		t.Fatalf("artifact preflight = %+v err=%v", missing, err)
+	}
+	if err := client.UploadRoleSourceArtifact(t.Context(), "runtime-1", pending, ref, strings.NewReader("payload")); err != nil {
+		t.Fatal(err)
+	}
 	heartbeat := requests["/api/daemon/heartbeat"]
 	if heartbeat["supports_role_source_scan"] != true || heartbeat["poll_role_source_scan"] != true {
 		t.Fatalf("heartbeat negotiation body = %#v", heartbeat)
@@ -262,5 +287,9 @@ func TestRoleSourceClientCarriesNegotiationLeaseAndIdempotentResult(t *testing.T
 	result := requests["/api/daemon/runtimes/runtime-1/role-sources/source-1/scans/request-1/result"]
 	if result["status"] != "failed" || result["lease_token"] != "lease-1" || result["error_code"] != "source_invalid" {
 		t.Fatalf("result body = %#v", result)
+	}
+	uploadPath := "/api/daemon/runtimes/runtime-1/role-sources/source-1/scans/request-1/artifacts/" + ref.Digest
+	if uploads[uploadPath] != "payload" {
+		t.Fatalf("artifact upload = %q at %q", uploads[uploadPath], uploadPath)
 	}
 }
