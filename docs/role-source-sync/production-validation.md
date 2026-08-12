@@ -90,6 +90,10 @@ Use a production-shaped dataset and two server replicas. Measure, do not infer:
 - API p50/p95/p99 for source list plus 100-entry history;
 - S3 upload/read/delete latency and deletion error rate;
 - Prometheus series count for all role-source metrics.
+- `multica_role_source_runtime_availability` changes by the expected count when
+  one active source's daemon stops, emits only the two approved status series,
+  and fires `MulticaRoleSourceRuntimeUnavailable` after the configured hold;
+  paused/detached sources do not page.
 
 Required initial SLOs for the engineering cohort:
 
@@ -98,6 +102,9 @@ Required initial SLOs for the engineering cohort:
 - source list p99 below 500 ms for the cohort's largest workspace;
 - zero deadlocks, orphan rows, cross-tenant fields or unbounded metric labels;
 - every persistence failure emits `persist_failed` and the Helm alert fires in the staging alert pipeline.
+- the runtime-unavailable alert identifies no tenant in Prometheus labels; the
+  authorized settings view and [operator runbook](operator-runbook.md) provide
+  the identification and recovery path.
 
 ## Evidence record
 

@@ -84,6 +84,7 @@ func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.
 		"multica_role_source_apply_failure_audit_writes_total":   {labelMode, labelStage, labelCode, labelOutcome},
 		"multica_role_source_apply_commit_reconciliations_total": {labelOutcome},
 		"multica_role_source_runtime_config_attestations_total":  {labelOutcome},
+		"multica_role_source_runtime_availability":               {labelStatus},
 	} {
 		got, ok := operationalMetricLabels[metric]
 		if !ok {
@@ -144,12 +145,15 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 		"MulticaRoleSourceApplyCommitReconciliationFailed",
 		"MulticaRoleSourceArtifactGCDeleteFailures",
 		"MulticaRoleSourceRuntimeAttestationPersistenceFailed",
+		"MulticaRoleSourceRuntimeUnavailable",
 		"multica_role_source_apply_failure_audit_writes_total",
 		"multica_role_source_apply_commit_reconciliations_total",
 		"multica_role_source_runtime_config_attestations_total",
+		"multica_role_source_runtime_availability",
 		`outcome=~"persist_failed|id_generation_failed"`,
 		"roleSourceAuditWriteFailureFor",
 		"roleSourceSeverity",
+		"roleSourceRuntimeUnavailableFor",
 	} {
 		if !strings.Contains(rule, required) {
 			t.Fatalf("role-source alert rule is missing %q", required)
@@ -168,6 +172,7 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 	values := string(valuesBody)
 	if !strings.Contains(values, "roleSourceAuditWriteFailureFor: 1m") ||
 		!strings.Contains(values, "roleSourceCommitReconciliationFailureFor: 1m") ||
+		!strings.Contains(values, "roleSourceRuntimeUnavailableFor: 10m") ||
 		!strings.Contains(values, "roleSourceSeverity: critical") {
 		t.Fatal("role-source audit alert defaults must stay short and critical")
 	}

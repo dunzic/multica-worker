@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/rolesource"
+	"github.com/multica-ai/multica/server/internal/runtimehealth"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -421,7 +422,7 @@ func roleSourceRuntimeConfigStatus(source db.RoleSource, attestation db.RoleSour
 	return response
 }
 
-const roleSourceRuntimeDBFreshnessWindow = time.Duration(RuntimeStaleThresholdSeconds) * time.Second
+const roleSourceRuntimeDBFreshnessWindow = runtimehealth.StaleThreshold
 
 func roleSourceRuntimeConfigCurrentStatus(response roleSourceRuntimeConfigResponse, runtime db.AgentRuntime, alive map[string]bool, livenessAvailable bool, now time.Time) roleSourceRuntimeConfigResponse {
 	response.AttestationStatus = response.Status

@@ -1,5 +1,5 @@
 {{- if .Values.monitoring.prometheusRule.enabled }}
-{{- $samplerQueryNames := "active_users|active_workspaces|task_queued|task_running|task_stuck|runtime_online|runtime_heartbeat_age|workspace_total" -}}
+{{- $samplerQueryNames := "active_users|active_workspaces|task_queued|task_running|task_stuck|runtime_online|runtime_heartbeat_age|workspace_total|role_source_runtime_availability" -}}
 {{- $samplerErrorNames := printf "acquire|%s" $samplerQueryNames -}}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -80,4 +80,12 @@ spec:
           annotations:
             summary: "Role-source runtime loaded-configuration evidence could not be persisted"
             description: "A daemon supplied a valid loaded-configuration attestation but the server could not durably record it. The daemon will retry because no acknowledgement was returned; inspect PostgreSQL availability and migration state before enabling role-source scans."
+        - alert: MulticaRoleSourceRuntimeUnavailable
+          expr: multica_role_source_runtime_availability{status="runtime_unavailable"} > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceRuntimeUnavailableFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "One or more managed role sources have no fresh runtime"
+            description: "At least one active, registered or error-state role source has remained bound to an offline, missing or DB-stale runtime. Tenant/source identifiers are deliberately absent from metrics; use the authorized role-source settings view and operator runbook to identify and repair the affected source."
 {{- end }}

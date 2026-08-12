@@ -26,7 +26,14 @@ The control plane can now distinguish a file that was merely written from the co
 - Current health combines evidence with the shared runtime liveness contract: Redis heartbeat TTL when available, otherwise the same 150-second database threshold used by the sweeper. The UI preserves the last evidence label beside the offline/stale warning.
 - History records first/last observation and restart observation count, supporting incident reconstruction without retaining raw configuration.
 - An unloaded statement is distinct from an old/unattested daemon, avoiding the misleading conclusion that silence means a valid empty configuration.
-- Open objections: guided repair actions, daemon upgrade guidance, fleet aggregation and proactive freshness/SLO alerts are not present.
+- Fleet aggregation now uses a fixed two-series database-backed availability
+  gauge aligned to the shared 150-second fallback threshold. A ten-minute Helm
+  alert and an operator recovery runbook cover detection, authorized
+  identification, daemon restart, evidence re-attestation and scan validation
+  without exposing tenant identifiers in Prometheus.
+- Open objections: guided repair actions and daemon upgrade guidance are not
+  present in product UI; planned retirement still lacks controlled
+  pause/detach/rebind APIs; the staging alert pipeline has not been exercised.
 
 ## Test review — 2/3
 
@@ -54,4 +61,4 @@ The control plane can now distinguish a file that was merely written from the co
 
 ## Rollout decision
 
-Merge behind `role_source_sync` plus `role_source_scan`. Use the status/history surface in an engineering cohort after applying migrations on a real PostgreSQL staging cluster. Execute [production-validation.md](../production-validation.md) and retain its evidence record. Broad rollout still requires live migration rollback, two-server duplicate-heartbeat/failover, daemon restart, runtime deletion, and stale-runtime cleanup evidence plus freshness alerts and a repair runbook.
+Merge behind `role_source_sync` plus `role_source_scan`. Use the status/history surface in an engineering cohort after applying migrations on a real PostgreSQL staging cluster. Execute [production-validation.md](../production-validation.md) and retain its evidence record. Broad rollout still requires live migration rollback, two-server duplicate-heartbeat/failover, daemon restart, runtime deletion, stale-runtime cleanup and real alert-pipeline evidence, plus a controlled pause/detach/rebind workflow for intentional retirement.
