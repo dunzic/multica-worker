@@ -76,6 +76,13 @@ func New(digestKey []byte, validateRoot RootValidator) (*Adapter, error) {
 }
 
 func (a *Adapter) Descriptor() rolesource.Descriptor {
+	return Descriptor()
+}
+
+// Descriptor exposes source-neutral negotiation metadata without constructing
+// a filesystem-capable adapter. The server catalog uses this; only the daemon
+// calls New and receives scan authority.
+func Descriptor() rolesource.Descriptor {
 	return rolesource.Descriptor{
 		Kind:            Kind,
 		DisplayName:     "AgentWaker directory",

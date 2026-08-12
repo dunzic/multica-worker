@@ -34,6 +34,8 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/rolesource"
+	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -238,6 +240,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
+	roleSourceCatalog, err := rolesource.NewCatalog(agentwaker.Descriptor())
+	if err != nil {
+		panic("build role source adapter catalog: " + err.Error())
+	}
+	roleSourceControlPlane, err := rolesource.NewControlPlane(pool, roleSourceCatalog)
+	if err != nil {
+		panic("build role source control plane: " + err.Error())
+	}
+	h.RoleSourceCatalog = roleSourceCatalog
+	h.RoleSources = roleSourceControlPlane
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
@@ -1048,6 +1060,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/runtimes/{runtimeId}/models/{requestId}/result", h.ReportModelListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/{requestId}/result", h.ReportLocalSkillListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/import/{requestId}/result", h.ReportLocalSkillImportResult)
+		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/result", h.ReportRoleSourceScanResult)
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
@@ -1139,6 +1152,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// are admin-gated below).
 					r.Get("/runtime-profiles", h.ListRuntimeProfiles)
 					r.Get("/runtime-profiles/{profileId}", h.GetRuntimeProfile)
+					r.Get("/role-source-adapters", h.ListRoleSourceAdapters)
+					r.Get("/role-sources", h.ListRoleSources)
+					r.Get("/role-sources/{sourceId}/scans/{scanId}", h.GetRoleSourceScan)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -1156,6 +1172,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Put("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Delete("/runtime-profiles/{profileId}", h.DeleteRuntimeProfile)
+					r.Post("/role-sources", h.CreateRoleSource)
+					r.Post("/role-sources/{sourceId}/scans", h.RequestRoleSourceScan)
 				})
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)

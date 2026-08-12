@@ -105,6 +105,12 @@ The daemon adapter may read only paths allowed by the source configuration and a
 
 Scanning secrets produces only declaration metadata and keyed change digests. Apply uses a separate, short-lived secret transfer request bound to workspace, source, snapshot, role, nonce, expiry, and target server key. The resulting encrypted values are written through the same transaction and fail-closed audit path as other mutations. Snapshot, plan, diagnostics, logs, analytics, events, caches, and receipts never contain plaintext values.
 
+### Daemon scan protocol
+
+The server exposes only adapter descriptors; it never constructs a filesystem-capable adapter. An administrator queues a scan through a workspace-admin API, and the control plane nudges the source's owning runtime through the existing pending-work channel. A daemon heartbeat separately declares `supports_role_source_scan` and `poll_role_source_scan`. Capability negotiation does not query PostgreSQL; a claim occurs only on an explicit poll. This prevents every 15-second fleet heartbeat from becoming an empty database claim while retaining a slower daemon recovery poll for missed hints.
+
+One heartbeat can lease at most one scan. The command contains source/workspace identity, adapter kind/version, an opaque daemon-local configuration ID, lease token and expiry—never an absolute path, credential or snapshot body. The daemon reports either one validated secret-free snapshot or one stable error code. Terminal reports are idempotent when runtime, lease, digest and outcome match; a stale, foreign or conflicting retry is rejected. Feature rollout requires both `role_source_sync` and `role_source_scan`; `role_source_apply` remains independently disabled.
+
 ### Deterministic plan and atomic apply
 
 The plan engine compares normalized object IDs and digests. It emits create, update, unchanged, conflict, detach-candidate, archive-candidate, blocked, and policy-decision actions. Every action records the affected fields, ownership, reason, and risk level.

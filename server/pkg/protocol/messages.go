@@ -10,6 +10,10 @@ const (
 	// Gated so only daemons+servers that both support it route claim over WS;
 	// everyone else keeps using the HTTP claim endpoint.
 	DaemonCapabilityRPCV1 = "rpc-v1"
+	// DaemonCapabilityRoleSourceScanV1 negotiates the lease-based, read-only
+	// role-source scan protocol. A server only claims work for a heartbeat that
+	// explicitly advertises matching daemon support.
+	DaemonCapabilityRoleSourceScanV1 = "role-source-scan-v1"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:
@@ -97,7 +101,8 @@ type WorkspacesChangedPayload struct{}
 // heartbeat, which claims whatever is queued) — so an unknown value from a
 // newer server stays safe on an older daemon.
 const (
-	PendingWorkKindModelList = "model_list"
+	PendingWorkKindModelList      = "model_list"
+	PendingWorkKindRoleSourceScan = "role_source_scan"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a
@@ -306,8 +311,10 @@ type ChatSessionUpdatedPayload struct {
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
 // identical semantics.
 type DaemonHeartbeatRequestPayload struct {
-	RuntimeID           string `json:"runtime_id"`
-	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
+	RuntimeID              string `json:"runtime_id"`
+	SupportsBatchImport    bool   `json:"supports_batch_import,omitempty"`
+	SupportsRoleSourceScan bool   `json:"supports_role_source_scan,omitempty"`
+	PollRoleSourceScan     bool   `json:"poll_role_source_scan,omitempty"`
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
@@ -331,11 +338,27 @@ type DaemonHeartbeatAckPayload struct {
 	PendingModelList        *DaemonHeartbeatPendingModelList        `json:"pending_model_list,omitempty"`
 	PendingLocalSkills      *DaemonHeartbeatPendingLocalSkills      `json:"pending_local_skills,omitempty"`
 	PendingLocalSkillImport *DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_import,omitempty"`
+	PendingRoleSourceScan   *DaemonHeartbeatPendingRoleSourceScan   `json:"pending_role_source_scan,omitempty"`
 	// PendingLocalSkillImports carries multiple import requests in a single
 	// heartbeat so the daemon can process them concurrently. Old daemons
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
+}
+
+// DaemonHeartbeatPendingRoleSourceScan is a leased scan command. It carries a
+// daemon-local opaque config handle, never the underlying path or credentials.
+// The lease token is only returned through the daemon-authenticated protocol
+// and is excluded from member-facing source and scan APIs.
+type DaemonHeartbeatPendingRoleSourceScan struct {
+	RequestID      string `json:"request_id"`
+	SourceID       string `json:"source_id"`
+	WorkspaceID    string `json:"workspace_id"`
+	Kind           string `json:"kind"`
+	AdapterVersion string `json:"adapter_version"`
+	DaemonConfigID string `json:"daemon_config_id"`
+	LeaseToken     string `json:"lease_token"`
+	LeaseExpiresAt string `json:"lease_expires_at"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no

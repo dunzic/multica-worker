@@ -33,6 +33,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -170,6 +171,8 @@ type Handler struct {
 	LocalSkillListStore    LocalSkillListStore
 	LocalSkillImportStore  LocalSkillImportStore
 	FeatureFlags           *featureflag.Service
+	RoleSources            RoleSourceControlPlane
+	RoleSourceCatalog      *rolesource.Catalog
 	LivenessStore          LivenessStore
 	HeartbeatScheduler     HeartbeatScheduler
 	Storage                storage.Storage

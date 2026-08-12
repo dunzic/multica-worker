@@ -147,8 +147,6 @@ RETURNING *;
 UPDATE role_source_scan_request
 SET status = 'succeeded',
     snapshot_digest = @snapshot_digest,
-    lease_token = NULL,
-    lease_expires_at = NULL,
     completed_at = now()
 WHERE id = @id
   AND source_id = @source_id
@@ -163,8 +161,6 @@ RETURNING *;
 UPDATE role_source_scan_request
 SET status = 'failed',
     error_code = @error_code,
-    lease_token = NULL,
-    lease_expires_at = NULL,
     completed_at = now()
 WHERE id = @id
   AND source_id = @source_id

@@ -21,6 +21,7 @@ import (
 var (
 	ErrScanAlreadyActive = errors.New("role source already has an active scan")
 	ErrScanLeaseLost     = errors.New("role source scan lease is stale or no longer owned")
+	ErrInvalidScanReport = errors.New("invalid role source scan report")
 )
 
 type controlPlaneDB interface {
@@ -33,15 +34,15 @@ type controlPlaneDB interface {
 // transaction. Materialization/apply is intentionally a later gate.
 type ControlPlane struct {
 	database controlPlaneDB
-	registry *Registry
+	catalog  DescriptorProvider
 	now      func() time.Time
 }
 
-func NewControlPlane(database controlPlaneDB, registry *Registry) (*ControlPlane, error) {
-	if database == nil || registry == nil {
-		return nil, errors.New("role source control plane requires database and adapter registry")
+func NewControlPlane(database controlPlaneDB, catalog DescriptorProvider) (*ControlPlane, error) {
+	if database == nil || catalog == nil {
+		return nil, errors.New("role source control plane requires database and adapter catalog")
 	}
-	return &ControlPlane{database: database, registry: registry, now: time.Now}, nil
+	return &ControlPlane{database: database, catalog: catalog, now: time.Now}, nil
 }
 
 type RegisterSourceInput struct {
@@ -57,7 +58,7 @@ type RegisterSourceInput struct {
 }
 
 func (c *ControlPlane) RegisterSource(ctx context.Context, input RegisterSourceInput) (db.RoleSource, error) {
-	descriptor, ok := c.registry.Descriptor(input.Kind)
+	descriptor, ok := c.catalog.Descriptor(input.Kind)
 	if !ok {
 		return db.RoleSource{}, fmt.Errorf("%w: %s", ErrAdapterNotFound, input.Kind)
 	}
@@ -159,21 +160,26 @@ func (c *ControlPlane) RequestScan(ctx context.Context, workspaceIDText, sourceI
 	return request, nil
 }
 
-func (c *ControlPlane) ClaimNextScan(ctx context.Context, runtimeIDText string, leaseDuration time.Duration) (db.RoleSourceScanRequest, error) {
+type ClaimedScan struct {
+	Request db.RoleSourceScanRequest
+	Source  db.RoleSource
+}
+
+func (c *ControlPlane) ClaimNextScan(ctx context.Context, runtimeIDText string, leaseDuration time.Duration) (ClaimedScan, error) {
 	if leaseDuration < 15*time.Second || leaseDuration > 15*time.Minute {
-		return db.RoleSourceScanRequest{}, errors.New("scan lease duration must be between 15 seconds and 15 minutes")
+		return ClaimedScan{}, errors.New("scan lease duration must be between 15 seconds and 15 minutes")
 	}
 	runtimeID, err := util.ParseUUID(runtimeIDText)
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return ClaimedScan{}, err
 	}
 	leaseToken, err := newPGUUID()
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return ClaimedScan{}, err
 	}
 	tx, err := c.database.Begin(ctx)
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return ClaimedScan{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	qtx := db.New(tx)
@@ -182,21 +188,49 @@ func (c *ControlPlane) ClaimNextScan(ctx context.Context, runtimeIDText string, 
 		LeaseDuration: pgtype.Interval{Microseconds: leaseDuration.Microseconds(), Valid: true},
 	})
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return ClaimedScan{}, err
 	}
 	source, err := qtx.GetRoleSourceForUpdate(ctx, db.GetRoleSourceForUpdateParams{ID: request.SourceID, WorkspaceID: request.WorkspaceID})
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return ClaimedScan{}, err
 	}
 	if err := c.appendAudit(ctx, qtx, source, "scan_claimed", AuditActor{Type: "runtime", ID: runtimeIDText}, AuditPayload{
 		OperationID: util.UUIDToString(request.ID), AdapterKind: Kind(source.Kind), AdapterVersion: source.AdapterVersion, Result: "claimed",
 	}); err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return ClaimedScan{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
+		return ClaimedScan{}, err
+	}
+	return ClaimedScan{Request: request, Source: source}, nil
+}
+
+func (c *ControlPlane) ListSources(ctx context.Context, workspaceIDText string) ([]db.RoleSource, error) {
+	workspaceID, err := util.ParseUUID(workspaceIDText)
+	if err != nil {
+		return nil, err
+	}
+	return c.queries().ListRoleSourcesInWorkspace(ctx, workspaceID)
+}
+
+func (c *ControlPlane) GetSource(ctx context.Context, workspaceIDText, sourceIDText string) (db.RoleSource, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil {
+		return db.RoleSource{}, err
+	}
+	return c.queries().GetRoleSourceInWorkspace(ctx, db.GetRoleSourceInWorkspaceParams{ID: sourceID, WorkspaceID: workspaceID})
+}
+
+func (c *ControlPlane) GetScan(ctx context.Context, workspaceIDText, sourceIDText, requestIDText string) (db.RoleSourceScanRequest, error) {
+	workspaceID, sourceID, requestID, err := parseThreeUUIDs(workspaceIDText, sourceIDText, requestIDText)
+	if err != nil {
 		return db.RoleSourceScanRequest{}, err
 	}
-	return request, nil
+	return c.queries().GetRoleSourceScanRequest(ctx, db.GetRoleSourceScanRequestParams{ID: requestID, SourceID: sourceID, WorkspaceID: workspaceID})
+}
+
+func (c *ControlPlane) queries() *db.Queries {
+	return db.New(c.database)
 }
 
 type ReportScanSuccessInput struct {
@@ -211,7 +245,7 @@ type ReportScanSuccessInput struct {
 func (c *ControlPlane) ReportScanSuccess(ctx context.Context, input ReportScanSuccessInput) (db.RoleSourceSnapshot, error) {
 	snapshot, err := validatedSnapshotCopy(input.Snapshot)
 	if err != nil {
-		return db.RoleSourceSnapshot{}, err
+		return db.RoleSourceSnapshot{}, fmt.Errorf("%w: %v", ErrInvalidScanReport, err)
 	}
 	workspaceID, sourceID, requestID, runtimeID, leaseToken, err := parseFiveUUIDs(input.WorkspaceID, input.SourceID, input.RequestID, input.RuntimeID, input.LeaseToken)
 	if err != nil {
@@ -235,11 +269,16 @@ func (c *ControlPlane) ReportScanSuccess(ctx context.Context, input ReportScanSu
 	if err != nil {
 		return db.RoleSourceSnapshot{}, err
 	}
+	if isIdempotentScanSuccess(request, source, runtimeID, leaseToken, snapshot.SnapshotDigest) {
+		return qtx.GetRoleSourceSnapshot(ctx, db.GetRoleSourceSnapshotParams{
+			SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: snapshot.SnapshotDigest,
+		})
+	}
 	if request.Status != "claimed" || request.ClaimedByRuntimeID != runtimeID || request.LeaseToken != leaseToken || source.RuntimeID != runtimeID {
 		return db.RoleSourceSnapshot{}, ErrScanLeaseLost
 	}
 	if request.ExpectedAdapterVersion != snapshot.AdapterVersion || source.AdapterVersion != snapshot.AdapterVersion || source.Kind != string(snapshot.Kind) {
-		return db.RoleSourceSnapshot{}, errors.New("scan report adapter identity does not match source registration")
+		return db.RoleSourceSnapshot{}, fmt.Errorf("%w: adapter identity does not match source registration", ErrInvalidScanReport)
 	}
 	stored, err := qtx.InsertRoleSourceSnapshot(ctx, db.InsertRoleSourceSnapshotParams{
 		SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: snapshot.SnapshotDigest, ManifestDigest: snapshot.ManifestDigest,
@@ -284,7 +323,7 @@ type ReportScanFailureInput struct {
 
 func (c *ControlPlane) ReportScanFailure(ctx context.Context, input ReportScanFailureInput) (db.RoleSourceScanRequest, error) {
 	if !stableIDPattern.MatchString(input.ErrorCode) {
-		return db.RoleSourceScanRequest{}, fmt.Errorf("invalid scan error code %q", input.ErrorCode)
+		return db.RoleSourceScanRequest{}, fmt.Errorf("%w: invalid scan error code %q", ErrInvalidScanReport, input.ErrorCode)
 	}
 	workspaceID, sourceID, requestID, runtimeID, leaseToken, err := parseFiveUUIDs(input.WorkspaceID, input.SourceID, input.RequestID, input.RuntimeID, input.LeaseToken)
 	if err != nil {
@@ -303,6 +342,9 @@ func (c *ControlPlane) ReportScanFailure(ctx context.Context, input ReportScanFa
 	request, err := qtx.GetRoleSourceScanRequestForUpdate(ctx, db.GetRoleSourceScanRequestForUpdateParams{ID: requestID, SourceID: sourceID, WorkspaceID: workspaceID})
 	if err != nil {
 		return db.RoleSourceScanRequest{}, err
+	}
+	if isIdempotentScanFailure(request, source, runtimeID, leaseToken, input.ErrorCode) {
+		return request, nil
 	}
 	if request.Status != "claimed" || request.ClaimedByRuntimeID != runtimeID || request.LeaseToken != leaseToken || source.RuntimeID != runtimeID {
 		return db.RoleSourceScanRequest{}, ErrScanLeaseLost
@@ -327,6 +369,16 @@ func (c *ControlPlane) ReportScanFailure(ctx context.Context, input ReportScanFa
 		return db.RoleSourceScanRequest{}, err
 	}
 	return completed, nil
+}
+
+func isIdempotentScanSuccess(request db.RoleSourceScanRequest, source db.RoleSource, runtimeID, leaseToken pgtype.UUID, snapshotDigest string) bool {
+	return request.Status == "succeeded" && request.ClaimedByRuntimeID == runtimeID && request.LeaseToken == leaseToken &&
+		source.RuntimeID == runtimeID && request.SnapshotDigest.Valid && request.SnapshotDigest.String == snapshotDigest
+}
+
+func isIdempotentScanFailure(request db.RoleSourceScanRequest, source db.RoleSource, runtimeID, leaseToken pgtype.UUID, errorCode string) bool {
+	return request.Status == "failed" && request.ClaimedByRuntimeID == runtimeID && request.LeaseToken == leaseToken &&
+		source.RuntimeID == runtimeID && request.ErrorCode.Valid && request.ErrorCode.String == errorCode
 }
 
 func (c *ControlPlane) appendAudit(ctx context.Context, qtx *db.Queries, source db.RoleSource, eventType string, actor AuditActor, payload AuditPayload) error {
@@ -402,6 +454,15 @@ func newPGUUID() (pgtype.UUID, error) {
 		return pgtype.UUID{}, err
 	}
 	return pgtype.UUID{Bytes: id, Valid: true}, nil
+}
+
+func parseTwoUUIDs(a, b string) (pgtype.UUID, pgtype.UUID, error) {
+	first, err := util.ParseUUID(a)
+	if err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, err
+	}
+	second, err := util.ParseUUID(b)
+	return first, second, err
 }
 
 func parseThreeUUIDs(a, b, c string) (pgtype.UUID, pgtype.UUID, pgtype.UUID, error) {

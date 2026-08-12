@@ -206,8 +206,6 @@ const completeRoleSourceScanFailure = `-- name: CompleteRoleSourceScanFailure :o
 UPDATE role_source_scan_request
 SET status = 'failed',
     error_code = $1,
-    lease_token = NULL,
-    lease_expires_at = NULL,
     completed_at = now()
 WHERE id = $2
   AND source_id = $3
@@ -261,8 +259,6 @@ const completeRoleSourceScanSuccess = `-- name: CompleteRoleSourceScanSuccess :o
 UPDATE role_source_scan_request
 SET status = 'succeeded',
     snapshot_digest = $1,
-    lease_token = NULL,
-    lease_expires_at = NULL,
     completed_at = now()
 WHERE id = $2
   AND source_id = $3
