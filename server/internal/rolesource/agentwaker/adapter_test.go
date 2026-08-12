@@ -219,8 +219,12 @@ func TestAdapterRedactedConfigDoesNotExposeAbsolutePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(redacted), "/private/role-sources") || !strings.Contains(string(redacted), "customer-a") {
-		t.Fatalf("redacted config = %s", redacted)
+	body, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "/private/role-sources") || !strings.Contains(string(body), "customer-a") {
+		t.Fatalf("redacted config = %s", body)
 	}
 }
 

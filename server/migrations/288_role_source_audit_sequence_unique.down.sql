@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS role_source_audit_sequence_unique;

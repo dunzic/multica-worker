@@ -14,6 +14,12 @@ import (
 
 const ContractVersion = "1.0"
 
+const (
+	FeatureFlagRoleSourceSync  = "role_source_sync"
+	FeatureFlagRoleSourceScan  = "role_source_scan"
+	FeatureFlagRoleSourceApply = "role_source_apply"
+)
+
 // Kind is the stable API and persistence identity of an adapter.
 type Kind string
 
@@ -41,8 +47,21 @@ type AdapterCapabilities struct {
 type Adapter interface {
 	Descriptor() Descriptor
 	ValidateConfig(json.RawMessage) error
-	RedactConfig(json.RawMessage) (json.RawMessage, error)
+	RedactConfig(json.RawMessage) (ConfigSummary, error)
 	Scan(context.Context, ScanRequest) (ScanOutput, error)
+}
+
+// ConfigSummary is the only source-configuration representation allowed in
+// control-plane persistence and ordinary APIs. Attributes are adapter-defined
+// labels, never raw configuration values, paths or credentials.
+type ConfigSummary struct {
+	Configured bool              `json:"configured"`
+	Attributes []ConfigAttribute `json:"attributes"`
+}
+
+type ConfigAttribute struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // ScanRequest is the source-neutral request sent to a registered adapter.

@@ -20,8 +20,8 @@ type fakeAdapter struct {
 
 func (f fakeAdapter) Descriptor() Descriptor               { return f.desc }
 func (f fakeAdapter) ValidateConfig(json.RawMessage) error { return f.configErr }
-func (f fakeAdapter) RedactConfig(json.RawMessage) (json.RawMessage, error) {
-	return json.RawMessage(`{"configured":true}`), nil
+func (f fakeAdapter) RedactConfig(json.RawMessage) (ConfigSummary, error) {
+	return ConfigSummary{Configured: true}, nil
 }
 func (f fakeAdapter) Scan(context.Context, ScanRequest) (ScanOutput, error) {
 	return ScanOutput{
@@ -136,8 +136,8 @@ func TestRegistryRedactsValidatedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(redacted) != `{"configured":true}` {
-		t.Fatalf("redacted config = %s", redacted)
+	if !redacted.Configured || len(redacted.Attributes) != 0 {
+		t.Fatalf("redacted config = %+v", redacted)
 	}
 }
 

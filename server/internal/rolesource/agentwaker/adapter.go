@@ -101,15 +101,15 @@ func (a *Adapter) ValidateConfig(raw json.RawMessage) error {
 	return a.validateRoot(cfg.RootPath)
 }
 
-func (a *Adapter) RedactConfig(raw json.RawMessage) (json.RawMessage, error) {
+func (a *Adapter) RedactConfig(raw json.RawMessage) (rolesource.ConfigSummary, error) {
 	cfg, err := decodeConfig(raw)
 	if err != nil {
-		return nil, err
+		return rolesource.ConfigSummary{}, err
 	}
-	return json.Marshal(map[string]any{
-		"root_name":  filepath.Base(cfg.RootPath),
-		"configured": true,
-	})
+	return rolesource.ConfigSummary{
+		Configured: true,
+		Attributes: []rolesource.ConfigAttribute{{Name: "root_name", Value: filepath.Base(cfg.RootPath)}},
+	}, nil
 }
 
 func (a *Adapter) Scan(ctx context.Context, request rolesource.ScanRequest) (rolesource.ScanOutput, error) {

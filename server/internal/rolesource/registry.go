@@ -91,24 +91,48 @@ func (r *Registry) Descriptors() []Descriptor {
 // RedactConfig validates source configuration and returns the adapter's safe
 // API/audit representation. Raw configuration must never be serialized through
 // a generic source response.
-func (r *Registry) RedactConfig(kind Kind, config json.RawMessage) (json.RawMessage, error) {
+func (r *Registry) RedactConfig(kind Kind, config json.RawMessage) (ConfigSummary, error) {
 	r.mu.RLock()
 	registered, ok := r.adapters[kind]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrAdapterNotFound, kind)
+		return ConfigSummary{}, fmt.Errorf("%w: %s", ErrAdapterNotFound, kind)
 	}
 	if err := registered.adapter.ValidateConfig(config); err != nil {
-		return nil, fmt.Errorf("validate %s config: %w", kind, err)
+		return ConfigSummary{}, fmt.Errorf("validate %s config: %w", kind, err)
 	}
 	redacted, err := registered.adapter.RedactConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("redact %s config: %w", kind, err)
+		return ConfigSummary{}, fmt.Errorf("redact %s config: %w", kind, err)
 	}
-	if len(redacted) == 0 || len(redacted) > 64<<10 || !json.Valid(redacted) {
-		return nil, fmt.Errorf("redact %s config: adapter returned invalid or oversized JSON", kind)
+	if err := validateConfigSummary(&redacted); err != nil {
+		return ConfigSummary{}, fmt.Errorf("redact %s config: %w", kind, err)
 	}
-	return append(json.RawMessage(nil), redacted...), nil
+	return redacted, nil
+}
+
+func validateConfigSummary(summary *ConfigSummary) error {
+	if len(summary.Attributes) > 32 {
+		return errors.New("config summary attribute count exceeds limit")
+	}
+	seen := make(map[string]bool, len(summary.Attributes))
+	for _, attribute := range summary.Attributes {
+		if !kindPattern.MatchString(attribute.Name) {
+			return fmt.Errorf("invalid config summary attribute name %q", attribute.Name)
+		}
+		if attribute.Value == "" || len(attribute.Value) > 512 || strings.ContainsAny(attribute.Value, "\r\n\x00") {
+			return fmt.Errorf("config summary attribute %q has an empty or unsafe value", attribute.Name)
+		}
+		if strings.HasPrefix(attribute.Value, "/") || strings.Contains(attribute.Value, "\\") {
+			return fmt.Errorf("config summary attribute %q contains an absolute/path-like value", attribute.Name)
+		}
+		if seen[attribute.Name] {
+			return fmt.Errorf("duplicate config summary attribute %q", attribute.Name)
+		}
+		seen[attribute.Name] = true
+	}
+	sort.Slice(summary.Attributes, func(i, j int) bool { return summary.Attributes[i].Name < summary.Attributes[j].Name })
+	return nil
 }
 
 // Scan validates configuration, invokes the selected adapter, validates the

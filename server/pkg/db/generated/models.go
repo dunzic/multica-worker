@@ -919,6 +919,111 @@ type QuickAction struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type RoleSource struct {
+	ID                    pgtype.UUID        `json:"id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	RuntimeID             pgtype.UUID        `json:"runtime_id"`
+	Name                  string             `json:"name"`
+	Kind                  string             `json:"kind"`
+	AdapterVersion        string             `json:"adapter_version"`
+	DaemonConfigID        string             `json:"daemon_config_id"`
+	ConfigRedacted        []byte             `json:"config_redacted"`
+	Policy                []byte             `json:"policy"`
+	State                 string             `json:"state"`
+	CurrentSnapshotDigest pgtype.Text        `json:"current_snapshot_digest"`
+	AuditSequence         int64              `json:"audit_sequence"`
+	Version               int64              `json:"version"`
+	CreatedBy             pgtype.UUID        `json:"created_by"`
+	UpdatedBy             pgtype.UUID        `json:"updated_by"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RoleSourceApply struct {
+	ID             pgtype.UUID        `json:"id"`
+	SourceID       pgtype.UUID        `json:"source_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RequestKey     string             `json:"request_key"`
+	Mode           string             `json:"mode"`
+	SnapshotDigest string             `json:"snapshot_digest"`
+	PlanDigest     string             `json:"plan_digest"`
+	Status         string             `json:"status"`
+	ActorUserID    pgtype.UUID        `json:"actor_user_id"`
+	ReceiptDigest  pgtype.Text        `json:"receipt_digest"`
+	Receipt        []byte             `json:"receipt"`
+	ErrorCode      pgtype.Text        `json:"error_code"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
+}
+
+type RoleSourceAuditEvent struct {
+	ID                  pgtype.UUID        `json:"id"`
+	SourceID            pgtype.UUID        `json:"source_id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	Sequence            int64              `json:"sequence"`
+	EventType           string             `json:"event_type"`
+	ActorType           string             `json:"actor_type"`
+	ActorID             pgtype.UUID        `json:"actor_id"`
+	PreviousEventDigest pgtype.Text        `json:"previous_event_digest"`
+	EventDigest         string             `json:"event_digest"`
+	Payload             []byte             `json:"payload"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
+type RoleSourcePlan struct {
+	SourceID           pgtype.UUID        `json:"source_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	PlanDigest         string             `json:"plan_digest"`
+	FromSnapshotDigest pgtype.Text        `json:"from_snapshot_digest"`
+	ToSnapshotDigest   string             `json:"to_snapshot_digest"`
+	Plan               []byte             `json:"plan"`
+	CreatedBy          pgtype.UUID        `json:"created_by"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
+type RoleSourcePlanApproval struct {
+	ID          pgtype.UUID        `json:"id"`
+	SourceID    pgtype.UUID        `json:"source_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	PlanDigest  string             `json:"plan_digest"`
+	Decision    string             `json:"decision"`
+	Decisions   []byte             `json:"decisions"`
+	ActorUserID pgtype.UUID        `json:"actor_user_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type RoleSourceScanRequest struct {
+	ID                     pgtype.UUID        `json:"id"`
+	SourceID               pgtype.UUID        `json:"source_id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	Status                 string             `json:"status"`
+	RequestedBy            pgtype.UUID        `json:"requested_by"`
+	ExpectedAdapterVersion string             `json:"expected_adapter_version"`
+	ClaimedByRuntimeID     pgtype.UUID        `json:"claimed_by_runtime_id"`
+	LeaseToken             pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt         pgtype.Timestamptz `json:"lease_expires_at"`
+	SnapshotDigest         pgtype.Text        `json:"snapshot_digest"`
+	ErrorCode              pgtype.Text        `json:"error_code"`
+	RequestedAt            pgtype.Timestamptz `json:"requested_at"`
+	ClaimedAt              pgtype.Timestamptz `json:"claimed_at"`
+	CompletedAt            pgtype.Timestamptz `json:"completed_at"`
+}
+
+type RoleSourceSnapshot struct {
+	SourceID            pgtype.UUID        `json:"source_id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	SnapshotDigest      string             `json:"snapshot_digest"`
+	ManifestDigest      string             `json:"manifest_digest"`
+	Kind                string             `json:"kind"`
+	AdapterVersion      string             `json:"adapter_version"`
+	ContractVersion     string             `json:"contract_version"`
+	Manifest            []byte             `json:"manifest"`
+	Diagnostics         []byte             `json:"diagnostics"`
+	SourceEvidence      []byte             `json:"source_evidence"`
+	ReportedByRuntimeID pgtype.UUID        `json:"reported_by_runtime_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
 type RuntimeProfile struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`

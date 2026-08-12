@@ -1,0 +1,266 @@
+-- name: CreateRoleSource :one
+INSERT INTO role_source (
+    id, workspace_id, runtime_id, name, kind, adapter_version,
+    daemon_config_id, config_redacted, policy, created_by, updated_by
+) VALUES (
+    @id, @workspace_id, @runtime_id, @name, @kind, @adapter_version,
+    @daemon_config_id, @config_redacted, @policy, @actor_user_id, @actor_user_id
+)
+RETURNING *;
+
+-- name: GetRoleSourceInWorkspace :one
+SELECT * FROM role_source
+WHERE id = @id AND workspace_id = @workspace_id;
+
+-- name: GetRoleSourceForUpdate :one
+SELECT * FROM role_source
+WHERE id = @id AND workspace_id = @workspace_id
+FOR UPDATE;
+
+-- name: ListRoleSourcesInWorkspace :many
+SELECT * FROM role_source
+WHERE workspace_id = @workspace_id
+ORDER BY created_at DESC, id;
+
+-- name: UpdateRoleSourceState :one
+UPDATE role_source
+SET state = @state,
+    updated_by = @actor_user_id,
+    version = version + 1,
+    updated_at = now()
+WHERE id = @id AND workspace_id = @workspace_id AND version = @expected_version
+RETURNING *;
+
+-- name: AdvanceRoleSourceSnapshot :one
+UPDATE role_source
+SET current_snapshot_digest = @snapshot_digest,
+    state = 'active',
+    updated_by = @actor_user_id,
+    version = version + 1,
+    updated_at = now()
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND current_snapshot_digest IS NOT DISTINCT FROM sqlc.narg('expected_snapshot_digest')::text
+RETURNING *;
+
+-- name: AllocateRoleSourceAuditSequence :one
+UPDATE role_source
+SET audit_sequence = audit_sequence + 1,
+    updated_at = now()
+WHERE id = @id AND workspace_id = @workspace_id
+RETURNING audit_sequence;
+
+-- name: InsertRoleSourceSnapshot :one
+INSERT INTO role_source_snapshot (
+    source_id, workspace_id, snapshot_digest, manifest_digest,
+    kind, adapter_version, contract_version, manifest, diagnostics,
+    source_evidence, reported_by_runtime_id
+) VALUES (
+    @source_id, @workspace_id, @snapshot_digest, @manifest_digest,
+    @kind, @adapter_version, @contract_version, @manifest, @diagnostics,
+    @source_evidence, @reported_by_runtime_id
+)
+ON CONFLICT (source_id, snapshot_digest) DO NOTHING
+RETURNING *;
+
+-- name: GetRoleSourceSnapshot :one
+SELECT * FROM role_source_snapshot
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND snapshot_digest = @snapshot_digest;
+
+-- name: ListRoleSourceSnapshots :many
+SELECT * FROM role_source_snapshot
+WHERE source_id = @source_id AND workspace_id = @workspace_id
+ORDER BY created_at DESC, snapshot_digest
+LIMIT @result_limit;
+
+-- name: CreateRoleSourceScanRequest :one
+INSERT INTO role_source_scan_request (
+    id, source_id, workspace_id, requested_by, expected_adapter_version
+) VALUES (
+    @id, @source_id, @workspace_id, @requested_by, @expected_adapter_version
+)
+RETURNING *;
+
+-- name: GetRoleSourceScanRequest :one
+SELECT * FROM role_source_scan_request
+WHERE id = @id AND source_id = @source_id AND workspace_id = @workspace_id;
+
+-- name: GetRoleSourceScanRequestForUpdate :one
+SELECT * FROM role_source_scan_request
+WHERE id = @id AND source_id = @source_id AND workspace_id = @workspace_id
+FOR UPDATE;
+
+-- name: ClaimNextRoleSourceScan :one
+WITH source_candidate AS MATERIALIZED (
+    SELECT source.id
+    FROM role_source source
+    WHERE source.runtime_id = @runtime_id
+      AND source.state IN ('registered', 'active', 'error')
+      AND EXISTS (
+          SELECT 1
+          FROM role_source_scan_request pending
+          WHERE pending.source_id = source.id
+            AND (
+                pending.status = 'queued'
+                OR (pending.status = 'claimed' AND pending.lease_expires_at < now())
+            )
+      )
+    ORDER BY source.id
+    FOR UPDATE OF source SKIP LOCKED
+    LIMIT 1
+), candidate AS (
+    SELECT request.id
+    FROM role_source_scan_request request
+    JOIN source_candidate source ON source.id = request.source_id
+    WHERE (
+          request.status = 'queued'
+          OR (request.status = 'claimed' AND request.lease_expires_at < now())
+      )
+    ORDER BY request.requested_at, request.id
+    FOR UPDATE OF request SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_scan_request request
+SET status = 'claimed',
+    claimed_by_runtime_id = @runtime_id,
+    lease_token = @lease_token,
+    lease_expires_at = now() + @lease_duration::interval,
+    claimed_at = COALESCE(claimed_at, now()),
+    error_code = NULL
+FROM candidate
+WHERE request.id = candidate.id
+RETURNING request.*;
+
+-- name: RenewRoleSourceScanLease :one
+UPDATE role_source_scan_request
+SET lease_expires_at = now() + @lease_duration::interval
+WHERE id = @id
+  AND claimed_by_runtime_id = @runtime_id
+  AND lease_token = @lease_token
+  AND status = 'claimed'
+  AND lease_expires_at > now()
+RETURNING *;
+
+-- name: CompleteRoleSourceScanSuccess :one
+UPDATE role_source_scan_request
+SET status = 'succeeded',
+    snapshot_digest = @snapshot_digest,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    completed_at = now()
+WHERE id = @id
+  AND source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND claimed_by_runtime_id = @runtime_id
+  AND lease_token = @lease_token
+  AND status = 'claimed'
+  AND lease_expires_at > now()
+RETURNING *;
+
+-- name: CompleteRoleSourceScanFailure :one
+UPDATE role_source_scan_request
+SET status = 'failed',
+    error_code = @error_code,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    completed_at = now()
+WHERE id = @id
+  AND source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND claimed_by_runtime_id = @runtime_id
+  AND lease_token = @lease_token
+  AND status = 'claimed'
+  AND lease_expires_at > now()
+RETURNING *;
+
+-- name: InsertRoleSourcePlan :one
+INSERT INTO role_source_plan (
+    source_id, workspace_id, plan_digest, from_snapshot_digest,
+    to_snapshot_digest, plan, created_by
+) VALUES (
+    @source_id, @workspace_id, @plan_digest, sqlc.narg('from_snapshot_digest'),
+    @to_snapshot_digest, @plan, @created_by
+)
+ON CONFLICT (source_id, plan_digest) DO NOTHING
+RETURNING *;
+
+-- name: GetRoleSourcePlan :one
+SELECT * FROM role_source_plan
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND plan_digest = @plan_digest;
+
+-- name: InsertRoleSourcePlanApproval :one
+INSERT INTO role_source_plan_approval (
+    id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id
+) VALUES (
+    @id, @source_id, @workspace_id, @plan_digest, @decision, @decisions, @actor_user_id
+)
+RETURNING *;
+
+-- name: GetLatestRoleSourcePlanApproval :one
+SELECT * FROM role_source_plan_approval
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND plan_digest = @plan_digest
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: InsertRoleSourceApply :one
+INSERT INTO role_source_apply (
+    id, source_id, workspace_id, request_key, mode, snapshot_digest,
+    plan_digest, status, actor_user_id
+) VALUES (
+    @id, @source_id, @workspace_id, @request_key, @mode, @snapshot_digest,
+    @plan_digest, 'pending', @actor_user_id
+)
+ON CONFLICT (source_id, request_key) DO NOTHING
+RETURNING *;
+
+-- name: GetRoleSourceApplyByRequest :one
+SELECT * FROM role_source_apply
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND request_key = @request_key;
+
+-- name: MarkRoleSourceApplyRunning :one
+UPDATE role_source_apply
+SET status = 'running'
+WHERE id = @id AND workspace_id = @workspace_id AND status = 'pending'
+RETURNING *;
+
+-- name: CompleteRoleSourceApply :one
+UPDATE role_source_apply
+SET status = @status,
+    receipt_digest = @receipt_digest,
+    receipt = @receipt,
+    error_code = sqlc.narg('error_code'),
+    completed_at = now()
+WHERE id = @id AND workspace_id = @workspace_id AND status = 'running'
+RETURNING *;
+
+-- name: InsertRoleSourceAuditEvent :one
+INSERT INTO role_source_audit_event (
+    id, source_id, workspace_id, sequence, event_type, actor_type, actor_id,
+    previous_event_digest, event_digest, payload, created_at
+) VALUES (
+    @id, @source_id, @workspace_id, @sequence, @event_type, @actor_type,
+    sqlc.narg('actor_id'), sqlc.narg('previous_event_digest'), @event_digest, @payload, @occurred_at
+)
+RETURNING *;
+
+-- name: GetLatestRoleSourceAuditEvent :one
+SELECT * FROM role_source_audit_event
+WHERE source_id = @source_id AND workspace_id = @workspace_id
+ORDER BY sequence DESC
+LIMIT 1;
+
+-- name: ListRoleSourceAuditEvents :many
+SELECT * FROM role_source_audit_event
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND sequence < @before_sequence
+ORDER BY sequence DESC
+LIMIT @result_limit;

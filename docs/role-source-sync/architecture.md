@@ -83,8 +83,10 @@ The control plane validates and canonicalizes this model before it computes the 
 The final schema keeps distinct responsibilities:
 
 - `role_source`: tenant-scoped source configuration, adapter kind/version, owning runtime, policy, and state.
+- `role_source_scan_request`: durable queued/leased daemon scan work and its terminal result.
 - `role_source_snapshot`: immutable normalized manifest metadata and content references.
 - `role_source_plan`: immutable from/to diff, decisions, blockers, and plan digest.
+- `role_source_plan_approval`: append-only approval/rejection decisions over an immutable plan.
 - `role_source_apply`: one idempotent apply or rollback attempt with actor, request key, outcome, and receipt digest.
 - `role_source_object_mapping`: stable source object ID to Multica object ID, object kind, ownership mask, and last applied digest.
 - `role_source_audit_event`: append-only, secret-free lifecycle events and receipts.
@@ -92,6 +94,10 @@ The final schema keeps distinct responsibilities:
 - shared capability identity, immutable versions, content-addressed artifacts, and runtime claim pins.
 
 Relationships are enforced in application transactions and teardown code, not by database foreign keys.
+
+The control plane never stores raw adapter configuration. It stores an opaque
+daemon-owned configuration ID and a typed, bounded safe summary. The daemon is
+the only component that resolves that ID to a local path or credential.
 
 ### Scan and secret boundary
 
