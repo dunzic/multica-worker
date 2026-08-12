@@ -42,6 +42,7 @@ type RoleSourceControlPlane interface {
 	ClaimNextSecretTransfer(context.Context, string, time.Duration) (rolesource.ClaimedSecretTransfer, error)
 	ReportSecretTransfer(context.Context, rolesource.ReportSecretTransferInput) (db.RoleSourceSecretTransfer, error)
 	GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error)
+	GetPlanImpact(context.Context, string, string, string) (rolesource.PlanImpact, error)
 	ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error)
 	ListApplyHistory(context.Context, string, string, int32) ([]rolesource.ApplyHistoryItem, error)
 	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
@@ -449,6 +450,21 @@ func (h *Handler) GetRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) GetRoleSourcePlanImpact(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	impact, err := h.RoleSources.GetPlanImpact(
+		r.Context(), workspaceID, chi.URLParam(r, "sourceId"), chi.URLParam(r, "planDigest"),
+	)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to load plan impact")
+		return
+	}
+	writeJSON(w, http.StatusOK, impact)
 }
 
 func (h *Handler) CreateRoleSourcePlan(w http.ResponseWriter, r *http.Request) {

@@ -1211,6 +1211,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/role-sources/{sourceId}/snapshots", h.ListRoleSourceSnapshots)
 					r.Get("/role-sources/{sourceId}/plans", h.ListRoleSourcePlans)
 					r.Get("/role-sources/{sourceId}/plans/{planDigest}", h.GetRoleSourcePlan)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}/impact", h.GetRoleSourcePlanImpact)
 					r.Get("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.ListRoleSourcePlanApprovals)
 					r.Get("/role-sources/{sourceId}/applies", h.ListRoleSourceApplyHistory)
 					r.Get("/role-sources/{sourceId}/task-pins", h.ListRoleSourceTaskPins)

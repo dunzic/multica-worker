@@ -5,4 +5,8 @@ export type {
   RoleSourcePlanAction,
   RoleSourcePlanBlocker,
   RoleSourcePlanRecord,
+  RoleSourcePlanImpact,
+  RoleSourcePlanImpactSummary,
+  RoleSourcePlanImpactTask,
+  RoleSourcePlanImpactWorker,
 } from "../types/role-source";

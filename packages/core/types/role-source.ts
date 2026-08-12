@@ -84,3 +84,46 @@ export interface RoleSourcePlanRecord {
   created_by: string;
   created_at: string;
 }
+
+export interface RoleSourcePlanImpactSummary {
+  new_roles: number;
+  mandatory_refresh_roles: number;
+  conditional_archive_roles: number;
+  unmapped_existing_roles: number;
+  cancel_on_apply: number;
+  conditional_cancel_on_archive: number;
+  continue_current_version: number;
+  worker_details_truncated: boolean;
+  task_details_truncated: boolean;
+}
+
+export interface RoleSourcePlanImpactWorker {
+  source_role_id: string;
+  agent_id: string;
+  agent_name: string;
+  effect: "provenance_refresh" | "conditional_archive";
+  pre_start_tasks: number;
+  running_tasks: number;
+  current_snapshot_digest: string;
+}
+
+export interface RoleSourcePlanImpactTask {
+  task_id: string;
+  source_role_id: string;
+  agent_id: string;
+  status: string;
+  effect: "cancel_on_apply" | "cancel_if_archived" | "continue_current_version";
+  created_at: string;
+}
+
+export interface RoleSourcePlanImpact {
+  contract_version: string;
+  source_id: string;
+  plan_digest: string;
+  target_snapshot_digest: string;
+  applyable: boolean;
+  generated_at: string;
+  summary: RoleSourcePlanImpactSummary;
+  workers: RoleSourcePlanImpactWorker[];
+  tasks: RoleSourcePlanImpactTask[];
+}

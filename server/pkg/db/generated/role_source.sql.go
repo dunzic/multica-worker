@@ -2181,6 +2181,100 @@ func (q *Queries) ListRoleSourcePlans(ctx context.Context, arg ListRoleSourcePla
 	return items, nil
 }
 
+const listRoleSourceRoleImpactRows = `-- name: ListRoleSourceRoleImpactRows :many
+WITH active_task_pin AS MATERIALIZED (
+    SELECT
+        pin.source_role_id,
+        pin.agent_id,
+        pin.snapshot_digest,
+        pin.role_object_digest,
+        task.id AS task_id,
+        task.status,
+        task.created_at
+    FROM agent_task_queue task
+    JOIN role_source_task_pin pin ON pin.task_id = task.id
+    WHERE pin.workspace_id = $1
+      AND pin.source_id = $2
+      AND pin.source_role_id = ANY($3::text[])
+      AND task.status IN ('queued', 'deferred', 'dispatched', 'running', 'waiting_local_directory')
+)
+SELECT
+    mapping.source_object_id AS source_role_id,
+    mapping.target_id AS agent_id,
+    target.name AS agent_name,
+    mapping.last_snapshot_digest,
+    count(active.task_id) FILTER (
+        WHERE active.status IN ('queued', 'deferred', 'dispatched')
+    )::bigint AS cancel_on_apply,
+    count(active.task_id) FILTER (
+        WHERE active.status IN ('running', 'waiting_local_directory')
+    )::bigint AS continue_current_version
+FROM role_source_object_mapping mapping
+JOIN agent target
+  ON target.id = mapping.target_id
+ AND target.workspace_id = mapping.workspace_id
+ AND target.kind = 'user'
+LEFT JOIN active_task_pin active
+  ON active.source_role_id = mapping.source_object_id
+ AND active.agent_id = mapping.target_id
+ AND active.snapshot_digest = mapping.last_snapshot_digest
+ AND active.role_object_digest = mapping.last_applied_digest
+WHERE mapping.workspace_id = $1
+  AND mapping.source_id = $2
+  AND mapping.source_kind = 'role'
+  AND mapping.source_parent_id = ''
+  AND mapping.target_kind = 'agent'
+  AND mapping.archived_at IS NULL
+  AND mapping.source_object_id = ANY($3::text[])
+GROUP BY mapping.source_object_id, mapping.target_id, target.name, mapping.last_snapshot_digest
+ORDER BY mapping.source_object_id
+`
+
+type ListRoleSourceRoleImpactRowsParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	SourceID      pgtype.UUID `json:"source_id"`
+	SourceRoleIds []string    `json:"source_role_ids"`
+}
+
+type ListRoleSourceRoleImpactRowsRow struct {
+	SourceRoleID           string      `json:"source_role_id"`
+	AgentID                pgtype.UUID `json:"agent_id"`
+	AgentName              string      `json:"agent_name"`
+	LastSnapshotDigest     string      `json:"last_snapshot_digest"`
+	CancelOnApply          int64       `json:"cancel_on_apply"`
+	ContinueCurrentVersion int64       `json:"continue_current_version"`
+}
+
+// A plan impact preview is point-in-time operational evidence, not part of the
+// immutable plan digest. Count only tasks pinned to the mapping's current
+// source version: older terminal history must not inflate the apply impact.
+func (q *Queries) ListRoleSourceRoleImpactRows(ctx context.Context, arg ListRoleSourceRoleImpactRowsParams) ([]ListRoleSourceRoleImpactRowsRow, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceRoleImpactRows, arg.WorkspaceID, arg.SourceID, arg.SourceRoleIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRoleSourceRoleImpactRowsRow{}
+	for rows.Next() {
+		var i ListRoleSourceRoleImpactRowsRow
+		if err := rows.Scan(
+			&i.SourceRoleID,
+			&i.AgentID,
+			&i.AgentName,
+			&i.LastSnapshotDigest,
+			&i.CancelOnApply,
+			&i.ContinueCurrentVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoleSourceSnapshots = `-- name: ListRoleSourceSnapshots :many
 SELECT source_id, workspace_id, snapshot_digest, manifest_digest, kind, adapter_version, contract_version, manifest, diagnostics, source_evidence, reported_by_runtime_id, created_at FROM role_source_snapshot
 WHERE source_id = $1 AND workspace_id = $2
@@ -2215,6 +2309,102 @@ func (q *Queries) ListRoleSourceSnapshots(ctx context.Context, arg ListRoleSourc
 			&i.Diagnostics,
 			&i.SourceEvidence,
 			&i.ReportedByRuntimeID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourceTaskImpactRows = `-- name: ListRoleSourceTaskImpactRows :many
+WITH active_task_pin AS MATERIALIZED (
+    SELECT
+        pin.task_id,
+        pin.source_role_id,
+        pin.agent_id,
+        pin.snapshot_digest,
+        pin.role_object_digest,
+        task.status,
+        task.created_at
+    FROM agent_task_queue task
+    JOIN role_source_task_pin pin ON pin.task_id = task.id
+    WHERE pin.workspace_id = $1
+      AND pin.source_id = $2
+      AND pin.source_role_id = ANY($3::text[])
+      AND task.status IN ('queued', 'deferred', 'dispatched', 'running', 'waiting_local_directory')
+)
+SELECT
+    active.task_id,
+    active.source_role_id,
+    active.agent_id,
+    active.status,
+    active.created_at
+FROM role_source_object_mapping mapping
+JOIN active_task_pin active
+  ON active.source_role_id = mapping.source_object_id
+ AND active.agent_id = mapping.target_id
+ AND active.snapshot_digest = mapping.last_snapshot_digest
+ AND active.role_object_digest = mapping.last_applied_digest
+WHERE mapping.workspace_id = $1
+  AND mapping.source_id = $2
+  AND mapping.source_kind = 'role'
+  AND mapping.source_parent_id = ''
+  AND mapping.target_kind = 'agent'
+  AND mapping.archived_at IS NULL
+  AND mapping.source_object_id = ANY($3::text[])
+  AND (
+      mapping.last_snapshot_digest <> $4
+      OR mapping.source_object_id = ANY($5::text[])
+  )
+ORDER BY active.created_at DESC, active.task_id DESC
+LIMIT $6
+`
+
+type ListRoleSourceTaskImpactRowsParams struct {
+	WorkspaceID               pgtype.UUID `json:"workspace_id"`
+	SourceID                  pgtype.UUID `json:"source_id"`
+	SourceRoleIds             []string    `json:"source_role_ids"`
+	TargetSnapshotDigest      string      `json:"target_snapshot_digest"`
+	ConditionalArchiveRoleIds []string    `json:"conditional_archive_role_ids"`
+	ResultLimit               int32       `json:"result_limit"`
+}
+
+type ListRoleSourceTaskImpactRowsRow struct {
+	TaskID       pgtype.UUID        `json:"task_id"`
+	SourceRoleID string             `json:"source_role_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	Status       string             `json:"status"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+// Details are bounded separately from aggregate counts. No issue content,
+// prompts, results, errors or secret-bearing context cross this audit API.
+func (q *Queries) ListRoleSourceTaskImpactRows(ctx context.Context, arg ListRoleSourceTaskImpactRowsParams) ([]ListRoleSourceTaskImpactRowsRow, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceTaskImpactRows,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.SourceRoleIds,
+		arg.TargetSnapshotDigest,
+		arg.ConditionalArchiveRoleIds,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRoleSourceTaskImpactRowsRow{}
+	for rows.Next() {
+		var i ListRoleSourceTaskImpactRowsRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.SourceRoleID,
+			&i.AgentID,
+			&i.Status,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

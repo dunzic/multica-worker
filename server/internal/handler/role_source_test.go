@@ -68,6 +68,8 @@ type fakeRoleSourceControlPlane struct {
 	reportSecretTransferErr   error
 	getPlanRow                db.RoleSourcePlan
 	getPlanErr                error
+	planImpact                rolesource.PlanImpact
+	planImpactErr             error
 	planRows                  []db.RoleSourcePlan
 	planListErr               error
 	applyHistory              []rolesource.ApplyHistoryItem
@@ -188,6 +190,11 @@ func (f *fakeRoleSourceControlPlane) RecordPlanApproval(_ context.Context, input
 func (f *fakeRoleSourceControlPlane) GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error) {
 	f.calls++
 	return f.getPlanRow, f.getPlanErr
+}
+
+func (f *fakeRoleSourceControlPlane) GetPlanImpact(context.Context, string, string, string) (rolesource.PlanImpact, error) {
+	f.calls++
+	return f.planImpact, f.planImpactErr
 }
 
 func (f *fakeRoleSourceControlPlane) ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error) {
@@ -472,6 +479,51 @@ func TestCreateRoleSourcePlan_ReturnsVerifiedDeterministicPlan(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), plan.PlanDigest) {
 		t.Fatalf("response omitted deterministic plan digest: %s", w.Body.String())
+	}
+}
+
+func TestGetRoleSourcePlanImpact_ReturnsContentFreeOperationalEvidence(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	fake := &fakeRoleSourceControlPlane{planImpact: rolesource.PlanImpact{
+		ContractVersion: rolesource.PlanImpactContractVersion,
+		SourceID:        roleSourceTestSourceID, PlanDigest: digest,
+		TargetSnapshotDigest: "sha256:" + strings.Repeat("b", 64),
+		GeneratedAt:          "2026-08-13T00:00:00Z",
+		Summary:              rolesource.PlanImpactSummary{CancelOnApply: 2},
+		Tasks: []rolesource.PlanImpactTask{{
+			TaskID:       "00000000-0000-4000-8000-000000000099",
+			SourceRoleID: "researcher", AgentID: "00000000-0000-4000-8000-000000000098",
+			Status: "queued", Effect: "cancel_on_apply", CreatedAt: "2026-08-13T00:00:00Z",
+		}},
+	}}
+	h := roleSourceTestHandler(t, true, fake)
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", digest)
+	w := httptest.NewRecorder()
+
+	h.GetRoleSourcePlanImpact(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"cancel_on_apply":2`) {
+		t.Fatalf("impact response status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, forbidden := range []string{"prompt", "result", "context", "error"} {
+		if strings.Contains(w.Body.String(), `"`+forbidden+`"`) {
+			t.Fatalf("impact response exposed forbidden field %q: %s", forbidden, w.Body.String())
+		}
+	}
+}
+
+func TestGetRoleSourcePlanImpact_DefaultOffDoesNotReachControlPlane(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{}
+	h := roleSourceTestHandler(t, false, fake)
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", "sha256:"+strings.Repeat("a", 64))
+	w := httptest.NewRecorder()
+
+	h.GetRoleSourcePlanImpact(w, req)
+
+	if w.Code != http.StatusNotFound || fake.calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", w.Code, fake.calls, w.Body.String())
 	}
 }
 

@@ -7,6 +7,7 @@ import { Badge } from "@multica/ui/components/ui/badge";
 import { cn } from "@multica/ui/lib/utils";
 import {
   roleSourceListOptions,
+  roleSourcePlanImpactOptions,
   roleSourcePlanListOptions,
   type RoleSourcePlanAction,
 } from "@multica/core/role-sources";
@@ -50,6 +51,14 @@ export function RoleSourcesTab() {
   });
   const selected = sources.data?.find((source) => source.id === selectedId);
   const latest = plans.data?.[0];
+  const impact = useQuery({
+    ...roleSourcePlanImpactOptions(
+      workspaceId,
+      selectedId,
+      latest?.plan.plan_digest ?? "",
+    ),
+    enabled: Boolean(workspaceId && selectedId && latest?.plan.plan_digest),
+  });
 
   return (
     <SettingsTab
@@ -148,6 +157,96 @@ export function RoleSourcesTab() {
                     ))}
                   </div>
                 ) : null}
+
+                <div className="space-y-3 p-4">
+                  <div>
+                    <div className="text-body font-medium">{t(($) => $.role_sources.impact_title)}</div>
+                    <div className="mt-1 text-caption text-muted-foreground">{t(($) => $.role_sources.impact_description)}</div>
+                  </div>
+                  {impact.isLoading ? (
+                    <div className="flex items-center gap-2 text-caption text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t(($) => $.role_sources.loading)}
+                    </div>
+                  ) : impact.isError ? (
+                    <div className="text-caption text-destructive">{t(($) => $.role_sources.impact_load_failed)}</div>
+                  ) : impact.data ? (
+                    <div className="space-y-3">
+                      <div className="font-mono text-caption text-muted-foreground">
+                        {t(($) => $.role_sources.impact_as_of, { time: impact.data.generated_at })}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Badge variant={impact.data.summary.cancel_on_apply > 0 ? "destructive" : "outline"}>
+                          {t(($) => $.role_sources.cancel_on_apply, { count: impact.data.summary.cancel_on_apply })}
+                        </Badge>
+                        <Badge variant={impact.data.summary.conditional_cancel_on_archive > 0 ? "destructive" : "outline"}>
+                          {t(($) => $.role_sources.cancel_if_archived, { count: impact.data.summary.conditional_cancel_on_archive })}
+                        </Badge>
+                        <Badge variant="secondary">
+                          {t(($) => $.role_sources.continue_current, { count: impact.data.summary.continue_current_version })}
+                        </Badge>
+                        {impact.data.summary.unmapped_existing_roles > 0 ? (
+                          <Badge variant="destructive">
+                            {t(($) => $.role_sources.unmapped_roles, { count: impact.data.summary.unmapped_existing_roles })}
+                          </Badge>
+                        ) : null}
+                      </div>
+
+                      {impact.data.workers.length > 0 ? (
+                        <div className="rounded-md border border-surface-border">
+                          <div className="border-b border-surface-border px-3 py-2 text-caption font-medium">
+                            {t(($) => $.role_sources.affected_workers)}
+                          </div>
+                          <div className="max-h-48 divide-y divide-surface-border overflow-y-auto">
+                            {impact.data.workers.map((worker) => (
+                              <div key={worker.agent_id} className="flex items-center justify-between gap-3 px-3 py-2 text-caption">
+                                <span className="min-w-0">
+                                  <span className="block truncate font-medium text-foreground">{worker.agent_name}</span>
+                                  <span className="block truncate text-muted-foreground">{worker.source_role_id}</span>
+                                </span>
+                                <span className="shrink-0 text-muted-foreground">
+                                  {t(($) => $.role_sources.worker_task_counts, {
+                                    preStart: worker.pre_start_tasks,
+                                    running: worker.running_tasks,
+                                  })}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      <div className="rounded-md border border-surface-border">
+                        <div className="border-b border-surface-border px-3 py-2 text-caption font-medium">
+                          {t(($) => $.role_sources.affected_tasks)}
+                        </div>
+                        {impact.data.tasks.length > 0 ? (
+                          <div className="max-h-56 divide-y divide-surface-border overflow-y-auto">
+                            {impact.data.tasks.map((task) => (
+                              <div key={task.task_id} className="flex items-center justify-between gap-3 px-3 py-2 text-caption">
+                                <span className="min-w-0 truncate font-mono">{task.task_id}</span>
+                                <span className="shrink-0 text-muted-foreground">
+                                  {task.status} · {task.effect === "cancel_on_apply"
+                                    ? t(($) => $.role_sources.effect_cancel)
+                                    : task.effect === "cancel_if_archived"
+                                      ? t(($) => $.role_sources.effect_conditional_cancel)
+                                      : t(($) => $.role_sources.effect_continue)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="px-3 py-4 text-caption text-muted-foreground">{t(($) => $.role_sources.no_active_tasks)}</div>
+                        )}
+                        {impact.data.summary.worker_details_truncated || impact.data.summary.task_details_truncated ? (
+                          <div className="border-t border-surface-border px-3 py-2 text-caption text-amber-700">
+                            {t(($) => $.role_sources.impact_truncated)}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
 
                 <div className="max-h-96 divide-y divide-surface-border overflow-y-auto">
                   {latest.plan.actions.slice(0, 200).map((action) => (

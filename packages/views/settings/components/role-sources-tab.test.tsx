@@ -6,6 +6,7 @@ import { renderWithI18n } from "../../test/i18n";
 const queryFixtures = vi.hoisted(() => ({
   sources: [] as Array<Record<string, unknown>>,
   plans: [] as Array<Record<string, unknown>>,
+  impact: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -19,9 +20,11 @@ vi.mock("@tanstack/react-query", async () => {
   return {
     ...actual,
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
-      data: options.queryKey.includes("plans")
-        ? queryFixtures.plans
-        : queryFixtures.sources,
+      data: options.queryKey.includes("impact")
+        ? queryFixtures.impact
+        : options.queryKey.includes("plans")
+          ? queryFixtures.plans
+          : queryFixtures.sources,
       isLoading: false,
       isError: false,
     }),
@@ -86,6 +89,46 @@ beforeEach(() => {
       },
     },
   ];
+  queryFixtures.impact = {
+    contract_version: "1.0",
+    source_id: "source-1",
+    plan_digest: "sha256:plan1234567890abcdef",
+    target_snapshot_digest: "sha256:abcdef",
+    applyable: false,
+    generated_at: "2026-08-13T00:00:00Z",
+    summary: {
+      new_roles: 0,
+      mandatory_refresh_roles: 1,
+      conditional_archive_roles: 1,
+      unmapped_existing_roles: 0,
+      cancel_on_apply: 2,
+      conditional_cancel_on_archive: 1,
+      continue_current_version: 1,
+      worker_details_truncated: false,
+      task_details_truncated: false,
+    },
+    workers: [
+      {
+        source_role_id: "researcher",
+        agent_id: "agent-1",
+        agent_name: "Researcher",
+        effect: "provenance_refresh",
+        pre_start_tasks: 2,
+        running_tasks: 1,
+        current_snapshot_digest: "sha256:old",
+      },
+    ],
+    tasks: [
+      {
+        task_id: "task-1",
+        source_role_id: "researcher",
+        agent_id: "agent-1",
+        status: "queued",
+        effect: "cancel_on_apply",
+        created_at: "2026-08-13T00:00:00Z",
+      },
+    ],
+  };
 });
 
 describe("RoleSourcesTab", () => {
@@ -96,6 +139,11 @@ describe("RoleSourcesTab", () => {
     expect(await screen.findByText("Blocked — no changes can be applied")).toBeInTheDocument();
     expect(screen.getByText("capability.external_write_not_supported")).toBeInTheDocument();
     expect(screen.getByText("Account actions")).toBeInTheDocument();
+    expect(screen.getByText("Affected workers and tasks")).toBeInTheDocument();
+    expect(screen.getByText("2 cancel on apply")).toBeInTheDocument();
+    expect(screen.getByText("1 continue current version")).toBeInTheDocument();
+    expect(screen.getByText("Researcher")).toBeInTheDocument();
+    expect(screen.getByText("task-1")).toBeInTheDocument();
     expect(screen.getByText(/This preview is read-only/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve|apply/i })).not.toBeInTheDocument();
   });
@@ -103,6 +151,7 @@ describe("RoleSourcesTab", () => {
   it("shows an explicit empty state without inventing configuration actions", () => {
     queryFixtures.sources = [];
     queryFixtures.plans = [];
+    queryFixtures.impact = undefined;
 
     renderWithI18n(<RoleSourcesTab />);
 

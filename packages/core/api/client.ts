@@ -41,6 +41,7 @@ import type {
   WorkspaceWorkingAgentType,
   RoleSource,
   RoleSourcePlanRecord,
+  RoleSourcePlanImpact,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -1668,6 +1669,16 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans`,
     );
     return response.plans ?? [];
+  }
+
+  async getRoleSourcePlanImpact(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+  ): Promise<RoleSourcePlanImpact> {
+    return this.fetch<RoleSourcePlanImpact>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/impact`,
+    );
   }
 
   async getRuntimeProfile(
