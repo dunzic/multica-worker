@@ -50,6 +50,10 @@ type fakeRoleSourceControlPlane struct {
 	approvalInput    *rolesource.RecordPlanApprovalInput
 	approvalRow      db.RoleSourcePlanApproval
 	approvalErr      error
+	applyInput       *rolesource.ApplyPlanInput
+	applyRow         db.RoleSourceApply
+	applyReceipt     rolesource.ApplyReceipt
+	applyErr         error
 	getPlanRow       db.RoleSourcePlan
 	getPlanErr       error
 	planRows         []db.RoleSourcePlan
@@ -64,6 +68,12 @@ type fakeRoleSourceControlPlane struct {
 	storedCreated    bool
 	storeArtifactErr error
 	calls            int
+}
+
+func (f *fakeRoleSourceControlPlane) ApplyPlan(_ context.Context, input rolesource.ApplyPlanInput) (db.RoleSourceApply, rolesource.ApplyReceipt, error) {
+	f.calls++
+	f.applyInput = &input
+	return f.applyRow, f.applyReceipt, f.applyErr
 }
 
 type roleSourcePendingWorkRecorder struct {
@@ -166,8 +176,9 @@ func roleSourceTestHandler(t *testing.T, enabled bool, controlPlane *fakeRoleSou
 	t.Helper()
 	provider := featureflag.NewStaticProvider()
 	provider.LoadRules(map[string]featureflag.Rule{
-		rolesource.FeatureFlagRoleSourceSync: {Default: enabled},
-		rolesource.FeatureFlagRoleSourceScan: {Default: enabled},
+		rolesource.FeatureFlagRoleSourceSync:  {Default: enabled},
+		rolesource.FeatureFlagRoleSourceScan:  {Default: enabled},
+		rolesource.FeatureFlagRoleSourceApply: {Default: enabled},
 	})
 	catalog, err := rolesource.NewCatalog(rolesource.Descriptor{
 		Kind: "test_directory", DisplayName: "Test directory", AdapterVersion: "1.0.0",
@@ -462,6 +473,76 @@ func TestRecordRoleSourcePlanApproval_DoesNotExposeRequestKey(t *testing.T) {
 	}
 }
 
+func TestApplyRoleSourcePlan_UsesSeparateApplyGateAndReturnsReceipt(t *testing.T) {
+	plan := roleSourceTestPlanRow(t)
+	applyID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
+	approvalID := "00000000-0000-4000-8000-000000000044"
+	receipt := rolesource.ApplyReceipt{
+		ContractVersion: rolesource.ApplyReceiptContractVersion, ApplyID: util.UUIDToString(applyID),
+		SourceID: roleSourceTestSourceID, WorkspaceID: testWorkspaceID, SnapshotDigest: plan.ToSnapshotDigest,
+		PlanDigest: plan.PlanDigest, ApprovalID: approvalID, Mappings: []rolesource.ApplyMapping{},
+	}
+	fake := &fakeRoleSourceControlPlane{
+		applyRow:     db.RoleSourceApply{ID: applyID, SourceID: util.MustParseUUID(roleSourceTestSourceID), WorkspaceID: util.MustParseUUID(testWorkspaceID), Status: "succeeded"},
+		applyReceipt: receipt,
+	}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+		"request_key": "apply-once", "approval_id": approvalID,
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", plan.PlanDigest)
+
+	h.ApplyRoleSourcePlan(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("apply plan: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if fake.applyInput == nil || fake.applyInput.RequestKey != "apply-once" || fake.applyInput.ApprovalID != approvalID || fake.applyInput.ActorUserID != testUserID {
+		t.Fatalf("apply input = %+v", fake.applyInput)
+	}
+	if strings.Contains(w.Body.String(), "apply-once") || !strings.Contains(w.Body.String(), approvalID) {
+		t.Fatalf("apply response leaked request key or omitted approval evidence: %s", w.Body.String())
+	}
+}
+
+func TestApplyRoleSourcePlan_DefaultOffDoesNotReachControlPlane(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{}
+	h := roleSourceTestHandler(t, true, fake)
+	provider := featureflag.NewStaticProvider()
+	provider.LoadRules(map[string]featureflag.Rule{
+		rolesource.FeatureFlagRoleSourceSync:  {Default: true},
+		rolesource.FeatureFlagRoleSourceScan:  {Default: true},
+		rolesource.FeatureFlagRoleSourceApply: {Default: false},
+	})
+	h.FeatureFlags = featureflag.NewService(provider)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+		"request_key": "apply-off", "approval_id": "00000000-0000-4000-8000-000000000044",
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", "sha256:"+strings.Repeat("a", 64))
+
+	h.ApplyRoleSourcePlan(w, req)
+
+	if w.Code != http.StatusNotFound || fake.calls != 0 {
+		t.Fatalf("default-off apply: status=%d calls=%d body=%s", w.Code, fake.calls, w.Body.String())
+	}
+}
+
+func TestApplyRoleSourcePlan_MapsUnsafeMaterializationToUnprocessable(t *testing.T) {
+	plan := roleSourceTestPlanRow(t)
+	fake := &fakeRoleSourceControlPlane{applyErr: rolesource.ErrMaterializationBlocked}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+		"request_key": "apply-blocked", "approval_id": "00000000-0000-4000-8000-000000000044",
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", plan.PlanDigest)
+
+	h.ApplyRoleSourcePlan(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unsafe materialization: expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestPopulateRoleSourceHeartbeat_SeparatesNegotiationFromPolling(t *testing.T) {
 	fake := &fakeRoleSourceControlPlane{}
 	h := roleSourceTestHandler(t, true, fake)
@@ -504,7 +585,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		t.Fatalf("create workspace: %v", err)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+		for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 			_, _ = testPool.Exec(context.Background(), "DELETE FROM "+table+" WHERE workspace_id = $1", workspaceID)
 		}
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, workspaceID)
@@ -566,6 +647,17 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		VALUES (gen_random_uuid(), $1, $2, 'delete-fixture', 'apply', $3, $4, 'pending', $5)
 	`, sourceID, workspaceID, digestA, digestB, testUserID)
 	execFixture(`
+		INSERT INTO role_source_object_mapping (
+			source_id, workspace_id, source_kind, source_object_id, target_kind, target_id,
+			ownership_mask, last_applied_digest, last_snapshot_digest
+		) VALUES ($1, $2, 'role', 'delete-role', 'agent', gen_random_uuid(), '["name"]'::jsonb, $3, $3)
+	`, sourceID, workspaceID, digestA)
+	execFixture(`
+		INSERT INTO role_source_capability_version (
+			workspace_id, source_id, capability_id, version, object_digest, definition, snapshot_digest
+		) VALUES ($1, $2, 'delete-capability', '1.0.0', $3, '{}'::jsonb, $3)
+	`, workspaceID, sourceID, digestA)
+	execFixture(`
 		INSERT INTO role_source_audit_event (id, source_id, workspace_id, sequence, event_type, actor_type, actor_id, event_digest, payload)
 		VALUES (gen_random_uuid(), $1, $2, 1, 'source_registered', 'user', $3, $4, '{}'::jsonb)
 	`, sourceID, workspaceID, testUserID, digestA)
@@ -576,7 +668,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("delete workspace: expected 204, got %d: %s", w.Code, w.Body.String())
 	}
-	for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+	for _, table := range []string{"role_source_audit_event", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 		var count int
 		if err := testPool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE workspace_id = $1", workspaceID).Scan(&count); err != nil {
 			t.Fatalf("count %s: %v", table, err)

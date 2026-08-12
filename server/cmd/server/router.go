@@ -248,6 +248,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	if err != nil {
 		panic("build role source control plane: " + err.Error())
 	}
+	roleSourceControlPlane.SetArtifactReader(store)
 	h.RoleSourceCatalog = roleSourceCatalog
 	h.RoleSources = roleSourceControlPlane
 	h.TaskService.FeatureFlags = opts.FeatureFlags
@@ -1183,6 +1184,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/role-sources/{sourceId}/scans", h.RequestRoleSourceScan)
 					r.Post("/role-sources/{sourceId}/plans", h.CreateRoleSourcePlan)
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.RecordRoleSourcePlanApproval)
+					r.Post("/role-sources/{sourceId}/plans/{planDigest}/apply", h.ApplyRoleSourcePlan)
 				})
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)

@@ -981,6 +981,33 @@ type RoleSourceAuditEvent struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
+type RoleSourceCapabilityVersion struct {
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	SourceID       pgtype.UUID        `json:"source_id"`
+	CapabilityID   string             `json:"capability_id"`
+	Version        string             `json:"version"`
+	ObjectDigest   string             `json:"object_digest"`
+	Definition     []byte             `json:"definition"`
+	SnapshotDigest string             `json:"snapshot_digest"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type RoleSourceObjectMapping struct {
+	SourceID           pgtype.UUID        `json:"source_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	SourceKind         string             `json:"source_kind"`
+	SourceParentID     string             `json:"source_parent_id"`
+	SourceObjectID     string             `json:"source_object_id"`
+	TargetKind         string             `json:"target_kind"`
+	TargetID           pgtype.UUID        `json:"target_id"`
+	OwnershipMask      []byte             `json:"ownership_mask"`
+	LastAppliedDigest  string             `json:"last_applied_digest"`
+	LastSnapshotDigest string             `json:"last_snapshot_digest"`
+	ArchivedAt         pgtype.Timestamptz `json:"archived_at"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RoleSourcePlan struct {
 	SourceID           pgtype.UUID        `json:"source_id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`

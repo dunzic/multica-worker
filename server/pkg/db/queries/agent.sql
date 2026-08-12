@@ -69,6 +69,34 @@ INSERT INTO agent (
 )
 RETURNING *;
 
+-- name: CreateRoleSourceAgent :one
+INSERT INTO agent (
+    workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
+    visibility, permission_mode, max_concurrent_tasks, owner_id, instructions,
+    custom_env, custom_args, mcp_config
+) VALUES (
+    @workspace_id, @name, @description, @runtime_mode, '{}'::jsonb, @runtime_id,
+    'private', 'private', 1, @owner_id, @instructions,
+    '{}'::jsonb, '[]'::jsonb, NULL
+)
+RETURNING *;
+
+-- name: UpdateRoleSourceAgent :one
+-- Only source-owned fields are changed. Owner, permission, secrets, MCP,
+-- model, service tier, status and user lifecycle are preserved.
+UPDATE agent
+SET name = @name,
+    description = @description,
+    runtime_mode = @runtime_mode,
+    runtime_id = @runtime_id,
+    instructions = @instructions,
+    updated_at = now()
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND kind = 'user'
+  AND archived_at IS NULL
+RETURNING *;
+
 -- name: CreateAgentBuilder :one
 -- One hidden builder agent per creation session. Keeping the execution carrier
 -- session-scoped freezes its model/runtime configuration when multiple builder

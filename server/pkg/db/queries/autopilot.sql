@@ -63,6 +63,47 @@ INSERT INTO autopilot (
     $7, $8
 ) RETURNING *;
 
+-- name: CreateRoleSourceAutopilot :one
+INSERT INTO autopilot (
+    workspace_id, title, description, assignee_type, assignee_id,
+    status, execution_mode, created_by_type, created_by_id
+) VALUES (
+    @workspace_id, @title, @description, 'agent', @assignee_id,
+    'paused', 'run_only', 'member', @created_by_id
+) RETURNING *;
+
+-- name: UpdateRoleSourceAutopilot :one
+-- Source sync never resumes, retargets or archives a user-controlled rule.
+UPDATE autopilot
+SET title = @title,
+    description = @description,
+    updated_at = now()
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND assignee_type = 'agent'
+  AND assignee_id = @assignee_id
+  AND status <> 'archived'
+RETURNING *;
+
+-- name: UpsertRoleSourceScheduleTrigger :one
+INSERT INTO autopilot_trigger (
+    id, autopilot_id, kind, enabled, cron_expression, timezone,
+    label, provider, published_by_type, published_by_id
+) VALUES (
+    @id, @autopilot_id, 'schedule', false, @cron_expression, @timezone,
+    @label, 'generic', 'member', @published_by_id
+)
+ON CONFLICT (id) DO UPDATE SET
+    cron_expression = EXCLUDED.cron_expression,
+    timezone = EXCLUDED.timezone,
+    label = EXCLUDED.label,
+    published_by_type = EXCLUDED.published_by_type,
+    published_by_id = EXCLUDED.published_by_id,
+    updated_at = now()
+WHERE autopilot_trigger.autopilot_id = EXCLUDED.autopilot_id
+  AND autopilot_trigger.kind = 'schedule'
+RETURNING *;
+
 -- name: UpdateAutopilot :one
 UPDATE autopilot SET
     title = COALESCE(sqlc.narg('title'), title),

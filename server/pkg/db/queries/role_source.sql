@@ -96,6 +96,11 @@ RETURNING *;
 SELECT * FROM role_source_artifact
 WHERE workspace_id = @workspace_id AND digest = @digest;
 
+-- name: GetRoleSourceArtifactForApply :one
+SELECT * FROM role_source_artifact
+WHERE workspace_id = @workspace_id AND digest = @digest
+FOR SHARE;
+
 -- name: ListRoleSourceArtifactsByDigests :many
 SELECT * FROM role_source_artifact
 WHERE workspace_id = @workspace_id
@@ -246,6 +251,13 @@ WHERE source_id = @source_id
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
+-- name: GetRoleSourcePlanApprovalByID :one
+SELECT * FROM role_source_plan_approval
+WHERE id = @id
+  AND source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND plan_digest = @plan_digest;
+
 -- name: ListRoleSourcePlanApprovals :many
 SELECT * FROM role_source_plan_approval
 WHERE source_id = @source_id
@@ -253,6 +265,86 @@ WHERE source_id = @source_id
   AND plan_digest = @plan_digest
 ORDER BY created_at DESC, id DESC
 LIMIT @result_limit;
+
+-- name: ListRoleSourceObjectMappingsForUpdate :many
+SELECT * FROM role_source_object_mapping
+WHERE source_id = @source_id AND workspace_id = @workspace_id
+ORDER BY source_kind, source_parent_id, source_object_id
+FOR UPDATE;
+
+-- name: CountInvalidRoleSourceObjectMappings :one
+-- Mapping rows intentionally have no foreign keys. Revalidate tenant and target
+-- kind before trusting any target identity in a materialization transaction.
+SELECT count(*) FROM role_source_object_mapping mapping
+WHERE mapping.source_id = @source_id
+  AND mapping.workspace_id = @workspace_id
+  AND (
+    (mapping.target_kind = 'agent' AND NOT EXISTS (
+      SELECT 1 FROM agent target
+      WHERE target.id = mapping.target_id AND target.workspace_id = mapping.workspace_id AND target.kind = 'user'
+    ))
+    OR (mapping.target_kind = 'skill' AND NOT EXISTS (
+      SELECT 1 FROM skill target
+      WHERE target.id = mapping.target_id AND target.workspace_id = mapping.workspace_id
+    ))
+    OR (mapping.target_kind = 'autopilot' AND NOT EXISTS (
+      SELECT 1 FROM autopilot target
+      WHERE target.id = mapping.target_id AND target.workspace_id = mapping.workspace_id
+    ))
+  );
+
+-- name: FindRoleSourceAgentNameConflict :one
+SELECT id FROM agent
+WHERE workspace_id = @workspace_id AND name = @name AND kind = 'user'
+LIMIT 1;
+
+-- name: FindRoleSourceSkillNameConflict :one
+SELECT id FROM skill
+WHERE workspace_id = @workspace_id AND name = @name
+LIMIT 1;
+
+-- name: FindRoleSourceAutopilotTitleConflict :one
+SELECT id FROM autopilot
+WHERE workspace_id = @workspace_id AND title = @title AND status <> 'archived'
+LIMIT 1;
+
+-- name: UpsertRoleSourceObjectMapping :one
+INSERT INTO role_source_object_mapping (
+    source_id, workspace_id, source_kind, source_parent_id, source_object_id,
+    target_kind, target_id, ownership_mask, last_applied_digest,
+    last_snapshot_digest, archived_at
+) VALUES (
+    @source_id, @workspace_id, @source_kind, @source_parent_id, @source_object_id,
+    @target_kind, @target_id, @ownership_mask, @last_applied_digest,
+    @last_snapshot_digest, sqlc.narg('archived_at')
+)
+ON CONFLICT (source_id, source_kind, source_parent_id, source_object_id)
+DO UPDATE SET target_kind = EXCLUDED.target_kind,
+              target_id = EXCLUDED.target_id,
+              ownership_mask = EXCLUDED.ownership_mask,
+              last_applied_digest = EXCLUDED.last_applied_digest,
+              last_snapshot_digest = EXCLUDED.last_snapshot_digest,
+              archived_at = EXCLUDED.archived_at,
+              updated_at = now()
+RETURNING *;
+
+-- name: InsertRoleSourceCapabilityVersion :one
+INSERT INTO role_source_capability_version (
+    workspace_id, source_id, capability_id, version, object_digest,
+    definition, snapshot_digest
+) VALUES (
+    @workspace_id, @source_id, @capability_id, @version, @object_digest,
+    @definition, @snapshot_digest
+)
+ON CONFLICT (source_id, capability_id, version, object_digest) DO NOTHING
+RETURNING *;
+
+-- name: GetRoleSourceCapabilityVersion :one
+SELECT * FROM role_source_capability_version
+WHERE source_id = @source_id
+  AND capability_id = @capability_id
+  AND version = @version
+  AND object_digest = @object_digest;
 
 -- name: InsertRoleSourceApply :one
 INSERT INTO role_source_apply (

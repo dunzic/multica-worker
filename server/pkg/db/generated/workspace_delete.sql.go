@@ -443,6 +443,12 @@ deleted_applies AS (
 deleted_plans AS (
     DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
 ),
+deleted_capability_versions AS (
+    DELETE FROM role_source_capability_version WHERE role_source_capability_version.workspace_id = $1
+),
+deleted_object_mappings AS (
+    DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
+),
 deleted_artifacts AS (
     DELETE FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
 ),

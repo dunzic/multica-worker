@@ -30,19 +30,31 @@ type controlPlaneDB interface {
 }
 
 // ControlPlane owns source registration, durable scan work and immutable scan
-// reports. Every mutating method writes its audit event in the same database
-// transaction. Materialization/apply is intentionally a later gate.
+// reports and approved materialization. Every successful mutation writes its
+// audit event in the same database transaction.
 type ControlPlane struct {
-	database controlPlaneDB
-	catalog  DescriptorProvider
-	now      func() time.Time
+	database         controlPlaneDB
+	catalog          DescriptorProvider
+	artifacts        ArtifactReader
+	materializeSlots chan struct{}
+	now              func() time.Time
+}
+
+type ArtifactReader interface {
+	GetReader(context.Context, string) (io.ReadCloser, error)
 }
 
 func NewControlPlane(database controlPlaneDB, catalog DescriptorProvider) (*ControlPlane, error) {
 	if database == nil || catalog == nil {
 		return nil, errors.New("role source control plane requires database and adapter catalog")
 	}
-	return &ControlPlane{database: database, catalog: catalog, now: time.Now}, nil
+	return &ControlPlane{
+		database: database, catalog: catalog, materializeSlots: make(chan struct{}, 8), now: time.Now,
+	}, nil
+}
+
+func (c *ControlPlane) SetArtifactReader(reader ArtifactReader) {
+	c.artifacts = reader
 }
 
 type RegisterSourceInput struct {

@@ -2418,6 +2418,73 @@ func (q *Queries) CreateRetryTask(ctx context.Context, arg CreateRetryTaskParams
 	return i, err
 }
 
+const createRoleSourceAgent = `-- name: CreateRoleSourceAgent :one
+INSERT INTO agent (
+    workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
+    visibility, permission_mode, max_concurrent_tasks, owner_id, instructions,
+    custom_env, custom_args, mcp_config
+) VALUES (
+    $1, $2, $3, $4, '{}'::jsonb, $5,
+    'private', 'private', 1, $6, $7,
+    '{}'::jsonb, '[]'::jsonb, NULL
+)
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+type CreateRoleSourceAgentParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	Name         string      `json:"name"`
+	Description  string      `json:"description"`
+	RuntimeMode  string      `json:"runtime_mode"`
+	RuntimeID    pgtype.UUID `json:"runtime_id"`
+	OwnerID      pgtype.UUID `json:"owner_id"`
+	Instructions string      `json:"instructions"`
+}
+
+func (q *Queries) CreateRoleSourceAgent(ctx context.Context, arg CreateRoleSourceAgentParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, createRoleSourceAgent,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Description,
+		arg.RuntimeMode,
+		arg.RuntimeID,
+		arg.OwnerID,
+		arg.Instructions,
+	)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+	)
+	return i, err
+}
+
 const createSystemUserAgent = `-- name: CreateSystemUserAgent :one
 INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode, runtime_config,
@@ -6733,4 +6800,75 @@ type UpdateAgentTaskSessionParams struct {
 func (q *Queries) UpdateAgentTaskSession(ctx context.Context, arg UpdateAgentTaskSessionParams) error {
 	_, err := q.db.Exec(ctx, updateAgentTaskSession, arg.ID, arg.SessionID, arg.WorkDir)
 	return err
+}
+
+const updateRoleSourceAgent = `-- name: UpdateRoleSourceAgent :one
+UPDATE agent
+SET name = $1,
+    description = $2,
+    runtime_mode = $3,
+    runtime_id = $4,
+    instructions = $5,
+    updated_at = now()
+WHERE id = $6
+  AND workspace_id = $7
+  AND kind = 'user'
+  AND archived_at IS NULL
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+type UpdateRoleSourceAgentParams struct {
+	Name         string      `json:"name"`
+	Description  string      `json:"description"`
+	RuntimeMode  string      `json:"runtime_mode"`
+	RuntimeID    pgtype.UUID `json:"runtime_id"`
+	Instructions string      `json:"instructions"`
+	ID           pgtype.UUID `json:"id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+}
+
+// Only source-owned fields are changed. Owner, permission, secrets, MCP,
+// model, service tier, status and user lifecycle are preserved.
+func (q *Queries) UpdateRoleSourceAgent(ctx context.Context, arg UpdateRoleSourceAgentParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, updateRoleSourceAgent,
+		arg.Name,
+		arg.Description,
+		arg.RuntimeMode,
+		arg.RuntimeID,
+		arg.Instructions,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+	)
+	return i, err
 }

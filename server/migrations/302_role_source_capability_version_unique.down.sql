@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS role_source_capability_version_unique;

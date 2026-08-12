@@ -36,6 +36,20 @@ INSERT INTO skill (workspace_id, name, description, content, config, created_by)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
+-- name: CreateRoleSourceSkill :one
+INSERT INTO skill (workspace_id, name, description, content, config, created_by)
+VALUES (@workspace_id, @name, @description, @content, @config, @created_by)
+RETURNING *;
+
+-- name: UpdateRoleSourceSkill :one
+UPDATE skill
+SET name = @name,
+    description = @description,
+    content = @content,
+    updated_at = now()
+WHERE id = @id AND workspace_id = @workspace_id
+RETURNING *;
+
 -- name: UpdateSkill :one
 UPDATE skill SET
     name = COALESCE(sqlc.narg('name'), name),

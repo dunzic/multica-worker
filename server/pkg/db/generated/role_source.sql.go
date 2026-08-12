@@ -308,6 +308,40 @@ func (q *Queries) CompleteRoleSourceScanSuccess(ctx context.Context, arg Complet
 	return i, err
 }
 
+const countInvalidRoleSourceObjectMappings = `-- name: CountInvalidRoleSourceObjectMappings :one
+SELECT count(*) FROM role_source_object_mapping mapping
+WHERE mapping.source_id = $1
+  AND mapping.workspace_id = $2
+  AND (
+    (mapping.target_kind = 'agent' AND NOT EXISTS (
+      SELECT 1 FROM agent target
+      WHERE target.id = mapping.target_id AND target.workspace_id = mapping.workspace_id AND target.kind = 'user'
+    ))
+    OR (mapping.target_kind = 'skill' AND NOT EXISTS (
+      SELECT 1 FROM skill target
+      WHERE target.id = mapping.target_id AND target.workspace_id = mapping.workspace_id
+    ))
+    OR (mapping.target_kind = 'autopilot' AND NOT EXISTS (
+      SELECT 1 FROM autopilot target
+      WHERE target.id = mapping.target_id AND target.workspace_id = mapping.workspace_id
+    ))
+  )
+`
+
+type CountInvalidRoleSourceObjectMappingsParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Mapping rows intentionally have no foreign keys. Revalidate tenant and target
+// kind before trusting any target identity in a materialization transaction.
+func (q *Queries) CountInvalidRoleSourceObjectMappings(ctx context.Context, arg CountInvalidRoleSourceObjectMappingsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countInvalidRoleSourceObjectMappings, arg.SourceID, arg.WorkspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createRoleSource = `-- name: CreateRoleSource :one
 INSERT INTO role_source (
     id, workspace_id, runtime_id, name, kind, adapter_version,
@@ -411,6 +445,60 @@ func (q *Queries) CreateRoleSourceScanRequest(ctx context.Context, arg CreateRol
 		&i.CompletedAt,
 	)
 	return i, err
+}
+
+const findRoleSourceAgentNameConflict = `-- name: FindRoleSourceAgentNameConflict :one
+SELECT id FROM agent
+WHERE workspace_id = $1 AND name = $2 AND kind = 'user'
+LIMIT 1
+`
+
+type FindRoleSourceAgentNameConflictParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Name        string      `json:"name"`
+}
+
+func (q *Queries) FindRoleSourceAgentNameConflict(ctx context.Context, arg FindRoleSourceAgentNameConflictParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, findRoleSourceAgentNameConflict, arg.WorkspaceID, arg.Name)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const findRoleSourceAutopilotTitleConflict = `-- name: FindRoleSourceAutopilotTitleConflict :one
+SELECT id FROM autopilot
+WHERE workspace_id = $1 AND title = $2 AND status <> 'archived'
+LIMIT 1
+`
+
+type FindRoleSourceAutopilotTitleConflictParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Title       string      `json:"title"`
+}
+
+func (q *Queries) FindRoleSourceAutopilotTitleConflict(ctx context.Context, arg FindRoleSourceAutopilotTitleConflictParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, findRoleSourceAutopilotTitleConflict, arg.WorkspaceID, arg.Title)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const findRoleSourceSkillNameConflict = `-- name: FindRoleSourceSkillNameConflict :one
+SELECT id FROM skill
+WHERE workspace_id = $1 AND name = $2
+LIMIT 1
+`
+
+type FindRoleSourceSkillNameConflictParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Name        string      `json:"name"`
+}
+
+func (q *Queries) FindRoleSourceSkillNameConflict(ctx context.Context, arg FindRoleSourceSkillNameConflictParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, findRoleSourceSkillNameConflict, arg.WorkspaceID, arg.Name)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getLatestRoleSourceAuditEvent = `-- name: GetLatestRoleSourceAuditEvent :one
@@ -537,6 +625,69 @@ func (q *Queries) GetRoleSourceArtifact(ctx context.Context, arg GetRoleSourceAr
 	return i, err
 }
 
+const getRoleSourceArtifactForApply = `-- name: GetRoleSourceArtifactForApply :one
+SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
+WHERE workspace_id = $1 AND digest = $2
+FOR SHARE
+`
+
+type GetRoleSourceArtifactForApplyParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Digest      string      `json:"digest"`
+}
+
+func (q *Queries) GetRoleSourceArtifactForApply(ctx context.Context, arg GetRoleSourceArtifactForApplyParams) (RoleSourceArtifact, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceArtifactForApply, arg.WorkspaceID, arg.Digest)
+	var i RoleSourceArtifact
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.Digest,
+		&i.SizeBytes,
+		&i.StorageKey,
+		&i.UploadedByRuntimeID,
+		&i.FirstSourceID,
+		&i.FirstScanRequestID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceCapabilityVersion = `-- name: GetRoleSourceCapabilityVersion :one
+SELECT workspace_id, source_id, capability_id, version, object_digest, definition, snapshot_digest, created_at FROM role_source_capability_version
+WHERE source_id = $1
+  AND capability_id = $2
+  AND version = $3
+  AND object_digest = $4
+`
+
+type GetRoleSourceCapabilityVersionParams struct {
+	SourceID     pgtype.UUID `json:"source_id"`
+	CapabilityID string      `json:"capability_id"`
+	Version      string      `json:"version"`
+	ObjectDigest string      `json:"object_digest"`
+}
+
+func (q *Queries) GetRoleSourceCapabilityVersion(ctx context.Context, arg GetRoleSourceCapabilityVersionParams) (RoleSourceCapabilityVersion, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceCapabilityVersion,
+		arg.SourceID,
+		arg.CapabilityID,
+		arg.Version,
+		arg.ObjectDigest,
+	)
+	var i RoleSourceCapabilityVersion
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.CapabilityID,
+		&i.Version,
+		&i.ObjectDigest,
+		&i.Definition,
+		&i.SnapshotDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getRoleSourceForUpdate = `-- name: GetRoleSourceForUpdate :one
 SELECT id, workspace_id, runtime_id, name, kind, adapter_version, daemon_config_id, config_redacted, policy, state, current_snapshot_digest, audit_sequence, version, created_by, updated_by, created_at, updated_at FROM role_source
 WHERE id = $1 AND workspace_id = $2
@@ -633,6 +784,43 @@ func (q *Queries) GetRoleSourcePlan(ctx context.Context, arg GetRoleSourcePlanPa
 		&i.Plan,
 		&i.CreatedBy,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRoleSourcePlanApprovalByID = `-- name: GetRoleSourcePlanApprovalByID :one
+SELECT id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id, created_at, request_key FROM role_source_plan_approval
+WHERE id = $1
+  AND source_id = $2
+  AND workspace_id = $3
+  AND plan_digest = $4
+`
+
+type GetRoleSourcePlanApprovalByIDParams struct {
+	ID          pgtype.UUID `json:"id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	PlanDigest  string      `json:"plan_digest"`
+}
+
+func (q *Queries) GetRoleSourcePlanApprovalByID(ctx context.Context, arg GetRoleSourcePlanApprovalByIDParams) (RoleSourcePlanApproval, error) {
+	row := q.db.QueryRow(ctx, getRoleSourcePlanApprovalByID,
+		arg.ID,
+		arg.SourceID,
+		arg.WorkspaceID,
+		arg.PlanDigest,
+	)
+	var i RoleSourcePlanApproval
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.WorkspaceID,
+		&i.PlanDigest,
+		&i.Decision,
+		&i.Decisions,
+		&i.ActorUserID,
+		&i.CreatedAt,
+		&i.RequestKey,
 	)
 	return i, err
 }
@@ -923,6 +1111,52 @@ func (q *Queries) InsertRoleSourceAuditEvent(ctx context.Context, arg InsertRole
 	return i, err
 }
 
+const insertRoleSourceCapabilityVersion = `-- name: InsertRoleSourceCapabilityVersion :one
+INSERT INTO role_source_capability_version (
+    workspace_id, source_id, capability_id, version, object_digest,
+    definition, snapshot_digest
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7
+)
+ON CONFLICT (source_id, capability_id, version, object_digest) DO NOTHING
+RETURNING workspace_id, source_id, capability_id, version, object_digest, definition, snapshot_digest, created_at
+`
+
+type InsertRoleSourceCapabilityVersionParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	CapabilityID   string      `json:"capability_id"`
+	Version        string      `json:"version"`
+	ObjectDigest   string      `json:"object_digest"`
+	Definition     []byte      `json:"definition"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+func (q *Queries) InsertRoleSourceCapabilityVersion(ctx context.Context, arg InsertRoleSourceCapabilityVersionParams) (RoleSourceCapabilityVersion, error) {
+	row := q.db.QueryRow(ctx, insertRoleSourceCapabilityVersion,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.CapabilityID,
+		arg.Version,
+		arg.ObjectDigest,
+		arg.Definition,
+		arg.SnapshotDigest,
+	)
+	var i RoleSourceCapabilityVersion
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.CapabilityID,
+		&i.Version,
+		&i.ObjectDigest,
+		&i.Definition,
+		&i.SnapshotDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertRoleSourcePlan = `-- name: InsertRoleSourcePlan :one
 INSERT INTO role_source_plan (
     source_id, workspace_id, plan_digest, from_snapshot_digest,
@@ -1159,6 +1393,52 @@ func (q *Queries) ListRoleSourceAuditEvents(ctx context.Context, arg ListRoleSou
 			&i.EventDigest,
 			&i.Payload,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourceObjectMappingsForUpdate = `-- name: ListRoleSourceObjectMappingsForUpdate :many
+SELECT source_id, workspace_id, source_kind, source_parent_id, source_object_id, target_kind, target_id, ownership_mask, last_applied_digest, last_snapshot_digest, archived_at, created_at, updated_at FROM role_source_object_mapping
+WHERE source_id = $1 AND workspace_id = $2
+ORDER BY source_kind, source_parent_id, source_object_id
+FOR UPDATE
+`
+
+type ListRoleSourceObjectMappingsForUpdateParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) ListRoleSourceObjectMappingsForUpdate(ctx context.Context, arg ListRoleSourceObjectMappingsForUpdateParams) ([]RoleSourceObjectMapping, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceObjectMappingsForUpdate, arg.SourceID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceObjectMapping{}
+	for rows.Next() {
+		var i RoleSourceObjectMapping
+		if err := rows.Scan(
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.SourceKind,
+			&i.SourceParentID,
+			&i.SourceObjectID,
+			&i.TargetKind,
+			&i.TargetID,
+			&i.OwnershipMask,
+			&i.LastAppliedDigest,
+			&i.LastSnapshotDigest,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1495,6 +1775,74 @@ func (q *Queries) UpdateRoleSourceState(ctx context.Context, arg UpdateRoleSourc
 		&i.Version,
 		&i.CreatedBy,
 		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertRoleSourceObjectMapping = `-- name: UpsertRoleSourceObjectMapping :one
+INSERT INTO role_source_object_mapping (
+    source_id, workspace_id, source_kind, source_parent_id, source_object_id,
+    target_kind, target_id, ownership_mask, last_applied_digest,
+    last_snapshot_digest, archived_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9,
+    $10, $11
+)
+ON CONFLICT (source_id, source_kind, source_parent_id, source_object_id)
+DO UPDATE SET target_kind = EXCLUDED.target_kind,
+              target_id = EXCLUDED.target_id,
+              ownership_mask = EXCLUDED.ownership_mask,
+              last_applied_digest = EXCLUDED.last_applied_digest,
+              last_snapshot_digest = EXCLUDED.last_snapshot_digest,
+              archived_at = EXCLUDED.archived_at,
+              updated_at = now()
+RETURNING source_id, workspace_id, source_kind, source_parent_id, source_object_id, target_kind, target_id, ownership_mask, last_applied_digest, last_snapshot_digest, archived_at, created_at, updated_at
+`
+
+type UpsertRoleSourceObjectMappingParams struct {
+	SourceID           pgtype.UUID        `json:"source_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	SourceKind         string             `json:"source_kind"`
+	SourceParentID     string             `json:"source_parent_id"`
+	SourceObjectID     string             `json:"source_object_id"`
+	TargetKind         string             `json:"target_kind"`
+	TargetID           pgtype.UUID        `json:"target_id"`
+	OwnershipMask      []byte             `json:"ownership_mask"`
+	LastAppliedDigest  string             `json:"last_applied_digest"`
+	LastSnapshotDigest string             `json:"last_snapshot_digest"`
+	ArchivedAt         pgtype.Timestamptz `json:"archived_at"`
+}
+
+func (q *Queries) UpsertRoleSourceObjectMapping(ctx context.Context, arg UpsertRoleSourceObjectMappingParams) (RoleSourceObjectMapping, error) {
+	row := q.db.QueryRow(ctx, upsertRoleSourceObjectMapping,
+		arg.SourceID,
+		arg.WorkspaceID,
+		arg.SourceKind,
+		arg.SourceParentID,
+		arg.SourceObjectID,
+		arg.TargetKind,
+		arg.TargetID,
+		arg.OwnershipMask,
+		arg.LastAppliedDigest,
+		arg.LastSnapshotDigest,
+		arg.ArchivedAt,
+	)
+	var i RoleSourceObjectMapping
+	err := row.Scan(
+		&i.SourceID,
+		&i.WorkspaceID,
+		&i.SourceKind,
+		&i.SourceParentID,
+		&i.SourceObjectID,
+		&i.TargetKind,
+		&i.TargetID,
+		&i.OwnershipMask,
+		&i.LastAppliedDigest,
+		&i.LastSnapshotDigest,
+		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

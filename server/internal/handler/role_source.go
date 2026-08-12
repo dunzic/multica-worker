@@ -34,6 +34,7 @@ type RoleSourceControlPlane interface {
 	ReportScanFailure(context.Context, rolesource.ReportScanFailureInput) (db.RoleSourceScanRequest, error)
 	CreatePlan(context.Context, rolesource.CreatePlanInput) (db.RoleSourcePlan, error)
 	RecordPlanApproval(context.Context, rolesource.RecordPlanApprovalInput) (db.RoleSourcePlanApproval, error)
+	ApplyPlan(context.Context, rolesource.ApplyPlanInput) (db.RoleSourceApply, rolesource.ApplyReceipt, error)
 	GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error)
 	ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error)
 	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
@@ -106,6 +107,15 @@ type roleSourceApprovalResponse struct {
 	Decisions   *rolesource.ApprovalDecisions `json:"decisions,omitempty"`
 	ActorUserID string                        `json:"actor_user_id"`
 	CreatedAt   string                        `json:"created_at"`
+}
+
+type roleSourceApplyResponse struct {
+	ID          string                  `json:"id"`
+	SourceID    string                  `json:"source_id"`
+	WorkspaceID string                  `json:"workspace_id"`
+	Status      string                  `json:"status"`
+	Receipt     rolesource.ApplyReceipt `json:"receipt"`
+	CompletedAt *string                 `json:"completed_at"`
 }
 
 func (h *Handler) roleSourceFeatureEnabled(r *http.Request, workspaceID, key string) bool {
@@ -451,6 +461,52 @@ func (h *Handler) RecordRoleSourcePlanApproval(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusCreated, response)
+}
+
+func (h *Handler) ApplyRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceApply) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot apply role source plans")
+		return
+	}
+	var body struct {
+		RequestKey string `json:"request_key"`
+		ApprovalID string `json:"approval_id"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	row, receipt, err := h.RoleSources.ApplyPlan(r.Context(), rolesource.ApplyPlanInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), PlanDigest: chi.URLParam(r, "planDigest"),
+		ApprovalID: body.ApprovalID, RequestKey: body.RequestKey, ActorUserID: userID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "role source, plan, approval, snapshot or target not found")
+		case errors.Is(err, rolesource.ErrInvalidApplyRequest):
+			writeError(w, http.StatusBadRequest, "cannot apply role source plan")
+		case errors.Is(err, rolesource.ErrIdempotencyConflict), errors.Is(err, rolesource.ErrApplyConflict):
+			writeError(w, http.StatusConflict, "role source apply conflicts with persisted or current state")
+		case errors.Is(err, rolesource.ErrMaterializationBlocked):
+			writeError(w, http.StatusUnprocessableEntity, "snapshot uses fields that are not safely materializable")
+		case errors.Is(err, rolesource.ErrMaterializationOverload):
+			writeError(w, http.StatusTooManyRequests, "role source apply capacity is exhausted")
+		default:
+			slog.Error("apply role source plan failed", "workspace_id", workspaceID, "source_id", chi.URLParam(r, "sourceId"), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to apply role source plan")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, roleSourceApplyResponse{
+		ID: util.UUIDToString(row.ID), SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+		Status: row.Status, Receipt: receipt, CompletedAt: util.TimestampToPtr(row.CompletedAt),
+	})
 }
 
 func (h *Handler) ListRoleSourcePlanApprovals(w http.ResponseWriter, r *http.Request) {

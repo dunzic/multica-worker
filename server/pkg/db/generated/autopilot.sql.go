@@ -459,6 +459,54 @@ func (q *Queries) CreateAutopilotTrigger(ctx context.Context, arg CreateAutopilo
 	return i, err
 }
 
+const createRoleSourceAutopilot = `-- name: CreateRoleSourceAutopilot :one
+INSERT INTO autopilot (
+    workspace_id, title, description, assignee_type, assignee_id,
+    status, execution_mode, created_by_type, created_by_id
+) VALUES (
+    $1, $2, $3, 'agent', $4,
+    'paused', 'run_only', 'member', $5
+) RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, pause_reason
+`
+
+type CreateRoleSourceAutopilotParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Title       string      `json:"title"`
+	Description pgtype.Text `json:"description"`
+	AssigneeID  pgtype.UUID `json:"assignee_id"`
+	CreatedByID pgtype.UUID `json:"created_by_id"`
+}
+
+func (q *Queries) CreateRoleSourceAutopilot(ctx context.Context, arg CreateRoleSourceAutopilotParams) (Autopilot, error) {
+	row := q.db.QueryRow(ctx, createRoleSourceAutopilot,
+		arg.WorkspaceID,
+		arg.Title,
+		arg.Description,
+		arg.AssigneeID,
+		arg.CreatedByID,
+	)
+	var i Autopilot
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.AssigneeID,
+		&i.Status,
+		&i.ExecutionMode,
+		&i.IssueTitleTemplate,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.LastRunAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AssigneeType,
+		&i.ProjectID,
+		&i.PauseReason,
+	)
+	return i, err
+}
+
 const deleteAutopilotCollaborator = `-- name: DeleteAutopilotCollaborator :exec
 DELETE FROM autopilot_collaborator
 WHERE autopilot_id = $1 AND user_type = $2 AND user_id = $3
@@ -2099,6 +2147,119 @@ func (q *Queries) UpdateAutopilotTrigger(ctx context.Context, arg UpdateAutopilo
 		arg.NextRunAt,
 		arg.Label,
 		arg.EventFilters,
+	)
+	var i AutopilotTrigger
+	err := row.Scan(
+		&i.ID,
+		&i.AutopilotID,
+		&i.Kind,
+		&i.Enabled,
+		&i.CronExpression,
+		&i.Timezone,
+		&i.NextRunAt,
+		&i.WebhookToken,
+		&i.Label,
+		&i.LastFiredAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Provider,
+		&i.SigningSecret,
+		&i.EventFilters,
+		&i.PublishedByType,
+		&i.PublishedByID,
+	)
+	return i, err
+}
+
+const updateRoleSourceAutopilot = `-- name: UpdateRoleSourceAutopilot :one
+UPDATE autopilot
+SET title = $1,
+    description = $2,
+    updated_at = now()
+WHERE id = $3
+  AND workspace_id = $4
+  AND assignee_type = 'agent'
+  AND assignee_id = $5
+  AND status <> 'archived'
+RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, pause_reason
+`
+
+type UpdateRoleSourceAutopilotParams struct {
+	Title       string      `json:"title"`
+	Description pgtype.Text `json:"description"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AssigneeID  pgtype.UUID `json:"assignee_id"`
+}
+
+// Source sync never resumes, retargets or archives a user-controlled rule.
+func (q *Queries) UpdateRoleSourceAutopilot(ctx context.Context, arg UpdateRoleSourceAutopilotParams) (Autopilot, error) {
+	row := q.db.QueryRow(ctx, updateRoleSourceAutopilot,
+		arg.Title,
+		arg.Description,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.AssigneeID,
+	)
+	var i Autopilot
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.AssigneeID,
+		&i.Status,
+		&i.ExecutionMode,
+		&i.IssueTitleTemplate,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.LastRunAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AssigneeType,
+		&i.ProjectID,
+		&i.PauseReason,
+	)
+	return i, err
+}
+
+const upsertRoleSourceScheduleTrigger = `-- name: UpsertRoleSourceScheduleTrigger :one
+INSERT INTO autopilot_trigger (
+    id, autopilot_id, kind, enabled, cron_expression, timezone,
+    label, provider, published_by_type, published_by_id
+) VALUES (
+    $1, $2, 'schedule', false, $3, $4,
+    $5, 'generic', 'member', $6
+)
+ON CONFLICT (id) DO UPDATE SET
+    cron_expression = EXCLUDED.cron_expression,
+    timezone = EXCLUDED.timezone,
+    label = EXCLUDED.label,
+    published_by_type = EXCLUDED.published_by_type,
+    published_by_id = EXCLUDED.published_by_id,
+    updated_at = now()
+WHERE autopilot_trigger.autopilot_id = EXCLUDED.autopilot_id
+  AND autopilot_trigger.kind = 'schedule'
+RETURNING id, autopilot_id, kind, enabled, cron_expression, timezone, next_run_at, webhook_token, label, last_fired_at, created_at, updated_at, provider, signing_secret, event_filters, published_by_type, published_by_id
+`
+
+type UpsertRoleSourceScheduleTriggerParams struct {
+	ID             pgtype.UUID `json:"id"`
+	AutopilotID    pgtype.UUID `json:"autopilot_id"`
+	CronExpression pgtype.Text `json:"cron_expression"`
+	Timezone       pgtype.Text `json:"timezone"`
+	Label          pgtype.Text `json:"label"`
+	PublishedByID  pgtype.UUID `json:"published_by_id"`
+}
+
+func (q *Queries) UpsertRoleSourceScheduleTrigger(ctx context.Context, arg UpsertRoleSourceScheduleTriggerParams) (AutopilotTrigger, error) {
+	row := q.db.QueryRow(ctx, upsertRoleSourceScheduleTrigger,
+		arg.ID,
+		arg.AutopilotID,
+		arg.CronExpression,
+		arg.Timezone,
+		arg.Label,
+		arg.PublishedByID,
 	)
 	var i AutopilotTrigger
 	err := row.Scan(
