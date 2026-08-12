@@ -351,14 +351,15 @@ type DaemonHeartbeatAckPayload struct {
 // The lease token is only returned through the daemon-authenticated protocol
 // and is excluded from member-facing source and scan APIs.
 type DaemonHeartbeatPendingRoleSourceScan struct {
-	RequestID      string `json:"request_id"`
-	SourceID       string `json:"source_id"`
-	WorkspaceID    string `json:"workspace_id"`
-	Kind           string `json:"kind"`
-	AdapterVersion string `json:"adapter_version"`
-	DaemonConfigID string `json:"daemon_config_id"`
-	LeaseToken     string `json:"lease_token"`
-	LeaseExpiresAt string `json:"lease_expires_at"`
+	RequestID              string `json:"request_id"`
+	SourceID               string `json:"source_id"`
+	WorkspaceID            string `json:"workspace_id"`
+	Kind                   string `json:"kind"`
+	AdapterVersion         string `json:"adapter_version"`
+	DaemonConfigID         string `json:"daemon_config_id"`
+	LeaseToken             string `json:"lease_token"`
+	LeaseExpiresAt         string `json:"lease_expires_at"`
+	PreviousSnapshotDigest string `json:"previous_snapshot_digest,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no

@@ -46,6 +46,15 @@ func OpenBoundedFS(rootPath string) (*BoundedFS, error) {
 	if err != nil {
 		return nil, err
 	}
+	opened, err := root.Lstat(".")
+	if err != nil {
+		root.Close() //nolint:errcheck
+		return nil, err
+	}
+	if !os.SameFile(info, opened) {
+		root.Close() //nolint:errcheck
+		return nil, fmt.Errorf("%w: source root changed during secure open", ErrChangedDuringRead)
+	}
 	return &BoundedFS{root: root}, nil
 }
 

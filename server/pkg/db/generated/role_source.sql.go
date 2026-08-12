@@ -1112,6 +1112,20 @@ func (q *Queries) ListRoleSourcesInWorkspace(ctx context.Context, workspaceID pg
 	return items, nil
 }
 
+const lockWorkspaceForRoleSourceMutation = `-- name: LockWorkspaceForRoleSourceMutation :one
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE
+`
+
+// Every role-source mutation takes this lock before any source/request lock.
+// Workspace teardown takes FOR UPDATE on the same row, preventing a mutation
+// from committing child data after the explicit no-FK cleanup sweep.
+func (q *Queries) LockWorkspaceForRoleSourceMutation(ctx context.Context, workspaceID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForRoleSourceMutation, workspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const markRoleSourceApplyRunning = `-- name: MarkRoleSourceApplyRunning :one
 UPDATE role_source_apply
 SET status = 'running'
@@ -1150,8 +1164,10 @@ const renewRoleSourceScanLease = `-- name: RenewRoleSourceScanLease :one
 UPDATE role_source_scan_request
 SET lease_expires_at = now() + $1::interval
 WHERE id = $2
-  AND claimed_by_runtime_id = $3
-  AND lease_token = $4
+  AND source_id = $3
+  AND workspace_id = $4
+  AND claimed_by_runtime_id = $5
+  AND lease_token = $6
   AND status = 'claimed'
   AND lease_expires_at > now()
 RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at
@@ -1160,6 +1176,8 @@ RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_ve
 type RenewRoleSourceScanLeaseParams struct {
 	LeaseDuration pgtype.Interval `json:"lease_duration"`
 	ID            pgtype.UUID     `json:"id"`
+	SourceID      pgtype.UUID     `json:"source_id"`
+	WorkspaceID   pgtype.UUID     `json:"workspace_id"`
 	RuntimeID     pgtype.UUID     `json:"runtime_id"`
 	LeaseToken    pgtype.UUID     `json:"lease_token"`
 }
@@ -1168,6 +1186,8 @@ func (q *Queries) RenewRoleSourceScanLease(ctx context.Context, arg RenewRoleSou
 	row := q.db.QueryRow(ctx, renewRoleSourceScanLease,
 		arg.LeaseDuration,
 		arg.ID,
+		arg.SourceID,
+		arg.WorkspaceID,
 		arg.RuntimeID,
 		arg.LeaseToken,
 	)

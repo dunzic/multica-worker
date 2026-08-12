@@ -1,0 +1,422 @@
+package daemon
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/multica-ai/multica/server/internal/rolesource"
+	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+const (
+	roleSourceConfigVersion   = 1
+	maxRoleSourceConfigBytes  = 1 << 20
+	maxRoleSourceConfigs      = 512
+	maxRoleSourceRoots        = 64
+	roleSourceScanConcurrency = 2
+)
+
+var roleSourceRecoveryPollInterval = 5 * time.Minute
+
+const (
+	roleSourceLeaseRenewAhead = 5 * time.Minute
+	roleSourceReportReserve   = 30 * time.Second
+	roleSourceRenewRetry      = 15 * time.Second
+)
+
+var roleSourceConfigIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+type roleSourceConfigDocument struct {
+	Version      int                              `json:"version"`
+	DigestKey    []byte                           `json:"digest_key"`
+	AllowedRoots []string                         `json:"allowed_roots"`
+	Sources      map[string]roleSourceLocalConfig `json:"sources"`
+}
+
+type roleSourceLocalConfig struct {
+	Kind   rolesource.Kind `json:"kind"`
+	Config json.RawMessage `json:"config"`
+}
+
+// roleSourceScanner owns local source authority. The control plane only sends
+// an opaque config ID; resolving it to a path and invoking a filesystem adapter
+// happens exclusively in this daemon process.
+type roleSourceScanner struct {
+	registry  *rolesource.Registry
+	configs   map[string]roleSourceLocalConfig
+	semaphore chan struct{}
+}
+
+func loadRoleSourceScanner(configPath string) (*roleSourceScanner, error) {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return nil, nil
+	}
+	if !filepath.IsAbs(configPath) || filepath.Clean(configPath) != configPath {
+		return nil, errors.New("role source config file must be a clean absolute path")
+	}
+	info, err := os.Lstat(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect role source config file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, errors.New("role source config file must be a regular non-symlink file")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("role source config file permissions must be 0600 or stricter")
+	}
+	if info.Size() <= 0 || info.Size() > maxRoleSourceConfigBytes {
+		return nil, errors.New("role source config file size is outside the allowed range")
+	}
+	file, err := os.Open(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("open role source config file: %w", err)
+	}
+	defer file.Close() //nolint:errcheck
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect opened role source config file: %w", err)
+	}
+	if !os.SameFile(info, openedInfo) || !openedInfo.Mode().IsRegular() || openedInfo.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("role source config file changed during secure open")
+	}
+	body, err := io.ReadAll(io.LimitReader(file, maxRoleSourceConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read role source config file: %w", err)
+	}
+	if len(body) > maxRoleSourceConfigBytes {
+		return nil, errors.New("role source config file exceeds size limit")
+	}
+	defer clear(body)
+	var document roleSourceConfigDocument
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode role source config file: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, errors.New("role source config file contains trailing JSON")
+	}
+	if document.Version != roleSourceConfigVersion {
+		return nil, fmt.Errorf("unsupported role source config version %d", document.Version)
+	}
+	key := document.DigestKey
+	if len(key) != 32 {
+		return nil, errors.New("role source digest_key must be exactly 32 base64-encoded bytes")
+	}
+	defer clear(key)
+	allowedRoots, err := validateRoleSourceAllowedRoots(document.AllowedRoots)
+	if err != nil {
+		return nil, err
+	}
+	adapter, err := agentwaker.New(key, roleSourceRootValidator(allowedRoots))
+	if err != nil {
+		return nil, err
+	}
+	registry, err := rolesource.NewRegistry(adapter)
+	if err != nil {
+		return nil, err
+	}
+	if len(document.Sources) == 0 || len(document.Sources) > maxRoleSourceConfigs {
+		return nil, fmt.Errorf("role source config count must be between 1 and %d", maxRoleSourceConfigs)
+	}
+	configs := make(map[string]roleSourceLocalConfig, len(document.Sources))
+	for configID, config := range document.Sources {
+		if !roleSourceConfigIDPattern.MatchString(configID) {
+			return nil, fmt.Errorf("invalid role source config id %q", configID)
+		}
+		if config.Kind != agentwaker.Kind {
+			return nil, fmt.Errorf("unsupported local role source kind %q", config.Kind)
+		}
+		if len(config.Config) == 0 || len(config.Config) > 64<<10 {
+			return nil, fmt.Errorf("role source config %q has invalid size", configID)
+		}
+		if _, err := registry.RedactConfig(config.Kind, config.Config); err != nil {
+			return nil, fmt.Errorf("validate role source config %q: %w", configID, err)
+		}
+		configs[configID] = roleSourceLocalConfig{Kind: config.Kind, Config: append(json.RawMessage(nil), config.Config...)}
+	}
+	return &roleSourceScanner{registry: registry, configs: configs, semaphore: make(chan struct{}, roleSourceScanConcurrency)}, nil
+}
+
+func (s *roleSourceScanner) acquire(ctx context.Context) bool {
+	if s == nil {
+		return false
+	}
+	select {
+	case s.semaphore <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *roleSourceScanner) tryAcquire() bool {
+	if s == nil {
+		return false
+	}
+	select {
+	case s.semaphore <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *roleSourceScanner) release() {
+	<-s.semaphore
+}
+
+func validateRoleSourceAllowedRoots(raw []string) ([]string, error) {
+	if len(raw) == 0 || len(raw) > maxRoleSourceRoots {
+		return nil, fmt.Errorf("role source allowed_roots count must be between 1 and %d", maxRoleSourceRoots)
+	}
+	result := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, candidate := range raw {
+		candidate = strings.TrimSpace(candidate)
+		if !filepath.IsAbs(candidate) || filepath.Clean(candidate) != candidate || candidate == string(filepath.Separator) {
+			return nil, fmt.Errorf("role source allowed root %q must be a clean, non-root absolute path", candidate)
+		}
+		resolved, err := canonicalRoleSourceDirectory(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("validate role source allowed root %q: %w", candidate, err)
+		}
+		if resolved != candidate {
+			return nil, fmt.Errorf("role source allowed root %q contains a symlink", candidate)
+		}
+		if !seen[resolved] {
+			seen[resolved] = true
+			result = append(result, resolved)
+		}
+	}
+	return result, nil
+}
+
+func roleSourceRootValidator(allowedRoots []string) agentwaker.RootValidator {
+	return func(candidate string) error {
+		resolved, err := canonicalRoleSourceDirectory(candidate)
+		if err != nil {
+			return err
+		}
+		if resolved != candidate {
+			return errors.New("role source root contains a symlink")
+		}
+		for _, allowed := range allowedRoots {
+			relative, err := filepath.Rel(allowed, resolved)
+			if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return nil
+			}
+		}
+		return errors.New("role source root is outside the configured allowed roots")
+	}
+}
+
+func canonicalRoleSourceDirectory(candidate string) (string, error) {
+	info, err := os.Lstat(candidate)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", errors.New("role source path must be a non-symlink directory")
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func (s *roleSourceScanner) scan(ctx context.Context, pending protocol.DaemonHeartbeatPendingRoleSourceScan) (rolesource.Snapshot, string) {
+	if s == nil {
+		return rolesource.Snapshot{}, "scanner_unavailable"
+	}
+	config, ok := s.configs[pending.DaemonConfigID]
+	if !ok {
+		return rolesource.Snapshot{}, "config_not_found"
+	}
+	descriptor, ok := s.registry.Descriptor(rolesource.Kind(pending.Kind))
+	if !ok || config.Kind != rolesource.Kind(pending.Kind) {
+		return rolesource.Snapshot{}, "adapter_not_supported"
+	}
+	if descriptor.AdapterVersion != pending.AdapterVersion {
+		return rolesource.Snapshot{}, "adapter_version_mismatch"
+	}
+	snapshot, err := s.registry.Scan(ctx, rolesource.Kind(pending.Kind), rolesource.ScanRequest{
+		WorkspaceID: pending.WorkspaceID, SourceID: pending.SourceID, Config: config.Config,
+		PreviousSnapshotDigest: pending.PreviousSnapshotDigest, RequestedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+			return rolesource.Snapshot{}, "scan_timeout"
+		}
+		return rolesource.Snapshot{}, "source_invalid"
+	}
+	return snapshot, ""
+}
+
+func (d *Daemon) roleSourceHeartbeatOptions(runtimeID string, forcePoll bool) HeartbeatOptions {
+	if d.roleSources == nil {
+		return HeartbeatOptions{}
+	}
+	option := HeartbeatOptions{SupportsRoleSourceScan: true}
+	now := time.Now()
+	d.roleSourcePollMu.Lock()
+	last := d.roleSourceLastPoll[runtimeID]
+	if (forcePoll || last.IsZero() || now.Sub(last) >= roleSourceRecoveryPollInterval) && d.roleSources.tryAcquire() {
+		d.roleSourceLastPoll[runtimeID] = now
+		option.PollRoleSourceScan = true
+	}
+	d.roleSourcePollMu.Unlock()
+	return option
+}
+
+func (d *Daemon) releaseRoleSourcePollReservation(option HeartbeatOptions) {
+	if option.PollRoleSourceScan && d.roleSources != nil {
+		d.roleSources.release()
+	}
+}
+
+func (d *Daemon) resetRoleSourceRecoveryPoll(runtimeID string) {
+	if d.roleSources == nil {
+		return
+	}
+	d.roleSourcePollMu.Lock()
+	delete(d.roleSourceLastPoll, runtimeID)
+	d.roleSourcePollMu.Unlock()
+}
+
+func (d *Daemon) handleRoleSourceScan(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, pollReserved bool) {
+	if d.roleSources == nil {
+		return
+	}
+	if !pollReserved && !d.roleSources.acquire(ctx) {
+		return
+	}
+	defer func() {
+		d.roleSources.release()
+		// Drain another queued source promptly now that a bounded scan slot is
+		// available. The empty follow-up poll is cheap and does not recur.
+		go d.handlePendingWorkHint(runtimeID, protocol.PendingWorkKindRoleSourceScan)
+	}()
+
+	leaseExpiresAt, err := time.Parse(time.RFC3339Nano, pending.LeaseExpiresAt)
+	if err != nil {
+		d.logger.Warn("role source scan command has invalid lease expiry", "runtime_id", runtimeID, "request_id", pending.RequestID)
+		return
+	}
+	if !leaseExpiresAt.After(time.Now()) {
+		d.logger.Info("role source scan lease already expired", "runtime_id", runtimeID, "request_id", pending.RequestID)
+		return
+	}
+	lease := &roleSourceLeaseState{expiresAt: leaseExpiresAt}
+	scanCtx, cancelScan := context.WithCancel(ctx)
+	scanDone := make(chan struct{})
+	renewDone := make(chan struct{})
+	go func() {
+		defer close(renewDone)
+		d.renewRoleSourceScanLease(scanCtx, cancelScan, runtimeID, pending, lease, scanDone)
+	}()
+	snapshot, errorCode := d.roleSources.scan(scanCtx, pending)
+	close(scanDone)
+	cancelScan()
+	<-renewDone
+
+	result := RoleSourceScanResult{LeaseToken: pending.LeaseToken}
+	if errorCode == "" {
+		result.Status = "completed"
+		result.Snapshot = &snapshot
+	} else {
+		result.Status = "failed"
+		result.ErrorCode = errorCode
+	}
+	reportCtx, cancelReport := context.WithDeadline(d.recoveryContext(), lease.expires())
+	err = d.client.ReportRoleSourceScanResult(reportCtx, runtimeID, pending, result)
+	cancelReport()
+	if err != nil {
+		d.logger.Warn("role source scan terminal report failed",
+			"runtime_id", runtimeID, "request_id", pending.RequestID, "status", result.Status, "error_code", result.ErrorCode, "error", err)
+		return
+	}
+	d.logger.Info("role source scan completed",
+		"runtime_id", runtimeID, "request_id", pending.RequestID, "status", result.Status,
+		"snapshot_digest", snapshot.SnapshotDigest, "error_code", result.ErrorCode)
+}
+
+type roleSourceLeaseState struct {
+	mu        sync.RWMutex
+	expiresAt time.Time
+}
+
+func (s *roleSourceLeaseState) expires() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.expiresAt
+}
+
+func (s *roleSourceLeaseState) set(expiresAt time.Time) {
+	s.mu.Lock()
+	s.expiresAt = expiresAt
+	s.mu.Unlock()
+}
+
+func (d *Daemon) renewRoleSourceScanLease(ctx context.Context, cancelScan context.CancelFunc, runtimeID string, pending PendingRoleSourceScan, lease *roleSourceLeaseState, scanDone <-chan struct{}) {
+	for {
+		expiresAt := lease.expires()
+		renewAt := expiresAt.Add(-roleSourceLeaseRenewAhead)
+		wait := time.Until(renewAt)
+		if wait < 0 {
+			wait = 0
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-scanDone:
+			timer.Stop()
+			return
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		renewCtx, cancelRenew := context.WithTimeout(d.recoveryContext(), 10*time.Second)
+		response, err := d.client.RenewRoleSourceScanLease(renewCtx, runtimeID, pending)
+		cancelRenew()
+		if err == nil {
+			newExpiry, parseErr := time.Parse(time.RFC3339Nano, response.LeaseExpiresAt)
+			if parseErr == nil && newExpiry.After(expiresAt) {
+				lease.set(newExpiry)
+				continue
+			}
+			err = errors.New("server returned an invalid role source lease expiry")
+		}
+		if time.Until(expiresAt) <= roleSourceReportReserve {
+			d.logger.Warn("role source scan lease renewal exhausted", "runtime_id", runtimeID, "request_id", pending.RequestID)
+			cancelScan()
+			return
+		}
+		d.logger.Debug("role source scan lease renewal will retry", "runtime_id", runtimeID, "request_id", pending.RequestID, "error", err)
+		retryTimer := time.NewTimer(roleSourceRenewRetry)
+		select {
+		case <-scanDone:
+			retryTimer.Stop()
+			return
+		case <-ctx.Done():
+			retryTimer.Stop()
+			return
+		case <-retryTimer.C:
+		}
+	}
+}

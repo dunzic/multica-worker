@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -464,17 +465,56 @@ type (
 	PendingModelList        = protocol.DaemonHeartbeatPendingModelList
 	PendingLocalSkills      = protocol.DaemonHeartbeatPendingLocalSkills
 	PendingLocalSkillImport = protocol.DaemonHeartbeatPendingLocalSkillImport
+	PendingRoleSourceScan   = protocol.DaemonHeartbeatPendingRoleSourceScan
 )
 
-func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string) (*HeartbeatResponse, error) {
+type HeartbeatOptions struct {
+	SupportsRoleSourceScan bool
+	PollRoleSourceScan     bool
+}
+
+func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, options ...HeartbeatOptions) (*HeartbeatResponse, error) {
+	var option HeartbeatOptions
+	if len(options) > 0 {
+		option = options[0]
+	}
 	var resp HeartbeatResponse
 	if err := c.postJSON(ctx, "/api/daemon/heartbeat", map[string]any{
-		"runtime_id":            runtimeID,
-		"supports_batch_import": true,
+		"runtime_id":                runtimeID,
+		"supports_batch_import":     true,
+		"supports_role_source_scan": option.SupportsRoleSourceScan,
+		"poll_role_source_scan":     option.PollRoleSourceScan,
 	}, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+type RoleSourceScanResult struct {
+	Status     string               `json:"status"`
+	LeaseToken string               `json:"lease_token"`
+	Snapshot   *rolesource.Snapshot `json:"snapshot,omitempty"`
+	ErrorCode  string               `json:"error_code,omitempty"`
+}
+
+// ReportRoleSourceScanResult retries the idempotent terminal report while the
+// caller's lease-bounded context remains alive.
+func (c *Client) ReportRoleSourceScanResult(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, result RoleSourceScanResult) error {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/scans/%s/result", runtimeID, pending.SourceID, pending.RequestID)
+	return c.postJSONWithRetry(ctx, path, result, nil, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second})
+}
+
+type RoleSourceScanLeaseResponse struct {
+	LeaseExpiresAt string `json:"lease_expires_at"`
+}
+
+func (c *Client) RenewRoleSourceScanLease(ctx context.Context, runtimeID string, pending PendingRoleSourceScan) (*RoleSourceScanLeaseResponse, error) {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/scans/%s/lease", runtimeID, pending.SourceID, pending.RequestID)
+	var response RoleSourceScanLeaseResponse
+	if err := c.postJSONWithRetry(ctx, path, map[string]string{"lease_token": pending.LeaseToken}, &response, []time.Duration{time.Second, 2 * time.Second}); err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 // ReportUpdateResult sends the CLI update result back to the server.

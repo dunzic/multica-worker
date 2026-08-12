@@ -94,6 +94,9 @@ func (c *ControlPlane) RegisterSource(ctx context.Context, input RegisterSourceI
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	qtx := db.New(tx)
+	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
+		return db.RoleSource{}, err
+	}
 	if _, err := qtx.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{ID: runtimeID, WorkspaceID: workspaceID}); err != nil {
 		return db.RoleSource{}, fmt.Errorf("validate role source runtime: %w", err)
 	}
@@ -131,6 +134,9 @@ func (c *ControlPlane) RequestScan(ctx context.Context, workspaceIDText, sourceI
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	qtx := db.New(tx)
+	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
+		return db.RoleSourceScanRequest{}, err
+	}
 	source, err := qtx.GetRoleSourceForUpdate(ctx, db.GetRoleSourceForUpdateParams{ID: sourceID, WorkspaceID: workspaceID})
 	if err != nil {
 		return db.RoleSourceScanRequest{}, err
@@ -183,6 +189,13 @@ func (c *ControlPlane) ClaimNextScan(ctx context.Context, runtimeIDText string, 
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	qtx := db.New(tx)
+	runtime, err := qtx.GetAgentRuntime(ctx, runtimeID)
+	if err != nil {
+		return ClaimedScan{}, err
+	}
+	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, runtime.WorkspaceID); err != nil {
+		return ClaimedScan{}, err
+	}
 	request, err := qtx.ClaimNextRoleSourceScan(ctx, db.ClaimNextRoleSourceScanParams{
 		RuntimeID: runtimeID, LeaseToken: leaseToken,
 		LeaseDuration: pgtype.Interval{Microseconds: leaseDuration.Microseconds(), Valid: true},
@@ -229,6 +242,41 @@ func (c *ControlPlane) GetScan(ctx context.Context, workspaceIDText, sourceIDTex
 	return c.queries().GetRoleSourceScanRequest(ctx, db.GetRoleSourceScanRequestParams{ID: requestID, SourceID: sourceID, WorkspaceID: workspaceID})
 }
 
+func (c *ControlPlane) RenewScanLease(ctx context.Context, workspaceIDText, sourceIDText, requestIDText, runtimeIDText, leaseTokenText string, leaseDuration time.Duration) (db.RoleSourceScanRequest, error) {
+	if leaseDuration < 15*time.Second || leaseDuration > 15*time.Minute {
+		return db.RoleSourceScanRequest{}, errors.New("scan lease duration must be between 15 seconds and 15 minutes")
+	}
+	workspaceID, sourceID, requestID, runtimeID, leaseToken, err := parseFiveUUIDs(
+		workspaceIDText, sourceIDText, requestIDText, runtimeIDText, leaseTokenText,
+	)
+	if err != nil {
+		return db.RoleSourceScanRequest{}, err
+	}
+	tx, err := c.database.Begin(ctx)
+	if err != nil {
+		return db.RoleSourceScanRequest{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	qtx := db.New(tx)
+	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
+		return db.RoleSourceScanRequest{}, err
+	}
+	row, err := qtx.RenewRoleSourceScanLease(ctx, db.RenewRoleSourceScanLeaseParams{
+		LeaseDuration: pgtype.Interval{Microseconds: leaseDuration.Microseconds(), Valid: true},
+		ID:            requestID, SourceID: sourceID, WorkspaceID: workspaceID, RuntimeID: runtimeID, LeaseToken: leaseToken,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.RoleSourceScanRequest{}, ErrScanLeaseLost
+	}
+	if err != nil {
+		return db.RoleSourceScanRequest{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.RoleSourceScanRequest{}, err
+	}
+	return row, nil
+}
+
 func (c *ControlPlane) queries() *db.Queries {
 	return db.New(c.database)
 }
@@ -261,6 +309,9 @@ func (c *ControlPlane) ReportScanSuccess(ctx context.Context, input ReportScanSu
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	qtx := db.New(tx)
+	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
+		return db.RoleSourceSnapshot{}, err
+	}
 	source, err := qtx.GetRoleSourceForUpdate(ctx, db.GetRoleSourceForUpdateParams{ID: sourceID, WorkspaceID: workspaceID})
 	if err != nil {
 		return db.RoleSourceSnapshot{}, err
@@ -335,6 +386,9 @@ func (c *ControlPlane) ReportScanFailure(ctx context.Context, input ReportScanFa
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	qtx := db.New(tx)
+	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
+		return db.RoleSourceScanRequest{}, err
+	}
 	source, err := qtx.GetRoleSourceForUpdate(ctx, db.GetRoleSourceForUpdateParams{ID: sourceID, WorkspaceID: workspaceID})
 	if err != nil {
 		return db.RoleSourceScanRequest{}, err

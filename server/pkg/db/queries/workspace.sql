@@ -196,6 +196,27 @@ cleared_vcs_prs AS (
 cleared_vcs_connections AS (
     DELETE FROM vcs_connection WHERE workspace_id = $1
 ),
+cleared_role_source_audit AS (
+    DELETE FROM role_source_audit_event WHERE role_source_audit_event.workspace_id = $1
+),
+cleared_role_source_approvals AS (
+    DELETE FROM role_source_plan_approval WHERE role_source_plan_approval.workspace_id = $1
+),
+cleared_role_source_applies AS (
+    DELETE FROM role_source_apply WHERE role_source_apply.workspace_id = $1
+),
+cleared_role_source_plans AS (
+    DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
+),
+cleared_role_source_snapshots AS (
+    DELETE FROM role_source_snapshot WHERE role_source_snapshot.workspace_id = $1
+),
+cleared_role_source_scans AS (
+    DELETE FROM role_source_scan_request WHERE role_source_scan_request.workspace_id = $1
+),
+cleared_role_sources AS (
+    DELETE FROM role_source WHERE role_source.workspace_id = $1
+),
 cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1
 )

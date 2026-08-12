@@ -1,3 +1,9 @@
+-- name: LockWorkspaceForRoleSourceMutation :one
+-- Every role-source mutation takes this lock before any source/request lock.
+-- Workspace teardown takes FOR UPDATE on the same row, preventing a mutation
+-- from committing child data after the explicit no-FK cleanup sweep.
+SELECT id FROM workspace WHERE id = @workspace_id FOR KEY SHARE;
+
 -- name: CreateRoleSource :one
 INSERT INTO role_source (
     id, workspace_id, runtime_id, name, kind, adapter_version,
@@ -137,6 +143,8 @@ RETURNING request.*;
 UPDATE role_source_scan_request
 SET lease_expires_at = now() + @lease_duration::interval
 WHERE id = @id
+  AND source_id = @source_id
+  AND workspace_id = @workspace_id
   AND claimed_by_runtime_id = @runtime_id
   AND lease_token = @lease_token
   AND status = 'claimed'

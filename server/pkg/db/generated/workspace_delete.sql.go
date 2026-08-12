@@ -429,6 +429,34 @@ func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID p
 	return err
 }
 
+const deleteWorkspaceRoleSources = `-- name: DeleteWorkspaceRoleSources :exec
+WITH
+deleted_audit_events AS (
+    DELETE FROM role_source_audit_event WHERE role_source_audit_event.workspace_id = $1
+),
+deleted_approvals AS (
+    DELETE FROM role_source_plan_approval WHERE role_source_plan_approval.workspace_id = $1
+),
+deleted_applies AS (
+    DELETE FROM role_source_apply WHERE role_source_apply.workspace_id = $1
+),
+deleted_plans AS (
+    DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
+),
+deleted_snapshots AS (
+    DELETE FROM role_source_snapshot WHERE role_source_snapshot.workspace_id = $1
+),
+deleted_scans AS (
+    DELETE FROM role_source_scan_request WHERE role_source_scan_request.workspace_id = $1
+)
+DELETE FROM role_source WHERE role_source.workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceRoleSources(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceRoleSources, workspaceID)
+	return err
+}
+
 const deleteWorkspaceRuntimesAndProjects = `-- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
 deleted_runtimes AS (

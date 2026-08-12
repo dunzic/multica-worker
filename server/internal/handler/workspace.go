@@ -950,6 +950,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceAgents(ctx, requester.WorkspaceID) },
 		},
 		{
+			name: "delete role sources",
+			run:  func() error { return qtx.DeleteWorkspaceRoleSources(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete runtimes and projects",
 			run:  func() error { return qtx.DeleteWorkspaceRuntimesAndProjects(ctx, requester.WorkspaceID) },
 		},

@@ -25,6 +25,7 @@ type RoleSourceControlPlane interface {
 	GetSource(context.Context, string, string) (db.RoleSource, error)
 	GetScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error)
 	ClaimNextScan(context.Context, string, time.Duration) (rolesource.ClaimedScan, error)
+	RenewScanLease(context.Context, string, string, string, string, string, time.Duration) (db.RoleSourceScanRequest, error)
 	ReportScanSuccess(context.Context, rolesource.ReportScanSuccessInput) (db.RoleSourceSnapshot, error)
 	ReportScanFailure(context.Context, rolesource.ReportScanFailureInput) (db.RoleSourceScanRequest, error)
 }
@@ -76,11 +77,16 @@ func (h *Handler) roleSourceDaemonScanEnabled(ctx context.Context, workspaceID s
 }
 
 func roleSourcePendingScanToProtocol(claimed rolesource.ClaimedScan) *protocol.DaemonHeartbeatPendingRoleSourceScan {
+	previousSnapshotDigest := ""
+	if claimed.Source.CurrentSnapshotDigest.Valid {
+		previousSnapshotDigest = claimed.Source.CurrentSnapshotDigest.String
+	}
 	return &protocol.DaemonHeartbeatPendingRoleSourceScan{
 		RequestID: util.UUIDToString(claimed.Request.ID), SourceID: util.UUIDToString(claimed.Request.SourceID),
 		WorkspaceID: util.UUIDToString(claimed.Request.WorkspaceID), Kind: claimed.Source.Kind,
 		AdapterVersion: claimed.Request.ExpectedAdapterVersion, DaemonConfigID: claimed.Source.DaemonConfigID,
 		LeaseToken: util.UUIDToString(claimed.Request.LeaseToken), LeaseExpiresAt: util.TimestampToString(claimed.Request.LeaseExpiresAt),
+		PreviousSnapshotDigest: previousSnapshotDigest,
 	}
 }
 
@@ -97,7 +103,7 @@ func (h *Handler) populateRoleSourceHeartbeat(ctx context.Context, ack *protocol
 	if !poll {
 		return
 	}
-	claimed, err := h.RoleSources.ClaimNextScan(ctx, runtimeID, 2*time.Minute)
+	claimed, err := h.RoleSources.ClaimNextScan(ctx, runtimeID, 15*time.Minute)
 	switch {
 	case err == nil:
 		ack.PendingRoleSourceScan = roleSourcePendingScanToProtocol(claimed)
@@ -321,6 +327,53 @@ func (h *Handler) ReportRoleSourceScanResult(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) RenewRoleSourceScanLease(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+	runtime, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
+	if !ok {
+		return
+	}
+	workspaceID := util.UUIDToString(runtime.WorkspaceID)
+	if !h.roleSourceDaemonScanEnabled(r.Context(), workspaceID) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	requestID, sourceID := chi.URLParam(r, "requestId"), chi.URLParam(r, "sourceId")
+	if _, err := util.ParseUUID(requestID); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request_id")
+		return
+	}
+	if _, err := util.ParseUUID(sourceID); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid source_id")
+		return
+	}
+	var body struct {
+		LeaseToken string `json:"lease_token"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if _, err := util.ParseUUID(body.LeaseToken); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid lease_token")
+		return
+	}
+	row, err := h.RoleSources.RenewScanLease(r.Context(), workspaceID, sourceID, requestID, runtimeID, body.LeaseToken, 15*time.Minute)
+	if err != nil {
+		switch {
+		case errors.Is(err, rolesource.ErrScanLeaseLost):
+			writeError(w, http.StatusConflict, "scan lease is stale or no longer owned")
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "scan not found")
+		default:
+			slog.Error("renew role source scan lease failed", "runtime_id", runtimeID, "request_id", requestID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to renew scan lease")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"lease_expires_at": util.TimestampToString(row.LeaseExpiresAt)})
 }
 
 func decodeStrictRoleSourceJSON(w http.ResponseWriter, r *http.Request, destination any) error {

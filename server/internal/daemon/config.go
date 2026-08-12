@@ -131,6 +131,11 @@ type Config struct {
 	// prefers a matching, executable override over resolving the profile's
 	// command_name on PATH. nil/empty means "always resolve via PATH".
 	ProfileCommandOverrides map[string]string
+
+	// roleSourceScanner is populated only when MULTICA_ROLE_SOURCE_CONFIG_FILE
+	// points at a validated local 0600 configuration. A nil scanner means the
+	// daemon must not advertise or poll the role-source scan protocol.
+	roleSourceScanner *roleSourceScanner
 }
 
 // Overrides allows CLI flags to override environment variables and defaults.
@@ -464,6 +469,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		autoReloadEnabled = false
 	}
 
+	roleSourceScanner, err := loadRoleSourceScanner(os.Getenv("MULTICA_ROLE_SOURCE_CONFIG_FILE"))
+	if err != nil {
+		return Config{}, fmt.Errorf("load role source scanner: %w", err)
+	}
+
 	return Config{
 		ServerBaseURL:                  serverBaseURL,
 		DaemonID:                       daemonID,
@@ -502,6 +512,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		QwenArgs:                       qwenArgs,
 		QwenpawArgs:                    qwenpawArgs,
 		ProfileCommandOverrides:        profileCommandOverrides,
+		roleSourceScanner:              roleSourceScanner,
 	}, nil
 }
 

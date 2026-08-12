@@ -434,10 +434,13 @@ func TestHeartbeatRoundTrip(t *testing.T) {
 
 	hub := NewHub()
 	var calls atomic.Int32
-	hub.SetHeartbeatHandler(func(_ context.Context, identity ClientIdentity, runtimeID string, _, _, _ bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+	hub.SetHeartbeatHandler(func(_ context.Context, identity ClientIdentity, runtimeID string, _ bool, supportsRoleSourceScan, pollRoleSourceScan bool) (*protocol.DaemonHeartbeatAckPayload, error) {
 		calls.Add(1)
 		if identity.WorkspaceID != "ws-1" {
 			t.Errorf("identity workspace = %q, want ws-1", identity.WorkspaceID)
+		}
+		if !supportsRoleSourceScan || !pollRoleSourceScan {
+			t.Errorf("role source negotiation = supports:%v poll:%v, want true/true", supportsRoleSourceScan, pollRoleSourceScan)
 		}
 		return &protocol.DaemonHeartbeatAckPayload{
 			RuntimeID: runtimeID,
@@ -465,8 +468,10 @@ func TestHeartbeatRoundTrip(t *testing.T) {
 	defer conn.Close()
 
 	hbFrame, err := json.Marshal(protocol.Message{
-		Type:    protocol.EventDaemonHeartbeat,
-		Payload: mustMarshalRaw(protocol.DaemonHeartbeatRequestPayload{RuntimeID: "runtime-1"}),
+		Type: protocol.EventDaemonHeartbeat,
+		Payload: mustMarshalRaw(protocol.DaemonHeartbeatRequestPayload{
+			RuntimeID: "runtime-1", SupportsRoleSourceScan: true, PollRoleSourceScan: true,
+		}),
 	})
 	if err != nil {
 		t.Fatalf("marshal heartbeat: %v", err)
