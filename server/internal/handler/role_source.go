@@ -28,6 +28,12 @@ type RoleSourceControlPlane interface {
 	RenewScanLease(context.Context, string, string, string, string, string, time.Duration) (db.RoleSourceScanRequest, error)
 	ReportScanSuccess(context.Context, rolesource.ReportScanSuccessInput) (db.RoleSourceSnapshot, error)
 	ReportScanFailure(context.Context, rolesource.ReportScanFailureInput) (db.RoleSourceScanRequest, error)
+	CreatePlan(context.Context, rolesource.CreatePlanInput) (db.RoleSourcePlan, error)
+	RecordPlanApproval(context.Context, rolesource.RecordPlanApprovalInput) (db.RoleSourcePlanApproval, error)
+	GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error)
+	ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error)
+	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
+	ListPlanApprovals(context.Context, string, string, string, int32) ([]db.RoleSourcePlanApproval, error)
 }
 
 type roleSourceResponse struct {
@@ -57,6 +63,33 @@ type roleSourceScanResponse struct {
 	RequestedAt            string  `json:"requested_at"`
 	ClaimedAt              *string `json:"claimed_at"`
 	CompletedAt            *string `json:"completed_at"`
+}
+
+type roleSourceSnapshotResponse struct {
+	SourceID            string              `json:"source_id"`
+	WorkspaceID         string              `json:"workspace_id"`
+	Snapshot            rolesource.Snapshot `json:"snapshot"`
+	ReportedByRuntimeID string              `json:"reported_by_runtime_id"`
+	CreatedAt           string              `json:"created_at"`
+}
+
+type roleSourcePlanResponse struct {
+	SourceID    string          `json:"source_id"`
+	WorkspaceID string          `json:"workspace_id"`
+	Plan        rolesource.Plan `json:"plan"`
+	CreatedBy   string          `json:"created_by"`
+	CreatedAt   string          `json:"created_at"`
+}
+
+type roleSourceApprovalResponse struct {
+	ID          string                        `json:"id"`
+	SourceID    string                        `json:"source_id"`
+	WorkspaceID string                        `json:"workspace_id"`
+	PlanDigest  string                        `json:"plan_digest"`
+	Decision    string                        `json:"decision"`
+	Decisions   *rolesource.ApprovalDecisions `json:"decisions,omitempty"`
+	ActorUserID string                        `json:"actor_user_id"`
+	CreatedAt   string                        `json:"created_at"`
 }
 
 func (h *Handler) roleSourceFeatureEnabled(r *http.Request, workspaceID, key string) bool {
@@ -251,6 +284,190 @@ func (h *Handler) GetRoleSourceScan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, roleSourceScanToResponse(row))
 }
 
+func (h *Handler) ListRoleSourceSnapshots(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	rows, err := h.RoleSources.ListSnapshots(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), 50)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list snapshots")
+		return
+	}
+	items := make([]roleSourceSnapshotResponse, 0, len(rows))
+	for _, row := range rows {
+		item, err := roleSourceSnapshotToResponse(row)
+		if err != nil {
+			slog.Error("stored role source snapshot is invalid", "snapshot_digest", row.SnapshotDigest, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list snapshots")
+			return
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": items})
+}
+
+func (h *Handler) ListRoleSourcePlans(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	rows, err := h.RoleSources.ListPlans(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), 50)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list plans")
+		return
+	}
+	items := make([]roleSourcePlanResponse, 0, len(rows))
+	for _, row := range rows {
+		item, err := roleSourcePlanToResponse(row)
+		if err != nil {
+			slog.Error("stored role source plan is invalid", "plan_digest", row.PlanDigest, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list plans")
+			return
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plans": items})
+}
+
+func (h *Handler) GetRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	row, err := h.RoleSources.GetPlan(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), chi.URLParam(r, "planDigest"))
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to load plan")
+		return
+	}
+	response, err := roleSourcePlanToResponse(row)
+	if err != nil {
+		slog.Error("stored role source plan is invalid", "plan_digest", row.PlanDigest, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load plan")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) CreateRoleSourcePlan(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot create role source plans")
+		return
+	}
+	var body struct {
+		TargetSnapshotDigest string `json:"target_snapshot_digest"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	row, err := h.RoleSources.CreatePlan(r.Context(), rolesource.CreatePlanInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"),
+		TargetSnapshotDigest: body.TargetSnapshotDigest, ActorUserID: userID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "role source or snapshot not found")
+		case errors.Is(err, rolesource.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "plan identity conflicts with persisted content")
+		case errors.Is(err, rolesource.ErrInvalidPlanRequest):
+			writeError(w, http.StatusBadRequest, "cannot create plan")
+		default:
+			slog.Error("create role source plan failed", "workspace_id", workspaceID, "source_id", chi.URLParam(r, "sourceId"), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to create plan")
+		}
+		return
+	}
+	response, err := roleSourcePlanToResponse(row)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode plan")
+		return
+	}
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func (h *Handler) RecordRoleSourcePlanApproval(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot approve role source plans")
+		return
+	}
+	var body struct {
+		RequestKey string                        `json:"request_key"`
+		Decision   string                        `json:"decision"`
+		Decisions  *rolesource.ApprovalDecisions `json:"decisions,omitempty"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	row, err := h.RoleSources.RecordPlanApproval(r.Context(), rolesource.RecordPlanApprovalInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), PlanDigest: chi.URLParam(r, "planDigest"),
+		RequestKey: body.RequestKey, Decision: body.Decision, Decisions: body.Decisions, ActorUserID: userID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "role source or plan not found")
+		case errors.Is(err, rolesource.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "request_key was already used for another approval")
+		case errors.Is(err, rolesource.ErrInvalidApprovalRequest):
+			writeError(w, http.StatusBadRequest, "cannot record plan approval")
+		default:
+			slog.Error("record role source approval failed", "workspace_id", workspaceID, "source_id", chi.URLParam(r, "sourceId"), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to record plan approval")
+		}
+		return
+	}
+	response, err := roleSourceApprovalToResponse(row)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode approval")
+		return
+	}
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func (h *Handler) ListRoleSourcePlanApprovals(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	rows, err := h.RoleSources.ListPlanApprovals(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), chi.URLParam(r, "planDigest"), 50)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list approvals")
+		return
+	}
+	items := make([]roleSourceApprovalResponse, 0, len(rows))
+	for _, row := range rows {
+		item, err := roleSourceApprovalToResponse(row)
+		if err != nil {
+			slog.Error("stored role source approval is invalid", "approval_id", util.UUIDToString(row.ID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list approvals")
+			return
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approvals": items})
+}
+
+func writeRoleSourceReadError(w http.ResponseWriter, err error, message string) {
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, message)
+}
+
 // ReportRoleSourceScanResult receives the terminal result for a leased scan.
 // It is daemon-authenticated, workspace-scoped through the runtime row and
 // retry-safe when the same terminal report is delivered more than once.
@@ -416,4 +633,47 @@ func roleSourceScanToResponse(row db.RoleSourceScanRequest) roleSourceScanRespon
 		SnapshotDigest: util.TextToPtr(row.SnapshotDigest), ErrorCode: util.TextToPtr(row.ErrorCode),
 		RequestedAt: util.TimestampToString(row.RequestedAt), ClaimedAt: util.TimestampToPtr(row.ClaimedAt), CompletedAt: util.TimestampToPtr(row.CompletedAt),
 	}
+}
+
+func roleSourceSnapshotToResponse(row db.RoleSourceSnapshot) (roleSourceSnapshotResponse, error) {
+	snapshot, err := rolesource.DecodePersistedSnapshot(row)
+	if err != nil {
+		return roleSourceSnapshotResponse{}, err
+	}
+	return roleSourceSnapshotResponse{
+		SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+		Snapshot: snapshot, ReportedByRuntimeID: util.UUIDToString(row.ReportedByRuntimeID),
+		CreatedAt: util.TimestampToString(row.CreatedAt),
+	}, nil
+}
+
+func roleSourcePlanToResponse(row db.RoleSourcePlan) (roleSourcePlanResponse, error) {
+	plan, err := rolesource.DecodePersistedPlan(row)
+	if err != nil {
+		return roleSourcePlanResponse{}, err
+	}
+	return roleSourcePlanResponse{
+		SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+		Plan: plan, CreatedBy: util.UUIDToString(row.CreatedBy), CreatedAt: util.TimestampToString(row.CreatedAt),
+	}, nil
+}
+
+func roleSourceApprovalToResponse(row db.RoleSourcePlanApproval) (roleSourceApprovalResponse, error) {
+	var decisions *rolesource.ApprovalDecisions
+	if row.Decision == "approved" {
+		var decoded rolesource.ApprovalDecisions
+		if err := json.Unmarshal(row.Decisions, &decoded); err != nil {
+			return roleSourceApprovalResponse{}, err
+		}
+		if decoded.ContractVersion != rolesource.PlanContractVersion {
+			return roleSourceApprovalResponse{}, errors.New("stored approval has invalid contract version")
+		}
+		rolesource.CanonicalizeApprovalDecisions(&decoded)
+		decisions = &decoded
+	}
+	return roleSourceApprovalResponse{
+		ID: util.UUIDToString(row.ID), SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+		PlanDigest: row.PlanDigest, Decision: row.Decision, Decisions: decisions,
+		ActorUserID: util.UUIDToString(row.ActorUserID), CreatedAt: util.TimestampToString(row.CreatedAt),
+	}, nil
 }

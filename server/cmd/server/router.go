@@ -1156,6 +1156,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/role-source-adapters", h.ListRoleSourceAdapters)
 					r.Get("/role-sources", h.ListRoleSources)
 					r.Get("/role-sources/{sourceId}/scans/{scanId}", h.GetRoleSourceScan)
+					r.Get("/role-sources/{sourceId}/snapshots", h.ListRoleSourceSnapshots)
+					r.Get("/role-sources/{sourceId}/plans", h.ListRoleSourcePlans)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}", h.GetRoleSourcePlan)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.ListRoleSourcePlanApprovals)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -1175,6 +1179,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/runtime-profiles/{profileId}", h.DeleteRuntimeProfile)
 					r.Post("/role-sources", h.CreateRoleSource)
 					r.Post("/role-sources/{sourceId}/scans", h.RequestRoleSourceScan)
+					r.Post("/role-sources/{sourceId}/plans", h.CreateRoleSourcePlan)
+					r.Post("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.RecordRoleSourcePlanApproval)
 				})
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)

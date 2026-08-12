@@ -445,7 +445,7 @@ func (q *Queries) GetLatestRoleSourceAuditEvent(ctx context.Context, arg GetLate
 }
 
 const getLatestRoleSourcePlanApproval = `-- name: GetLatestRoleSourcePlanApproval :one
-SELECT id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id, created_at FROM role_source_plan_approval
+SELECT id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id, created_at, request_key FROM role_source_plan_approval
 WHERE source_id = $1
   AND workspace_id = $2
   AND plan_digest = $3
@@ -471,6 +471,7 @@ func (q *Queries) GetLatestRoleSourcePlanApproval(ctx context.Context, arg GetLa
 		&i.Decisions,
 		&i.ActorUserID,
 		&i.CreatedAt,
+		&i.RequestKey,
 	)
 	return i, err
 }
@@ -606,6 +607,36 @@ func (q *Queries) GetRoleSourcePlan(ctx context.Context, arg GetRoleSourcePlanPa
 		&i.Plan,
 		&i.CreatedBy,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRoleSourcePlanApprovalByRequest = `-- name: GetRoleSourcePlanApprovalByRequest :one
+SELECT id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id, created_at, request_key FROM role_source_plan_approval
+WHERE source_id = $1
+  AND workspace_id = $2
+  AND request_key = $3
+`
+
+type GetRoleSourcePlanApprovalByRequestParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RequestKey  string      `json:"request_key"`
+}
+
+func (q *Queries) GetRoleSourcePlanApprovalByRequest(ctx context.Context, arg GetRoleSourcePlanApprovalByRequestParams) (RoleSourcePlanApproval, error) {
+	row := q.db.QueryRow(ctx, getRoleSourcePlanApprovalByRequest, arg.SourceID, arg.WorkspaceID, arg.RequestKey)
+	var i RoleSourcePlanApproval
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.WorkspaceID,
+		&i.PlanDigest,
+		&i.Decision,
+		&i.Decisions,
+		&i.ActorUserID,
+		&i.CreatedAt,
+		&i.RequestKey,
 	)
 	return i, err
 }
@@ -868,11 +899,12 @@ func (q *Queries) InsertRoleSourcePlan(ctx context.Context, arg InsertRoleSource
 
 const insertRoleSourcePlanApproval = `-- name: InsertRoleSourcePlanApproval :one
 INSERT INTO role_source_plan_approval (
-    id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id
+    id, source_id, workspace_id, plan_digest, request_key, decision, decisions, actor_user_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7, $8
 )
-RETURNING id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id, created_at
+ON CONFLICT (source_id, request_key) DO NOTHING
+RETURNING id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id, created_at, request_key
 `
 
 type InsertRoleSourcePlanApprovalParams struct {
@@ -880,6 +912,7 @@ type InsertRoleSourcePlanApprovalParams struct {
 	SourceID    pgtype.UUID `json:"source_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	PlanDigest  string      `json:"plan_digest"`
+	RequestKey  string      `json:"request_key"`
 	Decision    string      `json:"decision"`
 	Decisions   []byte      `json:"decisions"`
 	ActorUserID pgtype.UUID `json:"actor_user_id"`
@@ -891,6 +924,7 @@ func (q *Queries) InsertRoleSourcePlanApproval(ctx context.Context, arg InsertRo
 		arg.SourceID,
 		arg.WorkspaceID,
 		arg.PlanDigest,
+		arg.RequestKey,
 		arg.Decision,
 		arg.Decisions,
 		arg.ActorUserID,
@@ -905,6 +939,7 @@ func (q *Queries) InsertRoleSourcePlanApproval(ctx context.Context, arg InsertRo
 		&i.Decisions,
 		&i.ActorUserID,
 		&i.CreatedAt,
+		&i.RequestKey,
 	)
 	return i, err
 }
@@ -1010,6 +1045,99 @@ func (q *Queries) ListRoleSourceAuditEvents(ctx context.Context, arg ListRoleSou
 			&i.PreviousEventDigest,
 			&i.EventDigest,
 			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourcePlanApprovals = `-- name: ListRoleSourcePlanApprovals :many
+SELECT id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id, created_at, request_key FROM role_source_plan_approval
+WHERE source_id = $1
+  AND workspace_id = $2
+  AND plan_digest = $3
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+`
+
+type ListRoleSourcePlanApprovalsParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	PlanDigest  string      `json:"plan_digest"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+func (q *Queries) ListRoleSourcePlanApprovals(ctx context.Context, arg ListRoleSourcePlanApprovalsParams) ([]RoleSourcePlanApproval, error) {
+	rows, err := q.db.Query(ctx, listRoleSourcePlanApprovals,
+		arg.SourceID,
+		arg.WorkspaceID,
+		arg.PlanDigest,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourcePlanApproval{}
+	for rows.Next() {
+		var i RoleSourcePlanApproval
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.PlanDigest,
+			&i.Decision,
+			&i.Decisions,
+			&i.ActorUserID,
+			&i.CreatedAt,
+			&i.RequestKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourcePlans = `-- name: ListRoleSourcePlans :many
+SELECT source_id, workspace_id, plan_digest, from_snapshot_digest, to_snapshot_digest, plan, created_by, created_at FROM role_source_plan
+WHERE source_id = $1 AND workspace_id = $2
+ORDER BY created_at DESC, plan_digest
+LIMIT $3
+`
+
+type ListRoleSourcePlansParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+func (q *Queries) ListRoleSourcePlans(ctx context.Context, arg ListRoleSourcePlansParams) ([]RoleSourcePlan, error) {
+	rows, err := q.db.Query(ctx, listRoleSourcePlans, arg.SourceID, arg.WorkspaceID, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourcePlan{}
+	for rows.Next() {
+		var i RoleSourcePlan
+		if err := rows.Scan(
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.PlanDigest,
+			&i.FromSnapshotDigest,
+			&i.ToSnapshotDigest,
+			&i.Plan,
+			&i.CreatedBy,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

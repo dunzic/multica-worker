@@ -196,13 +196,26 @@ WHERE source_id = @source_id
   AND workspace_id = @workspace_id
   AND plan_digest = @plan_digest;
 
+-- name: ListRoleSourcePlans :many
+SELECT * FROM role_source_plan
+WHERE source_id = @source_id AND workspace_id = @workspace_id
+ORDER BY created_at DESC, plan_digest
+LIMIT @result_limit;
+
 -- name: InsertRoleSourcePlanApproval :one
 INSERT INTO role_source_plan_approval (
-    id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id
+    id, source_id, workspace_id, plan_digest, request_key, decision, decisions, actor_user_id
 ) VALUES (
-    @id, @source_id, @workspace_id, @plan_digest, @decision, @decisions, @actor_user_id
+    @id, @source_id, @workspace_id, @plan_digest, @request_key, @decision, @decisions, @actor_user_id
 )
+ON CONFLICT (source_id, request_key) DO NOTHING
 RETURNING *;
+
+-- name: GetRoleSourcePlanApprovalByRequest :one
+SELECT * FROM role_source_plan_approval
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND request_key = @request_key;
 
 -- name: GetLatestRoleSourcePlanApproval :one
 SELECT * FROM role_source_plan_approval
@@ -211,6 +224,14 @@ WHERE source_id = @source_id
   AND plan_digest = @plan_digest
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: ListRoleSourcePlanApprovals :many
+SELECT * FROM role_source_plan_approval
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND plan_digest = @plan_digest
+ORDER BY created_at DESC, id DESC
+LIMIT @result_limit;
 
 -- name: InsertRoleSourceApply :one
 INSERT INTO role_source_apply (

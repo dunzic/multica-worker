@@ -19,6 +19,7 @@ func TestRoleSourceMigrationsRespectRepositorySafetyRules(t *testing.T) {
 		t.Fatalf("found %d role-source up migrations, want control-plane migration plus isolated indexes", len(matches))
 	}
 	indexPattern := regexp.MustCompile(`(?is)^CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b.*;\s*$`)
+	containsIndexPattern := regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\b`)
 	for _, name := range matches {
 		body, err := os.ReadFile(name)
 		if err != nil {
@@ -35,8 +36,8 @@ func TestRoleSourceMigrationsRespectRepositorySafetyRules(t *testing.T) {
 		if strings.Contains(upper, "REFERENCES ") || strings.Contains(upper, "FOREIGN KEY") || strings.Contains(upper, " ON DELETE ") {
 			t.Fatalf("%s introduces a forbidden database relationship", name)
 		}
-		if strings.Contains(filepath.Base(name), "control_plane") {
-			if strings.Contains(upper, "PRIMARY KEY") || strings.Contains(upper, "CREATE INDEX") || strings.Contains(upper, " UNIQUE ") {
+		if !containsIndexPattern.MatchString(statementBody) {
+			if strings.Contains(upper, "PRIMARY KEY") || regexp.MustCompile(`(?i)\bUNIQUE\b`).MatchString(statementBody) {
 				t.Fatalf("%s creates an inline/non-concurrent index", name)
 			}
 			continue

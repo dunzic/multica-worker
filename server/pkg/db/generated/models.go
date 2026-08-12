@@ -990,6 +990,7 @@ type RoleSourcePlanApproval struct {
 	Decisions   []byte             `json:"decisions"`
 	ActorUserID pgtype.UUID        `json:"actor_user_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	RequestKey  string             `json:"request_key"`
 }
 
 type RoleSourceScanRequest struct {

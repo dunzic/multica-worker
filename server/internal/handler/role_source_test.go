@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -25,23 +27,37 @@ const (
 )
 
 type fakeRoleSourceControlPlane struct {
-	registerInput *rolesource.RegisterSourceInput
-	registerRow   db.RoleSource
-	registerErr   error
-	requestRow    db.RoleSourceScanRequest
-	requestErr    error
-	getScanRow    db.RoleSourceScanRequest
-	getScanErr    error
-	listRows      []db.RoleSource
-	listErr       error
-	getSourceRow  db.RoleSource
-	getSourceErr  error
-	claimRow      rolesource.ClaimedScan
-	claimErr      error
-	claimCalls    int
-	renewRow      db.RoleSourceScanRequest
-	renewErr      error
-	calls         int
+	registerInput   *rolesource.RegisterSourceInput
+	registerRow     db.RoleSource
+	registerErr     error
+	requestRow      db.RoleSourceScanRequest
+	requestErr      error
+	getScanRow      db.RoleSourceScanRequest
+	getScanErr      error
+	listRows        []db.RoleSource
+	listErr         error
+	getSourceRow    db.RoleSource
+	getSourceErr    error
+	claimRow        rolesource.ClaimedScan
+	claimErr        error
+	claimCalls      int
+	renewRow        db.RoleSourceScanRequest
+	renewErr        error
+	createPlanInput *rolesource.CreatePlanInput
+	createPlanRow   db.RoleSourcePlan
+	createPlanErr   error
+	approvalInput   *rolesource.RecordPlanApprovalInput
+	approvalRow     db.RoleSourcePlanApproval
+	approvalErr     error
+	getPlanRow      db.RoleSourcePlan
+	getPlanErr      error
+	planRows        []db.RoleSourcePlan
+	planListErr     error
+	snapshotRows    []db.RoleSourceSnapshot
+	snapshotListErr error
+	approvalRows    []db.RoleSourcePlanApproval
+	approvalListErr error
+	calls           int
 }
 
 type roleSourcePendingWorkRecorder struct {
@@ -98,6 +114,38 @@ func (f *fakeRoleSourceControlPlane) ReportScanFailure(context.Context, rolesour
 	return db.RoleSourceScanRequest{}, errors.New("unexpected report failure")
 }
 
+func (f *fakeRoleSourceControlPlane) CreatePlan(_ context.Context, input rolesource.CreatePlanInput) (db.RoleSourcePlan, error) {
+	f.calls++
+	f.createPlanInput = &input
+	return f.createPlanRow, f.createPlanErr
+}
+
+func (f *fakeRoleSourceControlPlane) RecordPlanApproval(_ context.Context, input rolesource.RecordPlanApprovalInput) (db.RoleSourcePlanApproval, error) {
+	f.calls++
+	f.approvalInput = &input
+	return f.approvalRow, f.approvalErr
+}
+
+func (f *fakeRoleSourceControlPlane) GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error) {
+	f.calls++
+	return f.getPlanRow, f.getPlanErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error) {
+	f.calls++
+	return f.planRows, f.planListErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error) {
+	f.calls++
+	return f.snapshotRows, f.snapshotListErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListPlanApprovals(context.Context, string, string, string, int32) ([]db.RoleSourcePlanApproval, error) {
+	f.calls++
+	return f.approvalRows, f.approvalListErr
+}
+
 func roleSourceTestHandler(t *testing.T, enabled bool, controlPlane *fakeRoleSourceControlPlane) *Handler {
 	t.Helper()
 	provider := featureflag.NewStaticProvider()
@@ -136,6 +184,46 @@ func roleSourceTestScanRow() db.RoleSourceScanRequest {
 		ID: util.MustParseUUID(roleSourceTestScanID), SourceID: util.MustParseUUID(roleSourceTestSourceID),
 		WorkspaceID: util.MustParseUUID(testWorkspaceID), Status: "running", ExpectedAdapterVersion: "1.0.0",
 		LeaseToken: util.MustParseUUID("00000000-0000-4000-8000-000000000044"), RequestedAt: now, ClaimedAt: now,
+	}
+}
+
+func roleSourceTestPlanRow(t *testing.T) db.RoleSourcePlan {
+	t.Helper()
+	plan := rolesource.Plan{
+		ContractVersion: rolesource.PlanContractVersion, SourceID: roleSourceTestSourceID,
+		ToSnapshotDigest: "sha256:" + strings.Repeat("a", 64), Applyable: true,
+		Actions: []rolesource.PlanAction{}, Blockers: []rolesource.PlanBlocker{},
+	}
+	unsigned, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(unsigned)
+	plan.PlanDigest = "sha256:" + hex.EncodeToString(sum[:])
+	body, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 10, 2, 0, 0, time.UTC), Valid: true}
+	return db.RoleSourcePlan{
+		SourceID: util.MustParseUUID(roleSourceTestSourceID), WorkspaceID: util.MustParseUUID(testWorkspaceID),
+		PlanDigest: plan.PlanDigest, ToSnapshotDigest: plan.ToSnapshotDigest, Plan: body,
+		CreatedBy: util.MustParseUUID(testUserID), CreatedAt: now,
+	}
+}
+
+func roleSourceTestApprovalRow(t *testing.T, plan db.RoleSourcePlan) db.RoleSourcePlanApproval {
+	t.Helper()
+	decisions, err := json.Marshal(rolesource.ApprovalDecisions{
+		ContractVersion: rolesource.PlanContractVersion, Archives: []rolesource.ArchiveActionDecision{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db.RoleSourcePlanApproval{
+		ID: util.MustParseUUID("00000000-0000-4000-8000-000000000045"), SourceID: plan.SourceID,
+		WorkspaceID: plan.WorkspaceID, PlanDigest: plan.PlanDigest, RequestKey: "private-client-retry-key",
+		Decision: "approved", Decisions: decisions, ActorUserID: util.MustParseUUID(testUserID), CreatedAt: plan.CreatedAt,
 	}
 }
 
@@ -253,6 +341,84 @@ func TestRequestRoleSourceScan_WakesOwningRuntime(t *testing.T) {
 	}
 }
 
+func TestCreateRoleSourcePlan_DefaultOffDoesNotReachControlPlane(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{}
+	h := roleSourceTestHandler(t, false, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]string{
+		"target_snapshot_digest": "sha256:" + strings.Repeat("a", 64),
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.CreateRoleSourcePlan(w, req)
+
+	if w.Code != http.StatusNotFound || fake.calls != 0 {
+		t.Fatalf("default-off plan: status=%d calls=%d body=%s", w.Code, fake.calls, w.Body.String())
+	}
+}
+
+func TestCreateRoleSourcePlan_ReturnsVerifiedDeterministicPlan(t *testing.T) {
+	plan := roleSourceTestPlanRow(t)
+	fake := &fakeRoleSourceControlPlane{createPlanRow: plan}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]string{
+		"target_snapshot_digest": plan.ToSnapshotDigest,
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.CreateRoleSourcePlan(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create plan: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if fake.createPlanInput == nil || fake.createPlanInput.TargetSnapshotDigest != plan.ToSnapshotDigest || fake.createPlanInput.ActorUserID != testUserID {
+		t.Fatalf("create plan input = %+v", fake.createPlanInput)
+	}
+	if !strings.Contains(w.Body.String(), plan.PlanDigest) {
+		t.Fatalf("response omitted deterministic plan digest: %s", w.Body.String())
+	}
+}
+
+func TestRecordRoleSourcePlanApproval_MapsRequestKeyReuseToConflict(t *testing.T) {
+	plan := roleSourceTestPlanRow(t)
+	fake := &fakeRoleSourceControlPlane{approvalErr: rolesource.ErrIdempotencyConflict}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+		"request_key": "approve-once", "decision": "approved",
+		"decisions": map[string]any{"contract_version": rolesource.PlanContractVersion, "archives": []any{}},
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", plan.PlanDigest)
+
+	h.RecordRoleSourcePlanApproval(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("approval key reuse: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRecordRoleSourcePlanApproval_DoesNotExposeRequestKey(t *testing.T) {
+	plan := roleSourceTestPlanRow(t)
+	approval := roleSourceTestApprovalRow(t, plan)
+	fake := &fakeRoleSourceControlPlane{approvalRow: approval}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+		"request_key": approval.RequestKey, "decision": "approved",
+		"decisions": map[string]any{"contract_version": rolesource.PlanContractVersion, "archives": []any{}},
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", plan.PlanDigest)
+
+	h.RecordRoleSourcePlanApproval(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("record approval: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if fake.approvalInput == nil || fake.approvalInput.RequestKey != approval.RequestKey {
+		t.Fatalf("approval input = %+v", fake.approvalInput)
+	}
+	if strings.Contains(w.Body.String(), approval.RequestKey) || strings.Contains(w.Body.String(), "request_key") {
+		t.Fatalf("approval response exposed idempotency key: %s", w.Body.String())
+	}
+}
+
 func TestPopulateRoleSourceHeartbeat_SeparatesNegotiationFromPolling(t *testing.T) {
 	fake := &fakeRoleSourceControlPlane{}
 	h := roleSourceTestHandler(t, true, fake)
@@ -343,8 +509,8 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		VALUES ($1, $2, $3, $4, '{}'::jsonb, $5)
 	`, sourceID, workspaceID, digestB, digestA, testUserID)
 	execFixture(`
-		INSERT INTO role_source_plan_approval (id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id)
-		VALUES (gen_random_uuid(), $1, $2, $3, 'approved', '{}'::jsonb, $4)
+		INSERT INTO role_source_plan_approval (id, source_id, workspace_id, plan_digest, request_key, decision, decisions, actor_user_id)
+		VALUES (gen_random_uuid(), $1, $2, $3, 'delete-fixture', 'approved', '{}'::jsonb, $4)
 	`, sourceID, workspaceID, digestB, testUserID)
 	execFixture(`
 		INSERT INTO role_source_apply (id, source_id, workspace_id, request_key, mode, snapshot_digest, plan_digest, status, actor_user_id)
