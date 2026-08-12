@@ -16,6 +16,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
+	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -112,32 +113,48 @@ func loadRoleSourceScanner(configPath string) (*roleSourceScanner, error) {
 	if document.Version != roleSourceConfigVersion {
 		return nil, fmt.Errorf("unsupported role source config version %d", document.Version)
 	}
+	if len(document.Sources) == 0 || len(document.Sources) > maxRoleSourceConfigs {
+		return nil, fmt.Errorf("role source config count must be between 1 and %d", maxRoleSourceConfigs)
+	}
+	requiresAgentWaker := false
+	for _, config := range document.Sources {
+		if config.Kind == agentwaker.Kind {
+			requiresAgentWaker = true
+			break
+		}
+	}
 	key := document.DigestKey
-	if len(key) != 32 {
-		return nil, errors.New("role source digest_key must be exactly 32 base64-encoded bytes")
+	if (requiresAgentWaker || len(key) != 0) && len(key) != 32 {
+		return nil, errors.New("role source digest_key must be exactly 32 base64-encoded bytes when AgentWaker is configured")
 	}
 	defer clear(key)
 	allowedRoots, err := validateRoleSourceAllowedRoots(document.AllowedRoots)
 	if err != nil {
 		return nil, err
 	}
-	adapter, err := agentwaker.New(key, roleSourceRootValidator(allowedRoots))
+	rootValidator := roleSourceRootValidator(allowedRoots)
+	manifestDirectoryAdapter, err := manifestdir.New(rootValidator)
 	if err != nil {
 		return nil, err
 	}
-	registry, err := rolesource.NewRegistry(adapter)
+	adapters := []rolesource.Adapter{manifestDirectoryAdapter}
+	if requiresAgentWaker {
+		agentWakerAdapter, err := agentwaker.New(key, rootValidator)
+		if err != nil {
+			return nil, err
+		}
+		adapters = append(adapters, agentWakerAdapter)
+	}
+	registry, err := rolesource.NewRegistry(adapters...)
 	if err != nil {
 		return nil, err
-	}
-	if len(document.Sources) == 0 || len(document.Sources) > maxRoleSourceConfigs {
-		return nil, fmt.Errorf("role source config count must be between 1 and %d", maxRoleSourceConfigs)
 	}
 	configs := make(map[string]roleSourceLocalConfig, len(document.Sources))
 	for configID, config := range document.Sources {
 		if !roleSourceConfigIDPattern.MatchString(configID) {
 			return nil, fmt.Errorf("invalid role source config id %q", configID)
 		}
-		if config.Kind != agentwaker.Kind {
+		if _, ok := registry.Descriptor(config.Kind); !ok {
 			return nil, fmt.Errorf("unsupported local role source kind %q", config.Kind)
 		}
 		if len(config.Config) == 0 || len(config.Config) > 64<<10 {
@@ -205,7 +222,7 @@ func validateRoleSourceAllowedRoots(raw []string) ([]string, error) {
 	return result, nil
 }
 
-func roleSourceRootValidator(allowedRoots []string) agentwaker.RootValidator {
+func roleSourceRootValidator(allowedRoots []string) func(string) error {
 	return func(candidate string) error {
 		resolved, err := canonicalRoleSourceDirectory(candidate)
 		if err != nil {

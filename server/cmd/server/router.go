@@ -39,6 +39,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
+	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -246,7 +247,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
-	roleSourceCatalog, err := rolesource.NewCatalog(agentwaker.Descriptor())
+	roleSourceCatalog, err := rolesource.NewCatalog(agentwaker.Descriptor(), manifestdir.Descriptor())
 	if err != nil {
 		panic("build role source adapter catalog: " + err.Error())
 	}

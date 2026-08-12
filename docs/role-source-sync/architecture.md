@@ -4,7 +4,7 @@ Status: accepted for implementation
 
 Feature flag: `role_source_sync` (server-side until the first end-to-end slice is ready)
 
-Initial adapter: `agentwaker_directory`
+Initial adapters: `agentwaker_directory`, followed by the source-neutral `multica_manifest_directory` conformance adapter
 Target: production use by organisations with an aggregate user population of at least 10,000
 
 ## Product outcome
@@ -61,7 +61,7 @@ The first release uses compile-time registered Go adapters. It does not load arb
 - configuration validation and redaction behavior;
 - a deterministic scan implementation that returns the normalized manifest.
 
-An out-of-process adapter protocol can be added later, but only with process isolation, signed packages, resource quotas, and an authenticated protocol. Dynamic code loading is not required to call the first release “pluggable.”
+The second compile-time adapter consumes the normalized Multica manifest contract directly from a bounded directory. It proves the registry, daemon work protocol, snapshots and artifact transport are not coupled to AgentWaker parsing. An out-of-process adapter protocol can be added later, but only with process isolation, signed packages, resource quotas, and an authenticated protocol. Dynamic code loading is not required to call the first release “pluggable.”
 
 ### Normalized manifest
 

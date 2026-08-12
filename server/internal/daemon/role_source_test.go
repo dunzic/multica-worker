@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
+	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -72,6 +75,27 @@ func TestLoadRoleSourceScannerRequiresPrivateBoundedConfiguration(t *testing.T) 
 	outsidePath := writeRoleSourceConfigForTest(t, root, outside, 0o600)
 	if _, err := loadRoleSourceScanner(outsidePath); err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("outside source root error = %v", err)
+	}
+
+	missingKeyBody, err := os.ReadFile(validPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missingKey map[string]any
+	if err := json.Unmarshal(missingKeyBody, &missingKey); err != nil {
+		t.Fatal(err)
+	}
+	delete(missingKey, "digest_key")
+	missingKeyBody, err = json.Marshal(missingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingKeyPath := filepath.Join(t.TempDir(), "role-sources.json")
+	if err := os.WriteFile(missingKeyPath, missingKeyBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadRoleSourceScanner(missingKeyPath); err == nil || !strings.Contains(err.Error(), "when AgentWaker is configured") {
+		t.Fatalf("AgentWaker without digest key error=%v", err)
 	}
 }
 
@@ -222,6 +246,71 @@ generation:
 	}
 	if envelope.Claims.SnapshotDigest != snapshot.SnapshotDigest || envelope.Claims.RoleID != "writer" {
 		t.Fatalf("envelope claims = %+v", envelope.Claims)
+	}
+}
+
+func TestRoleSourceScannerRunsManifestDirectoryThroughSameGenericRegistry(t *testing.T) {
+	root := t.TempDir()
+	artifactBody := []byte("# Standard role\n")
+	artifactPath := "roles/standard.md"
+	if err := os.MkdirAll(filepath.Join(root, "roles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(artifactPath)), artifactBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(artifactBody)
+	ref := rolesource.ArtifactRef{Path: artifactPath, Digest: "sha256:" + hex.EncodeToString(sum[:]), MediaType: "text/markdown", SizeBytes: int64(len(artifactBody))}
+	manifest := rolesource.Manifest{
+		ContractVersion: rolesource.ContractVersion,
+		Roles: []rolesource.Role{{
+			ID: "standard", DisplayName: "Standard", Version: "1.0.0", Lifecycle: "active", Instructions: ref,
+			Skills: []rolesource.Skill{}, CapabilityBindings: []rolesource.CapabilityBinding{}, Environment: []rolesource.EnvironmentKey{},
+			MCP: []rolesource.MCPServer{}, Automations: []rolesource.Automation{},
+		}},
+		Capabilities: []rolesource.Capability{},
+	}
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "multica-role-source.json"), manifestBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	document := roleSourceConfigDocument{
+		Version: roleSourceConfigVersion, AllowedRoots: []string{root},
+		Sources: map[string]roleSourceLocalConfig{
+			"standard-main": {Kind: manifestdir.Kind, Config: json.RawMessage(`{"root_path":` + mustJSONRoleSourceTest(t, root) + `}`)},
+		},
+	}
+	configBody, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "role-sources.json")
+	if err := os.WriteFile(configPath, configBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanner, err := loadRoleSourceScanner(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := protocol.DaemonHeartbeatPendingRoleSourceScan{
+		WorkspaceID: "00000000-0000-4000-8000-000000000061", SourceID: "00000000-0000-4000-8000-000000000062",
+		Kind: string(manifestdir.Kind), AdapterVersion: manifestdir.Descriptor().AdapterVersion, DaemonConfigID: "standard-main",
+	}
+	snapshot, code := scanner.scan(t.Context(), pending)
+	if code != "" || snapshot.Kind != manifestdir.Kind || len(snapshot.Manifest.Roles) != 1 || snapshot.Manifest.Roles[0].ID != "standard" {
+		t.Fatalf("manifest-directory scan snapshot=%+v code=%q", snapshot, code)
+	}
+	reader, err := scanner.openArtifact(t.Context(), pending, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := io.ReadAll(reader)
+	reader.Close() //nolint:errcheck
+	if err != nil || string(opened) != string(artifactBody) {
+		t.Fatalf("manifest-directory artifact=%q err=%v", opened, err)
 	}
 }
 
