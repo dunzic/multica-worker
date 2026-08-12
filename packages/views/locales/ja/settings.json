@@ -217,8 +217,9 @@
     "effect_continue": "現在のバージョンで続行",
     "no_active_tasks": "現在、影響を受けるアクティブなタスクはありません。",
     "impact_truncated": "詳細は省略されています。上の集計には影響を受けるすべての作業が含まれます。",
-    "failed_applies_title": "失敗した適用試行",
-    "failed_applies_description": "変更トランザクションのロールバック後に独立して記録される、追記専用かつコンテンツを含まない監査証跡です。",
+    "failed_applies_title": "エラーを返した適用試行",
+    "failed_applies_description": "変更リクエストがエラーを返した後に独立して記録される、追記専用かつコンテンツを含まない監査証跡です。",
+    "failed_applies_commit_notice": "コミット段階のエラーは、ワークスペースのトランザクションがロールバックされた証明ではありません。復旧操作の前に成功レシートと照合してください。",
     "failed_applies_load_failed": "失敗した適用試行を読み込めませんでした。",
     "no_failed_applies": "このロールソースには失敗した適用試行が記録されていません。",
     "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"

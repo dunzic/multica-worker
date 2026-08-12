@@ -40,4 +40,17 @@ spec:
           annotations:
             summary: "Business sampler query p95 is high"
             description: "Business sampler query {{ "{{ $labels.name }}" }} p95 is above 300ms, leaving little headroom before the 500ms statement_timeout."
+    - name: multica-role-source
+      rules:
+        - alert: MulticaRoleSourceApplyFailureAuditWriteFailed
+          expr: |
+            sum by (outcome) (
+              increase(multica_role_source_apply_failure_audit_writes_total{outcome=~"persist_failed|id_generation_failed"}[5m])
+            ) > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceAuditWriteFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source apply failure evidence could not be persisted"
+            description: "At least one apply request returned an error, but its independent failure-audit row could not be written (outcome={{ "{{ $labels.outcome }}" }}). Preserve server logs, stop role-source apply rollout, and reconcile successful receipts before retry or recovery."
 {{- end }}

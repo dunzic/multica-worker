@@ -396,7 +396,7 @@ func TestApplyFailureAuditRunsAfterInnerTransactionReturns(t *testing.T) {
 	}
 	wrapper := source[wrapperAt:innerAt]
 	applyAt := strings.Index(wrapper, "c.applyPlan(ctx, input, &tracker)")
-	recordAt := strings.Index(wrapper, "c.recordApplyFailure(ctx, tracker, err)")
+	recordAt := strings.Index(wrapper, "c.recordApplyFailure(ctx, tracker, failureCode)")
 	if applyAt < 0 || recordAt < 0 || applyAt >= recordAt {
 		t.Fatal("failed-attempt evidence must be recorded only after the inner apply call returns")
 	}

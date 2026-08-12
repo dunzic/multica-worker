@@ -8,7 +8,7 @@ Final decision: **GO for merge behind disabled flags; NO-GO for production apply
 
 ## Customer and product outcome
 
-An apply request that returns an error now leaves content-free, append-only evidence even when the main workspace mutation transaction rolls back. Workspace members can inspect the source, plan, approval, actor, apply/rollback mode, failure stage, stable failure code and timestamp from the existing read-only Role Sources settings surface. No retry, recovery or apply control is exposed.
+An apply request that returns an error now leaves content-free, append-only evidence independently of its main workspace mutation transaction. Workspace members can inspect the source, plan, approval, actor, apply/rollback mode, failure stage, stable failure code and timestamp from the existing read-only Role Sources settings surface. No retry, recovery or apply control is exposed.
 
 ## Architecture review — 2/3
 
@@ -16,12 +16,14 @@ An apply request that returns an error now leaves content-free, append-only evid
 - The independent write uses a cancellation-detached context with a three-second bound. Client disconnects therefore do not erase the audit attempt indefinitely or create unbounded cleanup work.
 - The ledger stores a SHA-256 request-key correlation value, never the raw idempotency key, raw error, source manifest, secret, MCP definition, artifact body or task content.
 - Failure stage and code are database-constrained stable enums/bounded values. The same table covers apply and rollback without an AgentWaker-specific branch.
+- Bounded Prometheus counters separate returned apply errors from failure-evidence write outcomes, and the Helm rule pages on any persistence or ID-generation failure without tenant/request labels.
 - Open objections: a database outage can prevent the independent row itself from being persisted; commit-stage errors can be outcome-ambiguous and require reconciliation against successful receipts; no durable outbox, retention/partition policy or persistence-failure metric exists yet.
 
 ## Product review — 2/3
 
 - Operators can distinguish preflight, transaction, materialization, finalize and commit failures without seeing sensitive technical error text.
 - Empty, loading and error states are explicit, and the surface remains visibly read-only.
+- The UI explicitly warns that a commit-stage error is not proof of rollback and must be reconciled against successful receipts before recovery.
 - Open objections: stable codes still need product-owned labels and remediation guidance; commit-stage ambiguity must be explained; there is no support workflow, acknowledgement, retry or recovery action.
 
 ## Test review — 2/3

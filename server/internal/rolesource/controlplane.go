@@ -39,7 +39,16 @@ type ControlPlane struct {
 	secretBoxes      map[string]SecretBox
 	secretKeyID      string
 	materializeSlots chan struct{}
+	applyMetrics     ApplyMetrics
 	now              func() time.Time
+}
+
+// ApplyMetrics accepts bounded operational labels only. Implementations must
+// never attach workspace, source, actor, plan, approval or request identifiers
+// to metric series; those belong in the tenant-scoped audit ledger and logs.
+type ApplyMetrics interface {
+	RecordApplyError(mode, stage, code string)
+	RecordApplyFailureAudit(mode, stage, code, outcome string)
 }
 
 type ArtifactReader interface {
@@ -57,6 +66,10 @@ func NewControlPlane(database controlPlaneDB, catalog DescriptorProvider) (*Cont
 
 func (c *ControlPlane) SetArtifactReader(reader ArtifactReader) {
 	c.artifacts = reader
+}
+
+func (c *ControlPlane) SetApplyMetrics(metrics ApplyMetrics) {
+	c.applyMetrics = metrics
 }
 
 type SecretBox interface {

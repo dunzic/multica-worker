@@ -182,9 +182,12 @@ type RouterOptions struct {
 	// WecomMetrics is the WeCom adapter's health sink. Nil discards every
 	// counter, which is what a deployment with /metrics turned off gets.
 	WecomMetrics *obsmetrics.WecomMetrics
-	DaemonHub    *daemonws.Hub
-	DaemonWakeup service.TaskWakeupNotifier
-	FeatureFlags *featureflag.Service
+	// RoleSourceMetrics contains bounded protocol-state labels only. Nil keeps
+	// metrics disabled without changing role-source behavior.
+	RoleSourceMetrics *obsmetrics.RoleSourceMetrics
+	DaemonHub         *daemonws.Hub
+	DaemonWakeup      service.TaskWakeupNotifier
+	FeatureFlags      *featureflag.Service
 	// HeartbeatScheduler, when non-nil, replaces the default synchronous
 	// passthrough scheduler on the constructed Handler. main.go injects a
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
@@ -252,6 +255,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		panic("build role source control plane: " + err.Error())
 	}
 	roleSourceControlPlane.SetArtifactReader(store)
+	roleSourceControlPlane.SetApplyMetrics(opts.RoleSourceMetrics)
 	roleSourceSecretKeyConfigured := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_SECRET_KEY")) != ""
 	if roleSourceSecretKey, keyErr := secretbox.LoadKey("MULTICA_ROLE_SOURCE_SECRET_KEY"); keyErr == nil {
 		box, boxErr := secretbox.New(roleSourceSecretKey)

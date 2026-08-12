@@ -280,6 +280,9 @@ export function RoleSourcesTab() {
             description={t(($) => $.role_sources.failed_applies_description)}
           >
             <SettingsCard>
+              <div className="border-b border-surface-border px-4 py-3 text-caption leading-5 text-muted-foreground">
+                {t(($) => $.role_sources.failed_applies_commit_notice)}
+              </div>
               {applyFailures.isLoading ? (
                 <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />

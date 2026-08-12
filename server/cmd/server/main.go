@@ -344,6 +344,7 @@ func main() {
 	var samplerPool *pgxpool.Pool
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
+	var roleSourceMetrics *obsmetrics.RoleSourceMetrics
 	if metricsConfig.Enabled() {
 		// Build a dedicated tiny pool for the BusinessSamplerCollector
 		// so a stalled scrape can never starve business traffic. If the
@@ -373,6 +374,7 @@ func main() {
 		businessMetrics = metricsRegistry.Business
 		channelMediaMetrics = metricsRegistry.ChannelMedia
 		wecomMetrics = metricsRegistry.Wecom
+		roleSourceMetrics = metricsRegistry.RoleSource
 		// Forward inbound daemon WS frames into the per-kind counter so
 		// dashboards can split heartbeat / unknown / invalid traffic.
 		if daemonHub != nil {
@@ -400,6 +402,7 @@ func main() {
 		HTTPMetrics:        httpMetrics,
 		BusinessMetrics:    businessMetrics,
 		WecomMetrics:       wecomMetrics,
+		RoleSourceMetrics:  roleSourceMetrics,
 		DaemonHub:          daemonHub,
 		DaemonWakeup:       daemonWakeup,
 		FeatureFlags:       flags,

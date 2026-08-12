@@ -32,6 +32,7 @@ type Registry struct {
 	Business     *BusinessMetrics
 	ChannelMedia *ChannelMediaReconcilerMetrics
 	Wecom        *WecomMetrics
+	RoleSource   *RoleSourceMetrics
 	// Sampler is non-nil only when RegistryOptions.BusinessSampler was
 	// supplied with a valid Pool. Exposed so the cmd/server entrypoint
 	// can plumb the same instance into health checks if it ever wants to.
@@ -62,6 +63,9 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	wecomMetrics := NewWecomMetrics()
 	reg.MustRegister(wecomMetrics.Collectors()...)
 
+	roleSourceMetrics := NewRoleSourceMetrics()
+	reg.MustRegister(roleSourceMetrics.Collectors()...)
+
 	if opts.Pool != nil {
 		reg.MustRegister(NewDBCollector(opts.Pool))
 	}
@@ -83,6 +87,7 @@ func NewRegistry(opts RegistryOptions) *Registry {
 		Business:     businessMetrics,
 		ChannelMedia: channelMedia,
 		Wecom:        wecomMetrics,
+		RoleSource:   roleSourceMetrics,
 		Sampler:      sampler,
 	}
 }

@@ -32,6 +32,10 @@ const (
 	labelResult       = "result"
 	labelOp           = "op"
 	labelGate         = "gate"
+	labelMode         = "mode"
+	labelStage        = "stage"
+	labelCode         = "code"
+	labelOutcome      = "outcome"
 )
 
 var businessMetricLabels = map[string][]string{
@@ -86,6 +90,15 @@ var businessMetricLabels = map[string][]string{
 	"multica_feedback_submitted_total":                 {labelKind, labelPlatform},
 	"multica_contact_sales_submitted_total":            {labelSource},
 	"multica_chat_output_local_path_total":             {labelKind},
+}
+
+// operationalMetricLabels covers production-control metrics that do not flow
+// through BusinessMetrics. Keeping the registry separate prevents product
+// event tests from requiring these collectors while retaining the same global
+// label-cardinality policy.
+var operationalMetricLabels = map[string][]string{
+	"multica_role_source_apply_errors_total":               {labelMode, labelStage, labelCode},
+	"multica_role_source_apply_failure_audit_writes_total": {labelMode, labelStage, labelCode, labelOutcome},
 }
 
 var forbiddenMetricLabels = map[string]struct{}{

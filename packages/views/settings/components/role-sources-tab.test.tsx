@@ -161,9 +161,10 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText("1 continue current version")).toBeInTheDocument();
     expect(screen.getByText("Researcher")).toBeInTheDocument();
     expect(screen.getByText("task-1")).toBeInTheDocument();
-    expect(screen.getByText("Failed apply attempts")).toBeInTheDocument();
+    expect(screen.getByText("Apply attempts that returned errors")).toBeInTheDocument();
     expect(screen.getByText("state_conflict")).toBeInTheDocument();
     expect(screen.getByText(/apply · materialization/)).toBeInTheDocument();
+    expect(screen.getByText(/commit-stage error does not prove/)).toBeInTheDocument();
     expect(screen.getByText(/This preview is read-only/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve|apply|retry|recover/i })).not.toBeInTheDocument();
   });

@@ -217,8 +217,9 @@
     "effect_continue": "继续当前版本",
     "no_active_tasks": "当前没有受影响的活动任务。",
     "impact_truncated": "明细已截断；上方汇总数字仍包含全部受影响工作。",
-    "failed_applies_title": "失败的应用尝试",
-    "failed_applies_description": "在变更事务回滚后独立写入的追加式、无业务内容审计证据。",
+    "failed_applies_title": "返回错误的应用尝试",
+    "failed_applies_description": "变更请求返回错误后独立写入的追加式、无业务内容审计证据。",
+    "failed_applies_commit_notice": "提交阶段返回错误，不代表工作区事务一定已经回滚。执行恢复操作前，必须先与成功回执对账。",
     "failed_applies_load_failed": "无法加载失败的应用尝试。",
     "no_failed_applies": "该角色源尚未记录失败的应用尝试。",
     "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"

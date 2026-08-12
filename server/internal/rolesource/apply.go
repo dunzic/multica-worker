@@ -156,7 +156,11 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	tracker := applyAttemptTracker{mode: "unknown", stage: "preflight"}
 	row, receipt, err := c.applyPlan(ctx, input, &tracker)
 	if err != nil && tracker.recordable {
-		c.recordApplyFailure(ctx, tracker, err)
+		failureCode := classifyApplyFailure(err)
+		if c.applyMetrics != nil {
+			c.applyMetrics.RecordApplyError(tracker.mode, tracker.stage, failureCode)
+		}
+		c.recordApplyFailure(ctx, tracker, failureCode)
 	}
 	return row, receipt, err
 }
@@ -443,18 +447,28 @@ func classifyApplyFailure(err error) string {
 	}
 }
 
-func (c *ControlPlane) recordApplyFailure(parent context.Context, tracker applyAttemptTracker, applyErr error) {
+func (c *ControlPlane) recordApplyFailure(parent context.Context, tracker applyAttemptTracker, failureCode string) {
 	id, err := newPGUUID()
 	if err != nil {
 		slog.Warn("role source apply failure audit id generation failed", "stage", tracker.stage)
+		c.recordApplyFailureAuditMetric(tracker, failureCode, "id_generation_failed")
 		return
 	}
-	params := newApplyFailureParams(id, tracker, classifyApplyFailure(applyErr), c.now())
+	params := newApplyFailureParams(id, tracker, failureCode, c.now())
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
 	defer cancel()
 	_, err = db.New(c.database).InsertRoleSourceApplyFailure(ctx, params)
 	if err != nil {
 		slog.Warn("role source apply failure audit persist failed", "stage", params.FailureStage, "failure_code", params.FailureCode, "error", err)
+		c.recordApplyFailureAuditMetric(tracker, failureCode, "persist_failed")
+		return
+	}
+	c.recordApplyFailureAuditMetric(tracker, failureCode, "persisted")
+}
+
+func (c *ControlPlane) recordApplyFailureAuditMetric(tracker applyAttemptTracker, failureCode, outcome string) {
+	if c.applyMetrics != nil {
+		c.applyMetrics.RecordApplyFailureAudit(tracker.mode, tracker.stage, failureCode, outcome)
 	}
 }
 
