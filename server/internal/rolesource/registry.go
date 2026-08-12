@@ -88,6 +88,29 @@ func (r *Registry) Descriptors() []Descriptor {
 	return out
 }
 
+// RedactConfig validates source configuration and returns the adapter's safe
+// API/audit representation. Raw configuration must never be serialized through
+// a generic source response.
+func (r *Registry) RedactConfig(kind Kind, config json.RawMessage) (json.RawMessage, error) {
+	r.mu.RLock()
+	registered, ok := r.adapters[kind]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrAdapterNotFound, kind)
+	}
+	if err := registered.adapter.ValidateConfig(config); err != nil {
+		return nil, fmt.Errorf("validate %s config: %w", kind, err)
+	}
+	redacted, err := registered.adapter.RedactConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("redact %s config: %w", kind, err)
+	}
+	if len(redacted) == 0 || len(redacted) > 64<<10 || !json.Valid(redacted) {
+		return nil, fmt.Errorf("redact %s config: adapter returned invalid or oversized JSON", kind)
+	}
+	return append(json.RawMessage(nil), redacted...), nil
+}
+
 // Scan validates configuration, invokes the selected adapter, validates the
 // normalized manifest, and assigns the canonical manifest digest.
 func (r *Registry) Scan(ctx context.Context, kind Kind, request ScanRequest) (Snapshot, error) {
@@ -289,6 +312,19 @@ func validateCapability(capability *Capability) error {
 	if err := validateUniqueIDs("permission mode", capability.PermissionModes); err != nil {
 		return err
 	}
+	adapterIDs := make([]string, len(capability.Requirements.Adapters))
+	for index := range capability.Requirements.Adapters {
+		adapterIDs[index] = capability.Requirements.Adapters[index].ID
+	}
+	if err := validateUniqueIDs("adapter requirement", adapterIDs); err != nil {
+		return err
+	}
+	if err := validateUniqueIDs("environment requirement", capability.Requirements.Environment); err != nil {
+		return err
+	}
+	if err := validateUniqueIDs("MCP requirement", capability.Requirements.MCP); err != nil {
+		return err
+	}
 	if err := validateArtifact(capability.Entrypoint); err != nil {
 		return fmt.Errorf("entrypoint: %w", err)
 	}
@@ -384,6 +420,11 @@ func canonicalizeManifest(manifest *Manifest) {
 		capability := &manifest.Capabilities[i]
 		sort.Strings(capability.Profiles)
 		sort.Strings(capability.PermissionModes)
+		sort.Slice(capability.Requirements.Adapters, func(a, b int) bool {
+			return capability.Requirements.Adapters[a].ID < capability.Requirements.Adapters[b].ID
+		})
+		sort.Strings(capability.Requirements.Environment)
+		sort.Strings(capability.Requirements.MCP)
 		sort.Slice(capability.Artifacts, func(a, b int) bool { return capability.Artifacts[a].Path < capability.Artifacts[b].Path })
 	}
 }

@@ -19,6 +19,9 @@ type fakeAdapter struct {
 
 func (f fakeAdapter) Descriptor() Descriptor               { return f.desc }
 func (f fakeAdapter) ValidateConfig(json.RawMessage) error { return f.configErr }
+func (f fakeAdapter) RedactConfig(json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"configured":true}`), nil
+}
 func (f fakeAdapter) Scan(context.Context, ScanRequest) (ScanOutput, error) {
 	return ScanOutput{
 		Manifest:       f.manifest,
@@ -79,6 +82,20 @@ func TestRegistryDescriptorsAreSorted(t *testing.T) {
 	want := []Kind{"a_source", "z_source"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("descriptor order = %v, want %v", got, want)
+	}
+}
+
+func TestRegistryRedactsValidatedConfig(t *testing.T) {
+	registry, err := NewRegistry(validFakeAdapter("fake_source"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	redacted, err := registry.RedactConfig("fake_source", json.RawMessage(`{"token":"plaintext"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(redacted) != `{"configured":true}` {
+		t.Fatalf("redacted config = %s", redacted)
 	}
 }
 

@@ -41,6 +41,7 @@ type AdapterCapabilities struct {
 type Adapter interface {
 	Descriptor() Descriptor
 	ValidateConfig(json.RawMessage) error
+	RedactConfig(json.RawMessage) (json.RawMessage, error)
 	Scan(context.Context, ScanRequest) (ScanOutput, error)
 }
 
@@ -132,13 +133,25 @@ type Skill struct {
 }
 
 type Capability struct {
-	ID              string        `json:"id"`
-	Name            string        `json:"name"`
-	Version         string        `json:"version"`
-	Profiles        []string      `json:"profiles"`
-	PermissionModes []string      `json:"permission_modes"`
-	Entrypoint      ArtifactRef   `json:"entrypoint"`
-	Artifacts       []ArtifactRef `json:"artifacts,omitempty"`
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	Version         string                 `json:"version"`
+	Profiles        []string               `json:"profiles"`
+	PermissionModes []string               `json:"permission_modes"`
+	Requirements    CapabilityRequirements `json:"requirements"`
+	Entrypoint      ArtifactRef            `json:"entrypoint"`
+	Artifacts       []ArtifactRef          `json:"artifacts,omitempty"`
+}
+
+type CapabilityRequirements struct {
+	Adapters    []AdapterRequirement `json:"adapters"`
+	Environment []string             `json:"environment"`
+	MCP         []string             `json:"mcp"`
+}
+
+type AdapterRequirement struct {
+	ID       string `json:"id"`
+	Required bool   `json:"required"`
 }
 
 type CapabilityBinding struct {

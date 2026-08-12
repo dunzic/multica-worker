@@ -4,8 +4,8 @@ Updated: 2026-08-13
 
 | Feature | State | Current evidence | Next completion evidence |
 | --- | --- | --- | --- |
-| RS-01 Adapter registry and source registration | In progress | Source-neutral contract, trusted registry, canonical validation and tests in `server/internal/rolesource`; architecture and review gates accepted | AgentWaker adapter, reference fake adapter contract suite, feature flag, source persistence/API and tenant authorization |
-| RS-02 Bounded scan and contract validation | Design and absorption audit | code2rich scanner reviewed; path and secret blockers recorded | Hardened path resolver, AgentWaker adapter scan, artifact transfer, daemon protocol and immutable snapshot tests |
+| RS-01 Adapter registry and source registration | In progress | Source-neutral contract, trusted registry, canonical validation, redacted configuration view and tests in `server/internal/rolesource`; AgentWaker implements the same adapter contract | Feature flag, source persistence/API, tenant authorization and a second reference adapter conformance proof |
+| RS-02 Bounded scan and contract validation | In progress | Hardened root-confined filesystem; AgentWaker roles, skills and bounded supporting artifacts, capabilities and requirements, bindings, environment metadata, MCP and automations normalize into a secret-free manifest; traversal/symlink/no-mutation tests pass | Daemon queue/protocol, content transfer, immutable snapshot persistence, hostile manifest fuzzing and source-change retry |
 | RS-03 Snapshot, diff, approval and atomic apply | Designed | invariants and failure gates documented | current-main schema, deterministic plan engine, conflict decisions, idempotency, transaction and audit failure injection |
 | RS-04 Materialization | Designed | normalized roles/skills/capabilities/bindings/automations defined | stable mapping schema, ownership masks, runtime pin implementation and cross-runtime tests |
 | RS-05 Secret and MCP synchronization | Designed, fork approach rejected | plaintext-in-snapshot flaw identified; separate one-time transfer required | envelope protocol, encrypted store, key metadata/rotation, fail-closed audit and exfiltration suite |
@@ -15,7 +15,9 @@ Updated: 2026-08-13
 ## Current branch quality evidence
 
 - `go test ./internal/rolesource`
-- `go test -race ./internal/rolesource`
+- `go test ./internal/rolesource/...`
+- `go test -race ./internal/rolesource/...`
+- bounded fuzz runs for env parsing, path confinement and canonical JSON
 - `git diff --check`
 
-These checks cover only the generic contract and registry foundation. They do not prove any end-to-end source synchronization behavior or the 10,000-user production target.
+These checks cover the generic contract, bounded filesystem and AgentWaker adapter. They do not prove daemon/server persistence, apply behavior or the 10,000-user production target.
