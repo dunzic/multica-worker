@@ -173,6 +173,24 @@ func TestRoleSourceApplyFailurePersistenceIsContentFree(t *testing.T) {
 	}
 }
 
+func TestRoleSourceArtifactDeleteIntentSurvivesTenantTeardownWithoutContent(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "331_role_source_artifact_delete_intent.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"workspace_id uuid", "source_id uuid", "artifact_body", "manifest jsonb", "prompt", "credential", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("artifact delete intent retains forbidden tenant/content field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"storage_key", "artifact_digest", "lease_token", "lease_expires_at", "tombstone_pass", "next_attempt_at"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("artifact delete intent is missing lifecycle field %q", required)
+		}
+	}
+}
+
 func TestRoleSourceTaskPinsAreContentFreeAndRetryStable(t *testing.T) {
 	schemaBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "316_role_source_task_pin.up.sql"))
 	if err != nil {

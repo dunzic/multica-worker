@@ -455,6 +455,12 @@ deleted_capability_versions AS (
 deleted_object_mappings AS (
     DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
 ),
+queued_role_source_artifact_deletes AS (
+    INSERT INTO role_source_artifact_delete_intent (storage_key, artifact_digest, size_bytes, reason)
+    SELECT storage_key, digest, size_bytes, 'workspace_deleted'
+    FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
+    ON CONFLICT (storage_key) DO NOTHING
+),
 deleted_artifacts AS (
     DELETE FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
 ),

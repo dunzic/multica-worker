@@ -132,8 +132,21 @@ same transaction. A collector must claim candidate readiness rows with an
 exclusive `SKIP LOCKED` lock, so it cannot race through a snapshot publication:
 the snapshot either publishes its edge first or observes the body unavailable.
 Existing manifests are backfilled across every exact ArtifactRef location.
-This ledger is the prerequisite for retention; its presence alone does not
-authorize deletion until the tombstone/retry state machine is merged.
+The ledger is the deletion authority boundary; the worker below may act only
+after an artifact has no edge and has crossed the settle window.
+
+When the independent default-off
+`MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED` operator gate is enabled, the artifact
+reconciler moves only readiness rows older than 24 hours with no
+reachability edge into a durable, workspace-independent deletion intent in one
+SQL statement. Workspace teardown writes the same intent before removing its
+artifact rows, so deleting a tenant does not orphan object-storage bytes. Each
+worker claim has a two-minute lease; storage calls have a 30-second deadline;
+failures return to bounded backoff. A successful delete retains a widening
+15-minute, 1-hour, 6-hour and 24-hour tombstone re-delete tail to reclaim a PUT
+that materializes after its client abandoned the upload. Exact re-upload may
+cancel a pending/tombstoned intent, but never an actively deleting one. Metrics
+report queued objects, deletes, failures, active backlog and tombstones.
 
 Every role-source mutation first takes a shared lock on the workspace row. Workspace teardown takes an exclusive lock on the same row, then deletes audit events, approvals, applies, plans, snapshots, scan requests and sources explicitly before runtimes and the workspace. This lock order prevents a concurrent scan report from inserting an orphan after the no-foreign-key cleanup sweep.
 

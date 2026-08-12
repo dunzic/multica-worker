@@ -840,7 +840,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	var workspaceID, runtimeID, sourceID string
+	var workspaceID, runtimeID, sourceID, artifactStorageKey string
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO workspace (name, slug, description)
 		VALUES ('Role Source Delete Test', 'role-source-delete-' || gen_random_uuid()::text, '')
@@ -849,6 +849,9 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		t.Fatalf("create workspace: %v", err)
 	}
 	t.Cleanup(func() {
+		if artifactStorageKey != "" {
+			_, _ = testPool.Exec(context.Background(), "DELETE FROM role_source_artifact_delete_intent WHERE storage_key = $1", artifactStorageKey)
+		}
 		for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_snapshot_artifact", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 			_, _ = testPool.Exec(context.Background(), "DELETE FROM "+table+" WHERE workspace_id = $1", workspaceID)
 		}
@@ -876,6 +879,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		t.Fatalf("create source: %v", err)
 	}
 	digestA, digestB := "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64)
+	artifactStorageKey = "role-source-artifacts/" + workspaceID + "/" + strings.TrimPrefix(digestA, "sha256:")
 	execFixture := func(statement string, arguments ...any) {
 		t.Helper()
 		if _, err := testPool.Exec(ctx, statement, arguments...); err != nil {
@@ -887,7 +891,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 			workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id,
 			first_source_id, first_scan_request_id
 		) VALUES ($1, $2, 7, $3, $4, $5, gen_random_uuid())
-	`, workspaceID, digestA, "role-source-artifacts/"+workspaceID+"/"+strings.TrimPrefix(digestA, "sha256:"), runtimeID, sourceID)
+	`, workspaceID, digestA, artifactStorageKey, runtimeID, sourceID)
 	execFixture(`
 		INSERT INTO role_source_scan_request (id, source_id, workspace_id, requested_by, expected_adapter_version)
 		VALUES (gen_random_uuid(), $1, $2, $3, '0.1.0')
@@ -957,5 +961,12 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		if count != 0 {
 			t.Fatalf("%s rows survived workspace delete: %d", table, count)
 		}
+	}
+	var deleteIntentCount int
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM role_source_artifact_delete_intent WHERE storage_key = $1", artifactStorageKey).Scan(&deleteIntentCount); err != nil {
+		t.Fatal(err)
+	}
+	if deleteIntentCount != 1 {
+		t.Fatalf("workspace delete artifact intent count = %d, want 1", deleteIntentCount)
 	}
 }

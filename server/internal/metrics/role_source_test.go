@@ -93,11 +93,12 @@ func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.
 
 func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 	r := NewRegistry(RegistryOptions{})
-	if r.RoleSource == nil {
+	if r.RoleSource == nil || r.RoleSourceArtifactGC == nil {
 		t.Fatal("role-source metrics are not wired into the production registry")
 	}
 	r.RoleSource.RecordApplyFailureAudit("unknown", "preflight", "capacity_exhausted", "id_generation_failed")
 	r.RoleSource.RecordApplyCommitReconciliation("query_failed")
+	r.RoleSourceArtifactGC.DeleteFailures.Inc()
 
 	families, err := r.Gatherer.Gather()
 	if err != nil {
@@ -106,6 +107,7 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 	wanted := map[string]bool{
 		"multica_role_source_apply_failure_audit_writes_total":   false,
 		"multica_role_source_apply_commit_reconciliations_total": false,
+		"multica_role_source_artifact_gc_delete_failures_total":  false,
 	}
 	for _, family := range families {
 		if _, ok := wanted[family.GetName()]; ok {
@@ -129,6 +131,7 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 	for _, required := range []string{
 		"MulticaRoleSourceApplyFailureAuditWriteFailed",
 		"MulticaRoleSourceApplyCommitReconciliationFailed",
+		"MulticaRoleSourceArtifactGCDeleteFailures",
 		"multica_role_source_apply_failure_audit_writes_total",
 		"multica_role_source_apply_commit_reconciliations_total",
 		`outcome=~"persist_failed|id_generation_failed"`,

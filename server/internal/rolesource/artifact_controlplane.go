@@ -17,6 +17,7 @@ const artifactLookupBatch = 1_000
 var (
 	ErrArtifactMissing        = errors.New("role source snapshot references unavailable artifacts")
 	ErrInvalidArtifactRequest = errors.New("invalid role source artifact request")
+	ErrArtifactDeleteActive   = errors.New("role source artifact deletion is in progress")
 )
 
 type ArtifactLeaseInput struct {
@@ -135,6 +136,21 @@ func (c *ControlPlane) StoreArtifactRecord(ctx context.Context, input StoreArtif
 	}
 	if !c.scanLeaseIsActive(source, request, runtimeID, leaseToken) {
 		return db.RoleSourceArtifact{}, false, ErrScanLeaseLost
+	}
+	intent, intentErr := qtx.GetRoleSourceArtifactDeleteIntentForUpdate(ctx, input.StorageKey)
+	if intentErr == nil {
+		if intent.State == "deleting" {
+			return db.RoleSourceArtifact{}, false, ErrArtifactDeleteActive
+		}
+		cancelled, err := qtx.CancelRoleSourceArtifactDeleteIntent(ctx, input.StorageKey)
+		if err != nil {
+			return db.RoleSourceArtifact{}, false, err
+		}
+		if cancelled != 1 {
+			return db.RoleSourceArtifact{}, false, ErrArtifactDeleteActive
+		}
+	} else if !errors.Is(intentErr, pgx.ErrNoRows) {
+		return db.RoleSourceArtifact{}, false, intentErr
 	}
 	row, err := qtx.InsertRoleSourceArtifact(ctx, db.InsertRoleSourceArtifactParams{
 		WorkspaceID: workspaceID, Digest: input.Digest, SizeBytes: input.SizeBytes, StorageKey: input.StorageKey,

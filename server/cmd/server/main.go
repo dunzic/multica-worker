@@ -345,6 +345,7 @@ func main() {
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
 	var roleSourceMetrics *obsmetrics.RoleSourceMetrics
+	var roleSourceArtifactGCMetrics *obsmetrics.RoleSourceArtifactGCMetrics
 	if metricsConfig.Enabled() {
 		// Build a dedicated tiny pool for the BusinessSamplerCollector
 		// so a stalled scrape can never starve business traffic. If the
@@ -375,6 +376,7 @@ func main() {
 		channelMediaMetrics = metricsRegistry.ChannelMedia
 		wecomMetrics = metricsRegistry.Wecom
 		roleSourceMetrics = metricsRegistry.RoleSource
+		roleSourceArtifactGCMetrics = metricsRegistry.RoleSourceArtifactGC
 		// Forward inbound daemon WS frames into the per-kind counter so
 		// dashboards can split heartbeat / unknown / invalid traffic.
 		if daemonHub != nil {
@@ -463,6 +465,10 @@ func main() {
 	if h.ChannelMediaReconciler != nil {
 		h.ChannelMediaReconciler.Metrics = channelMediaMetrics
 		go h.ChannelMediaReconciler.Run(sweepCtx)
+	}
+	if h.RoleSourceArtifactReconciler != nil {
+		h.RoleSourceArtifactReconciler.Metrics = roleSourceArtifactGCMetrics
+		go h.RoleSourceArtifactReconciler.Run(sweepCtx)
 	}
 	if h.ChannelDeliveryReconciler != nil {
 		go h.ChannelDeliveryReconciler.Run(sweepCtx)

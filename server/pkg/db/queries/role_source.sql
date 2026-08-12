@@ -144,6 +144,84 @@ WHERE workspace_id = @workspace_id
   AND snapshot_digest = @snapshot_digest
 ORDER BY artifact_digest;
 
+-- name: QueueNextUnreachableRoleSourceArtifact :one
+WITH candidate AS MATERIALIZED (
+    SELECT artifact.*
+    FROM role_source_artifact artifact
+    WHERE artifact.created_at < now() - @settle_delay::interval
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_snapshot_artifact edge
+          WHERE edge.workspace_id = artifact.workspace_id
+            AND edge.artifact_digest = artifact.digest
+      )
+    ORDER BY artifact.created_at, artifact.storage_key
+    FOR UPDATE OF artifact SKIP LOCKED
+    LIMIT 1
+), queued AS (
+    INSERT INTO role_source_artifact_delete_intent (
+        storage_key, artifact_digest, size_bytes, reason
+    )
+    SELECT storage_key, digest, size_bytes, 'unreachable' FROM candidate
+    ON CONFLICT (storage_key) DO NOTHING
+    RETURNING *
+), removed AS (
+    DELETE FROM role_source_artifact artifact
+    USING queued
+    WHERE artifact.storage_key = queued.storage_key
+    RETURNING artifact.storage_key
+)
+SELECT queued.* FROM queued JOIN removed USING (storage_key);
+
+-- name: ClaimNextRoleSourceArtifactDeleteIntent :one
+WITH candidate AS MATERIALIZED (
+    SELECT storage_key
+    FROM role_source_artifact_delete_intent
+    WHERE next_attempt_at <= now()
+      AND (state IN ('pending', 'tombstoned') OR (state = 'deleting' AND lease_expires_at < now()))
+    ORDER BY next_attempt_at, storage_key
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_artifact_delete_intent intent
+SET state = 'deleting', lease_token = @lease_token,
+    lease_expires_at = now() + @lease_duration::interval,
+    attempt = attempt + 1, updated_at = now()
+FROM candidate
+WHERE intent.storage_key = candidate.storage_key
+RETURNING intent.*;
+
+-- name: TombstoneRoleSourceArtifactDeleteIntent :execrows
+UPDATE role_source_artifact_delete_intent
+SET state = 'tombstoned', lease_token = NULL, lease_expires_at = NULL,
+    tombstone_pass = @tombstone_pass,
+    next_attempt_at = now() + @next_delay::interval, updated_at = now()
+WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease_token;
+
+-- name: ReleaseRoleSourceArtifactDeleteIntent :execrows
+UPDATE role_source_artifact_delete_intent
+SET state = 'pending', lease_token = NULL, lease_expires_at = NULL,
+    next_attempt_at = now() + @retry_delay::interval, updated_at = now()
+WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease_token;
+
+-- name: CompleteRoleSourceArtifactDeleteIntent :execrows
+DELETE FROM role_source_artifact_delete_intent
+WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease_token;
+
+-- name: GetRoleSourceArtifactDeleteIntentForUpdate :one
+SELECT * FROM role_source_artifact_delete_intent
+WHERE storage_key = @storage_key
+FOR UPDATE;
+
+-- name: CancelRoleSourceArtifactDeleteIntent :execrows
+DELETE FROM role_source_artifact_delete_intent
+WHERE storage_key = @storage_key AND state IN ('pending', 'tombstoned');
+
+-- name: CountRoleSourceArtifactDeleteIntents :one
+SELECT
+    count(*) FILTER (WHERE state IN ('pending', 'deleting'))::bigint AS active_count,
+    count(*) FILTER (WHERE state = 'tombstoned')::bigint AS tombstone_count
+FROM role_source_artifact_delete_intent;
+
 -- name: CreateRoleSourceScanRequest :one
 INSERT INTO role_source_scan_request (
     id, source_id, workspace_id, requested_by, expected_adapter_version

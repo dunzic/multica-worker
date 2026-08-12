@@ -1034,6 +1034,8 @@ func writeRoleSourceArtifactLeaseError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "scan not found")
 	case errors.Is(err, rolesource.ErrInvalidArtifactRequest):
 		writeError(w, http.StatusBadRequest, "invalid artifact request")
+	case errors.Is(err, rolesource.ErrArtifactDeleteActive):
+		writeError(w, http.StatusServiceUnavailable, "artifact deletion reconciliation is in progress; retry upload")
 	default:
 		slog.Error("role source artifact control-plane request failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "artifact control plane failed")

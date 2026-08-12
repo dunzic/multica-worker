@@ -370,6 +370,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			Storage: store,
 			Logger:  slog.Default(),
 		}
+		if enabled := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED")); enabled == "true" || enabled == "1" {
+			h.RoleSourceArtifactReconciler = &service.RoleSourceArtifactReconciler{
+				Queries: queries,
+				Storage: store,
+				Logger:  slog.Default(),
+			}
+		}
 	}
 	h.ChannelSupervisor = engine.NewSupervisor(
 		lark.NewChannelInstallationStore(queries),

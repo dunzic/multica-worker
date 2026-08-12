@@ -83,6 +83,63 @@ func (q *Queries) AllocateRoleSourceAuditSequence(ctx context.Context, arg Alloc
 	return audit_sequence, err
 }
 
+const cancelRoleSourceArtifactDeleteIntent = `-- name: CancelRoleSourceArtifactDeleteIntent :execrows
+DELETE FROM role_source_artifact_delete_intent
+WHERE storage_key = $1 AND state IN ('pending', 'tombstoned')
+`
+
+func (q *Queries) CancelRoleSourceArtifactDeleteIntent(ctx context.Context, storageKey string) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelRoleSourceArtifactDeleteIntent, storageKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const claimNextRoleSourceArtifactDeleteIntent = `-- name: ClaimNextRoleSourceArtifactDeleteIntent :one
+WITH candidate AS MATERIALIZED (
+    SELECT storage_key
+    FROM role_source_artifact_delete_intent
+    WHERE next_attempt_at <= now()
+      AND (state IN ('pending', 'tombstoned') OR (state = 'deleting' AND lease_expires_at < now()))
+    ORDER BY next_attempt_at, storage_key
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_artifact_delete_intent intent
+SET state = 'deleting', lease_token = $1,
+    lease_expires_at = now() + $2::interval,
+    attempt = attempt + 1, updated_at = now()
+FROM candidate
+WHERE intent.storage_key = candidate.storage_key
+RETURNING intent.storage_key, intent.artifact_digest, intent.size_bytes, intent.reason, intent.state, intent.lease_token, intent.lease_expires_at, intent.attempt, intent.tombstone_pass, intent.next_attempt_at, intent.created_at, intent.updated_at
+`
+
+type ClaimNextRoleSourceArtifactDeleteIntentParams struct {
+	LeaseToken    pgtype.UUID     `json:"lease_token"`
+	LeaseDuration pgtype.Interval `json:"lease_duration"`
+}
+
+func (q *Queries) ClaimNextRoleSourceArtifactDeleteIntent(ctx context.Context, arg ClaimNextRoleSourceArtifactDeleteIntentParams) (RoleSourceArtifactDeleteIntent, error) {
+	row := q.db.QueryRow(ctx, claimNextRoleSourceArtifactDeleteIntent, arg.LeaseToken, arg.LeaseDuration)
+	var i RoleSourceArtifactDeleteIntent
+	err := row.Scan(
+		&i.StorageKey,
+		&i.ArtifactDigest,
+		&i.SizeBytes,
+		&i.Reason,
+		&i.State,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.Attempt,
+		&i.TombstonePass,
+		&i.NextAttemptAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const claimNextRoleSourceScan = `-- name: ClaimNextRoleSourceScan :one
 WITH source_candidate AS MATERIALIZED (
     SELECT source.id
@@ -265,6 +322,24 @@ func (q *Queries) CompleteRoleSourceApply(ctx context.Context, arg CompleteRoleS
 		&i.CompletedAt,
 	)
 	return i, err
+}
+
+const completeRoleSourceArtifactDeleteIntent = `-- name: CompleteRoleSourceArtifactDeleteIntent :execrows
+DELETE FROM role_source_artifact_delete_intent
+WHERE storage_key = $1 AND state = 'deleting' AND lease_token = $2
+`
+
+type CompleteRoleSourceArtifactDeleteIntentParams struct {
+	StorageKey string      `json:"storage_key"`
+	LeaseToken pgtype.UUID `json:"lease_token"`
+}
+
+func (q *Queries) CompleteRoleSourceArtifactDeleteIntent(ctx context.Context, arg CompleteRoleSourceArtifactDeleteIntentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeRoleSourceArtifactDeleteIntent, arg.StorageKey, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const completeRoleSourceScanFailure = `-- name: CompleteRoleSourceScanFailure :one
@@ -458,6 +533,25 @@ func (q *Queries) CountInvalidRoleSourceObjectMappings(ctx context.Context, arg 
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const countRoleSourceArtifactDeleteIntents = `-- name: CountRoleSourceArtifactDeleteIntents :one
+SELECT
+    count(*) FILTER (WHERE state IN ('pending', 'deleting'))::bigint AS active_count,
+    count(*) FILTER (WHERE state = 'tombstoned')::bigint AS tombstone_count
+FROM role_source_artifact_delete_intent
+`
+
+type CountRoleSourceArtifactDeleteIntentsRow struct {
+	ActiveCount    int64 `json:"active_count"`
+	TombstoneCount int64 `json:"tombstone_count"`
+}
+
+func (q *Queries) CountRoleSourceArtifactDeleteIntents(ctx context.Context) (CountRoleSourceArtifactDeleteIntentsRow, error) {
+	row := q.db.QueryRow(ctx, countRoleSourceArtifactDeleteIntents)
+	var i CountRoleSourceArtifactDeleteIntentsRow
+	err := row.Scan(&i.ActiveCount, &i.TombstoneCount)
+	return i, err
 }
 
 const createRoleSource = `-- name: CreateRoleSource :one
@@ -898,6 +992,32 @@ func (q *Queries) GetRoleSourceArtifact(ctx context.Context, arg GetRoleSourceAr
 		&i.FirstSourceID,
 		&i.FirstScanRequestID,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceArtifactDeleteIntentForUpdate = `-- name: GetRoleSourceArtifactDeleteIntentForUpdate :one
+SELECT storage_key, artifact_digest, size_bytes, reason, state, lease_token, lease_expires_at, attempt, tombstone_pass, next_attempt_at, created_at, updated_at FROM role_source_artifact_delete_intent
+WHERE storage_key = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetRoleSourceArtifactDeleteIntentForUpdate(ctx context.Context, storageKey string) (RoleSourceArtifactDeleteIntent, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceArtifactDeleteIntentForUpdate, storageKey)
+	var i RoleSourceArtifactDeleteIntent
+	err := row.Scan(
+		&i.StorageKey,
+		&i.ArtifactDigest,
+		&i.SizeBytes,
+		&i.Reason,
+		&i.State,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.Attempt,
+		&i.TombstonePass,
+		&i.NextAttemptAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -2856,6 +2976,91 @@ func (q *Queries) MarkRoleSourceApplyRunning(ctx context.Context, arg MarkRoleSo
 	return i, err
 }
 
+const queueNextUnreachableRoleSourceArtifact = `-- name: QueueNextUnreachableRoleSourceArtifact :one
+WITH candidate AS MATERIALIZED (
+    SELECT artifact.workspace_id, artifact.digest, artifact.size_bytes, artifact.storage_key, artifact.uploaded_by_runtime_id, artifact.first_source_id, artifact.first_scan_request_id, artifact.created_at
+    FROM role_source_artifact artifact
+    WHERE artifact.created_at < now() - $1::interval
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_snapshot_artifact edge
+          WHERE edge.workspace_id = artifact.workspace_id
+            AND edge.artifact_digest = artifact.digest
+      )
+    ORDER BY artifact.created_at, artifact.storage_key
+    FOR UPDATE OF artifact SKIP LOCKED
+    LIMIT 1
+), queued AS (
+    INSERT INTO role_source_artifact_delete_intent (
+        storage_key, artifact_digest, size_bytes, reason
+    )
+    SELECT storage_key, digest, size_bytes, 'unreachable' FROM candidate
+    ON CONFLICT (storage_key) DO NOTHING
+    RETURNING storage_key, artifact_digest, size_bytes, reason, state, lease_token, lease_expires_at, attempt, tombstone_pass, next_attempt_at, created_at, updated_at
+), removed AS (
+    DELETE FROM role_source_artifact artifact
+    USING queued
+    WHERE artifact.storage_key = queued.storage_key
+    RETURNING artifact.storage_key
+)
+SELECT queued.storage_key, queued.artifact_digest, queued.size_bytes, queued.reason, queued.state, queued.lease_token, queued.lease_expires_at, queued.attempt, queued.tombstone_pass, queued.next_attempt_at, queued.created_at, queued.updated_at FROM queued JOIN removed USING (storage_key)
+`
+
+type QueueNextUnreachableRoleSourceArtifactRow struct {
+	StorageKey     string             `json:"storage_key"`
+	ArtifactDigest string             `json:"artifact_digest"`
+	SizeBytes      int64              `json:"size_bytes"`
+	Reason         string             `json:"reason"`
+	State          string             `json:"state"`
+	LeaseToken     pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	Attempt        int32              `json:"attempt"`
+	TombstonePass  int32              `json:"tombstone_pass"`
+	NextAttemptAt  pgtype.Timestamptz `json:"next_attempt_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) QueueNextUnreachableRoleSourceArtifact(ctx context.Context, settleDelay pgtype.Interval) (QueueNextUnreachableRoleSourceArtifactRow, error) {
+	row := q.db.QueryRow(ctx, queueNextUnreachableRoleSourceArtifact, settleDelay)
+	var i QueueNextUnreachableRoleSourceArtifactRow
+	err := row.Scan(
+		&i.StorageKey,
+		&i.ArtifactDigest,
+		&i.SizeBytes,
+		&i.Reason,
+		&i.State,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.Attempt,
+		&i.TombstonePass,
+		&i.NextAttemptAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const releaseRoleSourceArtifactDeleteIntent = `-- name: ReleaseRoleSourceArtifactDeleteIntent :execrows
+UPDATE role_source_artifact_delete_intent
+SET state = 'pending', lease_token = NULL, lease_expires_at = NULL,
+    next_attempt_at = now() + $1::interval, updated_at = now()
+WHERE storage_key = $2 AND state = 'deleting' AND lease_token = $3
+`
+
+type ReleaseRoleSourceArtifactDeleteIntentParams struct {
+	RetryDelay pgtype.Interval `json:"retry_delay"`
+	StorageKey string          `json:"storage_key"`
+	LeaseToken pgtype.UUID     `json:"lease_token"`
+}
+
+func (q *Queries) ReleaseRoleSourceArtifactDeleteIntent(ctx context.Context, arg ReleaseRoleSourceArtifactDeleteIntentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseRoleSourceArtifactDeleteIntent, arg.RetryDelay, arg.StorageKey, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const renewRoleSourceScanLease = `-- name: RenewRoleSourceScanLease :one
 UPDATE role_source_scan_request
 SET lease_expires_at = now() + $1::interval
@@ -2972,6 +3177,34 @@ func (q *Queries) SubmitRoleSourceSecretTransfer(ctx context.Context, arg Submit
 		&i.ErrorCode,
 	)
 	return i, err
+}
+
+const tombstoneRoleSourceArtifactDeleteIntent = `-- name: TombstoneRoleSourceArtifactDeleteIntent :execrows
+UPDATE role_source_artifact_delete_intent
+SET state = 'tombstoned', lease_token = NULL, lease_expires_at = NULL,
+    tombstone_pass = $1,
+    next_attempt_at = now() + $2::interval, updated_at = now()
+WHERE storage_key = $3 AND state = 'deleting' AND lease_token = $4
+`
+
+type TombstoneRoleSourceArtifactDeleteIntentParams struct {
+	TombstonePass int32           `json:"tombstone_pass"`
+	NextDelay     pgtype.Interval `json:"next_delay"`
+	StorageKey    string          `json:"storage_key"`
+	LeaseToken    pgtype.UUID     `json:"lease_token"`
+}
+
+func (q *Queries) TombstoneRoleSourceArtifactDeleteIntent(ctx context.Context, arg TombstoneRoleSourceArtifactDeleteIntentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, tombstoneRoleSourceArtifactDeleteIntent,
+		arg.TombstonePass,
+		arg.NextDelay,
+		arg.StorageKey,
+		arg.LeaseToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateRoleSourceState = `-- name: UpdateRoleSourceState :one

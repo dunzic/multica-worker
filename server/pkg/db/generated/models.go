@@ -1007,6 +1007,21 @@ type RoleSourceArtifact struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
+type RoleSourceArtifactDeleteIntent struct {
+	StorageKey     string             `json:"storage_key"`
+	ArtifactDigest string             `json:"artifact_digest"`
+	SizeBytes      int64              `json:"size_bytes"`
+	Reason         string             `json:"reason"`
+	State          string             `json:"state"`
+	LeaseToken     pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	Attempt        int32              `json:"attempt"`
+	TombstonePass  int32              `json:"tombstone_pass"`
+	NextAttemptAt  pgtype.Timestamptz `json:"next_attempt_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RoleSourceAuditEvent struct {
 	ID                  pgtype.UUID        `json:"id"`
 	SourceID            pgtype.UUID        `json:"source_id"`

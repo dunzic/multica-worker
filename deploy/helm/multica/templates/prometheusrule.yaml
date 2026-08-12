@@ -64,4 +64,12 @@ spec:
           annotations:
             summary: "Role-source apply commit outcome could not be reconciled"
             description: "An apply COMMIT returned an error and the independent receipt check could not safely establish the outcome (outcome={{ "{{ $labels.outcome }}" }}). Stop apply rollout and reconcile the request against successful receipts before retry or recovery."
+        - alert: MulticaRoleSourceArtifactGCDeleteFailures
+          expr: increase(multica_role_source_artifact_gc_delete_failures_total[15m]) > 20
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source artifact garbage collection cannot delete objects"
+            description: "More than 20 role-source artifact object deletes failed in 15 minutes and the failure rate stayed elevated. The durable intents are retained for retry; inspect object-storage availability and deletion permissions before backlog growth exhausts capacity."
 {{- end }}
