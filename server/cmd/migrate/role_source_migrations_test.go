@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -48,6 +49,8 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Strings(upFiles)
+	expectedTables, expectedIndexes := 0, 0
+	indexPattern := regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
 	for _, name := range upFiles {
 		body, err := os.ReadFile(name)
 		if err != nil {
@@ -55,6 +58,10 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 		}
 		if _, err := conn.Exec(ctx, string(body)); err != nil {
 			t.Fatalf("apply %s: %v", filepath.Base(name), err)
+		}
+		expectedTables += strings.Count(strings.ToUpper(string(body)), "CREATE TABLE ")
+		if indexPattern.Match(body) {
+			expectedIndexes++
 		}
 	}
 
@@ -66,15 +73,15 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 	`, schema).Scan(&tableCount); err != nil {
 		t.Fatal(err)
 	}
-	if tableCount != 7 {
-		t.Fatalf("role-source table count = %d, want 7", tableCount)
+	if tableCount != expectedTables {
+		t.Fatalf("role-source table count = %d, want %d", tableCount, expectedTables)
 	}
 	var indexCount int
 	if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE 'role_source%'`, schema).Scan(&indexCount); err != nil {
 		t.Fatal(err)
 	}
-	if indexCount != len(upFiles)-1 {
-		t.Fatalf("role-source index count = %d, want %d", indexCount, len(upFiles)-1)
+	if indexCount != expectedIndexes {
+		t.Fatalf("role-source index count = %d, want %d", indexCount, expectedIndexes)
 	}
 
 	downFiles := make([]string, len(upFiles))
