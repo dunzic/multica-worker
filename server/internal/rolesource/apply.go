@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -139,7 +140,28 @@ type applyPreflight struct {
 	receipt        *ApplyReceipt
 }
 
+type applyAttemptTracker struct {
+	recordable       bool
+	workspaceID      pgtype.UUID
+	sourceID         pgtype.UUID
+	approvalID       pgtype.UUID
+	actorID          pgtype.UUID
+	planDigest       string
+	requestKeyDigest string
+	mode             string
+	stage            string
+}
+
 func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.RoleSourceApply, ApplyReceipt, error) {
+	tracker := applyAttemptTracker{mode: "unknown", stage: "preflight"}
+	row, receipt, err := c.applyPlan(ctx, input, &tracker)
+	if err != nil && tracker.recordable {
+		c.recordApplyFailure(ctx, tracker, err)
+	}
+	return row, receipt, err
+}
+
+func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, tracker *applyAttemptTracker) (db.RoleSourceApply, ApplyReceipt, error) {
 	input.RequestKey = strings.TrimSpace(input.RequestKey)
 	if !sha256Pattern.MatchString(input.PlanDigest) || input.RequestKey == "" || len(input.RequestKey) > 200 {
 		return db.RoleSourceApply{}, ApplyReceipt{}, fmt.Errorf("%w: apply requires a valid plan digest and bounded request key", ErrInvalidApplyRequest)
@@ -156,6 +178,13 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	input.SourceID = util.UUIDToString(sourceID)
 	input.ActorUserID = util.UUIDToString(actorID)
 	input.ApprovalID = util.UUIDToString(approvalID)
+	requestKeyDigest := sha256.Sum256([]byte(input.RequestKey))
+	*tracker = applyAttemptTracker{
+		recordable: true, workspaceID: workspaceID, sourceID: sourceID,
+		approvalID: approvalID, actorID: actorID, planDigest: input.PlanDigest,
+		requestKeyDigest: "sha256:" + hex.EncodeToString(requestKeyDigest[:]),
+		mode:             "unknown", stage: "preflight",
+	}
 	if err := normalizeApplySecretTransferIDs(&input); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
@@ -179,6 +208,7 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		return *preflight.existing, *preflight.receipt, nil
 	}
 
+	tracker.stage = "transaction"
 	tx, err := c.database.Begin(ctx)
 	if err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
@@ -200,6 +230,10 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	if err != nil || !plan.Applyable {
 		return db.RoleSourceApply{}, ApplyReceipt{}, fmt.Errorf("%w: plan is invalid or blocked", ErrInvalidApplyRequest)
 	}
+	tracker.mode = "apply"
+	if plan.Mode == PlanModeRollback {
+		tracker.mode = "rollback"
+	}
 	existing, existingErr := qtx.GetRoleSourceApplyByRequest(ctx, db.GetRoleSourceApplyByRequestParams{
 		SourceID: sourceID, WorkspaceID: workspaceID, RequestKey: input.RequestKey,
 	})
@@ -208,6 +242,7 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		if matchErr != nil {
 			return db.RoleSourceApply{}, ApplyReceipt{}, matchErr
 		}
+		tracker.stage = "commit"
 		if err := tx.Commit(ctx); err != nil {
 			return db.RoleSourceApply{}, ApplyReceipt{}, err
 		}
@@ -281,6 +316,7 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		if matchErr != nil {
 			return db.RoleSourceApply{}, ApplyReceipt{}, matchErr
 		}
+		tracker.stage = "commit"
 		if err := tx.Commit(ctx); err != nil {
 			return db.RoleSourceApply{}, ApplyReceipt{}, err
 		}
@@ -294,6 +330,7 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 
+	tracker.stage = "materialization"
 	artifacts := preflight.artifacts
 	if err := validatePreflightArtifactLedger(ctx, qtx, workspaceID, artifacts); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
@@ -328,6 +365,7 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	if err := state.consumeSecretTransfers(ctx); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	tracker.stage = "finalize"
 	expected := pgtype.Text{}
 	if plan.FromSnapshotDigest != "" {
 		expected = pgtype.Text{String: plan.FromSnapshotDigest, Valid: true}
@@ -373,10 +411,61 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 	}); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	tracker.stage = "commit"
 	if err := tx.Commit(ctx); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	return applyRow, receipt, nil
+}
+
+func classifyApplyFailure(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "request_cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, ErrMaterializationOverload):
+		return "capacity_exhausted"
+	case errors.Is(err, ErrMaterializationBlocked):
+		return "materialization_blocked"
+	case errors.Is(err, ErrApplyConflict), errors.Is(err, ErrIdempotencyConflict):
+		return "state_conflict"
+	case errors.Is(err, ErrInvalidApplyRequest):
+		return "invalid_request"
+	case errors.Is(err, ErrInvalidSecretEnvelope), errors.Is(err, ErrExpiredSecretEnvelope):
+		return "invalid_secret_transfer"
+	case errors.Is(err, ErrSecretStoreUnavailable):
+		return "dependency_unavailable"
+	case errors.Is(err, pgx.ErrNoRows):
+		return "resource_not_found"
+	default:
+		return "internal_failure"
+	}
+}
+
+func (c *ControlPlane) recordApplyFailure(parent context.Context, tracker applyAttemptTracker, applyErr error) {
+	id, err := newPGUUID()
+	if err != nil {
+		slog.Warn("role source apply failure audit id generation failed", "stage", tracker.stage)
+		return
+	}
+	params := newApplyFailureParams(id, tracker, classifyApplyFailure(applyErr), c.now())
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
+	defer cancel()
+	_, err = db.New(c.database).InsertRoleSourceApplyFailure(ctx, params)
+	if err != nil {
+		slog.Warn("role source apply failure audit persist failed", "stage", params.FailureStage, "failure_code", params.FailureCode, "error", err)
+	}
+}
+
+func newApplyFailureParams(id pgtype.UUID, tracker applyAttemptTracker, failureCode string, occurredAt time.Time) db.InsertRoleSourceApplyFailureParams {
+	return db.InsertRoleSourceApplyFailureParams{
+		ID: id, WorkspaceID: tracker.workspaceID, SourceID: tracker.sourceID,
+		PlanDigest: tracker.planDigest, ApprovalID: tracker.approvalID, ActorUserID: tracker.actorID,
+		RequestKeyDigest: tracker.requestKeyDigest, Mode: tracker.mode,
+		FailureStage: tracker.stage, FailureCode: failureCode,
+		OccurredAt: pgtype.Timestamptz{Time: occurredAt.UTC(), Valid: true},
+	}
 }
 
 func (c *ControlPlane) ListApplyHistory(ctx context.Context, workspaceIDText, sourceIDText string, limit int32) ([]ApplyHistoryItem, error) {
@@ -402,6 +491,19 @@ func (c *ControlPlane) ListApplyHistory(ctx context.Context, workspaceIDText, so
 		items = append(items, ApplyHistoryItem{Row: row, Receipt: receipt})
 	}
 	return items, nil
+}
+
+func (c *ControlPlane) ListApplyFailures(ctx context.Context, workspaceIDText, sourceIDText string, limit int32) ([]db.RoleSourceApplyFailure, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > 100 {
+		return nil, errors.New("apply failure limit must be between 1 and 100")
+	}
+	return c.queries().ListRoleSourceApplyFailures(ctx, db.ListRoleSourceApplyFailuresParams{
+		WorkspaceID: workspaceID, SourceID: sourceID, ResultLimit: limit,
+	})
 }
 
 func matchIdempotentApply(existing db.RoleSourceApply, plan Plan, input ApplyPlanInput, actorID pgtype.UUID) (ApplyReceipt, error) {

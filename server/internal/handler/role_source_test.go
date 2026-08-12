@@ -74,6 +74,8 @@ type fakeRoleSourceControlPlane struct {
 	planListErr               error
 	applyHistory              []rolesource.ApplyHistoryItem
 	applyHistoryErr           error
+	applyFailures             []db.RoleSourceApplyFailure
+	applyFailuresErr          error
 	snapshotRows              []db.RoleSourceSnapshot
 	snapshotListErr           error
 	approvalRows              []db.RoleSourcePlanApproval
@@ -101,6 +103,11 @@ func (f *fakeRoleSourceControlPlane) CreateRollbackPlan(_ context.Context, input
 func (f *fakeRoleSourceControlPlane) ListApplyHistory(context.Context, string, string, int32) ([]rolesource.ApplyHistoryItem, error) {
 	f.calls++
 	return f.applyHistory, f.applyHistoryErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListApplyFailures(context.Context, string, string, int32) ([]db.RoleSourceApplyFailure, error) {
+	f.calls++
+	return f.applyFailures, f.applyFailuresErr
 }
 
 func (f *fakeRoleSourceControlPlane) RequestSecretTransfer(_ context.Context, input rolesource.RequestSecretTransferInput) (db.RoleSourceSecretTransfer, error) {
@@ -669,6 +676,29 @@ func TestListRoleSourceApplyHistoryExposesProvenanceWithoutIdempotencyKeys(t *te
 	}
 	if strings.Contains(w.Body.String(), "never-expose-history-key") || strings.Contains(w.Body.String(), "request_key") {
 		t.Fatalf("apply history exposed idempotency key: %s", w.Body.String())
+	}
+}
+
+func TestListRoleSourceApplyFailuresExposesStableCodesWithoutCorrelationDigest(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{applyFailures: []db.RoleSourceApplyFailure{{
+		ID:       util.MustParseUUID("00000000-0000-4000-8000-000000000045"),
+		SourceID: util.MustParseUUID(roleSourceTestSourceID), WorkspaceID: util.MustParseUUID(testWorkspaceID),
+		PlanDigest: "sha256:" + strings.Repeat("a", 64), ApprovalID: util.MustParseUUID("00000000-0000-4000-8000-000000000044"),
+		ActorUserID: util.MustParseUUID(testUserID), RequestKeyDigest: "sha256:" + strings.Repeat("f", 64),
+		Mode: "apply", FailureStage: "materialization", FailureCode: "state_conflict",
+		OccurredAt: pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 2, 0, 0, 0, time.UTC), Valid: true},
+	}}}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.ListRoleSourceApplyFailures(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"failure_stage":"materialization"`) || !strings.Contains(w.Body.String(), `"failure_code":"state_conflict"`) {
+		t.Fatalf("apply failure response: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), strings.Repeat("f", 64)) || strings.Contains(w.Body.String(), "request_key") || strings.Contains(w.Body.String(), "raw_error") {
+		t.Fatalf("apply failure response exposed internal correlation or raw detail: %s", w.Body.String())
 	}
 }
 

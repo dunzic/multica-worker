@@ -45,6 +45,7 @@ type RoleSourceControlPlane interface {
 	GetPlanImpact(context.Context, string, string, string) (rolesource.PlanImpact, error)
 	ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error)
 	ListApplyHistory(context.Context, string, string, int32) ([]rolesource.ApplyHistoryItem, error)
+	ListApplyFailures(context.Context, string, string, int32) ([]db.RoleSourceApplyFailure, error)
 	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
 	ListPlanApprovals(context.Context, string, string, string, int32) ([]db.RoleSourcePlanApproval, error)
 	ListMissingArtifacts(context.Context, rolesource.ArtifactLeaseInput, []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error)
@@ -126,6 +127,19 @@ type roleSourceApplyResponse struct {
 	ActorUserID string                  `json:"actor_user_id"`
 	Receipt     rolesource.ApplyReceipt `json:"receipt"`
 	CompletedAt *string                 `json:"completed_at"`
+}
+
+type roleSourceApplyFailureResponse struct {
+	ID           string `json:"id"`
+	SourceID     string `json:"source_id"`
+	WorkspaceID  string `json:"workspace_id"`
+	PlanDigest   string `json:"plan_digest"`
+	ApprovalID   string `json:"approval_id"`
+	ActorUserID  string `json:"actor_user_id"`
+	Mode         string `json:"mode"`
+	FailureStage string `json:"failure_stage"`
+	FailureCode  string `json:"failure_code"`
+	OccurredAt   string `json:"occurred_at"`
 }
 
 type roleSourceSecretTransferResponse struct {
@@ -668,6 +682,31 @@ func (h *Handler) ListRoleSourceApplyHistory(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"applies": responses})
+}
+
+// ListRoleSourceApplyFailures exposes only stable failure codes and bounded
+// provenance. The request-key digest remains an internal correlation field;
+// raw request keys, raw errors and source content are never returned.
+func (h *Handler) ListRoleSourceApplyFailures(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	rows, err := h.RoleSources.ListApplyFailures(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), 100)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list apply failures")
+		return
+	}
+	responses := make([]roleSourceApplyFailureResponse, 0, len(rows))
+	for _, row := range rows {
+		responses = append(responses, roleSourceApplyFailureResponse{
+			ID: util.UUIDToString(row.ID), SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+			PlanDigest: row.PlanDigest, ApprovalID: util.UUIDToString(row.ApprovalID), ActorUserID: util.UUIDToString(row.ActorUserID),
+			Mode: row.Mode, FailureStage: row.FailureStage, FailureCode: row.FailureCode,
+			OccurredAt: util.TimestampToString(row.OccurredAt),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"failures": responses})
 }
 
 // ListRoleSourceTaskPins exposes content-free execution provenance to workspace

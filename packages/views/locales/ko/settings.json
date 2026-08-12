@@ -216,7 +216,12 @@
     "effect_conditional_cancel": "보관 시 취소",
     "effect_continue": "현재 버전으로 계속",
     "no_active_tasks": "현재 영향받는 활성 태스크가 없습니다.",
-    "impact_truncated": "상세가 잘렸습니다. 위 집계에는 영향받는 모든 작업이 포함됩니다."
+    "impact_truncated": "상세가 잘렸습니다. 위 집계에는 영향받는 모든 작업이 포함됩니다.",
+    "failed_applies_title": "실패한 적용 시도",
+    "failed_applies_description": "변경 트랜잭션 롤백 후 독립적으로 기록되는 추가 전용, 콘텐츠 비포함 감사 증거입니다.",
+    "failed_applies_load_failed": "실패한 적용 시도를 불러올 수 없습니다.",
+    "no_failed_applies": "이 역할 소스에 기록된 실패한 적용 시도가 없습니다.",
+    "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"
   },
   "properties": {
     "title": "속성",

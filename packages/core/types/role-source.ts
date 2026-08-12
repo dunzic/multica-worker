@@ -127,3 +127,21 @@ export interface RoleSourcePlanImpact {
   workers: RoleSourcePlanImpactWorker[];
   tasks: RoleSourcePlanImpactTask[];
 }
+
+export interface RoleSourceApplyFailure {
+  id: string;
+  source_id: string;
+  workspace_id: string;
+  plan_digest: string;
+  approval_id: string;
+  actor_user_id: string;
+  mode: "apply" | "rollback" | "unknown";
+  failure_stage:
+    | "preflight"
+    | "transaction"
+    | "materialization"
+    | "finalize"
+    | "commit";
+  failure_code: string;
+  occurred_at: string;
+}

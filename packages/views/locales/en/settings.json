@@ -216,7 +216,12 @@
     "effect_conditional_cancel": "cancel if archived",
     "effect_continue": "continue current version",
     "no_active_tasks": "No active tasks are affected at this moment.",
-    "impact_truncated": "This preview is truncated. Aggregate counts above include all affected work."
+    "impact_truncated": "This preview is truncated. Aggregate counts above include all affected work.",
+    "failed_applies_title": "Failed apply attempts",
+    "failed_applies_description": "Append-only, content-free evidence recorded outside the rolled-back mutation transaction.",
+    "failed_applies_load_failed": "Couldn't load failed apply attempts.",
+    "no_failed_applies": "No failed apply attempts have been recorded for this source.",
+    "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"
   },
   "properties": {
     "title": "Properties",

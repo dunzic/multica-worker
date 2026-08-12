@@ -1467,6 +1467,64 @@ func (q *Queries) InsertRoleSourceApply(ctx context.Context, arg InsertRoleSourc
 	return i, err
 }
 
+const insertRoleSourceApplyFailure = `-- name: InsertRoleSourceApplyFailure :one
+INSERT INTO role_source_apply_failure (
+    id, workspace_id, source_id, plan_digest, approval_id, actor_user_id,
+    request_key_digest, mode, failure_stage, failure_code, occurred_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11
+)
+RETURNING id, workspace_id, source_id, plan_digest, approval_id, actor_user_id, request_key_digest, mode, failure_stage, failure_code, occurred_at
+`
+
+type InsertRoleSourceApplyFailureParams struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	SourceID         pgtype.UUID        `json:"source_id"`
+	PlanDigest       string             `json:"plan_digest"`
+	ApprovalID       pgtype.UUID        `json:"approval_id"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	RequestKeyDigest string             `json:"request_key_digest"`
+	Mode             string             `json:"mode"`
+	FailureStage     string             `json:"failure_stage"`
+	FailureCode      string             `json:"failure_code"`
+	OccurredAt       pgtype.Timestamptz `json:"occurred_at"`
+}
+
+// This append-only row is written after the main mutation transaction has
+// rolled back. It intentionally stores no request key, raw error or payload.
+func (q *Queries) InsertRoleSourceApplyFailure(ctx context.Context, arg InsertRoleSourceApplyFailureParams) (RoleSourceApplyFailure, error) {
+	row := q.db.QueryRow(ctx, insertRoleSourceApplyFailure,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.PlanDigest,
+		arg.ApprovalID,
+		arg.ActorUserID,
+		arg.RequestKeyDigest,
+		arg.Mode,
+		arg.FailureStage,
+		arg.FailureCode,
+		arg.OccurredAt,
+	)
+	var i RoleSourceApplyFailure
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.PlanDigest,
+		&i.ApprovalID,
+		&i.ActorUserID,
+		&i.RequestKeyDigest,
+		&i.Mode,
+		&i.FailureStage,
+		&i.FailureCode,
+		&i.OccurredAt,
+	)
+	return i, err
+}
+
 const insertRoleSourceArtifact = `-- name: InsertRoleSourceArtifact :one
 INSERT INTO role_source_artifact (
     workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id,
@@ -1901,6 +1959,51 @@ func (q *Queries) IsRoleSourceTaskPinCurrent(ctx context.Context, taskID pgtype.
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listRoleSourceApplyFailures = `-- name: ListRoleSourceApplyFailures :many
+SELECT id, workspace_id, source_id, plan_digest, approval_id, actor_user_id, request_key_digest, mode, failure_stage, failure_code, occurred_at FROM role_source_apply_failure
+WHERE workspace_id = $1 AND source_id = $2
+ORDER BY occurred_at DESC, id DESC
+LIMIT $3
+`
+
+type ListRoleSourceApplyFailuresParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+func (q *Queries) ListRoleSourceApplyFailures(ctx context.Context, arg ListRoleSourceApplyFailuresParams) ([]RoleSourceApplyFailure, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceApplyFailures, arg.WorkspaceID, arg.SourceID, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceApplyFailure{}
+	for rows.Next() {
+		var i RoleSourceApplyFailure
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.SourceID,
+			&i.PlanDigest,
+			&i.ApprovalID,
+			&i.ActorUserID,
+			&i.RequestKeyDigest,
+			&i.Mode,
+			&i.FailureStage,
+			&i.FailureCode,
+			&i.OccurredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRoleSourceArtifactsByDigests = `-- name: ListRoleSourceArtifactsByDigests :many

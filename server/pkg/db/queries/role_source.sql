@@ -695,6 +695,24 @@ SET status = @status,
 WHERE id = @id AND workspace_id = @workspace_id AND status = 'running'
 RETURNING *;
 
+-- name: InsertRoleSourceApplyFailure :one
+-- This append-only row is written after the main mutation transaction has
+-- rolled back. It intentionally stores no request key, raw error or payload.
+INSERT INTO role_source_apply_failure (
+    id, workspace_id, source_id, plan_digest, approval_id, actor_user_id,
+    request_key_digest, mode, failure_stage, failure_code, occurred_at
+) VALUES (
+    @id, @workspace_id, @source_id, @plan_digest, @approval_id, @actor_user_id,
+    @request_key_digest, @mode, @failure_stage, @failure_code, @occurred_at
+)
+RETURNING *;
+
+-- name: ListRoleSourceApplyFailures :many
+SELECT * FROM role_source_apply_failure
+WHERE workspace_id = @workspace_id AND source_id = @source_id
+ORDER BY occurred_at DESC, id DESC
+LIMIT @result_limit;
+
 -- name: InsertRoleSourceAuditEvent :one
 INSERT INTO role_source_audit_event (
     id, source_id, workspace_id, sequence, event_type, actor_type, actor_id,

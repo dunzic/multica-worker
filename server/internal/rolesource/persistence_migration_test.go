@@ -102,6 +102,24 @@ func TestRoleSourcePersistenceNeverStoresRawSourceConfig(t *testing.T) {
 	}
 }
 
+func TestRoleSourceApplyFailurePersistenceIsContentFree(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "324_role_source_apply_failure.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"request_key text", "raw_error", "error_message", "payload", "manifest", "artifact_body", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("apply failure schema contains sensitive field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"request_key_digest", "failure_stage", "failure_code", "occurred_at"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("apply failure schema is missing %q", required)
+		}
+	}
+}
+
 func TestRoleSourceTaskPinsAreContentFreeAndRetryStable(t *testing.T) {
 	schemaBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "316_role_source_task_pin.up.sql"))
 	if err != nil {

@@ -208,6 +208,9 @@ cleared_role_source_secret_transfers AS (
 cleared_role_source_approvals AS (
     DELETE FROM role_source_plan_approval WHERE role_source_plan_approval.workspace_id = $1
 ),
+cleared_role_source_apply_failures AS (
+    DELETE FROM role_source_apply_failure WHERE role_source_apply_failure.workspace_id = $1
+),
 cleared_role_source_applies AS (
     DELETE FROM role_source_apply WHERE role_source_apply.workspace_id = $1
 ),

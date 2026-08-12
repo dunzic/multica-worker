@@ -7,6 +7,7 @@ const queryFixtures = vi.hoisted(() => ({
   sources: [] as Array<Record<string, unknown>>,
   plans: [] as Array<Record<string, unknown>>,
   impact: undefined as Record<string, unknown> | undefined,
+  failures: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -22,6 +23,8 @@ vi.mock("@tanstack/react-query", async () => {
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
       data: options.queryKey.includes("impact")
         ? queryFixtures.impact
+        : options.queryKey.includes("apply-failures")
+          ? queryFixtures.failures
         : options.queryKey.includes("plans")
           ? queryFixtures.plans
           : queryFixtures.sources,
@@ -129,6 +132,20 @@ beforeEach(() => {
       },
     ],
   };
+  queryFixtures.failures = [
+    {
+      id: "failure-1",
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      plan_digest: "sha256:plan1234567890abcdef",
+      approval_id: "approval-1",
+      actor_user_id: "user-1",
+      mode: "apply",
+      failure_stage: "materialization",
+      failure_code: "state_conflict",
+      occurred_at: "2026-08-13T02:00:00Z",
+    },
+  ];
 });
 
 describe("RoleSourcesTab", () => {
@@ -144,14 +161,18 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText("1 continue current version")).toBeInTheDocument();
     expect(screen.getByText("Researcher")).toBeInTheDocument();
     expect(screen.getByText("task-1")).toBeInTheDocument();
+    expect(screen.getByText("Failed apply attempts")).toBeInTheDocument();
+    expect(screen.getByText("state_conflict")).toBeInTheDocument();
+    expect(screen.getByText(/apply · materialization/)).toBeInTheDocument();
     expect(screen.getByText(/This preview is read-only/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /approve|apply/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve|apply|retry|recover/i })).not.toBeInTheDocument();
   });
 
   it("shows an explicit empty state without inventing configuration actions", () => {
     queryFixtures.sources = [];
     queryFixtures.plans = [];
     queryFixtures.impact = undefined;
+    queryFixtures.failures = [];
 
     renderWithI18n(<RoleSourcesTab />);
 

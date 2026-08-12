@@ -982,6 +982,20 @@ type RoleSourceApply struct {
 	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
 }
 
+type RoleSourceApplyFailure struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	SourceID         pgtype.UUID        `json:"source_id"`
+	PlanDigest       string             `json:"plan_digest"`
+	ApprovalID       pgtype.UUID        `json:"approval_id"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	RequestKeyDigest string             `json:"request_key_digest"`
+	Mode             string             `json:"mode"`
+	FailureStage     string             `json:"failure_stage"`
+	FailureCode      string             `json:"failure_code"`
+	OccurredAt       pgtype.Timestamptz `json:"occurred_at"`
+}
+
 type RoleSourceArtifact struct {
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
 	Digest              string             `json:"digest"`

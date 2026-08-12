@@ -42,6 +42,7 @@ import type {
   RoleSource,
   RoleSourcePlanRecord,
   RoleSourcePlanImpact,
+  RoleSourceApplyFailure,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -1679,6 +1680,16 @@ export class ApiClient {
     return this.fetch<RoleSourcePlanImpact>(
       `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/impact`,
     );
+  }
+
+  async listRoleSourceApplyFailures(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceApplyFailure[]> {
+    const response = await this.fetch<{ failures?: RoleSourceApplyFailure[] }>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/apply-failures`,
+    );
+    return response.failures ?? [];
   }
 
   async getRuntimeProfile(

@@ -98,6 +98,7 @@ export type {
   RoleSourcePlanImpactSummary,
   RoleSourcePlanImpactTask,
   RoleSourcePlanImpactWorker,
+  RoleSourceApplyFailure,
 } from "./role-source";
 export type { InboxItem, InboxSeverity, InboxItemType, InboxWorkspaceUnread } from "./inbox";
 export type { NotificationGroupKey, NotificationGroupValue, NotificationPreferences, NotificationPreferenceResponse } from "./notification-preference";

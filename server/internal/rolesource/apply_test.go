@@ -10,12 +10,66 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+func TestClassifyApplyFailureUsesStableContentFreeCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "cancelled", err: context.Canceled, want: "request_cancelled"},
+		{name: "deadline", err: context.DeadlineExceeded, want: "deadline_exceeded"},
+		{name: "capacity", err: ErrMaterializationOverload, want: "capacity_exhausted"},
+		{name: "blocked", err: ErrMaterializationBlocked, want: "materialization_blocked"},
+		{name: "apply conflict", err: ErrApplyConflict, want: "state_conflict"},
+		{name: "idempotency conflict", err: ErrIdempotencyConflict, want: "state_conflict"},
+		{name: "invalid request", err: ErrInvalidApplyRequest, want: "invalid_request"},
+		{name: "invalid secret transfer", err: ErrInvalidSecretEnvelope, want: "invalid_secret_transfer"},
+		{name: "expired secret transfer", err: ErrExpiredSecretEnvelope, want: "invalid_secret_transfer"},
+		{name: "secret store unavailable", err: ErrSecretStoreUnavailable, want: "dependency_unavailable"},
+		{name: "resource not found", err: pgx.ErrNoRows, want: "resource_not_found"},
+		{name: "wrapped", err: errors.Join(errors.New("private detail"), ErrApplyConflict), want: "state_conflict"},
+		{name: "unknown", err: errors.New("private database detail"), want: "internal_failure"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyApplyFailure(test.err); got != test.want {
+				t.Fatalf("classifyApplyFailure()=%q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNewApplyFailureParamsContainsOnlyBoundedAuditMetadata(t *testing.T) {
+	id := util.MustParseUUID("00000000-0000-4000-8000-000000000040")
+	workspaceID := util.MustParseUUID("00000000-0000-4000-8000-000000000041")
+	sourceID := util.MustParseUUID("00000000-0000-4000-8000-000000000042")
+	approvalID := util.MustParseUUID("00000000-0000-4000-8000-000000000043")
+	actorID := util.MustParseUUID("00000000-0000-4000-8000-000000000044")
+	occurredAt := time.Date(2026, 8, 13, 9, 30, 0, 123, time.FixedZone("CST", 8*60*60))
+	tracker := applyAttemptTracker{
+		recordable: true, workspaceID: workspaceID, sourceID: sourceID, approvalID: approvalID, actorID: actorID,
+		planDigest: testSHA256("p"), requestKeyDigest: testSHA256("r"), mode: "rollback", stage: "materialization",
+	}
+	params := newApplyFailureParams(id, tracker, "state_conflict", occurredAt)
+	if params.ID != id || params.WorkspaceID != workspaceID || params.SourceID != sourceID || params.ApprovalID != approvalID || params.ActorUserID != actorID {
+		t.Fatalf("identity metadata=%+v", params)
+	}
+	if params.PlanDigest != tracker.planDigest || params.RequestKeyDigest != tracker.requestKeyDigest || params.Mode != "rollback" || params.FailureStage != "materialization" || params.FailureCode != "state_conflict" {
+		t.Fatalf("audit metadata=%+v", params)
+	}
+	if !params.OccurredAt.Valid || !params.OccurredAt.Time.Equal(occurredAt) || params.OccurredAt.Time.Location() != time.UTC {
+		t.Fatalf("occurred_at=%+v", params.OccurredAt)
+	}
+}
 
 func TestValidateMaterializationScopeAcceptsSafeSourceNeutralObjects(t *testing.T) {
 	manifest := planTestManifest()
@@ -326,6 +380,31 @@ func TestApplyPreflightsObjectStorageBeforeMutationLocks(t *testing.T) {
 	}
 	if !strings.Contains(queryText, "UpsertRoleSourceObjectMappings") || !strings.Contains(queryText, "jsonb_to_recordset(@mappings::jsonb)") {
 		t.Fatal("large applies must flush mapping mutations through one typed recordset")
+	}
+}
+
+func TestApplyFailureAuditRunsAfterInnerTransactionReturns(t *testing.T) {
+	body, err := os.ReadFile("apply.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	wrapperAt := strings.Index(source, "func (c *ControlPlane) ApplyPlan(")
+	innerAt := strings.Index(source, "func (c *ControlPlane) applyPlan(")
+	if wrapperAt < 0 || innerAt < 0 || wrapperAt >= innerAt {
+		t.Fatal("apply wrapper or inner transaction function is missing")
+	}
+	wrapper := source[wrapperAt:innerAt]
+	applyAt := strings.Index(wrapper, "c.applyPlan(ctx, input, &tracker)")
+	recordAt := strings.Index(wrapper, "c.recordApplyFailure(ctx, tracker, err)")
+	if applyAt < 0 || recordAt < 0 || applyAt >= recordAt {
+		t.Fatal("failed-attempt evidence must be recorded only after the inner apply call returns")
+	}
+	inner := source[innerAt:]
+	beginAt := strings.Index(inner, "c.database.Begin(ctx)")
+	rollbackAt := strings.Index(inner, "defer tx.Rollback(ctx)")
+	if beginAt < 0 || rollbackAt < 0 || beginAt >= rollbackAt {
+		t.Fatal("inner apply must install transaction rollback before mutation work")
 	}
 }
 

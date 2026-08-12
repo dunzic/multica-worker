@@ -89,6 +89,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"runtime_profile":                 workspaceDelete,
 	"role_source":                     workspaceDelete,
 	"role_source_apply":               workspaceDelete,
+	"role_source_apply_failure":       workspaceDelete,
 	"role_source_artifact":            workspaceDelete,
 	"role_source_audit_event":         workspaceDelete,
 	"role_source_capability_version":  workspaceDelete,

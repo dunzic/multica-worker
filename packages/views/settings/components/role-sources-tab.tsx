@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2 } from "lucide-react
 import { Badge } from "@multica/ui/components/ui/badge";
 import { cn } from "@multica/ui/lib/utils";
 import {
+  roleSourceApplyFailureListOptions,
   roleSourceListOptions,
   roleSourcePlanImpactOptions,
   roleSourcePlanListOptions,
@@ -58,6 +59,10 @@ export function RoleSourcesTab() {
       latest?.plan.plan_digest ?? "",
     ),
     enabled: Boolean(workspaceId && selectedId && latest?.plan.plan_digest),
+  });
+  const applyFailures = useQuery({
+    ...roleSourceApplyFailureListOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId),
   });
 
   return (
@@ -113,11 +118,12 @@ export function RoleSourcesTab() {
       </SettingsSection>
 
       {selected ? (
-        <SettingsSection
-          title={t(($) => $.role_sources.latest_plan_title)}
-          description={t(($) => $.role_sources.latest_plan_description, { name: selected.name })}
-        >
-          <SettingsCard>
+        <>
+          <SettingsSection
+            title={t(($) => $.role_sources.latest_plan_title)}
+            description={t(($) => $.role_sources.latest_plan_description, { name: selected.name })}
+          >
+            <SettingsCard>
             {plans.isLoading ? (
               <div className="flex min-h-24 items-center justify-center gap-2 text-caption text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -266,8 +272,55 @@ export function RoleSourcesTab() {
                 </div>
               </div>
             )}
-          </SettingsCard>
-        </SettingsSection>
+            </SettingsCard>
+          </SettingsSection>
+
+          <SettingsSection
+            title={t(($) => $.role_sources.failed_applies_title)}
+            description={t(($) => $.role_sources.failed_applies_description)}
+          >
+            <SettingsCard>
+              {applyFailures.isLoading ? (
+                <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t(($) => $.role_sources.loading)}
+                </div>
+              ) : applyFailures.isError ? (
+                <div className="p-4 text-caption text-destructive">
+                  {t(($) => $.role_sources.failed_applies_load_failed)}
+                </div>
+              ) : !applyFailures.data?.length ? (
+                <div className="p-4 text-caption text-muted-foreground">
+                  {t(($) => $.role_sources.no_failed_applies)}
+                </div>
+              ) : (
+                <div className="max-h-80 divide-y divide-surface-border overflow-y-auto">
+                  {applyFailures.data.map((failure) => (
+                    <div key={failure.id} className="flex items-start justify-between gap-4 px-4 py-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-body font-medium">
+                          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                          <span className="font-mono">{failure.failure_code}</span>
+                        </div>
+                        <div className="mt-1 text-caption text-muted-foreground">
+                          {t(($) => $.role_sources.failed_apply_metadata, {
+                            mode: failure.mode,
+                            stage: failure.failure_stage,
+                            time: failure.occurred_at,
+                          })}
+                        </div>
+                        <div className="mt-0.5 font-mono text-caption text-muted-foreground">
+                          {shortDigest(failure.plan_digest)}
+                        </div>
+                      </div>
+                      <Badge variant="outline">{failure.failure_stage}</Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SettingsCard>
+          </SettingsSection>
+        </>
       ) : null}
     </SettingsTab>
   );
