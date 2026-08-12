@@ -195,6 +195,7 @@
     "empty_hint": "服务器管理员需要先配置并扫描角色源，之后才会在这里显示。",
     "runtime_revision": "运行时修订",
     "runtime_loaded": "运行时配置已加载",
+    "runtime_unavailable": "运行时离线或心跳已过期",
     "runtime_unattested": "运行时尚未证明",
     "runtime_not_loaded": "运行时未加载配置",
     "runtime_config_missing": "运行时缺少配置 ID",

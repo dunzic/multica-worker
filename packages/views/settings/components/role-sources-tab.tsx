@@ -42,6 +42,8 @@ function runtimeConfigTranslationKey(status: string) {
       return "runtime_version_mismatch" as const;
     case "invalid_attestation":
       return "runtime_invalid_attestation" as const;
+    case "runtime_unavailable":
+      return "runtime_unavailable" as const;
     default:
       return "runtime_unattested" as const;
   }
@@ -143,6 +145,11 @@ export function RoleSourcesTab() {
                   <Badge variant={source.runtime_config.status === "loaded" ? "secondary" : "destructive"}>
                     {t(($) => $.role_sources[runtimeConfigTranslationKey(source.runtime_config.status)])}
                   </Badge>
+                  {source.runtime_config.status === "runtime_unavailable" ? (
+                    <Badge variant="outline">
+                      {t(($) => $.role_sources[runtimeConfigTranslationKey(source.runtime_config.attestation_status)])}
+                    </Badge>
+                  ) : null}
                 </span>
               </button>
             ))

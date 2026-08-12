@@ -195,6 +195,7 @@
     "empty_hint": "ここに表示するには、サーバー管理者がソースを設定してスキャンする必要があります。",
     "runtime_revision": "ランタイムリビジョン",
     "runtime_loaded": "ランタイム設定を読み込み済み",
+    "runtime_unavailable": "ランタイムがオフラインまたは古い状態",
     "runtime_unattested": "ランタイム未証明",
     "runtime_not_loaded": "ランタイム設定未読み込み",
     "runtime_config_missing": "ランタイム設定 ID なし",

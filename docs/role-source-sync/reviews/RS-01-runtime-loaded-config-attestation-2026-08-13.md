@@ -8,7 +8,7 @@ Final decision: **GO for merge behind the existing role-source flags; NO-GO for 
 
 ## Customer and product outcome
 
-The control plane can now distinguish a file that was merely written from the configuration a daemon process actually loaded. Each role source reports one of seven explicit states: unattested, not loaded, config ID missing, adapter kind mismatch, adapter version drift, invalid evidence, or loaded and matching. Workspace members can inspect the current state, a redacted revision and the bounded history of distinct states without seeing local config IDs, paths, raw adapter configuration, allowed roots or keys.
+The control plane can now distinguish a file that was merely written from the configuration a daemon process actually loaded. Each role source retains one of seven explicit evidence states: unattested, not loaded, config ID missing, adapter kind mismatch, adapter version drift, invalid evidence, or loaded and matching. The current status additionally becomes runtime unavailable when the owning runtime is offline or its heartbeat is stale, so old loaded evidence is never presented as current health. Workspace members can inspect the current state, last evidence state, a redacted revision and the bounded history without seeing local config IDs, paths, raw adapter configuration, allowed roots or keys.
 
 ## Architecture review — 2/3
 
@@ -23,15 +23,17 @@ The control plane can now distinguish a file that was merely written from the co
 ## Product review — 2/3
 
 - The read-only settings surface turns protocol evidence into operational language and makes adapter drift visible before a scan fails.
+- Current health combines evidence with the shared runtime liveness contract: Redis heartbeat TTL when available, otherwise the same 150-second database threshold used by the sweeper. The UI preserves the last evidence label beside the offline/stale warning.
 - History records first/last observation and restart observation count, supporting incident reconstruction without retaining raw configuration.
 - An unloaded statement is distinct from an old/unattested daemon, avoiding the misleading conclusion that silence means a valid empty configuration.
-- Open objections: guided repair actions, daemon upgrade guidance, fleet aggregation and freshness/SLO alerts are not present.
+- Open objections: guided repair actions, daemon upgrade guidance, fleet aggregation and proactive freshness/SLO alerts are not present.
 
 ## Test review — 2/3
 
 - Protocol tests cover canonical identity, tamper detection, sorted/unique inputs, unloaded-state constraints and unknown nested fields.
 - Daemon tests cover revision derivation from the exact securely opened body, adapter identity enumeration, per-runtime acknowledgement suppression, mismatched acknowledgement retry and HTTP wire shape.
 - Handler tests cover every current-state classification and corrupt evidence fail-closed behavior. Static migration tests cover redacted schema, bounded arrays, distinct-state persistence, lock ordering and explicit teardown.
+- Liveness tests cover fresh/stale database fallback, live/expired Redis evidence, DB-offline precedence, missing runtimes and preservation of invalid-attestation priority.
 - UI tests cover current matching state, revision visibility, historical evidence and continued absence of mutation controls.
 - Opt-in live PostgreSQL tests now exercise migrations 334–338 through the existing isolated-schema round trip, duplicate restart history, runtime-delete/heartbeat exclusion and registration/delete lock conflict. They compile locally but did not execute because no PostgreSQL server is available.
 - Open objections: those live tests and primary failover still need recorded staging results; the checked-in test is evidence infrastructure, not a passing production gate.

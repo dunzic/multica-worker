@@ -195,6 +195,7 @@
     "empty_hint": "A server administrator must configure and scan a source before it appears here.",
     "runtime_revision": "Runtime revision",
     "runtime_loaded": "Runtime config loaded",
+    "runtime_unavailable": "Runtime offline or stale",
     "runtime_unattested": "Runtime not attested",
     "runtime_not_loaded": "Runtime config not loaded",
     "runtime_config_missing": "Runtime config ID missing",

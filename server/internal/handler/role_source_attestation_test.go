@@ -122,7 +122,48 @@ func TestRoleSourceRuntimeAttestationHistoryResponseOmitsDaemonConfigCommitments
 
 func TestRoleSourceRuntimeConfigStatusDistinguishesUnattestedRuntime(t *testing.T) {
 	got := roleSourceRuntimeConfigStatus(db.RoleSource{}, db.RoleSourceRuntimeAttestation{})
-	if got.Status != "unattested" || got.AttestationID != nil || got.Revision != nil || got.ObservedAt != nil {
+	if got.Status != "unattested" || got.AttestationStatus != "unattested" || got.RuntimeStatus != "unknown" || got.AttestationID != nil || got.Revision != nil || got.ObservedAt != nil {
 		t.Fatalf("unattested status = %+v", got)
+	}
+}
+
+func TestRoleSourceRuntimeConfigCurrentStatusIncludesRuntimeFreshness(t *testing.T) {
+	runtimeID, err := util.ParseUUID("11111111-1111-4111-8111-111111111111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	fresh := db.AgentRuntime{ID: runtimeID, Status: "online", LastSeenAt: pgtype.Timestamptz{Time: now.Add(-time.Minute), Valid: true}}
+	stale := fresh
+	stale.LastSeenAt = pgtype.Timestamptz{Time: now.Add(-3 * time.Minute), Valid: true}
+	offline := fresh
+	offline.Status = "offline"
+	tests := []struct {
+		name              string
+		evidence          string
+		runtime           db.AgentRuntime
+		alive             map[string]bool
+		livenessAvailable bool
+		wantStatus        string
+		wantRuntime       string
+	}{
+		{name: "fresh DB fallback", evidence: "loaded", runtime: fresh, wantStatus: "loaded", wantRuntime: "online"},
+		{name: "stale DB fallback", evidence: "loaded", runtime: stale, wantStatus: "runtime_unavailable", wantRuntime: "offline"},
+		{name: "live Redis", evidence: "loaded", runtime: stale, alive: map[string]bool{"11111111-1111-4111-8111-111111111111": true}, livenessAvailable: true, wantStatus: "loaded", wantRuntime: "online"},
+		{name: "expired Redis", evidence: "loaded", runtime: fresh, alive: map[string]bool{"11111111-1111-4111-8111-111111111111": false}, livenessAvailable: true, wantStatus: "runtime_unavailable", wantRuntime: "offline"},
+		{name: "DB offline wins", evidence: "loaded", runtime: offline, alive: map[string]bool{"11111111-1111-4111-8111-111111111111": true}, livenessAvailable: true, wantStatus: "runtime_unavailable", wantRuntime: "offline"},
+		{name: "invalid evidence stays visible", evidence: "invalid_attestation", runtime: offline, wantStatus: "invalid_attestation", wantRuntime: "offline"},
+		{name: "missing runtime", evidence: "unattested", wantStatus: "runtime_unavailable", wantRuntime: "offline"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := roleSourceRuntimeConfigCurrentStatus(
+				roleSourceRuntimeConfigResponse{Status: test.evidence},
+				test.runtime, test.alive, test.livenessAvailable, now,
+			)
+			if got.Status != test.wantStatus || got.AttestationStatus != test.evidence || got.RuntimeStatus != test.wantRuntime {
+				t.Fatalf("current status = %+v, want status=%q attestation=%q runtime=%q", got, test.wantStatus, test.evidence, test.wantRuntime)
+			}
+		})
 	}
 }

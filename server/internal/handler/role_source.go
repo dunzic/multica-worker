@@ -80,11 +80,13 @@ type roleSourceResponse struct {
 }
 
 type roleSourceRuntimeConfigResponse struct {
-	Status        string  `json:"status"`
-	AttestationID *string `json:"attestation_id"`
-	Revision      *string `json:"revision"`
-	ObservedAt    *string `json:"observed_at"`
-	ChangedAt     *string `json:"changed_at"`
+	Status            string  `json:"status"`
+	AttestationStatus string  `json:"attestation_status"`
+	RuntimeStatus     string  `json:"runtime_status"`
+	AttestationID     *string `json:"attestation_id"`
+	Revision          *string `json:"revision"`
+	ObservedAt        *string `json:"observed_at"`
+	ChangedAt         *string `json:"changed_at"`
 }
 
 type roleSourceRuntimeAttestationObservationResponse struct {
@@ -322,6 +324,9 @@ func (h *Handler) ListRoleSources(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	attestations := make(map[string]db.RoleSourceRuntimeAttestation, len(runtimeIDs))
+	runtimes := make(map[string]db.AgentRuntime, len(runtimeIDs))
+	runtimeAlive := map[string]bool{}
+	livenessAvailable := false
 	if len(runtimeIDs) > 0 {
 		workspaceUUID, err := util.ParseUUID(workspaceID)
 		if err != nil {
@@ -339,7 +344,23 @@ func (h *Handler) ListRoleSources(w http.ResponseWriter, r *http.Request) {
 		for _, attestation := range attestedRows {
 			attestations[util.UUIDToString(attestation.RuntimeID)] = attestation
 		}
+		runtimeRows, err := h.Queries.GetAgentRuntimes(r.Context(), runtimeIDs)
+		if err != nil {
+			slog.Warn("list role source runtimes failed", "workspace_id", workspaceID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list role sources")
+			return
+		}
+		runtimeIDStrings := make([]string, 0, len(runtimeRows))
+		for _, runtime := range runtimeRows {
+			runtimeID := util.UUIDToString(runtime.ID)
+			runtimes[runtimeID] = runtime
+			runtimeIDStrings = append(runtimeIDStrings, runtimeID)
+		}
+		if h.LivenessStore != nil {
+			runtimeAlive, livenessAvailable = h.LivenessStore.IsAliveBatch(r.Context(), runtimeIDStrings)
+		}
 	}
+	now := time.Now()
 	items := make([]roleSourceResponse, 0, len(rows))
 	for _, row := range rows {
 		item, err := roleSourceToResponse(row)
@@ -348,7 +369,11 @@ func (h *Handler) ListRoleSources(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list role sources")
 			return
 		}
-		item.RuntimeConfig = roleSourceRuntimeConfigStatus(row, attestations[util.UUIDToString(row.RuntimeID)])
+		runtimeID := util.UUIDToString(row.RuntimeID)
+		item.RuntimeConfig = roleSourceRuntimeConfigCurrentStatus(
+			roleSourceRuntimeConfigStatus(row, attestations[runtimeID]),
+			runtimes[runtimeID], runtimeAlive, livenessAvailable, now,
+		)
 		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sources": items})
@@ -388,9 +413,42 @@ func (h *Handler) ListRoleSourceRuntimeAttestations(w http.ResponseWriter, r *ht
 
 func roleSourceRuntimeConfigStatus(source db.RoleSource, attestation db.RoleSourceRuntimeAttestation) roleSourceRuntimeConfigResponse {
 	if !attestation.RuntimeID.Valid {
-		return roleSourceRuntimeConfigResponse{Status: "unattested"}
+		return roleSourceRuntimeConfigResponse{Status: "unattested", AttestationStatus: "unattested", RuntimeStatus: "unknown"}
 	}
-	return roleSourceRuntimeConfigStatusFromEvidence(source, attestation.ContractVersion, attestation.Loaded, attestation.AttestationID, attestation.ConfigRevision, attestation.Sources, attestation.ObservedAt, attestation.ChangedAt)
+	response := roleSourceRuntimeConfigStatusFromEvidence(source, attestation.ContractVersion, attestation.Loaded, attestation.AttestationID, attestation.ConfigRevision, attestation.Sources, attestation.ObservedAt, attestation.ChangedAt)
+	response.AttestationStatus = response.Status
+	response.RuntimeStatus = "unknown"
+	return response
+}
+
+const roleSourceRuntimeDBFreshnessWindow = time.Duration(RuntimeStaleThresholdSeconds) * time.Second
+
+func roleSourceRuntimeConfigCurrentStatus(response roleSourceRuntimeConfigResponse, runtime db.AgentRuntime, alive map[string]bool, livenessAvailable bool, now time.Time) roleSourceRuntimeConfigResponse {
+	response.AttestationStatus = response.Status
+	response.RuntimeStatus = "offline"
+	if roleSourceRuntimeIsAvailable(runtime, alive, livenessAvailable, now) {
+		response.RuntimeStatus = "online"
+		return response
+	}
+	if response.Status != "invalid_attestation" {
+		response.Status = "runtime_unavailable"
+	}
+	return response
+}
+
+func roleSourceRuntimeIsAvailable(runtime db.AgentRuntime, alive map[string]bool, livenessAvailable bool, now time.Time) bool {
+	if !runtime.ID.Valid || runtime.Status != "online" {
+		return false
+	}
+	runtimeID := util.UUIDToString(runtime.ID)
+	if livenessAvailable {
+		return alive[runtimeID]
+	}
+	if !runtime.LastSeenAt.Valid {
+		return false
+	}
+	age := now.Sub(runtime.LastSeenAt.Time)
+	return age <= roleSourceRuntimeDBFreshnessWindow
 }
 
 func roleSourceRuntimeConfigStatusFromEvidence(source db.RoleSource, contractVersion string, loadedEvidence bool, attestationID string, revision pgtype.Text, sources []byte, observedAt, changedAt pgtype.Timestamptz) roleSourceRuntimeConfigResponse {
@@ -1398,7 +1456,7 @@ func roleSourceToResponse(row db.RoleSource) (roleSourceResponse, error) {
 		ConfigSummary: summary, Policy: policy, State: row.State,
 		CurrentSnapshotDigest: util.TextToPtr(row.CurrentSnapshotDigest), Version: row.Version,
 		CreatedAt: util.TimestampToString(row.CreatedAt), UpdatedAt: util.TimestampToString(row.UpdatedAt),
-		RuntimeConfig: roleSourceRuntimeConfigResponse{Status: "unattested"},
+		RuntimeConfig: roleSourceRuntimeConfigResponse{Status: "unattested", AttestationStatus: "unattested", RuntimeStatus: "unknown"},
 	}, nil
 }
 

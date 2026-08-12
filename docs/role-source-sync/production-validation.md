@@ -72,10 +72,11 @@ Run against the actual staging topology, not a single local process:
 
 1. Start two server replicas and one configured daemon on the candidate commit.
 2. Restart the daemon twice without changing config. Verify one current attestation, one history state and the observation count increasing once per process start.
-3. Change one adapter version/config entry and restart. Verify a new state, visible drift classification and no raw config ID/path in API or logs.
-4. Force PostgreSQL primary failover while the daemon is retrying an unacknowledged attestation. Verify the daemon continues retrying, one durable state wins and the server acknowledges only after commit.
-5. Hold runtime deletion open, start a first-attestation heartbeat, then commit deletion. Verify the heartbeat fails and no orphan evidence remains.
-6. Restore the old primary only after fencing it from writes. Verify no duplicate history or split-brain current state appears.
+3. Stop the daemon and wait past the configured Redis TTL/database stale threshold. Verify current source status becomes runtime unavailable while the last attestation status remains loaded; restart and verify it returns online without rewriting history incorrectly.
+4. Change one adapter version/config entry and restart. Verify a new state, visible drift classification and no raw config ID/path in API or logs.
+5. Force PostgreSQL primary failover while the daemon is retrying an unacknowledged attestation. Verify the daemon continues retrying, one durable state wins and the server acknowledges only after commit.
+6. Hold runtime deletion open, start a first-attestation heartbeat, then commit deletion. Verify the heartbeat fails and no orphan evidence remains.
+7. Restore the old primary only after fencing it from writes. Verify no duplicate history or split-brain current state appears.
 
 Pass criteria: no lost accepted state, no acknowledgement before durability, no orphan rows, no cross-workspace identifiers, no unbounded retries and no duplicate current row.
 

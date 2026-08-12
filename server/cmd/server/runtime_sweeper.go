@@ -29,7 +29,7 @@ const (
 	// 150s leaves a 45s buffer above the 105s worst-case DB age, and keeps
 	// detection latency for a genuinely-dead runtime under staleThreshold +
 	// sweepInterval = 180s (~3 minutes).
-	staleThresholdSeconds = 150.0
+	staleThresholdSeconds = handler.RuntimeStaleThresholdSeconds
 	// offlineRuntimeTTLSeconds deletes offline runtimes with no active agents
 	// after this duration. 7 days gives users plenty of time to restart daemons.
 	offlineRuntimeTTLSeconds = 7 * 24 * 3600.0

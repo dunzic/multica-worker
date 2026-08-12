@@ -8,6 +8,19 @@ export interface RoleSourceConfigSummary {
   attributes: RoleSourceConfigAttribute[];
 }
 
+export type RoleSourceAttestationStatus =
+  | "unattested"
+  | "not_loaded"
+  | "config_missing"
+  | "kind_mismatch"
+  | "adapter_version_mismatch"
+  | "invalid_attestation"
+  | "loaded";
+
+export type RoleSourceRuntimeConfigStatus =
+  | RoleSourceAttestationStatus
+  | "runtime_unavailable";
+
 export interface RoleSource {
   id: string;
   workspace_id: string;
@@ -23,14 +36,9 @@ export interface RoleSource {
   created_at: string;
   updated_at: string;
   runtime_config: {
-    status:
-      | "unattested"
-      | "not_loaded"
-      | "config_missing"
-      | "kind_mismatch"
-      | "adapter_version_mismatch"
-      | "invalid_attestation"
-      | "loaded";
+    status: RoleSourceRuntimeConfigStatus;
+    attestation_status: RoleSourceAttestationStatus;
+    runtime_status: "online" | "offline" | "unknown";
     attestation_id: string | null;
     revision: string | null;
     observed_at: string | null;
@@ -39,7 +47,7 @@ export interface RoleSource {
 }
 
 export interface RoleSourceRuntimeAttestation {
-  status: RoleSource["runtime_config"]["status"];
+  status: RoleSourceAttestationStatus;
   contract_version: string;
   loaded: boolean;
   attestation_id: string;

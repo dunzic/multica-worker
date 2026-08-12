@@ -195,6 +195,7 @@
     "empty_hint": "여기에 표시하려면 서버 관리자가 소스를 설정하고 스캔해야 합니다.",
     "runtime_revision": "런타임 리비전",
     "runtime_loaded": "런타임 구성 로드됨",
+    "runtime_unavailable": "런타임 오프라인 또는 오래된 상태",
     "runtime_unattested": "런타임 미증명",
     "runtime_not_loaded": "런타임 구성 미로드",
     "runtime_config_missing": "런타임 구성 ID 없음",

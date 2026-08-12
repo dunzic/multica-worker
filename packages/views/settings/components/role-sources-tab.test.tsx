@@ -57,6 +57,8 @@ beforeEach(() => {
       updated_at: "2026-08-13T00:00:00Z",
       runtime_config: {
         status: "loaded",
+        attestation_status: "loaded",
+        runtime_status: "online",
         attestation_id: "sha256:attestation1234567890",
         revision: "sha256:revision1234567890",
         observed_at: "2026-08-13T00:05:00Z",
@@ -206,5 +208,22 @@ describe("RoleSourcesTab", () => {
 
     expect(screen.getByText("No role sources configured")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create|configure/i })).not.toBeInTheDocument();
+  });
+
+  it("does not present historical loaded evidence as current health when the runtime is unavailable", async () => {
+    queryFixtures.sources[0]!.runtime_config = {
+      status: "runtime_unavailable",
+      runtime_status: "offline",
+      attestation_status: "loaded",
+      attestation_id: "sha256:attestation1234567890",
+      revision: "sha256:revision1234567890",
+      observed_at: "2026-08-13T00:05:00Z",
+      changed_at: "2026-08-13T00:05:00Z",
+    };
+
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(await screen.findByText("Runtime offline or stale")).toBeInTheDocument();
+    expect(screen.getAllByText("Runtime config loaded")).toHaveLength(2);
   });
 });
