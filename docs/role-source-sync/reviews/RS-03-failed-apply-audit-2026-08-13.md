@@ -17,13 +17,14 @@ An apply request that returns an error now leaves content-free, append-only evid
 - The ledger stores a SHA-256 request-key correlation value, never the raw idempotency key, raw error, source manifest, secret, MCP definition, artifact body or task content.
 - Failure stage and code are database-constrained stable enums/bounded values. The same table covers apply and rollback without an AgentWaker-specific branch.
 - Bounded Prometheus counters separate returned apply errors from failure-evidence write outcomes, and the Helm rule pages on any persistence or ID-generation failure without tenant/request labels.
-- Open objections: a database outage can prevent the independent row itself from being persisted; commit-stage errors can be outcome-ambiguous and require reconciliation against successful receipts; no durable outbox, retention/partition policy or persistence-failure metric exists yet.
+- A commit-response error triggers an independent primary-database lookup by the exact idempotency key. A digest-verified, actor/approval/secret-transfer-exact successful receipt is returned as success; missing, conflicting or unavailable evidence remains an error and is separately measured/alerted.
+- Open objections: a database outage can prevent both reconciliation and the independent row itself from being persisted; no durable outbox/fallback or retention/partition policy exists yet.
 
 ## Product review — 2/3
 
 - Operators can distinguish preflight, transaction, materialization, finalize and commit failures without seeing sensitive technical error text.
 - Empty, loading and error states are explicit, and the surface remains visibly read-only.
-- The UI explicitly warns that a commit-stage error is not proof of rollback and must be reconciled against successful receipts before recovery.
+- The UI explicitly warns that a remaining commit-stage entry means automatic reconciliation did not confirm success and must not be treated as proof of rollback.
 - Open objections: stable codes still need product-owned labels and remediation guidance; commit-stage ambiguity must be explained; there is no support workflow, acknowledgement, retry or recovery action.
 
 ## Test review — 2/3

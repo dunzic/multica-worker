@@ -212,4 +212,5 @@ monitoring:
     # Any missing failed-apply evidence is an audit-control violation. Keep the
     # delay short and severity separate from sampler health.
     roleSourceAuditWriteFailureFor: 1m
+    roleSourceCommitReconciliationFailureFor: 1m
     roleSourceSeverity: critical

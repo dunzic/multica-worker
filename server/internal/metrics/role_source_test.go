@@ -15,6 +15,7 @@ func TestRoleSourceMetricsReportBoundedApplyAndAuditOutcomes(t *testing.T) {
 	m.RecordApplyError("apply", "materialization", "state_conflict")
 	m.RecordApplyFailureAudit("apply", "materialization", "state_conflict", "persisted")
 	m.RecordApplyFailureAudit("apply", "materialization", "state_conflict", "persist_failed")
+	m.RecordApplyCommitReconciliation("confirmed_succeeded")
 
 	if got := testutil.ToFloat64(m.applyErrors.WithLabelValues("apply", "materialization", "state_conflict")); got != 1 {
 		t.Fatalf("apply error metric=%v, want 1", got)
@@ -24,6 +25,9 @@ func TestRoleSourceMetricsReportBoundedApplyAndAuditOutcomes(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.failureAuditWrites.WithLabelValues("apply", "materialization", "state_conflict", "persist_failed")); got != 1 {
 		t.Fatalf("failed audit metric=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.commitReconciliations.WithLabelValues("confirmed_succeeded")); got != 1 {
+		t.Fatalf("commit reconciliation metric=%v, want 1", got)
 	}
 }
 
@@ -53,6 +57,7 @@ func TestRoleSourceMetricsNormalizeUnboundedCallerValues(t *testing.T) {
 	m := NewRoleSourceMetrics()
 	m.RecordApplyError("workspace-123", "request-456", "private database error for tenant-789")
 	m.RecordApplyFailureAudit("workspace-123", "request-456", "private database error for tenant-789", "source-abc")
+	m.RecordApplyCommitReconciliation("workspace-123")
 
 	if got := testutil.ToFloat64(m.applyErrors.WithLabelValues("unknown", "unknown", "internal_failure")); got != 1 {
 		t.Fatalf("normalized apply error metric=%v, want 1", got)
@@ -60,12 +65,16 @@ func TestRoleSourceMetricsNormalizeUnboundedCallerValues(t *testing.T) {
 	if got := testutil.ToFloat64(m.failureAuditWrites.WithLabelValues("unknown", "unknown", "internal_failure", "unknown")); got != 1 {
 		t.Fatalf("normalized audit metric=%v, want 1", got)
 	}
+	if got := testutil.ToFloat64(m.commitReconciliations.WithLabelValues("unknown")); got != 1 {
+		t.Fatalf("normalized reconciliation metric=%v, want 1", got)
+	}
 }
 
 func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.T) {
 	for metric, want := range map[string][]string{
-		"multica_role_source_apply_errors_total":               {labelMode, labelStage, labelCode},
-		"multica_role_source_apply_failure_audit_writes_total": {labelMode, labelStage, labelCode, labelOutcome},
+		"multica_role_source_apply_errors_total":                 {labelMode, labelStage, labelCode},
+		"multica_role_source_apply_failure_audit_writes_total":   {labelMode, labelStage, labelCode, labelOutcome},
+		"multica_role_source_apply_commit_reconciliations_total": {labelOutcome},
 	} {
 		got, ok := operationalMetricLabels[metric]
 		if !ok {
@@ -88,17 +97,26 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 		t.Fatal("role-source metrics are not wired into the production registry")
 	}
 	r.RoleSource.RecordApplyFailureAudit("unknown", "preflight", "capacity_exhausted", "id_generation_failed")
+	r.RoleSource.RecordApplyCommitReconciliation("query_failed")
 
 	families, err := r.Gatherer.Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
+	wanted := map[string]bool{
+		"multica_role_source_apply_failure_audit_writes_total":   false,
+		"multica_role_source_apply_commit_reconciliations_total": false,
+	}
 	for _, family := range families {
-		if family.GetName() == "multica_role_source_apply_failure_audit_writes_total" {
-			return
+		if _, ok := wanted[family.GetName()]; ok {
+			wanted[family.GetName()] = true
 		}
 	}
-	t.Fatal("production registry did not expose role-source failure-audit metrics")
+	for name, seen := range wanted {
+		if !seen {
+			t.Fatalf("production registry did not expose %s", name)
+		}
+	}
 }
 
 func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
@@ -110,7 +128,9 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 	rule := string(templateBody)
 	for _, required := range []string{
 		"MulticaRoleSourceApplyFailureAuditWriteFailed",
+		"MulticaRoleSourceApplyCommitReconciliationFailed",
 		"multica_role_source_apply_failure_audit_writes_total",
+		"multica_role_source_apply_commit_reconciliations_total",
 		`outcome=~"persist_failed|id_generation_failed"`,
 		"roleSourceAuditWriteFailureFor",
 		"roleSourceSeverity",
@@ -130,7 +150,9 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	values := string(valuesBody)
-	if !strings.Contains(values, "roleSourceAuditWriteFailureFor: 1m") || !strings.Contains(values, "roleSourceSeverity: critical") {
+	if !strings.Contains(values, "roleSourceAuditWriteFailureFor: 1m") ||
+		!strings.Contains(values, "roleSourceCommitReconciliationFailureFor: 1m") ||
+		!strings.Contains(values, "roleSourceSeverity: critical") {
 		t.Fatal("role-source audit alert defaults must stay short and critical")
 	}
 }

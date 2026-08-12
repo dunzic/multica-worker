@@ -155,6 +155,18 @@ type applyAttemptTracker struct {
 func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.RoleSourceApply, ApplyReceipt, error) {
 	tracker := applyAttemptTracker{mode: "unknown", stage: "preflight"}
 	row, receipt, err := c.applyPlan(ctx, input, &tracker)
+	if err != nil && tracker.recordable && tracker.stage == "commit" {
+		reconciledRow, reconciledReceipt, outcome, reconcileErr := c.reconcileApplyCommit(ctx, input, tracker)
+		if c.applyMetrics != nil {
+			c.applyMetrics.RecordApplyCommitReconciliation(outcome)
+		}
+		if reconcileErr == nil {
+			return reconciledRow, reconciledReceipt, nil
+		}
+		if errors.Is(reconcileErr, ErrIdempotencyConflict) {
+			err = reconcileErr
+		}
+	}
 	if err != nil && tracker.recordable {
 		failureCode := classifyApplyFailure(err)
 		if c.applyMetrics != nil {
@@ -163,6 +175,45 @@ func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.
 		c.recordApplyFailure(ctx, tracker, failureCode)
 	}
 	return row, receipt, err
+}
+
+func (c *ControlPlane) reconcileApplyCommit(parent context.Context, input ApplyPlanInput, tracker applyAttemptTracker) (db.RoleSourceApply, ApplyReceipt, string, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
+	defer cancel()
+	row, err := c.queries().GetRoleSourceApplyByRequest(ctx, db.GetRoleSourceApplyByRequestParams{
+		SourceID: tracker.sourceID, WorkspaceID: tracker.workspaceID, RequestKey: strings.TrimSpace(input.RequestKey),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.RoleSourceApply{}, ApplyReceipt{}, "not_found", err
+	}
+	if err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, "query_failed", err
+	}
+	input.WorkspaceID = util.UUIDToString(tracker.workspaceID)
+	input.SourceID = util.UUIDToString(tracker.sourceID)
+	input.ActorUserID = util.UUIDToString(tracker.actorID)
+	input.ApprovalID = util.UUIDToString(tracker.approvalID)
+	if err := normalizeApplySecretTransferIDs(&input); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, "conflict", ErrIdempotencyConflict
+	}
+	receipt, err := matchReconciledApply(row, input, tracker)
+	if err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, "conflict", err
+	}
+	return row, receipt, "confirmed_succeeded", nil
+}
+
+func matchReconciledApply(row db.RoleSourceApply, input ApplyPlanInput, tracker applyAttemptTracker) (ApplyReceipt, error) {
+	if row.SourceID != tracker.sourceID || row.WorkspaceID != tracker.workspaceID || row.ActorUserID != tracker.actorID ||
+		row.PlanDigest != tracker.planDigest || row.Mode != tracker.mode || row.Status != "succeeded" {
+		return ApplyReceipt{}, ErrIdempotencyConflict
+	}
+	receipt, err := decodeApplyReceipt(row)
+	if err != nil || receipt.ApprovalID != input.ApprovalID || receipt.SourceID != input.SourceID || receipt.WorkspaceID != input.WorkspaceID ||
+		receipt.PlanDigest != tracker.planDigest || !receiptSecretTransfersMatchInput(receipt.SecretTransfers, input.SecretTransferIDs) {
+		return ApplyReceipt{}, ErrIdempotencyConflict
+	}
+	return receipt, nil
 }
 
 func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, tracker *applyAttemptTracker) (db.RoleSourceApply, ApplyReceipt, error) {

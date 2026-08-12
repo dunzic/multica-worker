@@ -6,8 +6,9 @@ import "github.com/prometheus/client_golang/prometheus"
 // identifiers are intentionally absent to keep series cardinality safe at
 // large workspace/user counts and to keep audit identity out of telemetry.
 type RoleSourceMetrics struct {
-	applyErrors        *prometheus.CounterVec
-	failureAuditWrites *prometheus.CounterVec
+	applyErrors           *prometheus.CounterVec
+	failureAuditWrites    *prometheus.CounterVec
+	commitReconciliations *prometheus.CounterVec
 }
 
 func NewRoleSourceMetrics() *RoleSourceMetrics {
@@ -20,11 +21,15 @@ func NewRoleSourceMetrics() *RoleSourceMetrics {
 			Namespace: "multica", Subsystem: "role_source", Name: "apply_failure_audit_writes_total",
 			Help: "Attempts to persist independent role-source apply-error audit evidence, partitioned by bounded outcome.",
 		}, []string{"mode", "stage", "code", "outcome"}),
+		commitReconciliations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "role_source", Name: "apply_commit_reconciliations_total",
+			Help: "Independent receipt checks after a role-source apply commit returned an error.",
+		}, []string{"outcome"}),
 	}
 }
 
 func (m *RoleSourceMetrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.applyErrors, m.failureAuditWrites}
+	return []prometheus.Collector{m.applyErrors, m.failureAuditWrites, m.commitReconciliations}
 }
 
 func (m *RoleSourceMetrics) RecordApplyError(mode, stage, code string) {
@@ -33,6 +38,10 @@ func (m *RoleSourceMetrics) RecordApplyError(mode, stage, code string) {
 
 func (m *RoleSourceMetrics) RecordApplyFailureAudit(mode, stage, code, outcome string) {
 	m.failureAuditWrites.WithLabelValues(roleSourceMode(mode), roleSourceStage(stage), roleSourceCode(code), roleSourceAuditOutcome(outcome)).Inc()
+}
+
+func (m *RoleSourceMetrics) RecordApplyCommitReconciliation(outcome string) {
+	m.commitReconciliations.WithLabelValues(roleSourceCommitReconciliationOutcome(outcome)).Inc()
 }
 
 func roleSourceMode(value string) string {
@@ -67,6 +76,15 @@ func roleSourceCode(value string) string {
 func roleSourceAuditOutcome(value string) string {
 	switch value {
 	case "persisted", "persist_failed", "id_generation_failed":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func roleSourceCommitReconciliationOutcome(value string) string {
+	switch value {
+	case "confirmed_succeeded", "not_found", "query_failed", "conflict":
 		return value
 	default:
 		return "unknown"

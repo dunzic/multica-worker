@@ -219,7 +219,7 @@
     "impact_truncated": "This preview is truncated. Aggregate counts above include all affected work.",
     "failed_applies_title": "Apply attempts that returned errors",
     "failed_applies_description": "Append-only, content-free evidence recorded independently after the mutation request returns an error.",
-    "failed_applies_commit_notice": "A commit-stage error does not prove the workspace transaction rolled back. Reconcile it against successful receipts before taking recovery action.",
+    "failed_applies_commit_notice": "A commit-stage entry means the automatic receipt check did not confirm success. Do not assume rollback; reconcile it against successful receipts before recovery.",
     "failed_applies_load_failed": "Couldn't load failed apply attempts.",
     "no_failed_applies": "No failed apply attempts have been recorded for this source.",
     "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"

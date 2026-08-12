@@ -49,6 +49,7 @@ type ControlPlane struct {
 type ApplyMetrics interface {
 	RecordApplyError(mode, stage, code string)
 	RecordApplyFailureAudit(mode, stage, code, outcome string)
+	RecordApplyCommitReconciliation(outcome string)
 }
 
 type ArtifactReader interface {

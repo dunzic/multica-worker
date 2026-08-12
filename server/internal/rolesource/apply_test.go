@@ -263,6 +263,72 @@ func TestApplyReceiptDigestDetectsTampering(t *testing.T) {
 	}
 }
 
+func TestMatchReconciledApplyRequiresExactSuccessfulReceipt(t *testing.T) {
+	applyID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
+	workspaceID := util.MustParseUUID("00000000-0000-4000-8000-000000000001")
+	sourceID := util.MustParseUUID("00000000-0000-4000-8000-000000000042")
+	actorID := util.MustParseUUID("00000000-0000-4000-8000-000000000003")
+	approvalID := util.MustParseUUID("00000000-0000-4000-8000-000000000044")
+	planDigest := testSHA256("p")
+	receipt := ApplyReceipt{
+		ContractVersion: ApplyReceiptContractVersion, Mode: "apply", ApplyID: util.UUIDToString(applyID),
+		SourceID: util.UUIDToString(sourceID), WorkspaceID: util.UUIDToString(workspaceID), SnapshotDigest: testSHA256("s"),
+		PlanDigest: planDigest, ApprovalID: util.UUIDToString(approvalID), Mappings: []ApplyMapping{},
+		SecretTransfers: []SecretTransferReceipt{{RoleID: "writer", TransferID: "00000000-0000-4000-8000-000000000046", EnvelopeDigest: testSHA256("e")}},
+	}
+	_, digest, err := encodeApplyReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.ReceiptDigest = digest
+	body, _, err := encodeApplyReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := db.RoleSourceApply{
+		ID: applyID, WorkspaceID: workspaceID, SourceID: sourceID, ActorUserID: actorID,
+		Mode: "apply", Status: "succeeded", SnapshotDigest: receipt.SnapshotDigest, PlanDigest: planDigest,
+		ReceiptDigest: pgtype.Text{String: digest, Valid: true}, Receipt: body,
+	}
+	input := ApplyPlanInput{
+		WorkspaceID: util.UUIDToString(workspaceID), SourceID: util.UUIDToString(sourceID), ActorUserID: util.UUIDToString(actorID),
+		ApprovalID: util.UUIDToString(approvalID), PlanDigest: planDigest,
+		SecretTransferIDs: map[string]string{"writer": "00000000-0000-4000-8000-000000000046"},
+	}
+	tracker := applyAttemptTracker{workspaceID: workspaceID, sourceID: sourceID, actorID: actorID, approvalID: approvalID, planDigest: planDigest, mode: "apply", stage: "commit"}
+	if _, err := matchReconciledApply(row, input, tracker); err != nil {
+		t.Fatalf("exact committed receipt rejected: %v", err)
+	}
+
+	conflicts := []struct {
+		name   string
+		mutate func(*db.RoleSourceApply, *ApplyPlanInput, *applyAttemptTracker)
+	}{
+		{name: "actor", mutate: func(row *db.RoleSourceApply, _ *ApplyPlanInput, _ *applyAttemptTracker) {
+			row.ActorUserID = util.MustParseUUID("00000000-0000-4000-8000-000000000099")
+		}},
+		{name: "plan", mutate: func(_ *db.RoleSourceApply, _ *ApplyPlanInput, tracker *applyAttemptTracker) {
+			tracker.planDigest = testSHA256("other")
+		}},
+		{name: "approval", mutate: func(_ *db.RoleSourceApply, input *ApplyPlanInput, _ *applyAttemptTracker) {
+			input.ApprovalID = "00000000-0000-4000-8000-000000000099"
+		}},
+		{name: "secret transfer", mutate: func(_ *db.RoleSourceApply, input *ApplyPlanInput, _ *applyAttemptTracker) {
+			input.SecretTransferIDs["writer"] = "00000000-0000-4000-8000-000000000099"
+		}},
+	}
+	for _, test := range conflicts {
+		t.Run(test.name, func(t *testing.T) {
+			changedRow, changedInput, changedTracker := row, input, tracker
+			changedInput.SecretTransferIDs = map[string]string{"writer": input.SecretTransferIDs["writer"]}
+			test.mutate(&changedRow, &changedInput, &changedTracker)
+			if _, err := matchReconciledApply(changedRow, changedInput, changedTracker); !errors.Is(err, ErrIdempotencyConflict) {
+				t.Fatalf("conflicting committed receipt error=%v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRoleSecretPayloadRequiresExactSnapshotSetsAndMCPHash(t *testing.T) {
 	definition := json.RawMessage(`{"command":"safe-mcp","env":{"TOKEN":"${TOKEN}"}}`)
 	var value any

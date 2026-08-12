@@ -53,4 +53,15 @@ spec:
           annotations:
             summary: "Role-source apply failure evidence could not be persisted"
             description: "At least one apply request returned an error, but its independent failure-audit row could not be written (outcome={{ "{{ $labels.outcome }}" }}). Preserve server logs, stop role-source apply rollout, and reconcile successful receipts before retry or recovery."
+        - alert: MulticaRoleSourceApplyCommitReconciliationFailed
+          expr: |
+            sum by (outcome) (
+              increase(multica_role_source_apply_commit_reconciliations_total{outcome=~"query_failed|conflict"}[5m])
+            ) > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceCommitReconciliationFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source apply commit outcome could not be reconciled"
+            description: "An apply COMMIT returned an error and the independent receipt check could not safely establish the outcome (outcome={{ "{{ $labels.outcome }}" }}). Stop apply rollout and reconcile the request against successful receipts before retry or recovery."
 {{- end }}
