@@ -67,6 +67,21 @@ func TestOpenRejectsShort(t *testing.T) {
 	}
 }
 
+func TestAdditionalDataBindsCiphertextContext(t *testing.T) {
+	box := mustNewBox(t)
+	sealed, err := box.SealWithAAD([]byte("source secret"), []byte("workspace-a/source-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := box.OpenWithAAD(sealed, []byte("workspace-a/source-a"))
+	if err != nil || string(opened) != "source secret" {
+		t.Fatalf("open with matching context = %q, %v", opened, err)
+	}
+	if _, err := box.OpenWithAAD(sealed, []byte("workspace-b/source-a")); err == nil {
+		t.Fatal("ciphertext opened under a different tenant context")
+	}
+}
+
 func TestNewRejectsBadKey(t *testing.T) {
 	if _, err := New(make([]byte, 16)); err != ErrInvalidKey {
 		t.Fatalf("expected ErrInvalidKey for 16-byte key, got %v", err)

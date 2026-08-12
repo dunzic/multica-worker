@@ -23,8 +23,9 @@ var (
 )
 
 var (
-	ErrAdapterNotFound  = errors.New("role source adapter not found")
-	ErrDuplicateAdapter = errors.New("role source adapter already registered")
+	ErrAdapterNotFound   = errors.New("role source adapter not found")
+	ErrDuplicateAdapter  = errors.New("role source adapter already registered")
+	ErrSecretUnavailable = errors.New("role source adapter does not provide secret export")
 )
 
 // Registry is concurrency-safe because daemon scan workers and control-plane
@@ -109,6 +110,46 @@ func (r *Registry) RedactConfig(kind Kind, config json.RawMessage) (ConfigSummar
 		return ConfigSummary{}, fmt.Errorf("redact %s config: %w", kind, err)
 	}
 	return redacted, nil
+}
+
+// ExportSecretPayload invokes an optional daemon-only adapter capability and
+// binds it to a fully revalidated snapshot. The server control plane never
+// owns a Registry with filesystem-capable adapters and cannot call this path.
+func (r *Registry) ExportSecretPayload(ctx context.Context, kind Kind, request ScanRequest, snapshot Snapshot, roleID string) (SecretEnvelopePayload, error) {
+	r.mu.RLock()
+	registered, ok := r.adapters[kind]
+	r.mu.RUnlock()
+	if !ok {
+		return SecretEnvelopePayload{}, fmt.Errorf("%w: %s", ErrAdapterNotFound, kind)
+	}
+	if err := registered.adapter.ValidateConfig(request.Config); err != nil {
+		return SecretEnvelopePayload{}, fmt.Errorf("validate %s config: %w", kind, err)
+	}
+	canonical, err := validatedSnapshotCopy(snapshot)
+	if err != nil {
+		return SecretEnvelopePayload{}, fmt.Errorf("validate secret export snapshot: %w", err)
+	}
+	if canonical.Kind != kind || canonical.AdapterVersion != registered.descriptor.AdapterVersion || canonical.ContractVersion != registered.descriptor.ContractVersion {
+		return SecretEnvelopePayload{}, errors.New("secret export snapshot does not match adapter identity")
+	}
+	if request.WorkspaceID == "" || request.SourceID == "" || !stableIDPattern.MatchString(roleID) {
+		return SecretEnvelopePayload{}, errors.New("secret export requires source, workspace and role identity")
+	}
+	found := false
+	for _, role := range canonical.Manifest.Roles {
+		if role.ID == roleID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return SecretEnvelopePayload{}, errors.New("secret export role is absent from snapshot")
+	}
+	exporter, ok := registered.adapter.(SecretExporter)
+	if !ok {
+		return SecretEnvelopePayload{}, fmt.Errorf("%w: %s", ErrSecretUnavailable, kind)
+	}
+	return exporter.ExportSecretPayload(ctx, request, canonical, roleID)
 }
 
 func validateConfigSummary(summary *ConfigSummary) error {

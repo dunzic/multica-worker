@@ -60,6 +60,14 @@ type ArtifactOpener interface {
 	OpenArtifact(context.Context, ScanRequest, ArtifactRef) (io.ReadCloser, error)
 }
 
+// SecretExporter is an optional daemon-only adapter capability. It reads the
+// sensitive source values that correspond to one already validated immutable
+// snapshot. Values never enter ScanOutput; the daemon immediately encrypts the
+// returned payload for a one-time server challenge.
+type SecretExporter interface {
+	ExportSecretPayload(context.Context, ScanRequest, Snapshot, string) (SecretEnvelopePayload, error)
+}
+
 // ConfigSummary is the only source-configuration representation allowed in
 // control-plane persistence and ordinary APIs. Attributes are adapter-defined
 // labels, never raw configuration values, paths or credentials.

@@ -65,6 +65,14 @@ func New(key []byte) (*Box, error) {
 // secret by its ciphertext — two Seal calls on the same plaintext
 // produce different bytes).
 func (b *Box) Seal(plaintext []byte) ([]byte, error) {
+	return b.SealWithAAD(plaintext, nil)
+}
+
+// SealWithAAD encrypts plaintext and authenticates additionalData without
+// storing it in the ciphertext. Callers must provide the exact same bytes to
+// OpenWithAAD. This binds a secret to tenant/object/version context and stops a
+// valid ciphertext row from being moved to another identity.
+func (b *Box) SealWithAAD(plaintext, additionalData []byte) ([]byte, error) {
 	nonce := make([]byte, b.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("secretbox: read nonce: %w", err)
@@ -72,19 +80,25 @@ func (b *Box) Seal(plaintext []byte) ([]byte, error) {
 	// b.aead.Seal appends ciphertext+tag to its first argument; we
 	// pass `nonce` so the caller receives a single contiguous slice
 	// laid out as nonce||ciphertext||tag, which Open then splits.
-	return b.aead.Seal(nonce, nonce, plaintext, nil), nil
+	return b.aead.Seal(nonce, nonce, plaintext, additionalData), nil
 }
 
 // Open reverses Seal. Returns ErrCiphertextTooShort or an
 // authentication error (from GCM) if the input is malformed or
 // tampered.
 func (b *Box) Open(sealed []byte) ([]byte, error) {
+	return b.OpenWithAAD(sealed, nil)
+}
+
+// OpenWithAAD decrypts a value sealed with SealWithAAD. A mismatched tenant,
+// object or version context fails authentication before plaintext is returned.
+func (b *Box) OpenWithAAD(sealed, additionalData []byte) ([]byte, error) {
 	ns := b.aead.NonceSize()
 	if len(sealed) < ns+b.aead.Overhead() {
 		return nil, ErrCiphertextTooShort
 	}
 	nonce, ciphertext := sealed[:ns], sealed[ns:]
-	return b.aead.Open(nil, nonce, ciphertext, nil)
+	return b.aead.Open(nil, nonce, ciphertext, additionalData)
 }
 
 // LoadKey reads a base64-encoded 32-byte key from the given env var.
