@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func planTestSnapshot(t *testing.T, manifest Manifest) Snapshot {
+func planTestSnapshot(t testing.TB, manifest Manifest) Snapshot {
 	t.Helper()
 	if err := validateManifest(&manifest); err != nil {
 		t.Fatal(err)
