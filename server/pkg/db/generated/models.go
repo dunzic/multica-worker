@@ -297,6 +297,32 @@ type ChannelChatSessionBinding struct {
 	PendingFresh   bool               `json:"pending_fresh"`
 }
 
+type ChannelDelivery struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	InstallationID    pgtype.UUID        `json:"installation_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	ChannelType       string             `json:"channel_type"`
+	ChannelChatID     string             `json:"channel_chat_id"`
+	OperationKind     string             `json:"operation_kind"`
+	CorrelationID     pgtype.UUID        `json:"correlation_id"`
+	PayloadDigest     string             `json:"payload_digest"`
+	Status            string             `json:"status"`
+	AttemptCount      int32              `json:"attempt_count"`
+	LeaseToken        pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt    pgtype.Timestamptz `json:"lease_expires_at"`
+	ExternalMessageID pgtype.Text        `json:"external_message_id"`
+	Evidence          []byte             `json:"evidence"`
+	EvidenceDigest    pgtype.Text        `json:"evidence_digest"`
+	LastErrorCode     pgtype.Text        `json:"last_error_code"`
+	DeliveredAt       pgtype.Timestamptz `json:"delivered_at"`
+	ReadbackAt        pgtype.Timestamptz `json:"readback_at"`
+	FailedAt          pgtype.Timestamptz `json:"failed_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ChannelInboundAudit struct {
 	ID               pgtype.UUID        `json:"id"`
 	InstallationID   pgtype.UUID        `json:"installation_id"`

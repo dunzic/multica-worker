@@ -150,6 +150,9 @@ cleared_user_bindings AS (
 cleared_binding_tokens AS (
     DELETE FROM channel_binding_token WHERE workspace_id = $1
 ),
+cleared_channel_deliveries AS (
+    DELETE FROM channel_delivery WHERE workspace_id = $1
+),
 cleared_installations AS (
     DELETE FROM channel_installation WHERE workspace_id = $1
 ),
@@ -199,6 +202,9 @@ cleared_vcs_connections AS (
 cleared_role_source_audit AS (
     DELETE FROM role_source_audit_event WHERE role_source_audit_event.workspace_id = $1
 ),
+cleared_role_source_secret_transfers AS (
+    DELETE FROM role_source_secret_transfer WHERE role_source_secret_transfer.workspace_id = $1
+),
 cleared_role_source_approvals AS (
     DELETE FROM role_source_plan_approval WHERE role_source_plan_approval.workspace_id = $1
 ),
@@ -213,6 +219,15 @@ cleared_role_source_snapshots AS (
 ),
 cleared_role_source_scans AS (
     DELETE FROM role_source_scan_request WHERE role_source_scan_request.workspace_id = $1
+),
+cleared_role_source_mappings AS (
+    DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
+),
+cleared_role_source_capabilities AS (
+    DELETE FROM role_source_capability_version WHERE role_source_capability_version.workspace_id = $1
+),
+cleared_role_source_artifacts AS (
+    DELETE FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
 ),
 cleared_role_sources AS (
     DELETE FROM role_source WHERE role_source.workspace_id = $1

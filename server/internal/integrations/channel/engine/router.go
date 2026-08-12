@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -35,9 +37,10 @@ type Router struct {
 	mu   sync.RWMutex
 	sets map[channel.Type]ResolverSet
 
-	issues IssueCreator
-	tasks  TaskEnqueuer
-	reader SessionReader
+	issues    IssueCreator
+	tasks     TaskEnqueuer
+	reader    SessionReader
+	readbacks delivery.ReadbackRecorder
 
 	batcher *pendingBatcher
 
@@ -74,6 +77,10 @@ type RouterConfig struct {
 	// Per-session ordering is unaffected. Defaults to 8.
 	MediaConcurrency int
 	Logger           *slog.Logger
+	// Readbacks records an explicit user reply to a provider message as a
+	// monotonic delivery acknowledgement. Missing receipts are normal and do
+	// not interrupt inbound chat processing.
+	Readbacks delivery.ReadbackRecorder
 }
 
 // NewRouter builds a Router around the shared (platform-agnostic) services:
@@ -99,6 +106,7 @@ func NewRouter(issues IssueCreator, tasks TaskEnqueuer, reader SessionReader, cf
 		issues:       issues,
 		tasks:        tasks,
 		reader:       reader,
+		readbacks:    cfg.Readbacks,
 		replyTimeout: cfg.ReplyTimeout,
 		mediaTimeout: cfg.MediaTimeout,
 		mediaCtx:     mediaCtx,
@@ -252,6 +260,7 @@ func (r *Router) dispatch(ctx context.Context, set ResolverSet, msg channel.Inbo
 	if !inst.Active {
 		return r.drop(ctx, set, msg, inst.ID, DropReasonRevokedInstallation), inst, nil
 	}
+	r.recordDeliveryReadback(ctx, inst, msg)
 
 	// 2. Two-phase dedup claim with owner fencing — before group filter and
 	//    identity so a reconnect replay cannot re-trigger a binding prompt,
@@ -282,6 +291,16 @@ func (r *Router) dispatch(ctx context.Context, set ResolverSet, msg channel.Inbo
 		return r.drop(ctx, set, msg, inst.ID, DropReasonDuplicate), inst, nil
 	}
 	return res, inst, err
+}
+
+func (r *Router) recordDeliveryReadback(ctx context.Context, inst ResolvedInstallation, msg channel.InboundMessage) {
+	if r.readbacks == nil || msg.ReplyTo == nil || msg.ReplyTo.MessageID == "" || msg.MessageID == "" {
+		return
+	}
+	if _, err := r.readbacks.MarkReadback(ctx, inst.ID, msg.ReplyTo.MessageID, msg.MessageID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		r.logger.WarnContext(ctx, "channel router: delivery readback record failed",
+			"channel_type", string(msg.Source.ChannelType), "message_id", msg.MessageID, "error", err)
+	}
 }
 
 // dedupFinalize tells dispatch how to land the claim row after processClaimed.

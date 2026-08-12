@@ -229,6 +229,17 @@ cleared_inbound_dedup AS (
     DELETE FROM channel_inbound_message_dedup
     WHERE installation_id IN (SELECT id FROM dead)
 ),
+detached_deliveries AS (
+    UPDATE channel_delivery
+    SET installation_id = NULL,
+        status = CASE WHEN status = 'pending' THEN 'failed' ELSE status END,
+        last_error_code = CASE WHEN status = 'pending' THEN 'installation_detached' ELSE last_error_code END,
+        failed_at = CASE WHEN status = 'pending' THEN now() ELSE failed_at END,
+        lease_token = NULL,
+        lease_expires_at = NULL,
+        updated_at = now()
+    WHERE installation_id IN (SELECT id FROM dead)
+),
 detached_audit AS (
     -- Reclaim keeps the DETACH semantics: the workspace still exists, so a
     -- NULL-installation audit row stays meaningful for operator triage. The hard-
@@ -274,6 +285,17 @@ cleared_user_bindings AS (
 ),
 cleared_inbound_dedup AS (
     DELETE FROM channel_inbound_message_dedup WHERE installation_id IN (SELECT id FROM doomed)
+),
+detached_deliveries AS (
+    UPDATE channel_delivery
+    SET installation_id = NULL,
+        status = CASE WHEN status = 'pending' THEN 'failed' ELSE status END,
+        last_error_code = CASE WHEN status = 'pending' THEN 'installation_detached' ELSE last_error_code END,
+        failed_at = CASE WHEN status = 'pending' THEN now() ELSE failed_at END,
+        lease_token = NULL,
+        lease_expires_at = NULL,
+        updated_at = now()
+    WHERE installation_id IN (SELECT id FROM doomed)
 ),
 cleared_audit AS (
     -- Hard delete: purge audit rows rather than detaching them into permanently

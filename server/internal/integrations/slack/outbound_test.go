@@ -11,6 +11,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -52,6 +53,32 @@ type fakeSender struct {
 	called int
 	got    channel.OutboundMessage
 }
+
+type fakeDeliveryRecorder struct {
+	input     delivery.ClaimInput
+	claimed   int
+	delivered int
+}
+
+func (f *fakeDeliveryRecorder) Claim(_ context.Context, input delivery.ClaimInput) (delivery.Claim, error) {
+	f.input = input
+	f.claimed++
+	return delivery.Claim{ShouldSend: true, Row: db.ChannelDelivery{
+		ID: uid(20), WorkspaceID: input.WorkspaceID, InstallationID: input.InstallationID,
+		TaskID: input.TaskID, ChatSessionID: input.ChatSessionID, ChannelType: string(input.ChannelType),
+		ChannelChatID: input.ChannelChatID, OperationKind: input.OperationKind, CorrelationID: uid(21),
+		PayloadDigest: delivery.PayloadDigest(input.Payload), Status: "pending", AttemptCount: 1, LeaseToken: uid(22),
+	}}, nil
+}
+
+func (f *fakeDeliveryRecorder) MarkDelivered(_ context.Context, claim delivery.Claim, messageID string) (db.ChannelDelivery, error) {
+	f.delivered++
+	claim.Row.Status = "delivered"
+	claim.Row.ExternalMessageID = pgtype.Text{String: messageID, Valid: true}
+	return claim.Row, nil
+}
+
+func (f *fakeDeliveryRecorder) MarkFailed(context.Context, delivery.Claim, string) error { return nil }
 
 func (f *fakeSender) Send(_ context.Context, out channel.OutboundMessage) (channel.SendResult, error) {
 	f.called++
@@ -127,6 +154,24 @@ func TestOutbound_PostsSealedChannelTaskReply(t *testing.T) {
 
 	if fs.called != 1 {
 		t.Fatalf("sender called %d times, want 1 for a sealed channel task", fs.called)
+	}
+}
+
+func TestOutbound_UsesSharedDeliveryContract(t *testing.T) {
+	q := &fakeOutboundQueries{
+		task: db.AgentTaskQueue{ChatInputTaskID: uid(2)}, taskChannelIngested: true,
+		binding: db.ChannelChatSessionBinding{InstallationID: uid(1), ChannelChatID: "C123", Config: []byte(`{"channel_id":"C123"}`)},
+		inst:    db.ChannelInstallation{ID: uid(1), WorkspaceID: uid(9), Status: "active", Config: slackInstallConfigJSON()},
+	}
+	fs := &fakeSender{}
+	recorder := &fakeDeliveryRecorder{}
+	newTestOutbound(q, fs).WithDeliveryRecorder(recorder).handleEvent(chatDoneEvent("00000000-0000-0000-0000-000000000001", "audited answer"))
+
+	if fs.called != 1 || recorder.claimed != 1 || recorder.delivered != 1 {
+		t.Fatalf("send/claim/deliver = %d/%d/%d, want 1/1/1", fs.called, recorder.claimed, recorder.delivered)
+	}
+	if recorder.input.ChannelType != TypeSlack || recorder.input.OperationKind != delivery.OperationChatReply || recorder.input.Payload != "audited answer" {
+		t.Fatalf("delivery input = %+v", recorder.input)
 	}
 }
 

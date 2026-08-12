@@ -29,6 +29,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composiointeg "github.com/multica-ai/multica/server/internal/integrations/composio"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
@@ -342,7 +343,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// connection of its own outside the per-installation supervisor. The Router
 	// is the single shared inbound handler injected into every Channel.
 	channelRegistry := channel.NewRegistry()
-	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{Logger: slog.Default()})
+	deliveryLedger := delivery.NewLedger(queries)
+	h.ChannelDeliveries = deliveryLedger
+	h.ChannelDeliveryReconciler = &delivery.Reconciler{Ledger: deliveryLedger, Logger: slog.Default()}
+	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{Logger: slog.Default(), Readbacks: deliveryLedger})
 	// Debounce the per-session run trigger so a burst of messages collapses
 	// into one agent run instead of one per message (MUL-2968).
 	channelRouter.EnableRunBatching(engine.DefaultChatRunBatchWindow)
@@ -604,7 +608,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			slackTyping := slack.NewTypingIndicatorManager(queries, box.Open, slog.Default())
 			slackTyping.Register(bus)
 			channelRouter.Register(slack.TypeSlack, slack.NewSlackResolverSet(queries, pool, slackReplier, slackTyping))
-			slack.NewOutbound(queries, box.Open, slog.Default()).Register(bus)
+			slack.NewOutbound(queries, box.Open, slog.Default()).WithDeliveryRecorder(deliveryLedger).Register(bus)
 
 			// On-demand history reader behind the unified `multica chat history`
 			// command (MUL-3871): pull the session's Slack conversation when the
@@ -677,7 +681,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				)
 			}
 			channelRouter.Register(dingtalk.TypeDingTalk, dingtalk.NewDingTalkResolverSet(queries, pool, replier, ack, media))
-			dingtalk.NewOutbound(queries, box.Open, dingtalkClient, slog.Default()).Register(bus)
+			dingtalk.NewOutbound(queries, box.Open, dingtalkClient, slog.Default()).WithDeliveryRecorder(deliveryLedger).Register(bus)
 			dingtalk.RegisterDingTalk(channelRegistry, dingtalk.ChannelDeps{
 				Decrypt: box.Open,
 				Client:  dingtalkClient,
@@ -1209,6 +1213,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/role-sources/{sourceId}/plans/{planDigest}", h.GetRoleSourcePlan)
 					r.Get("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.ListRoleSourcePlanApprovals)
 					r.Get("/role-sources/{sourceId}/applies", h.ListRoleSourceApplyHistory)
+					r.Get("/channel-deliveries", h.ListChannelDeliveries)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {

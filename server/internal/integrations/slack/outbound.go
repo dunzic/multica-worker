@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -45,6 +46,7 @@ type Outbound struct {
 	q         outboundQueries
 	decrypt   Decrypter
 	logger    *slog.Logger
+	delivery  delivery.Recorder
 	newSender func(creds credentials) replySender
 }
 
@@ -60,6 +62,14 @@ func NewOutbound(q outboundQueries, decrypt Decrypter, logger *slog.Logger) *Out
 		// installation's separate app-level token (see slack_channel.go).
 		return newSlackSender(c, slack.New(c.BotToken), logger)
 	}
+	return o
+}
+
+// WithDeliveryRecorder enables connector-neutral idempotency and audited
+// provider-message receipts. It is optional so isolated adapter tests and
+// deployments upgrading before the ledger migration keep their old behavior.
+func (o *Outbound) WithDeliveryRecorder(recorder delivery.Recorder) *Outbound {
+	o.delivery = recorder
 	return o
 }
 
@@ -137,11 +147,15 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		return fmt.Errorf("decode slack credentials: %w", err)
 	}
 	channelID, threadTS := outboundTarget(binding)
-	if _, err := o.newSender(creds).Send(ctx, channel.OutboundMessage{
-		ChatID:   channelID,
-		Text:     content,
-		ThreadID: threadTS,
-	}); err != nil {
+	_, err = delivery.Send(ctx, o.delivery, delivery.ClaimInput{
+		WorkspaceID: inst.WorkspaceID, InstallationID: inst.ID, TaskID: taskID, ChatSessionID: sessionID,
+		ChannelType: TypeSlack, ChannelChatID: channelID, OperationKind: delivery.OperationChatReply, Payload: content,
+	}, func(sendCtx context.Context) (channel.SendResult, error) {
+		return o.newSender(creds).Send(sendCtx, channel.OutboundMessage{
+			ChatID: channelID, Text: content, ThreadID: threadTS,
+		})
+	})
+	if err != nil {
 		return fmt.Errorf("post slack reply: %w", err)
 	}
 	return nil

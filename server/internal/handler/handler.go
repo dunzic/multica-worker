@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
@@ -246,6 +247,11 @@ type Handler struct {
 	// delivering events, to flush debounced run triggers and join in-flight
 	// reply goroutines. Built unconditionally (even without Lark).
 	ChannelRouter *engine.Router
+	// ChannelDeliveries exposes verified, content-free outbound delivery
+	// evidence to workspace members. The same ledger is shared by connector
+	// subscribers and the inbound readback recorder.
+	ChannelDeliveries         *delivery.Ledger
+	ChannelDeliveryReconciler *delivery.Reconciler
 	// ChannelMediaReconciler settles the channel-media intent ledger
 	// (uploaded-but-unbound object reclaim). Built in cmd/server/router.go
 	// where the storage backend exists; main.go starts it as an independent
