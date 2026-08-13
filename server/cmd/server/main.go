@@ -343,6 +343,7 @@ func main() {
 	var businessMetrics *obsmetrics.BusinessMetrics
 	var samplerPool *pgxpool.Pool
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
+	var channelDeliveryMetrics *obsmetrics.ChannelDeliveryMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
 	var roleSourceMetrics *obsmetrics.RoleSourceMetrics
 	var roleSourceArtifactGCMetrics *obsmetrics.RoleSourceArtifactGCMetrics
@@ -376,6 +377,7 @@ func main() {
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
 		channelMediaMetrics = metricsRegistry.ChannelMedia
+		channelDeliveryMetrics = metricsRegistry.ChannelDelivery
 		wecomMetrics = metricsRegistry.Wecom
 		roleSourceMetrics = metricsRegistry.RoleSource
 		roleSourceArtifactGCMetrics = metricsRegistry.RoleSourceArtifactGC
@@ -405,14 +407,15 @@ func main() {
 	heartbeatScheduler := handler.NewBatchedHeartbeatScheduler(queries, handler.DefaultHeartbeatBatchInterval)
 
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
-		HTTPMetrics:        httpMetrics,
-		BusinessMetrics:    businessMetrics,
-		WecomMetrics:       wecomMetrics,
-		RoleSourceMetrics:  roleSourceMetrics,
-		DaemonHub:          daemonHub,
-		DaemonWakeup:       daemonWakeup,
-		FeatureFlags:       flags,
-		HeartbeatScheduler: heartbeatScheduler,
+		HTTPMetrics:            httpMetrics,
+		BusinessMetrics:        businessMetrics,
+		WecomMetrics:           wecomMetrics,
+		RoleSourceMetrics:      roleSourceMetrics,
+		ChannelDeliveryMetrics: channelDeliveryMetrics,
+		DaemonHub:              daemonHub,
+		DaemonWakeup:           daemonWakeup,
+		FeatureFlags:           flags,
+		HeartbeatScheduler:     heartbeatScheduler,
 	})
 
 	srv := &http.Server{

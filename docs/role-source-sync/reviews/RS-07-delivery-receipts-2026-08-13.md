@@ -16,6 +16,14 @@ When a later inbound message explicitly replies to the delivered provider messag
 
 Workspace members can list the audit history. The response exposes payload and evidence digests but no message body, idempotency key, credential, token or provider error text. The shared Integrations settings page now renders the newest 100 verified rows with status filtering, connector type, task/correlation identity, attempts, safe error code, evidence commitment and time. It deliberately does not display channel-chat or provider-message routing IDs and has no resend action.
 
+Operational telemetry counts only committed `delivered`, `readback`, `failed`
+and `lease_expired` transitions using bounded connector, operation and safe
+error-code labels. Reconciliation success/query-failure is separate. Metrics
+contain no workspace, installation, task, session, correlation or provider
+message identity. Helm alerts cover sustained delivery failures and a
+reconciler that cannot expire abandoned leases; both direct operators to
+reconcile provider acceptance before retry.
+
 ## Architecture expert review
 
 Score: 2/3
@@ -67,7 +75,9 @@ Missing evidence:
 - real Slack/DingTalk timeout, 401/429 and provider-message readback exercises;
 - crash injection specifically after provider acceptance and before receipt commit;
 - attachment deletion/permission-loss cases once attachment delivery is modeled;
-- 10,000-user queue/index/load behavior and production metrics/alerts.
+- 10,000-user queue/index/load behavior;
+- dashboards, measured alert thresholds and an on-call exercise remain open;
+  the metric and Helm alert contract are implemented.
 
 ## CEO review
 

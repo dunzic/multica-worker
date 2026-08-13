@@ -43,13 +43,20 @@ type Queries interface {
 }
 
 type Ledger struct {
-	q   Queries
-	now func() time.Time
+	q       Queries
+	now     func() time.Time
+	metrics Metrics
+}
+
+type Metrics interface {
+	RecordChannelDeliveryTransition(connector, operation, status, errorCode string)
 }
 
 func NewLedger(q Queries) *Ledger {
 	return &Ledger{q: q, now: func() time.Time { return time.Now().UTC() }}
 }
+
+func (l *Ledger) SetMetrics(metrics Metrics) { l.metrics = metrics }
 
 type ClaimInput struct {
 	WorkspaceID    pgtype.UUID
@@ -174,6 +181,9 @@ func (l *Ledger) MarkDelivered(ctx context.Context, claim Claim, externalMessage
 	if _, err := ValidateRow(row); err != nil {
 		return db.ChannelDelivery{}, err
 	}
+	if l.metrics != nil {
+		l.metrics.RecordChannelDeliveryTransition(row.ChannelType, row.OperationKind, "delivered", "none")
+	}
 	return row, nil
 }
 
@@ -182,11 +192,14 @@ func (l *Ledger) MarkFailed(ctx context.Context, claim Claim, errorCode string) 
 		return ErrClaimLost
 	}
 	errorCode = normalizeErrorCode(errorCode)
-	_, err := l.q.FailChannelDelivery(ctx, db.FailChannelDeliveryParams{
+	row, err := l.q.FailChannelDelivery(ctx, db.FailChannelDeliveryParams{
 		ID: claim.Row.ID, LeaseToken: claim.Row.LeaseToken, LastErrorCode: pgtype.Text{String: errorCode, Valid: true},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrClaimLost
+	}
+	if err == nil && l.metrics != nil {
+		l.metrics.RecordChannelDeliveryTransition(row.ChannelType, row.OperationKind, "failed", errorCode)
 	}
 	return err
 }
@@ -242,6 +255,9 @@ func (l *Ledger) MarkReadback(ctx context.Context, installationID pgtype.UUID, e
 	}
 	if _, err := ValidateRow(updated); err != nil {
 		return db.ChannelDelivery{}, err
+	}
+	if l.metrics != nil {
+		l.metrics.RecordChannelDeliveryTransition(updated.ChannelType, updated.OperationKind, "readback", "none")
 	}
 	return updated, nil
 }

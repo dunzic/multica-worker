@@ -31,6 +31,7 @@ type Registry struct {
 	HTTP                        *HTTPMetrics
 	Business                    *BusinessMetrics
 	ChannelMedia                *ChannelMediaReconcilerMetrics
+	ChannelDelivery             *ChannelDeliveryMetrics
 	Wecom                       *WecomMetrics
 	RoleSource                  *RoleSourceMetrics
 	RoleSourceArtifactGC        *RoleSourceArtifactGCMetrics
@@ -62,6 +63,8 @@ func NewRegistry(opts RegistryOptions) *Registry {
 
 	channelMedia := NewChannelMediaReconcilerMetrics()
 	reg.MustRegister(channelMedia.Collectors()...)
+	channelDelivery := NewChannelDeliveryMetrics()
+	reg.MustRegister(channelDelivery.Collectors()...)
 
 	wecomMetrics := NewWecomMetrics()
 	reg.MustRegister(wecomMetrics.Collectors()...)
@@ -95,6 +98,7 @@ func NewRegistry(opts RegistryOptions) *Registry {
 		HTTP:                        httpMetrics,
 		Business:                    businessMetrics,
 		ChannelMedia:                channelMedia,
+		ChannelDelivery:             channelDelivery,
 		Wecom:                       wecomMetrics,
 		RoleSource:                  roleSourceMetrics,
 		RoleSourceArtifactGC:        roleSourceArtifactGC,

@@ -16,8 +16,14 @@ const (
 // a fresh lease, which avoids guessing whether a provider accepted an
 // ambiguous request.
 type Reconciler struct {
-	Ledger *Ledger
-	Logger *slog.Logger
+	Ledger  *Ledger
+	Logger  *slog.Logger
+	Metrics ReconcileMetrics
+}
+
+type ReconcileMetrics interface {
+	RecordChannelDeliveryReconcile(outcome string)
+	RecordChannelDeliveryTransition(connector, operation, status, errorCode string)
 }
 
 func (r *Reconciler) Run(ctx context.Context) {
@@ -40,10 +46,19 @@ func (r *Reconciler) RunOnce(ctx context.Context) {
 	for {
 		rows, err := r.Ledger.ExpireLeases(ctx, reconcileBatch)
 		if err != nil {
+			if r.Metrics != nil {
+				r.Metrics.RecordChannelDeliveryReconcile("query_failed")
+			}
 			if ctx.Err() == nil {
 				r.logger().WarnContext(ctx, "channel delivery reconciler: expiry failed", "error", err)
 			}
 			return
+		}
+		if r.Metrics != nil {
+			r.Metrics.RecordChannelDeliveryReconcile("completed")
+			for _, row := range rows {
+				r.Metrics.RecordChannelDeliveryTransition(row.ChannelType, row.OperationKind, "lease_expired", "timeout")
+			}
 		}
 		if len(rows) < int(reconcileBatch) {
 			return

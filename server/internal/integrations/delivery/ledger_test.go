@@ -18,6 +18,19 @@ type memoryQueries struct {
 	has bool
 }
 
+type deliveryMetricsRecorder struct {
+	transitions []string
+	reconciles  []string
+}
+
+func (m *deliveryMetricsRecorder) RecordChannelDeliveryTransition(connector, operation, status, errorCode string) {
+	m.transitions = append(m.transitions, connector+":"+operation+":"+status+":"+errorCode)
+}
+
+func (m *deliveryMetricsRecorder) RecordChannelDeliveryReconcile(outcome string) {
+	m.reconciles = append(m.reconciles, outcome)
+}
+
 func testUUID(n byte) pgtype.UUID {
 	var id pgtype.UUID
 	id.Bytes[15] = n
@@ -147,6 +160,60 @@ func TestSendRecordsDeliveredAndDeduplicates(t *testing.T) {
 	}
 	if _, err := ValidateRow(q.row); err != nil {
 		t.Fatalf("stored evidence invalid: %v", err)
+	}
+}
+
+func TestDeliveryMetricsObserveOnlyCommittedTransitions(t *testing.T) {
+	q := &memoryQueries{}
+	ledger := NewLedger(q)
+	metrics := &deliveryMetricsRecorder{}
+	ledger.SetMetrics(metrics)
+
+	if _, err := Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		return channel.SendResult{}, errors.New("provider token must never become a label")
+	}); err == nil {
+		t.Fatal("provider failure was hidden")
+	}
+	if _, err := Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		return channel.SendResult{MessageID: "provider-1"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.MarkReadback(context.Background(), testUUID(2), "provider-1", "reply-1"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"slack:chat_reply:failed:provider_error",
+		"slack:chat_reply:delivered:none",
+		"slack:chat_reply:readback:none",
+	}
+	if len(metrics.transitions) != len(want) {
+		t.Fatalf("transitions=%v, want %v", metrics.transitions, want)
+	}
+	for index := range want {
+		if metrics.transitions[index] != want[index] {
+			t.Fatalf("transitions=%v, want %v", metrics.transitions, want)
+		}
+	}
+}
+
+func TestReconcilerRecordsExpiredClaimsWithoutResending(t *testing.T) {
+	q := &memoryQueries{}
+	ledger := NewLedger(q)
+	claim, err := ledger.Claim(context.Background(), baseClaimInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.row.LeaseExpiresAt = pgtype.Timestamptz{Time: time.Now().Add(-time.Minute), Valid: true}
+	metrics := &deliveryMetricsRecorder{}
+	reconciler := &Reconciler{Ledger: ledger, Metrics: metrics}
+	reconciler.RunOnce(context.Background())
+
+	if claim.ShouldSend != true || q.row.Status != "failed" {
+		t.Fatalf("claim=%+v row=%+v", claim, q.row)
+	}
+	if len(metrics.reconciles) != 1 || metrics.reconciles[0] != "completed" || len(metrics.transitions) != 1 || metrics.transitions[0] != "slack:chat_reply:lease_expired:timeout" {
+		t.Fatalf("reconcile metrics=%+v", metrics)
 	}
 }
 

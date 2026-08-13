@@ -128,4 +128,25 @@ spec:
           annotations:
             summary: "One or more managed role sources have no fresh runtime"
             description: "At least one active, registered or error-state role source has remained bound to an offline, missing or DB-stale runtime. Tenant/source identifiers are deliberately absent from metrics; use the authorized role-source settings view and operator runbook to identify and repair the affected source."
+    - name: multica-channel-delivery
+      rules:
+        - alert: MulticaChannelDeliveryFailuresElevated
+          expr: |
+            sum by (connector, operation) (
+              increase(multica_channel_delivery_transitions_total{status=~"failed|lease_expired"}[15m])
+            ) > 20
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Channel delivery failures are elevated"
+            description: "More than 20 {{ "{{ $labels.connector }}" }} {{ "{{ $labels.operation }}" }} deliveries failed or lost their send lease in 15 minutes. Do not blind-resend: use correlation evidence to reconcile provider acceptance before a controlled retry."
+        - alert: MulticaChannelDeliveryReconcilerErrors
+          expr: increase(multica_channel_delivery_reconciliations_total{outcome="query_failed"}[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Channel delivery reconciler cannot expire abandoned leases"
+            description: "The delivery reconciler cannot query or persist expired send leases. Pending rows may remain unresolved; inspect PostgreSQL health and migration state before retrying connector events."
 {{- end }}

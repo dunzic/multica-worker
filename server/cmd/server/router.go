@@ -187,10 +187,11 @@ type RouterOptions struct {
 	WecomMetrics *obsmetrics.WecomMetrics
 	// RoleSourceMetrics contains bounded protocol-state labels only. Nil keeps
 	// metrics disabled without changing role-source behavior.
-	RoleSourceMetrics *obsmetrics.RoleSourceMetrics
-	DaemonHub         *daemonws.Hub
-	DaemonWakeup      service.TaskWakeupNotifier
-	FeatureFlags      *featureflag.Service
+	RoleSourceMetrics      *obsmetrics.RoleSourceMetrics
+	ChannelDeliveryMetrics *obsmetrics.ChannelDeliveryMetrics
+	DaemonHub              *daemonws.Hub
+	DaemonWakeup           service.TaskWakeupNotifier
+	FeatureFlags           *featureflag.Service
 	// HeartbeatScheduler, when non-nil, replaces the default synchronous
 	// passthrough scheduler on the constructed Handler. main.go injects a
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
@@ -352,8 +353,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// is the single shared inbound handler injected into every Channel.
 	channelRegistry := channel.NewRegistry()
 	deliveryLedger := delivery.NewLedger(queries)
+	deliveryLedger.SetMetrics(opts.ChannelDeliveryMetrics)
 	h.ChannelDeliveries = deliveryLedger
-	h.ChannelDeliveryReconciler = &delivery.Reconciler{Ledger: deliveryLedger, Logger: slog.Default()}
+	h.ChannelDeliveryReconciler = &delivery.Reconciler{Ledger: deliveryLedger, Logger: slog.Default(), Metrics: opts.ChannelDeliveryMetrics}
 	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{Logger: slog.Default(), Readbacks: deliveryLedger})
 	// Debounce the per-session run trigger so a burst of messages collapses
 	// into one agent run instead of one per message (MUL-2968).

@@ -33,6 +33,9 @@ const (
 	labelOp           = "op"
 	labelGate         = "gate"
 	labelMode         = "mode"
+	labelConnector    = "connector"
+	labelOperation    = "operation"
+	labelErrorCode    = "error_code"
 	labelStage        = "stage"
 	labelCode         = "code"
 	labelOutcome      = "outcome"
@@ -97,6 +100,8 @@ var businessMetricLabels = map[string][]string{
 // event tests from requiring these collectors while retaining the same global
 // label-cardinality policy.
 var operationalMetricLabels = map[string][]string{
+	"multica_channel_delivery_transitions_total":             {labelConnector, labelOperation, labelStatus, labelErrorCode},
+	"multica_channel_delivery_reconciliations_total":         {labelOutcome},
 	"multica_role_source_apply_errors_total":                 {labelMode, labelStage, labelCode},
 	"multica_role_source_apply_failure_audit_writes_total":   {labelMode, labelStage, labelCode, labelOutcome},
 	"multica_role_source_apply_commit_reconciliations_total": {labelOutcome},
