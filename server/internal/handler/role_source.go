@@ -34,6 +34,7 @@ type RoleSourceControlPlane interface {
 	GetSource(context.Context, string, string) (db.RoleSource, error)
 	GetScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error)
 	GetLatestScan(context.Context, string, string) (db.RoleSourceScanRequest, error)
+	ListScans(context.Context, string, string, int32) ([]db.RoleSourceScanRequest, error)
 	ClaimNextScan(context.Context, string, time.Duration) (rolesource.ClaimedScan, error)
 	RenewScanLease(context.Context, string, string, string, string, string, time.Duration) (db.RoleSourceScanRequest, error)
 	ReportScanSuccess(context.Context, rolesource.ReportScanSuccessInput) (db.RoleSourceSnapshot, error)
@@ -876,6 +877,23 @@ func (h *Handler) GetLatestRoleSourceScan(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, roleSourceScanToResponse(row))
+}
+
+func (h *Handler) ListRoleSourceScans(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	rows, err := h.RoleSources.ListScans(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), 100)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list role source scans")
+		return
+	}
+	items := make([]roleSourceScanResponse, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, roleSourceScanToResponse(row))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"scans": items})
 }
 
 func (h *Handler) ListRoleSourceSnapshots(w http.ResponseWriter, r *http.Request) {

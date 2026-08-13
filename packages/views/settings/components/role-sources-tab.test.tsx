@@ -13,6 +13,7 @@ const queryFixtures = vi.hoisted(() => ({
   legalHolds: [] as Array<Record<string, unknown>>,
   retention: undefined as Record<string, unknown> | undefined,
   latestScan: undefined as Record<string, unknown> | undefined,
+  scans: [] as Array<Record<string, unknown>>,
   approvals: [] as Array<Record<string, unknown>>,
   applies: [] as Array<Record<string, unknown>>,
   secretTransfers: [] as Array<Record<string, unknown>>,
@@ -79,6 +80,8 @@ vi.mock("@tanstack/react-query", async () => {
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
       data: options.queryKey.includes("latest-scan")
         ? queryFixtures.latestScan
+        : options.queryKey.includes("scans")
+          ? queryFixtures.scans
         : options.queryKey.includes("impact")
         ? queryFixtures.impact
         : options.queryKey.includes("approvals")
@@ -152,6 +155,19 @@ beforeEach(() => {
     claimed_at: "2026-08-13T00:10:01Z",
     completed_at: "2026-08-13T00:10:02Z",
   };
+  queryFixtures.scans = [
+    queryFixtures.latestScan,
+    {
+      ...queryFixtures.latestScan,
+      id: "scan-old",
+      status: "failed",
+      snapshot_digest: null,
+      error_code: "remote_trust_invalid",
+      requested_at: "2026-08-12T00:10:00Z",
+      claimed_at: "2026-08-12T00:10:01Z",
+      completed_at: "2026-08-12T00:10:02Z",
+    },
+  ];
   queryFixtures.plans = [
     {
       source_id: "source-1",
@@ -314,7 +330,9 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText(/automatic receipt check did not confirm/)).toBeInTheDocument();
     expect(screen.getByText(/Plan approval and apply remain read-only/)).toBeInTheDocument();
     expect(screen.getByText("Read-only source scan")).toBeInTheDocument();
-    expect(screen.getByText("Succeeded")).toBeInTheDocument();
+    expect(screen.getAllByText("Succeeded")).toHaveLength(2);
+    expect(screen.getByText("Scan history")).toBeInTheDocument();
+    expect(screen.getByText("remote_trust_invalid")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run read-only scan" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve|apply|retry|recover/i })).not.toBeInTheDocument();
   });
@@ -647,7 +665,7 @@ describe("RoleSourcesTab", () => {
     memberFixture.role = "member";
     renderWithI18n(<RoleSourcesTab />);
 
-    expect(screen.getByText("Succeeded")).toBeInTheDocument();
+    expect(screen.getAllByText("Succeeded")).toHaveLength(2);
     expect(screen.getByText("Only workspace owners and admins can request a scan.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run read-only scan" })).not.toBeInTheDocument();
   });

@@ -785,6 +785,14 @@ WHERE source_id = @source_id AND workspace_id = @workspace_id
 ORDER BY requested_at DESC, id
 LIMIT 1;
 
+-- name: ListRoleSourceScanRequests :many
+-- Bounded operator history. Handler DTOs intentionally omit lease, runtime,
+-- requester and idempotency evidence.
+SELECT * FROM role_source_scan_request
+WHERE source_id = @source_id AND workspace_id = @workspace_id
+ORDER BY requested_at DESC, id DESC
+LIMIT @result_limit;
+
 -- name: GetRoleSourceScanRequestForUpdate :one
 SELECT * FROM role_source_scan_request
 WHERE id = @id AND source_id = @source_id AND workspace_id = @workspace_id

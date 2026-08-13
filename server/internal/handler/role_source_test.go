@@ -45,6 +45,8 @@ type fakeRoleSourceControlPlane struct {
 	getScanErr                error
 	getLatestScanRow          db.RoleSourceScanRequest
 	getLatestScanErr          error
+	listScanRows              []db.RoleSourceScanRequest
+	listScanErr               error
 	listRows                  []db.RoleSource
 	listErr                   error
 	getSourceRow              db.RoleSource
@@ -205,6 +207,11 @@ func (f *fakeRoleSourceControlPlane) GetScan(context.Context, string, string, st
 func (f *fakeRoleSourceControlPlane) GetLatestScan(context.Context, string, string) (db.RoleSourceScanRequest, error) {
 	f.calls++
 	return f.getLatestScanRow, f.getLatestScanErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListScans(context.Context, string, string, int32) ([]db.RoleSourceScanRequest, error) {
+	f.calls++
+	return f.listScanRows, f.listScanErr
 }
 
 func (f *fakeRoleSourceControlPlane) ClaimNextScan(context.Context, string, time.Duration) (rolesource.ClaimedScan, error) {
@@ -810,6 +817,29 @@ func TestGetLatestRoleSourceScan_MapsEmptyHistoryToNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("empty latest scan: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListRoleSourceScansIsBoundedAndRedacted(t *testing.T) {
+	row := roleSourceTestScanRow()
+	fake := &fakeRoleSourceControlPlane{listScanRows: []db.RoleSourceScanRequest{row}}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.ListRoleSourceScans(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("list scans: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	for _, forbidden := range []string{"lease_token", "lease_expires_at", "claimed_by_runtime_id", "request_key_digest", "requested_by", "000000000044"} {
+		if strings.Contains(w.Body.String(), forbidden) {
+			t.Fatalf("scan history exposed %q: %s", forbidden, w.Body.String())
+		}
+	}
+	if !strings.Contains(w.Body.String(), `"scans"`) || !strings.Contains(w.Body.String(), `"status":"succeeded"`) {
+		t.Fatalf("scan history missing safe status: %s", w.Body.String())
 	}
 }
 

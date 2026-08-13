@@ -90,6 +90,21 @@ describe("ApiClient role-source runtime evidence", () => {
     ]);
   });
 
+  it("lists redacted scan history and fails closed on malformed rows", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ scans: [scan] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ scans: [{ id: 42 }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listRoleSourceScans("workspace-1", "source-1")).resolves.toEqual([scan]);
+    await expect(client.listRoleSourceScans("workspace-1", "source-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/scans",
+    );
+  });
+
   it("treats empty scan history as null and malformed scan responses as unavailable", async () => {
     const fetchMock = vi
       .fn()

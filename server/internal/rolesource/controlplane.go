@@ -337,6 +337,19 @@ func (c *ControlPlane) GetLatestScan(ctx context.Context, workspaceIDText, sourc
 	})
 }
 
+func (c *ControlPlane) ListScans(ctx context.Context, workspaceIDText, sourceIDText string, limit int32) ([]db.RoleSourceScanRequest, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	return c.queries().ListRoleSourceScanRequests(ctx, db.ListRoleSourceScanRequestsParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, ResultLimit: limit,
+	})
+}
+
 func (c *ControlPlane) RenewScanLease(ctx context.Context, workspaceIDText, sourceIDText, requestIDText, runtimeIDText, leaseTokenText string, leaseDuration time.Duration) (db.RoleSourceScanRequest, error) {
 	if leaseDuration < 15*time.Second || leaseDuration > 15*time.Minute {
 		return db.RoleSourceScanRequest{}, errors.New("scan lease duration must be between 15 seconds and 15 minutes")

@@ -44,6 +44,7 @@ import {
   roleSourcePlanApprovalListOptions,
   roleSourcePlanListOptions,
   roleSourceRuntimeAttestationListOptions,
+  roleSourceScanListOptions,
   roleSourceSecretTransferListOptions,
   roleSourceRetentionPreviewOptions,
   roleSourceKeys,
@@ -231,6 +232,10 @@ export function RoleSourcesTab() {
     ...roleSourceLatestScanOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId),
   });
+  const scanHistory = useQuery({
+    ...roleSourceScanListOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId),
+  });
   const latestScanData = latestScan.data;
   const requestScan = useRequestRoleSourceScan(workspaceId, selectedId);
   const latest = plans.data?.[0];
@@ -287,6 +292,7 @@ export function RoleSourcesTab() {
     if (latestScan.data?.status !== "succeeded") return;
     void queryClient.invalidateQueries({ queryKey: roleSourceKeys.list(workspaceId) });
     void queryClient.invalidateQueries({ queryKey: roleSourceKeys.plans(workspaceId, selectedId) });
+    void queryClient.invalidateQueries({ queryKey: roleSourceKeys.scans(workspaceId, selectedId) });
   }, [latestScan.data?.id, latestScan.data?.status, queryClient, selectedId, workspaceId]);
 
   React.useEffect(() => {
@@ -557,6 +563,7 @@ export function RoleSourcesTab() {
       queryClient.invalidateQueries({ queryKey: roleSourceKeys.applies(workspaceId, selected.id) }),
       queryClient.invalidateQueries({ queryKey: roleSourceKeys.applyFailures(workspaceId, selected.id) }),
       queryClient.invalidateQueries({ queryKey: roleSourceKeys.latestScan(workspaceId, selected.id) }),
+      queryClient.invalidateQueries({ queryKey: roleSourceKeys.scans(workspaceId, selected.id) }),
     ]);
     toast.success(t(($) => $.role_sources.failed_apply_reconciled));
   }
@@ -995,8 +1002,8 @@ export function RoleSourcesTab() {
           ) : null}
 
           <div ref={planSectionRef}>
-            <SettingsSection
-              title={t(($) => $.role_sources.latest_plan_title)}
+          <SettingsSection
+            title={t(($) => $.role_sources.latest_plan_title)}
               description={t(($) => $.role_sources.latest_plan_description, { name: selected.name })}
             >
               <SettingsCard>
@@ -1330,6 +1337,43 @@ export function RoleSourcesTab() {
               </SettingsCard>
             </SettingsSection>
           </div>
+
+          <SettingsSection
+            title={t(($) => $.role_sources.scan_history_title)}
+            description={t(($) => $.role_sources.scan_history_description)}
+          >
+            <SettingsCard>
+              {scanHistory.isLoading ? (
+                <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t(($) => $.role_sources.loading)}
+                </div>
+              ) : scanHistory.isError ? (
+                <div className="p-4 text-caption text-destructive">{t(($) => $.role_sources.scan_history_load_failed)}</div>
+              ) : !scanHistory.data?.length ? (
+                <div className="p-4 text-caption text-muted-foreground">{t(($) => $.role_sources.scan_history_empty)}</div>
+              ) : (
+                <div className="max-h-80 divide-y divide-surface-border overflow-y-auto">
+                  {scanHistory.data.map((scan) => (
+                    <div key={scan.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-body font-medium">
+                          {t(($) => $.role_sources[scanStatusTranslationKey(scan.status)])}
+                          {scan.error_code ? <span className="font-mono text-caption text-destructive">{scan.error_code}</span> : null}
+                        </div>
+                        <div className="mt-1 font-mono text-caption text-muted-foreground">
+                          {shortDigest(scan.snapshot_digest)} · {scan.completed_at ?? scan.requested_at}
+                        </div>
+                      </div>
+                      <Badge variant={scan.status === "failed" ? "destructive" : scan.status === "succeeded" ? "secondary" : "outline"}>
+                        {scan.expected_adapter_version}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SettingsCard>
+          </SettingsSection>
 
           <SettingsSection
             title={t(($) => $.role_sources.receipts_title)}

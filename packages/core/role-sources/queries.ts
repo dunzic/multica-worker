@@ -25,6 +25,8 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "retention", sourceId] as const,
   latestScan: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "latest-scan", sourceId] as const,
+  scans: (workspaceId: string, sourceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "scans", sourceId] as const,
 };
 
 export function roleSourceListOptions(workspaceId: string) {
@@ -80,6 +82,17 @@ export function roleSourceLatestScanOptions(
       return status === "queued" || status === "claimed" ? 2000 : false;
     },
     staleTime: 0,
+  });
+}
+
+export function roleSourceScanListOptions(
+  workspaceId: string,
+  sourceId: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.scans(workspaceId, sourceId),
+    queryFn: () => api.listRoleSourceScans(workspaceId, sourceId),
+    enabled: Boolean(sourceId),
   });
 }
 

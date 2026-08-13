@@ -3886,6 +3886,57 @@ func (q *Queries) ListRoleSourceRuntimeAttestations(ctx context.Context, arg Lis
 	return items, nil
 }
 
+const listRoleSourceScanRequests = `-- name: ListRoleSourceScanRequests :many
+SELECT id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest FROM role_source_scan_request
+WHERE source_id = $1 AND workspace_id = $2
+ORDER BY requested_at DESC, id DESC
+LIMIT $3
+`
+
+type ListRoleSourceScanRequestsParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+// Bounded operator history. Handler DTOs intentionally omit lease, runtime,
+// requester and idempotency evidence.
+func (q *Queries) ListRoleSourceScanRequests(ctx context.Context, arg ListRoleSourceScanRequestsParams) ([]RoleSourceScanRequest, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceScanRequests, arg.SourceID, arg.WorkspaceID, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceScanRequest{}
+	for rows.Next() {
+		var i RoleSourceScanRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.Status,
+			&i.RequestedBy,
+			&i.ExpectedAdapterVersion,
+			&i.ClaimedByRuntimeID,
+			&i.LeaseToken,
+			&i.LeaseExpiresAt,
+			&i.SnapshotDigest,
+			&i.ErrorCode,
+			&i.RequestedAt,
+			&i.ClaimedAt,
+			&i.CompletedAt,
+			&i.RequestKeyDigest,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoleSourceSecretTransfersForPlan = `-- name: ListRoleSourceSecretTransfersForPlan :many
 SELECT DISTINCT ON (role_id) id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code FROM role_source_secret_transfer
 WHERE source_id = $1

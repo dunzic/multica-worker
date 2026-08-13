@@ -83,6 +83,10 @@ export const RoleSourceScanSchema = z.object({
   completed_at: z.string().nullable().optional().default(null),
 }).loose();
 
+export const RoleSourceScanListSchema = z.object({
+  scans: z.array(RoleSourceScanSchema),
+}).loose();
+
 export const EMPTY_ROLE_SOURCE_SCAN: RoleSourceScan = {
   id: "",
   source_id: "",

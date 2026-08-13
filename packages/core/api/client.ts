@@ -318,6 +318,7 @@ import {
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
   RoleSourceScanSchema,
+  RoleSourceScanListSchema,
   RoleSourcePlanRecordSchema,
   RoleSourcePlanRecordListSchema,
   RoleSourcePlanApprovalSchema,
@@ -1718,6 +1719,18 @@ export class ApiClient {
       if (error instanceof ApiError && error.status === 404) return null;
       throw error;
     }
+  }
+
+  async listRoleSourceScans(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceScan[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/scans`,
+    );
+    return parseWithFallback(raw, RoleSourceScanListSchema, { scans: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/scans",
+    }).scans;
   }
 
   async requestRoleSourceScan(
