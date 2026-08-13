@@ -1066,6 +1066,34 @@ func TestMaterializedAutomationBatchPreservesSafetyBoundary(t *testing.T) {
 	}
 }
 
+func TestAutomationTitleRacePolicyLocksRevalidatesThenWrites(t *testing.T) {
+	body, err := os.ReadFile("apply.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	lockStart := strings.Index(text, "func (s *materializationState) lockAndRevalidateAutomationTitles")
+	if lockStart < 0 {
+		t.Fatal("automation title lock helper is missing")
+	}
+	lockSection := text[lockStart:]
+	lockAt := strings.Index(lockSection, "autopilotlock.LockTitles")
+	revalidateAt := strings.Index(lockSection, "validateMaterializationNames")
+	if lockAt < 0 || revalidateAt < 0 || lockAt >= revalidateAt {
+		t.Fatal("automation titles must be locked before the post-lock name conflict check")
+	}
+	materializeStart := strings.Index(text, "func (s *materializationState) materializeAutomations")
+	if materializeStart < 0 {
+		t.Fatal("automation materializer is missing")
+	}
+	materializeSection := text[materializeStart:lockStart]
+	policyAt := strings.Index(materializeSection, "lockAndRevalidateAutomationTitles")
+	writeAt := strings.Index(materializeSection, "MaterializeRoleSourceAutomations")
+	if policyAt < 0 || writeAt < 0 || policyAt >= writeAt {
+		t.Fatal("automation title policy must finish before the batch write")
+	}
+}
+
 func TestMaterializedAutomationBatchRequiresExactReturnedIDs(t *testing.T) {
 	first := uuid.New()
 	second := uuid.New()

@@ -22,9 +22,13 @@ evidence passes.**
   archived rules, cross-tenant targets, trigger-ID ownership conflicts or wrong
   trigger kinds produce an incomplete set and roll back the whole apply before
   mappings, receipt or audit commit.
-- Open objection: Autopilot has no database uniqueness constraint for active
-  workspace title. The bounded name preflight improves diagnostics but cannot
-  close a concurrent user-create race.
+- Ordinary Autopilots intentionally permit duplicate titles, so a global unique
+  index would break the existing product contract. Role Source automation
+  titles and ordinary create/rename paths instead share transaction-scoped,
+  workspace-title advisory locks. The materializer locks the full desired set
+  in canonical order and repeats its bounded conflict check before writing.
+- Open objection: the lock protocol has unit and source-order contract coverage,
+  but still needs a live two-transaction PostgreSQL race test.
 
 ## Product review — 2/3
 
@@ -33,8 +37,8 @@ evidence passes.**
   activate recurring work or retarget an existing rule.
 - Trigger ownership conflicts fail closed instead of attaching a schedule to
   another Autopilot.
-- Open objection: customer approval/apply/progress/recovery UI is still absent,
-  and title-race behavior needs a product decision before rollout.
+- The existing plan card exposes affected workers and tasks. Open objection:
+  end-to-end customer apply progress and recovery guidance remain incomplete.
 
 ## Test review — 2/3
 
@@ -63,8 +67,9 @@ evidence passes.**
 
 1. PostgreSQL 17 production-shaped run with mixed create/update automations,
    measuring statements, WAL, row locks, transaction duration and pool usage.
-2. Concurrent user create/rename and source apply proving an approved database
-   title-race policy; do not rely on the current preflight alone.
+2. Concurrent ordinary create/rename and source apply on PostgreSQL proving the
+   shared title lock plus post-lock recheck; do not treat unit/source-order
+   coverage as live race evidence.
 3. Failure injection after every batch and during trigger, mapping, receipt and
    commit work, proving complete rollback and safe retry.
 4. Candidate-image 10,000-user load and a two-operator rehearsal proving rules

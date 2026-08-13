@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/autopilotlock"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -116,6 +117,7 @@ type verifiedArtifact struct {
 type materializationState struct {
 	control            *ControlPlane
 	q                  *db.Queries
+	tx                 pgx.Tx
 	workspaceID        pgtype.UUID
 	source             db.RoleSource
 	actorID            pgtype.UUID
@@ -501,7 +503,7 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 		PlanDigest:         plan.PlanDigest, ApprovalID: input.ApprovalID, Mappings: []ApplyMapping{}, SecretTransfers: []SecretTransferReceipt{},
 	}
 	state := materializationState{
-		control: c, q: qtx, workspaceID: workspaceID, source: source, actorID: actorID, snapshot: snapshot, plan: plan,
+		control: c, q: qtx, tx: tx, workspaceID: workspaceID, source: source, actorID: actorID, snapshot: snapshot, plan: plan,
 		decisions: decisions, actions: actionIndex(plan), artifacts: artifacts, capabilities: capabilityIndex(snapshot.Manifest.Capabilities), mappings: mappingIndex(mappingRows),
 		secretPayloads: secretPayloads, secretTransfers: secretTransfers,
 		runtimeMode: runtime.RuntimeMode, now: c.now, receipt: &receipt,
@@ -2259,6 +2261,9 @@ func materializedSkillFileBatches(mutations []pendingRoleSourceSkillFileMutation
 }
 
 func (s *materializationState) materializeAutomations(ctx context.Context) error {
+	if err := s.lockAndRevalidateAutomationTitles(ctx); err != nil {
+		return err
+	}
 	pending := make([]pendingRoleSourceAutomation, 0)
 	for _, role := range s.snapshot.Manifest.Roles {
 		for _, automation := range role.Automations {
@@ -2336,6 +2341,26 @@ func (s *materializationState) materializeAutomations(ctx context.Context) error
 		}
 	}
 	return nil
+}
+
+func (s *materializationState) lockAndRevalidateAutomationTitles(ctx context.Context) error {
+	names, err := collectMaterializationNames(s.snapshot, s.plan, s.mappings)
+	if err != nil {
+		return err
+	}
+	titles := make([]string, 0)
+	for _, name := range names {
+		if name.TargetKind == "autopilot" {
+			titles = append(titles, name.Name)
+		}
+	}
+	if err := autopilotlock.LockTitles(ctx, s.tx, s.workspaceID, titles...); err != nil {
+		return err
+	}
+	// The earlier bounded preflight gives fast diagnostics. This second check
+	// runs while every desired automation title is locked, closing the race with
+	// ordinary create and rename transactions that use the same lock contract.
+	return validateMaterializationNames(ctx, s.q, s.workspaceID, s.snapshot, s.plan, s.mappings)
 }
 
 func exactMaterializedAutomationIDs(requested []pendingRoleSourceAutomation, rows []pgtype.UUID) (map[string]bool, error) {

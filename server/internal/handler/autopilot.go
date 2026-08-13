@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/autopilotlock"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -676,6 +677,22 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 	if !h.validateAutopilotAssigneeForSave(w, r, qtx, assigneeType, assigneeUUID, wsUUID, true) {
 		return
 	}
+	if err := autopilotlock.LockTitles(r.Context(), tx, wsUUID, req.Title); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create autopilot")
+		return
+	}
+	claimed, err := autopilotlock.HasTitleConflict(r.Context(), tx, wsUUID, req.Title, pgtype.UUID{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create autopilot")
+		return
+	}
+	if claimed {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "a Role Source-managed autopilot already uses this title",
+			"code":  "role_source_autopilot_title_conflict",
+		})
+		return
+	}
 
 	autopilot, err := qtx.CreateAutopilot(r.Context(), db.CreateAutopilotParams{
 		WorkspaceID:        wsUUID,
@@ -918,6 +935,30 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		w, r, qtx, nextType, nextID, prev.WorkspaceID, nextStatus == "active",
 	) {
 		return
+	}
+	nextTitle := prev.Title
+	if req.Title != nil {
+		nextTitle = *req.Title
+	}
+	titleChanged := nextTitle != prev.Title
+	reactivated := prev.Status == "archived" && nextStatus != "archived"
+	if nextStatus != "archived" && (titleChanged || reactivated) {
+		if err := autopilotlock.LockTitles(r.Context(), tx, prev.WorkspaceID, prev.Title, nextTitle); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update autopilot")
+			return
+		}
+		claimed, err := autopilotlock.HasTitleConflict(r.Context(), tx, prev.WorkspaceID, nextTitle, prev.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update autopilot")
+			return
+		}
+		if claimed {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "a Role Source-managed autopilot already uses this title",
+				"code":  "role_source_autopilot_title_conflict",
+			})
+			return
+		}
 	}
 
 	// Assignment locks come first. Runtime teardown and squad leader changes
