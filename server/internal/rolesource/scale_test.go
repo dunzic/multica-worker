@@ -412,3 +412,21 @@ func TestTenThousandCapabilityVersionsFitBoundedBatches(t *testing.T) {
 		t.Fatalf("batched capabilities=%d want=%d", total, len(versions))
 	}
 }
+
+func TestTenThousandCapabilitiesUseOneIndexedLookupSet(t *testing.T) {
+	capabilities := make([]Capability, 10_000)
+	for index := range capabilities {
+		capabilities[index] = Capability{ID: fmt.Sprintf("capability-%05d", index), Version: "1.0.0"}
+	}
+	state := materializationState{snapshot: Snapshot{Manifest: Manifest{Capabilities: capabilities}}}
+	for index := len(capabilities) - 1; index >= 0; index-- {
+		id := fmt.Sprintf("capability-%05d", index)
+		capability, ok := state.capability(id)
+		if !ok || capability.ID != id {
+			t.Fatalf("capability lookup %q = %+v, %v", id, capability, ok)
+		}
+	}
+	if len(state.capabilities) != len(capabilities) {
+		t.Fatalf("indexed capabilities=%d, want=%d", len(state.capabilities), len(capabilities))
+	}
+}

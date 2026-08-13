@@ -124,6 +124,7 @@ type materializationState struct {
 	decisions          map[string]ArchiveDecision
 	actions            map[string]PlanAction
 	artifacts          map[string]verifiedArtifact
+	capabilities       map[string]Capability
 	mappings           map[string]db.RoleSourceObjectMapping
 	secretPayloads     map[string]SecretEnvelopePayload
 	secretTransfers    map[string]db.RoleSourceSecretTransfer
@@ -501,7 +502,7 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	}
 	state := materializationState{
 		control: c, q: qtx, workspaceID: workspaceID, source: source, actorID: actorID, snapshot: snapshot, plan: plan,
-		decisions: decisions, actions: actionIndex(plan), artifacts: artifacts, mappings: mappingIndex(mappingRows),
+		decisions: decisions, actions: actionIndex(plan), artifacts: artifacts, capabilities: capabilityIndex(snapshot.Manifest.Capabilities), mappings: mappingIndex(mappingRows),
 		secretPayloads: secretPayloads, secretTransfers: secretTransfers,
 		runtimeMode: runtime.RuntimeMode, now: c.now, receipt: &receipt,
 		pendingMappings:    make(map[string]pendingRoleSourceMapping),
@@ -1872,7 +1873,7 @@ func (s *materializationState) collectSkillFileTargets(pendingTargets map[string
 			if err != nil {
 				return nil, err
 			}
-			capability, ok := capabilityByID(s.snapshot.Manifest.Capabilities, binding.CapabilityID)
+			capability, ok := s.capability(binding.CapabilityID)
 			if !ok {
 				return nil, fmt.Errorf("%w: capability binding definition is missing", ErrApplyConflict)
 			}
@@ -2009,7 +2010,7 @@ func (s *materializationState) materializeCapabilityBinding(ctx context.Context,
 	if !ok || skillMapping.ArchivedAt.Valid || skillMapping.TargetKind != "skill" {
 		return fmt.Errorf("%w: capability binding target skill is missing", ErrApplyConflict)
 	}
-	capability, ok := capabilityByID(s.snapshot.Manifest.Capabilities, binding.CapabilityID)
+	capability, ok := s.capability(binding.CapabilityID)
 	if !ok {
 		return fmt.Errorf("%w: capability binding definition is missing", ErrApplyConflict)
 	}
@@ -2032,13 +2033,20 @@ func (s *materializationState) materializeCapabilityBinding(ctx context.Context,
 	return nil
 }
 
-func capabilityByID(capabilities []Capability, id string) (Capability, bool) {
+func capabilityIndex(capabilities []Capability) map[string]Capability {
+	indexed := make(map[string]Capability, len(capabilities))
 	for _, capability := range capabilities {
-		if capability.ID == id {
-			return capability, true
-		}
+		indexed[capability.ID] = capability
 	}
-	return Capability{}, false
+	return indexed
+}
+
+func (s *materializationState) capability(id string) (Capability, bool) {
+	if s.capabilities == nil {
+		s.capabilities = capabilityIndex(s.snapshot.Manifest.Capabilities)
+	}
+	capability, ok := s.capabilities[id]
+	return capability, ok
 }
 
 func (s *materializationState) capabilityBundleFiles(capability Capability, binding CapabilityBinding, objectDigest string) (map[string]string, error) {
