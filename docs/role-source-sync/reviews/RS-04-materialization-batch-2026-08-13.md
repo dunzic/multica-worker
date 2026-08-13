@@ -13,8 +13,10 @@ evidence passes.**
 A large role catalog no longer pays one database round trip per role-to-skill
 association. The apply transaction stages unique associations in memory and
 persists the complete tenant-validated set once. A newly created skill with no
-supporting files also avoids two empty database queries. Existing skills and
-capability packages retain their row locks and file-ownership conflict checks.
+supporting files also avoids two empty database queries. Target-name conflicts
+are checked in one tenant query, and immutable capability definitions are
+written in batches capped at 500 rows and 2 MiB. Existing skills and capability
+packages retain their row locks and file-ownership conflict checks.
 
 ## Architecture review — 2/3
 
@@ -28,8 +30,15 @@ capability packages retain their row locks and file-ownership conflict checks.
 - The empty-file shortcut is restricted to a skill created in this same
   transaction. Existing targets still lock the skill and enumerate files
   before comparing source-owned paths.
+- The name preflight allows only the exact mapped target, rejects any other
+  workspace match and rejects plan-internal duplicate target names. Agent and
+  skill unique constraints remain the concurrent-write authority.
+- Capability batches accept an existing row only when tenant, source, semantic
+  version, object digest and canonical JSON definition all match. Count and
+  byte limits bound each SQL parameter; a partial result rolls back the apply.
 - Open objection: agent, skill, automation and secret updates still include
-  per-object statements; live lock duration and WAL behavior are unknown.
+  per-object statements; autopilot has no database title uniqueness constraint;
+  live lock duration and WAL behavior are unknown.
 
 ## Product review — 2/3
 
@@ -47,6 +56,9 @@ capability packages retain their row locks and file-ownership conflict checks.
   ordering and a 10,000-association deterministic batch.
 - SQL contracts require workspace checks on agent and skill, active user-agent
   scope, conflict-safe insertion and absence of any association-enable update.
+- Namespace contracts cover exact mapped-target allowance, any-other-row
+  rejection and plan-internal duplicate names. Capability contracts cover exact
+  immutable match, 10,000 definitions and 500-row/2-MiB batch bounds.
 - A zero-file new-skill test runs with no query object, proving the shortcut
   cannot accidentally invoke empty lock/list calls.
 - Existing role-source and race suites retain file ownership, mapping,
@@ -56,8 +68,9 @@ capability packages retain their row locks and file-ownership conflict checks.
 
 ## CEO review — 2/3
 
-- Removing roughly 10,000 association round trips and up to 20,000 empty file
-  queries from a representative first import materially lowers database time,
+- Removing roughly 10,000 association round trips, up to 20,000 empty file
+  queries, 10,000 name queries and 10,000 capability insert/fallback-query
+  pairs from representative large catalogs materially lowers database time,
   lock exposure and rollout risk with limited code and no product fork.
 - The value is operational rather than a new sellable feature; it improves the
   credibility and support cost of enterprise-scale catalogs.
@@ -68,7 +81,8 @@ capability packages retain their row locks and file-ownership conflict checks.
 ## Evidence required for 3/3
 
 1. PostgreSQL 17 `EXPLAIN (ANALYZE, BUFFERS, WAL)` for 10,000 new, existing and
-   mixed associations, including disabled rows and cross-tenant negative cases.
+   mixed associations, capability versions and names, including disabled rows,
+   exact/mismatched definitions and cross-tenant negative cases.
 2. End-to-end 1,000-role/10,000-skill apply with transaction duration, pool
    wait, lock wait, statement bytes, WAL, CPU/memory and receipt verification.
 3. Cancellation, statement timeout, primary failover, duplicate request and

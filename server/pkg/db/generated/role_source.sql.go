@@ -810,6 +810,55 @@ func (q *Queries) CountRoleSourceArtifactIntegrityStates(ctx context.Context) (C
 	return i, err
 }
 
+const countRoleSourceMaterializationNameConflicts = `-- name: CountRoleSourceMaterializationNameConflicts :one
+WITH requested AS (
+    SELECT
+        item ->> 'target_kind' AS target_kind,
+        item ->> 'name' AS requested_name,
+        NULLIF(item ->> 'allowed_id', '')::UUID AS allowed_id
+    FROM jsonb_array_elements($2::jsonb) AS item
+)
+SELECT count(*)::bigint
+FROM requested
+WHERE
+    (target_kind = 'agent' AND EXISTS (
+        SELECT 1 FROM agent target
+        WHERE target.workspace_id = $1
+          AND target.kind = 'user'
+          AND target.name = requested.requested_name
+          AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
+    ))
+ OR (target_kind = 'skill' AND EXISTS (
+        SELECT 1 FROM skill target
+        WHERE target.workspace_id = $1
+          AND target.name = requested.requested_name
+          AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
+    ))
+ OR (target_kind = 'autopilot' AND EXISTS (
+        SELECT 1 FROM autopilot target
+        WHERE target.workspace_id = $1
+          AND target.status <> 'archived'
+          AND target.title = requested.requested_name
+          AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
+    ))
+`
+
+type CountRoleSourceMaterializationNameConflictsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Names       []byte      `json:"names"`
+}
+
+// Validate the entire requested target namespace once before per-object writes.
+// allowed_id is the exact mapped target that may already own the name. Any
+// other row is a conflict; this avoids LIMIT 1 nondeterminism when an existing
+// mapping and a user-owned object share a skill/autopilot name.
+func (q *Queries) CountRoleSourceMaterializationNameConflicts(ctx context.Context, arg CountRoleSourceMaterializationNameConflictsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRoleSourceMaterializationNameConflicts, arg.WorkspaceID, arg.Names)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countRoleSourceRetentionCandidates = `-- name: CountRoleSourceRetentionCandidates :one
 SELECT
     count(*) FILTER (WHERE state <> 'completed')::bigint AS active_count,
@@ -1125,6 +1174,84 @@ func (q *Queries) DeleteUnreachableRoleSourceCapabilityVersions(ctx context.Cont
 	return result.RowsAffected(), nil
 }
 
+const ensureRoleSourceCapabilityVersions = `-- name: EnsureRoleSourceCapabilityVersions :many
+WITH requested AS MATERIALIZED (
+    SELECT
+        item ->> 'capability_id' AS capability_id,
+        item ->> 'version' AS version,
+        item ->> 'object_digest' AS object_digest,
+        item -> 'definition' AS definition
+    FROM jsonb_array_elements($1::jsonb) AS item
+), preexisting AS MATERIALIZED (
+    SELECT requested.capability_id, requested.version, requested.object_digest
+    FROM requested
+    JOIN role_source_capability_version existing
+      ON existing.workspace_id = $2
+     AND existing.source_id = $3
+     AND existing.capability_id = requested.capability_id
+     AND existing.version = requested.version
+     AND existing.object_digest = requested.object_digest
+     AND existing.definition = requested.definition
+), inserted AS (
+    INSERT INTO role_source_capability_version (
+        workspace_id, source_id, capability_id, version, object_digest,
+        definition, snapshot_digest
+    )
+    SELECT
+        $2, $3, capability_id, version, object_digest,
+        definition, $4
+    FROM requested
+    ON CONFLICT (source_id, capability_id, version, object_digest) DO NOTHING
+    RETURNING capability_id, version, object_digest
+)
+SELECT capability_id, version, object_digest FROM inserted
+UNION ALL
+SELECT capability_id, version, object_digest FROM preexisting
+ORDER BY 1, 2, 3
+`
+
+type EnsureRoleSourceCapabilityVersionsParams struct {
+	Versions       []byte      `json:"versions"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+type EnsureRoleSourceCapabilityVersionsRow struct {
+	CapabilityID string `json:"capability_id"`
+	Version      string `json:"version"`
+	ObjectDigest string `json:"object_digest"`
+}
+
+// Materialize bounded immutable capability-version batches. Existing rows are
+// accepted only when tenant, identity, digest and canonical JSON definition
+// match exactly. The preexisting CTE reads the statement snapshot; inserted
+// rows are returned only through RETURNING, avoiding double counts.
+func (q *Queries) EnsureRoleSourceCapabilityVersions(ctx context.Context, arg EnsureRoleSourceCapabilityVersionsParams) ([]EnsureRoleSourceCapabilityVersionsRow, error) {
+	rows, err := q.db.Query(ctx, ensureRoleSourceCapabilityVersions,
+		arg.Versions,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.SnapshotDigest,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EnsureRoleSourceCapabilityVersionsRow{}
+	for rows.Next() {
+		var i EnsureRoleSourceCapabilityVersionsRow
+		if err := rows.Scan(&i.CapabilityID, &i.Version, &i.ObjectDigest); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const expireRoleSourceSecretTransfers = `-- name: ExpireRoleSourceSecretTransfers :many
 WITH expired AS MATERIALIZED (
     SELECT id
@@ -1226,60 +1353,6 @@ func (q *Queries) FailRoleSourceSecretTransfer(ctx context.Context, arg FailRole
 		&i.ErrorCode,
 	)
 	return i, err
-}
-
-const findRoleSourceAgentNameConflict = `-- name: FindRoleSourceAgentNameConflict :one
-SELECT id FROM agent
-WHERE workspace_id = $1 AND name = $2 AND kind = 'user'
-LIMIT 1
-`
-
-type FindRoleSourceAgentNameConflictParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Name        string      `json:"name"`
-}
-
-func (q *Queries) FindRoleSourceAgentNameConflict(ctx context.Context, arg FindRoleSourceAgentNameConflictParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, findRoleSourceAgentNameConflict, arg.WorkspaceID, arg.Name)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
-const findRoleSourceAutopilotTitleConflict = `-- name: FindRoleSourceAutopilotTitleConflict :one
-SELECT id FROM autopilot
-WHERE workspace_id = $1 AND title = $2 AND status <> 'archived'
-LIMIT 1
-`
-
-type FindRoleSourceAutopilotTitleConflictParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Title       string      `json:"title"`
-}
-
-func (q *Queries) FindRoleSourceAutopilotTitleConflict(ctx context.Context, arg FindRoleSourceAutopilotTitleConflictParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, findRoleSourceAutopilotTitleConflict, arg.WorkspaceID, arg.Title)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
-const findRoleSourceSkillNameConflict = `-- name: FindRoleSourceSkillNameConflict :one
-SELECT id FROM skill
-WHERE workspace_id = $1 AND name = $2
-LIMIT 1
-`
-
-type FindRoleSourceSkillNameConflictParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Name        string      `json:"name"`
-}
-
-func (q *Queries) FindRoleSourceSkillNameConflict(ctx context.Context, arg FindRoleSourceSkillNameConflictParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, findRoleSourceSkillNameConflict, arg.WorkspaceID, arg.Name)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
 }
 
 const getLatestRoleSourceAuditEvent = `-- name: GetLatestRoleSourceAuditEvent :one

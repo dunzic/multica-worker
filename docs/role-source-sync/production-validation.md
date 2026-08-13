@@ -259,6 +259,14 @@ S3, metrics and failover evidence below.
 - API p50/p95/p99 for source list plus 100-entry history;
 - S3 upload/read/delete latency and deletion error rate;
 - Prometheus series count for all role-source metrics.
+- one default-off 1,000-role/10,000-skill apply fixture measuring name
+  preflight, 10,000 association batch, capability batches, agent/skill writes,
+  mappings, receipt and commit separately; record SQL parameter bytes, rows,
+  transaction duration, lock wait, WAL, CPU/memory and rollback duration;
+- repeat the large apply with existing disabled associations, exact and
+  mismatched immutable capability versions, cross-tenant endpoints, duplicate
+  source names, concurrent user agent/skill creation and concurrent same-title
+  autopilot creation; every invalid or ambiguous case must roll back atomically;
 - `multica_role_source_runtime_availability` changes by the expected count when
   one active source's daemon stops, emits only the two approved status series,
   and fires `MulticaRoleSourceRuntimeUnavailable` after the configured hold;

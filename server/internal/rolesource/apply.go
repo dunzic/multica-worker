@@ -30,6 +30,9 @@ const (
 	maxApplyArtifacts           = 20_000
 	maxApplyArtifactBytes       = 128 << 20
 	maxConcurrentArtifactReads  = 16
+	capabilityVersionBatchSize  = 500
+	capabilityVersionBatchBytes = 2 << 20
+	materializationNameMaxBytes = 16 << 20
 )
 
 var (
@@ -137,6 +140,19 @@ type pendingRoleSourceSkillFile struct {
 type pendingRoleSourceAgentSkill struct {
 	AgentID string `json:"agent_id"`
 	SkillID string `json:"skill_id"`
+}
+
+type pendingRoleSourceName struct {
+	TargetKind string `json:"target_kind"`
+	Name       string `json:"name"`
+	AllowedID  string `json:"allowed_id,omitempty"`
+}
+
+type pendingRoleSourceCapabilityVersion struct {
+	CapabilityID string          `json:"capability_id"`
+	Version      string          `json:"version"`
+	ObjectDigest string          `json:"object_digest"`
+	Definition   json.RawMessage `json:"definition"`
 }
 
 type applyPreflight struct {
@@ -406,6 +422,9 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	}
 	if invalidMappings != 0 {
 		return db.RoleSourceApply{}, ApplyReceipt{}, fmt.Errorf("%w: %d object mappings have missing, mismatched or cross-tenant targets", ErrApplyConflict, invalidMappings)
+	}
+	if err := validateMaterializationNames(ctx, qtx, workspaceID, snapshot, plan, mappingIndex(mappingRows)); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	receipt := ApplyReceipt{
 		ContractVersion: ApplyReceiptContractVersion, Mode: applyMode, ApplyID: util.UUIDToString(applyRow.ID),
@@ -1031,11 +1050,85 @@ func mappingIndex(rows []db.RoleSourceObjectMapping) map[string]db.RoleSourceObj
 	return result
 }
 
-func (s *materializationState) materialize(ctx context.Context) error {
-	for _, capability := range s.snapshot.Manifest.Capabilities {
-		if err := s.materializeCapability(ctx, capability); err != nil {
-			return err
+func validateMaterializationNames(
+	ctx context.Context,
+	q *db.Queries,
+	workspaceID pgtype.UUID,
+	snapshot Snapshot,
+	plan Plan,
+	mappings map[string]db.RoleSourceObjectMapping,
+) error {
+	names, err := collectMaterializationNames(snapshot, plan, mappings)
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	body, err := json.Marshal(names)
+	if err != nil {
+		return err
+	}
+	if len(body) > materializationNameMaxBytes {
+		return fmt.Errorf("%w: materialization name preflight exceeds %d bytes", ErrMaterializationBlocked, materializationNameMaxBytes)
+	}
+	conflicts, err := q.CountRoleSourceMaterializationNameConflicts(ctx, db.CountRoleSourceMaterializationNameConflictsParams{
+		Names: body, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return err
+	}
+	if conflicts != 0 {
+		return fmt.Errorf("%w: %d materialization target names conflict", ErrApplyConflict, conflicts)
+	}
+	return nil
+}
+
+func collectMaterializationNames(snapshot Snapshot, plan Plan, mappings map[string]db.RoleSourceObjectMapping) ([]pendingRoleSourceName, error) {
+	actions := actionIndex(plan)
+	names := make([]pendingRoleSourceName, 0, len(snapshot.Manifest.Roles))
+	seen := make(map[string]ObjectRef)
+	appendName := func(ref ObjectRef, targetKind, name string) error {
+		action, ok := actions[objectKey(ref)]
+		if !ok || action.Operation == PlanArchiveCandidate || action.Operation == PlanBlocked || action.Operation == PlanUnchanged {
+			return nil
 		}
+		identity := targetKind + "\x00" + name
+		if prior, duplicate := seen[identity]; duplicate && prior != ref {
+			return fmt.Errorf("%w: source objects request the same %s name %q", ErrApplyConflict, targetKind, name)
+		}
+		seen[identity] = ref
+		request := pendingRoleSourceName{TargetKind: targetKind, Name: name}
+		if mapping, ok := mappings[objectKey(ref)]; ok && !mapping.ArchivedAt.Valid {
+			if mapping.TargetKind != targetKind {
+				return fmt.Errorf("%w: mapped %s name target changed kind", ErrApplyConflict, targetKind)
+			}
+			request.AllowedID = util.UUIDToString(mapping.TargetID)
+		}
+		names = append(names, request)
+		return nil
+	}
+	for _, role := range snapshot.Manifest.Roles {
+		if err := appendName(ObjectRef{Kind: "role", ID: role.ID}, "agent", role.DisplayName); err != nil {
+			return nil, err
+		}
+		for _, skill := range role.Skills {
+			if err := appendName(ObjectRef{Kind: "skill", ParentID: role.ID, ID: skill.ID}, "skill", skill.Name); err != nil {
+				return nil, err
+			}
+		}
+		for _, automation := range role.Automations {
+			if err := appendName(ObjectRef{Kind: "automation", ParentID: role.ID, ID: automation.ID}, "autopilot", automationTitle(role.DisplayName, automation.Name)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return names, nil
+}
+
+func (s *materializationState) materialize(ctx context.Context) error {
+	if err := s.materializeCapabilities(ctx); err != nil {
+		return err
 	}
 	for _, role := range s.snapshot.Manifest.Roles {
 		if err := s.materializeRole(ctx, role); err != nil {
@@ -1232,40 +1325,97 @@ func (s *materializationState) incrementAppliedAction(operation PlanOperation) {
 	}
 }
 
-func (s *materializationState) materializeCapability(ctx context.Context, capability Capability) error {
-	ref := ObjectRef{Kind: "capability", ID: capability.ID}
-	action := s.actions[objectKey(ref)]
-	if action.Operation == PlanUnchanged {
-		s.receipt.Counts.Unchanged++
-		return nil
-	}
-	if action.Operation == PlanArchiveCandidate {
-		if s.decisions[objectKey(ref)] == ArchiveDecisionRetain {
-			s.receipt.Counts.Retained++
-		}
-		return nil
-	}
-	definition, err := json.Marshal(capability)
+func (s *materializationState) materializeCapabilities(ctx context.Context) error {
+	versions, counts, err := collectCapabilityVersions(s.snapshot, s.actions, s.decisions)
 	if err != nil {
 		return err
 	}
-	_, err = s.q.InsertRoleSourceCapabilityVersion(ctx, db.InsertRoleSourceCapabilityVersionParams{
-		WorkspaceID: s.workspaceID, SourceID: s.source.ID, CapabilityID: capability.ID, Version: capability.Version,
-		ObjectDigest: action.AfterDigest, Definition: definition, SnapshotDigest: s.snapshot.SnapshotDigest,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = s.q.GetRoleSourceCapabilityVersion(ctx, db.GetRoleSourceCapabilityVersionParams{
-			SourceID: s.source.ID, CapabilityID: capability.ID, Version: capability.Version, ObjectDigest: action.AfterDigest,
-		})
+	s.receipt.Counts.Created += counts.Created
+	s.receipt.Counts.Updated += counts.Updated
+	s.receipt.Counts.Unchanged += counts.Unchanged
+	s.receipt.Counts.Retained += counts.Retained
+	batches, err := capabilityVersionBatches(versions)
+	if err != nil {
+		return err
 	}
-	if err == nil {
-		if action.Operation == PlanCreate {
-			s.receipt.Counts.Created++
-		} else {
-			s.receipt.Counts.Updated++
+	for _, batch := range batches {
+		body, err := json.Marshal(batch)
+		if err != nil {
+			return err
+		}
+		rows, err := s.q.EnsureRoleSourceCapabilityVersions(ctx, db.EnsureRoleSourceCapabilityVersionsParams{
+			Versions: body, WorkspaceID: s.workspaceID, SourceID: s.source.ID,
+			SnapshotDigest: s.snapshot.SnapshotDigest,
+		})
+		if err != nil {
+			return err
+		}
+		if len(rows) != len(batch) {
+			return fmt.Errorf("%w: persisted %d of %d capability versions in batch", ErrApplyConflict, len(rows), len(batch))
 		}
 	}
-	return err
+	return nil
+}
+
+func collectCapabilityVersions(snapshot Snapshot, actions map[string]PlanAction, decisions map[string]ArchiveDecision) ([]pendingRoleSourceCapabilityVersion, ApplyCounts, error) {
+	versions := make([]pendingRoleSourceCapabilityVersion, 0, len(snapshot.Manifest.Capabilities))
+	var counts ApplyCounts
+	for _, capability := range snapshot.Manifest.Capabilities {
+		ref := ObjectRef{Kind: "capability", ID: capability.ID}
+		action := actions[objectKey(ref)]
+		if action.Operation == PlanUnchanged {
+			counts.Unchanged++
+			continue
+		}
+		if action.Operation == PlanArchiveCandidate {
+			if decisions[objectKey(ref)] == ArchiveDecisionRetain {
+				counts.Retained++
+			}
+			continue
+		}
+		definition, err := json.Marshal(capability)
+		if err != nil {
+			return nil, ApplyCounts{}, err
+		}
+		versions = append(versions, pendingRoleSourceCapabilityVersion{
+			CapabilityID: capability.ID, Version: capability.Version,
+			ObjectDigest: action.AfterDigest, Definition: definition,
+		})
+		if action.Operation == PlanCreate {
+			counts.Created++
+		} else {
+			counts.Updated++
+		}
+	}
+	return versions, counts, nil
+}
+
+func capabilityVersionBatches(versions []pendingRoleSourceCapabilityVersion) ([][]pendingRoleSourceCapabilityVersion, error) {
+	if len(versions) == 0 {
+		return nil, nil
+	}
+	batches := make([][]pendingRoleSourceCapabilityVersion, 0, (len(versions)+capabilityVersionBatchSize-1)/capabilityVersionBatchSize)
+	start, encodedBytes := 0, 2 // JSON array brackets.
+	for index, version := range versions {
+		body, err := json.Marshal(version)
+		if err != nil {
+			return nil, err
+		}
+		if len(body)+2 > capabilityVersionBatchBytes {
+			return nil, fmt.Errorf("%w: capability version %q exceeds batch byte limit", ErrMaterializationBlocked, version.CapabilityID)
+		}
+		separator := 0
+		if index > start {
+			separator = 1
+		}
+		if index > start && (index-start >= capabilityVersionBatchSize || encodedBytes+separator+len(body) > capabilityVersionBatchBytes) {
+			batches = append(batches, versions[start:index])
+			start, encodedBytes, separator = index, 2, 0
+		}
+		encodedBytes += separator + len(body)
+	}
+	batches = append(batches, versions[start:])
+	return batches, nil
 }
 
 func (s *materializationState) materializeRole(ctx context.Context, role Role) error {
@@ -1286,17 +1436,11 @@ func (s *materializationState) materializeRole(ctx context.Context, role Role) e
 		return fmt.Errorf("%w: archived role mapping cannot be reused", ErrApplyConflict)
 	}
 	if mapped {
-		if err := s.ensureNameAvailable(ctx, "agent", role.DisplayName, mapping.TargetID); err != nil {
-			return err
-		}
 		target, err = s.q.UpdateRoleSourceAgent(ctx, db.UpdateRoleSourceAgentParams{
 			Name: role.DisplayName, Description: roleDescription(role), RuntimeMode: s.runtimeMode, RuntimeID: s.source.RuntimeID,
 			Instructions: instructions, ID: mapping.TargetID, WorkspaceID: s.workspaceID,
 		})
 	} else {
-		if err := s.ensureNameAvailable(ctx, "agent", role.DisplayName, pgtype.UUID{}); err != nil {
-			return err
-		}
 		target, err = s.q.CreateRoleSourceAgent(ctx, db.CreateRoleSourceAgentParams{
 			WorkspaceID: s.workspaceID, Name: role.DisplayName, Description: roleDescription(role), RuntimeMode: s.runtimeMode,
 			RuntimeID: s.source.RuntimeID, OwnerID: s.actorID, Instructions: instructions,
@@ -1340,17 +1484,11 @@ func (s *materializationState) materializeSkill(ctx context.Context, role Role, 
 	}
 	var target db.Skill
 	if mapped {
-		if err := s.ensureNameAvailable(ctx, "skill", skill.Name, mapping.TargetID); err != nil {
-			return err
-		}
 		target, err = s.q.UpdateRoleSourceSkill(ctx, db.UpdateRoleSourceSkillParams{
 			Name: skill.Name, Description: "Managed by role source", Content: s.artifacts[skill.Entrypoint.Digest].body,
 			ID: mapping.TargetID, WorkspaceID: s.workspaceID,
 		})
 	} else {
-		if err := s.ensureNameAvailable(ctx, "skill", skill.Name, pgtype.UUID{}); err != nil {
-			return err
-		}
 		target, err = s.q.CreateRoleSourceSkill(ctx, db.CreateRoleSourceSkillParams{
 			WorkspaceID: s.workspaceID, Name: skill.Name, Description: "Managed by role source",
 			Content: s.artifacts[skill.Entrypoint.Digest].body, Config: config, CreatedBy: s.actorID,
@@ -1576,16 +1714,10 @@ func (s *materializationState) materializeAutomation(ctx context.Context, role R
 	var err error
 	description := pgtype.Text{String: s.artifacts[automation.Prompt.Digest].body, Valid: true}
 	if mapped {
-		if err := s.ensureNameAvailable(ctx, "autopilot", title, mapping.TargetID); err != nil {
-			return err
-		}
 		target, err = s.q.UpdateRoleSourceAutopilot(ctx, db.UpdateRoleSourceAutopilotParams{
 			Title: title, Description: description, ID: mapping.TargetID, WorkspaceID: s.workspaceID, AssigneeID: roleMapping.TargetID,
 		})
 	} else {
-		if err := s.ensureNameAvailable(ctx, "autopilot", title, pgtype.UUID{}); err != nil {
-			return err
-		}
 		target, err = s.q.CreateRoleSourceAutopilot(ctx, db.CreateRoleSourceAutopilotParams{
 			WorkspaceID: s.workspaceID, Title: title, Description: description, AssigneeID: roleMapping.TargetID, CreatedByID: s.actorID,
 		})
@@ -1851,31 +1983,6 @@ func ownershipMask(mapping db.RoleSourceObjectMapping) []string {
 		return []string{}
 	}
 	return mask
-}
-
-func (s *materializationState) ensureNameAvailable(ctx context.Context, kind, name string, allowed pgtype.UUID) error {
-	var found pgtype.UUID
-	var err error
-	switch kind {
-	case "agent":
-		found, err = s.q.FindRoleSourceAgentNameConflict(ctx, db.FindRoleSourceAgentNameConflictParams{WorkspaceID: s.workspaceID, Name: name})
-	case "skill":
-		found, err = s.q.FindRoleSourceSkillNameConflict(ctx, db.FindRoleSourceSkillNameConflictParams{WorkspaceID: s.workspaceID, Name: name})
-	case "autopilot":
-		found, err = s.q.FindRoleSourceAutopilotTitleConflict(ctx, db.FindRoleSourceAutopilotTitleConflictParams{WorkspaceID: s.workspaceID, Title: name})
-	default:
-		return errors.New("invalid target kind")
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if allowed.Valid && found == allowed {
-		return nil
-	}
-	return fmt.Errorf("%w: unmanaged %s already uses name %q", ErrApplyConflict, kind, name)
 }
 
 func roleDescription(role Role) string {

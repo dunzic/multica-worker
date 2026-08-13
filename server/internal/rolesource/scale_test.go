@@ -3,6 +3,7 @@ package rolesource
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -129,5 +130,65 @@ func TestTenThousandAgentSkillBindingsFitOneDeterministicBatch(t *testing.T) {
 		if bindings[index-1].AgentID+"/"+bindings[index-1].SkillID >= bindings[index].AgentID+"/"+bindings[index].SkillID {
 			t.Fatal("10,000 binding batch is not deterministic")
 		}
+	}
+}
+
+func TestTenThousandMaterializationNamesFitOnePreflight(t *testing.T) {
+	snapshot := planTestSnapshot(t, productionScaleManifest())
+	plan, err := BuildPlan("scale-name-source", nil, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, err := collectMaterializationNames(snapshot, plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != productionScaleRoleCount {
+		t.Fatalf("name preflight=%d, want=%d", len(names), productionScaleRoleCount)
+	}
+	body, err := json.Marshal(names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > 2<<20 {
+		t.Fatalf("10,000 name preflight body=%d bytes exceeds bounded request budget", len(body))
+	}
+}
+
+func TestTenThousandCapabilityVersionsFitBoundedBatches(t *testing.T) {
+	capabilities := make([]Capability, 10_000)
+	actions := make(map[string]PlanAction, len(capabilities))
+	for index := range capabilities {
+		id := fmt.Sprintf("capability-%05d", index)
+		capabilities[index] = Capability{ID: id, Version: "1.0.0", Entrypoint: productionApplyArtifact(id + "/main.md")}
+		actions[objectKey(ObjectRef{Kind: "capability", ID: id})] = PlanAction{Operation: PlanCreate, AfterDigest: testSHA256(id)}
+	}
+	versions, counts, err := collectCapabilityVersions(Snapshot{Manifest: Manifest{Capabilities: capabilities}}, actions, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != len(capabilities) || counts.Created != len(capabilities) {
+		t.Fatalf("capability batch versions=%d counts=%+v", len(versions), counts)
+	}
+	batches, err := capabilityVersionBatches(versions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, batch := range batches {
+		total += len(batch)
+		if len(batch) > capabilityVersionBatchSize {
+			t.Fatalf("capability batch items=%d", len(batch))
+		}
+		body, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > capabilityVersionBatchBytes {
+			t.Fatalf("capability batch is %d bytes", len(body))
+		}
+	}
+	if total != len(versions) {
+		t.Fatalf("batched capabilities=%d want=%d", total, len(versions))
 	}
 }

@@ -957,20 +957,41 @@ WHERE mapping.source_id = @source_id
     ))
   );
 
--- name: FindRoleSourceAgentNameConflict :one
-SELECT id FROM agent
-WHERE workspace_id = @workspace_id AND name = @name AND kind = 'user'
-LIMIT 1;
-
--- name: FindRoleSourceSkillNameConflict :one
-SELECT id FROM skill
-WHERE workspace_id = @workspace_id AND name = @name
-LIMIT 1;
-
--- name: FindRoleSourceAutopilotTitleConflict :one
-SELECT id FROM autopilot
-WHERE workspace_id = @workspace_id AND title = @title AND status <> 'archived'
-LIMIT 1;
+-- name: CountRoleSourceMaterializationNameConflicts :one
+-- Validate the entire requested target namespace once before per-object writes.
+-- allowed_id is the exact mapped target that may already own the name. Any
+-- other row is a conflict; this avoids LIMIT 1 nondeterminism when an existing
+-- mapping and a user-owned object share a skill/autopilot name.
+WITH requested AS (
+    SELECT
+        item ->> 'target_kind' AS target_kind,
+        item ->> 'name' AS requested_name,
+        NULLIF(item ->> 'allowed_id', '')::UUID AS allowed_id
+    FROM jsonb_array_elements(@names::jsonb) AS item
+)
+SELECT count(*)::bigint
+FROM requested
+WHERE
+    (target_kind = 'agent' AND EXISTS (
+        SELECT 1 FROM agent target
+        WHERE target.workspace_id = @workspace_id
+          AND target.kind = 'user'
+          AND target.name = requested.requested_name
+          AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
+    ))
+ OR (target_kind = 'skill' AND EXISTS (
+        SELECT 1 FROM skill target
+        WHERE target.workspace_id = @workspace_id
+          AND target.name = requested.requested_name
+          AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
+    ))
+ OR (target_kind = 'autopilot' AND EXISTS (
+        SELECT 1 FROM autopilot target
+        WHERE target.workspace_id = @workspace_id
+          AND target.status <> 'archived'
+          AND target.title = requested.requested_name
+          AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
+    ));
 
 -- name: UpsertRoleSourceObjectMappings :many
 -- One apply can materialize thousands of objects. Send mapping mutations as a
@@ -1020,6 +1041,45 @@ INSERT INTO role_source_capability_version (
 )
 ON CONFLICT (source_id, capability_id, version, object_digest) DO NOTHING
 RETURNING *;
+
+-- name: EnsureRoleSourceCapabilityVersions :many
+-- Materialize bounded immutable capability-version batches. Existing rows are
+-- accepted only when tenant, identity, digest and canonical JSON definition
+-- match exactly. The preexisting CTE reads the statement snapshot; inserted
+-- rows are returned only through RETURNING, avoiding double counts.
+WITH requested AS MATERIALIZED (
+    SELECT
+        item ->> 'capability_id' AS capability_id,
+        item ->> 'version' AS version,
+        item ->> 'object_digest' AS object_digest,
+        item -> 'definition' AS definition
+    FROM jsonb_array_elements(@versions::jsonb) AS item
+), preexisting AS MATERIALIZED (
+    SELECT requested.capability_id, requested.version, requested.object_digest
+    FROM requested
+    JOIN role_source_capability_version existing
+      ON existing.workspace_id = @workspace_id
+     AND existing.source_id = @source_id
+     AND existing.capability_id = requested.capability_id
+     AND existing.version = requested.version
+     AND existing.object_digest = requested.object_digest
+     AND existing.definition = requested.definition
+), inserted AS (
+    INSERT INTO role_source_capability_version (
+        workspace_id, source_id, capability_id, version, object_digest,
+        definition, snapshot_digest
+    )
+    SELECT
+        @workspace_id, @source_id, capability_id, version, object_digest,
+        definition, @snapshot_digest
+    FROM requested
+    ON CONFLICT (source_id, capability_id, version, object_digest) DO NOTHING
+    RETURNING capability_id, version, object_digest
+)
+SELECT capability_id, version, object_digest FROM inserted
+UNION ALL
+SELECT capability_id, version, object_digest FROM preexisting
+ORDER BY 1, 2, 3;
 
 -- name: GetRoleSourceCapabilityVersion :one
 SELECT * FROM role_source_capability_version

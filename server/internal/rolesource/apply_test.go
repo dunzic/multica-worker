@@ -1,11 +1,13 @@
 package rolesource
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -481,6 +483,132 @@ func TestRoleSourceAgentSkillBatchIsTenantValidatedAndDoesNotEnableRows(t *testi
 	batch := query[batchAt : batchAt+1+nextAt]
 	if strings.Contains(batch, "SET enabled") || strings.Contains(batch, "enabled = true") {
 		t.Fatal("role-source batch must not re-enable a user-disabled association")
+	}
+}
+
+func TestMaterializationNamesAreCollectedOnceWithExactAllowedTargets(t *testing.T) {
+	roleRef := ObjectRef{Kind: "role", ID: "writer"}
+	skillRef := ObjectRef{Kind: "skill", ParentID: "writer", ID: "research"}
+	roleTarget := util.MustParseUUID("00000000-0000-4000-8000-000000000051")
+	snapshot := Snapshot{Manifest: Manifest{Roles: []Role{{
+		ID: "writer", DisplayName: "Writer", Skills: []Skill{{ID: "research", Name: "Research"}},
+	}}}}
+	plan := Plan{Actions: []PlanAction{
+		{Ref: roleRef, Operation: PlanUpdate},
+		{Ref: skillRef, Operation: PlanCreate},
+	}}
+	names, err := collectMaterializationNames(snapshot, plan, map[string]db.RoleSourceObjectMapping{
+		objectKey(roleRef): {TargetKind: "agent", TargetID: roleTarget},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0].TargetKind != "agent" || names[0].AllowedID != util.UUIDToString(roleTarget) || names[1].TargetKind != "skill" || names[1].AllowedID != "" {
+		t.Fatalf("materialization names=%+v", names)
+	}
+}
+
+func TestMaterializationNamesRejectDuplicateSourceNamespace(t *testing.T) {
+	snapshot := Snapshot{Manifest: Manifest{Roles: []Role{
+		{ID: "writer", DisplayName: "Writer", Skills: []Skill{{ID: "a", Name: "Shared"}}},
+		{ID: "reviewer", DisplayName: "Reviewer", Skills: []Skill{{ID: "b", Name: "Shared"}}},
+	}}}
+	plan := Plan{Actions: []PlanAction{
+		{Ref: ObjectRef{Kind: "role", ID: "writer"}, Operation: PlanCreate},
+		{Ref: ObjectRef{Kind: "role", ID: "reviewer"}, Operation: PlanCreate},
+		{Ref: ObjectRef{Kind: "skill", ParentID: "writer", ID: "a"}, Operation: PlanCreate},
+		{Ref: ObjectRef{Kind: "skill", ParentID: "reviewer", ID: "b"}, Operation: PlanCreate},
+	}}
+	if _, err := collectMaterializationNames(snapshot, plan, nil); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("duplicate namespace error=%v", err)
+	}
+}
+
+func TestMaterializationNameConflictSQLRejectsAnyNonMappedMatch(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(body)
+	for _, required := range []string{
+		"CountRoleSourceMaterializationNameConflicts", "jsonb_array_elements", "target.workspace_id = @workspace_id",
+		"target.id <> requested.allowed_id", "target.kind = 'user'", "target.status <> 'archived'",
+	} {
+		if !strings.Contains(query, required) {
+			t.Errorf("materialization name batch query missing %q", required)
+		}
+	}
+	if strings.Contains(query, "FindRoleSourceSkillNameConflict") || strings.Contains(query, "FindRoleSourceAutopilotTitleConflict") {
+		t.Fatal("per-object nondeterministic name conflict queries remain")
+	}
+}
+
+func TestCapabilityVersionsAreCollectedWithExactImmutableDefinitions(t *testing.T) {
+	created := Capability{ID: "browser", Version: "1.0.0", Entrypoint: testArtifact("browser/main.md")}
+	unchanged := Capability{ID: "reader", Version: "1.0.0", Entrypoint: testArtifact("reader/main.md")}
+	retained := Capability{ID: "legacy", Version: "1.0.0", Entrypoint: testArtifact("legacy/main.md")}
+	snapshot := Snapshot{Manifest: Manifest{Capabilities: []Capability{created, unchanged, retained}}}
+	actions := map[string]PlanAction{
+		objectKey(ObjectRef{Kind: "capability", ID: "browser"}): {Operation: PlanCreate, AfterDigest: testSHA256("browser")},
+		objectKey(ObjectRef{Kind: "capability", ID: "reader"}):  {Operation: PlanUnchanged},
+		objectKey(ObjectRef{Kind: "capability", ID: "legacy"}):  {Operation: PlanArchiveCandidate},
+	}
+	versions, counts, err := collectCapabilityVersions(snapshot, actions, map[string]ArchiveDecision{
+		objectKey(ObjectRef{Kind: "capability", ID: "legacy"}): ArchiveDecisionRetain,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 || versions[0].CapabilityID != "browser" || versions[0].Version != "1.0.0" || versions[0].ObjectDigest != testSHA256("browser") {
+		t.Fatalf("capability versions=%+v", versions)
+	}
+	wantDefinition, _ := json.Marshal(created)
+	if !bytes.Equal(versions[0].Definition, wantDefinition) {
+		t.Fatalf("capability definition=%s want=%s", versions[0].Definition, wantDefinition)
+	}
+	if counts.Created != 1 || counts.Unchanged != 1 || counts.Retained != 1 {
+		t.Fatalf("capability counts=%+v", counts)
+	}
+}
+
+func TestCapabilityVersionBatchRequiresExactTenantDigestAndDefinition(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(body)
+	for _, required := range []string{
+		"EnsureRoleSourceCapabilityVersions", "jsonb_array_elements", "existing.workspace_id = @workspace_id",
+		"existing.source_id = @source_id", "existing.object_digest = requested.object_digest",
+		"existing.definition = requested.definition", "ON CONFLICT (source_id, capability_id, version, object_digest) DO NOTHING",
+	} {
+		if !strings.Contains(query, required) {
+			t.Errorf("capability version batch query missing %q", required)
+		}
+	}
+}
+
+func TestCapabilityVersionBatchesRespectCountAndEncodedByteLimits(t *testing.T) {
+	versions := make([]pendingRoleSourceCapabilityVersion, capabilityVersionBatchSize+1)
+	for index := range versions {
+		versions[index] = pendingRoleSourceCapabilityVersion{
+			CapabilityID: fmt.Sprintf("cap-%03d", index), Version: "1.0.0", ObjectDigest: testSHA256(fmt.Sprint(index)),
+			Definition: json.RawMessage(`{"name":"small"}`),
+		}
+	}
+	batches, err := capabilityVersionBatches(versions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != capabilityVersionBatchSize || len(batches[1]) != 1 {
+		t.Fatalf("count-bounded batches=%v", []int{len(batches[0]), len(batches[1])})
+	}
+	oversized := pendingRoleSourceCapabilityVersion{
+		CapabilityID: "oversized", Version: "1.0.0", ObjectDigest: testSHA256("oversized"),
+		Definition: json.RawMessage(`{"body":"` + strings.Repeat("x", capabilityVersionBatchBytes) + `"}`),
+	}
+	if _, err := capabilityVersionBatches([]pendingRoleSourceCapabilityVersion{oversized}); !errors.Is(err, ErrMaterializationBlocked) {
+		t.Fatalf("oversized capability error=%v", err)
 	}
 }
 
