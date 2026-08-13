@@ -51,5 +51,8 @@ Updated: 2026-08-13
 - sqlc v1.31.1 generation; migration-policy tests; migration command compilation
 - live PostgreSQL isolated-schema migration round-trip test exists but skipped locally because PostgreSQL was not running
 - `git diff --check`
+- official Helm 3.20.2 archive checksum verification, chart lint, default-off rendering, enabled capacity/backup Job rendering and fail-closed invalid-minimum/path cases
+- repository-pinned pnpm 10.28.2 frontend verification: all six typecheck tasks and all five Vitest workspace tasks pass; ESLint completes with zero errors and pre-existing warnings
+- `go vet ./...` passes; `go test ./...` passes every package except the pre-existing `pkg/agent` process-protocol suite, whose observed five-second timing failures reproduce in an isolated package run and pass when the same cases are serialized with `-parallel=1`; no role-source change touches that package
 
 These checks cover the generic contract, bounded filesystem, AgentWaker adapter, authenticated API shapes, daemon-local execution, protocol negotiation/renewal, deterministic planning, artifact transfer, the static/unit behavior of atomic apply, content-free runtime provenance pins, read-only capability-package verification, and two connector delivery implementations. They do not prove live PostgreSQL migration/transaction failure behavior, lock contention/failover, provider callback behavior, cross-runtime capability execution or the 10,000-user production target.

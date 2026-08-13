@@ -9,7 +9,7 @@ cluster execution remain required before any cohort.
 | --- | ---: | --- |
 | Architecture expert | 2/3 | Product sync/scan/apply flags and destructive retention/GC gates are separately default-off. Capacity and backup are one-shot Jobs using the exact candidate image, explicit PVCs and existing Secrets/workload identity. Restore/verify stays an isolated manual recovery workflow because an ordinary release chart must not be able to overwrite a target database. |
 | Product expert | 2/3 | The chart now exposes a repeatable operational entry instead of requiring shell access to a backend pod. Cohort cardinalities and each backup run remain deliberate operator inputs; there is no scheduled backup policy or UI. |
-| Test expert | 2/3 | Go static contracts and shell syntax cover closed defaults, explicit gates, Secret references, read-only capacity sessions, no retry and safe output names; the repository Helm rendering script now covers enabled and unsafe cases. Helm is unavailable locally, so live `helm lint/template` and Kubernetes Job evidence remain open. |
+| Test expert | 2/3 | Go static contracts and the repository rendering suite cover closed defaults, explicit gates, Secret references, read-only capacity sessions, no retry, safe output names, successful enabled renders and fail-closed invalid values. The official Helm 3.20.2 archive was verified against its published SHA-256 sidecar before `helm lint` and the full render suite passed; Kubernetes Job execution evidence remains open. |
 | CEO | 2/3 | Repeatable, bounded operations reduce rollout and audit cost without widening default customer exposure. SLA claims remain blocked on candidate-cluster capacity, restore, failover and support-labor measurements. |
 
 Security and data-loss conditions:
@@ -24,7 +24,8 @@ Security and data-loss conditions:
   follow the isolated target and traffic-fence requirements in
   `disaster-recovery.md`.
 
-Rollout decision: keep all five Helm gates false. Render and run the capacity
+Rollout decision: keep all five Helm gates false. The candidate chart has passed
+local lint and positive/negative rendering; run the capacity
 Job on Gate E staging, then run the backup Job plus isolated restore/verify in
 Gate F. Scores can reach 3 only after retained evidence matches the candidate
 image digest, full commit, PostgreSQL/storage topology and approved cohort.
