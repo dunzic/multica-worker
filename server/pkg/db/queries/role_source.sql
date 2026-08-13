@@ -1319,22 +1319,22 @@ ORDER BY id;
 
 -- name: UpsertRoleSourceObjectMappings :many
 -- One apply can materialize thousands of objects. Send each caller-bounded
--- mapping batch as a typed JSON recordset so the transaction does not pay one
--- network round trip per object. Row triggers still execute for every affected
--- mapping, and the caller verifies the exact returned source-object set.
+-- mapping batch with explicit JSON field extraction and database casts so the
+-- transaction does not pay one network round trip per object. Row triggers
+-- still execute for every affected mapping, and the caller verifies the exact
+-- returned source-object set.
 WITH input AS (
-    SELECT *
-    FROM jsonb_to_recordset(@mappings::jsonb) AS item(
-        source_kind TEXT,
-        source_parent_id TEXT,
-        source_object_id TEXT,
-        target_kind TEXT,
-        target_id UUID,
-        ownership_mask JSONB,
-        last_applied_digest TEXT,
-        last_snapshot_digest TEXT,
-        archived_at TIMESTAMPTZ
-    )
+    SELECT
+        item ->> 'source_kind' AS source_kind,
+        item ->> 'source_parent_id' AS source_parent_id,
+        item ->> 'source_object_id' AS source_object_id,
+        item ->> 'target_kind' AS target_kind,
+        (item ->> 'target_id')::UUID AS target_id,
+        item -> 'ownership_mask' AS ownership_mask,
+        item ->> 'last_applied_digest' AS last_applied_digest,
+        item ->> 'last_snapshot_digest' AS last_snapshot_digest,
+        (item ->> 'archived_at')::TIMESTAMPTZ AS archived_at
+    FROM jsonb_array_elements(@mappings::jsonb) AS item
 )
 INSERT INTO role_source_object_mapping (
     source_id, workspace_id, source_kind, source_parent_id, source_object_id,

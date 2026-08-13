@@ -235,6 +235,45 @@ Pass criteria:
   two-replica Redis/process-death exercises from Gate B4 still deduplicate the
   stable UUID after replay.
 
+## Gate B6 — atomic apply failure and commit ambiguity
+
+Run the real apply transaction matrix against a disposable, fully migrated
+PostgreSQL 17 database. The deterministic fault hook is private to the
+same-package test: it has no exported setter, environment variable, server
+route or production configuration binding.
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_APPLY_FAILURE_TEST=1 \
+  go -C server test -count=1 \
+  -run '^TestRoleSourceApplyFailureMatrixPostgres$' ./internal/rolesource
+```
+
+Pass criteria:
+
+- failures immediately after transaction begin, apply start, before and after
+  materialization, secret consumption, snapshot advance, receipt completion,
+  success audit and outbox insertion leave no apply, audit or outbox row and do
+  not advance the source snapshot;
+- the independent failure ledger records one bounded stage/code and a SHA-256
+  request-key commitment, never the raw key, raw database error or artifact;
+- a role-create plan interrupted after materialization leaves neither the new
+  Agent nor its provenance mapping, proving rollback of real domain writes
+  rather than only a no-op transaction envelope;
+- a database wrapper that commits successfully and returns
+  `context.DeadlineExceeded` is reconciled to the exact succeeded receipt with
+  one apply, one success audit and one outbox row;
+- cancellation immediately after commit cannot cancel the bounded independent
+  reconciliation read;
+- simulating process loss after commit and constructing a new control plane
+  allows the exact request to resolve to the same apply ID and receipt digest,
+  without another materialization, audit event or outbox row;
+- the batch mapping query used by the real role-create path executes through
+  generated sqlc code on PostgreSQL; static compilation alone is insufficient.
+
+This single-node gate proves transaction atomicity and commit ambiguity. It
+does not prove behavior when PostgreSQL is completely unavailable or during a
+primary failover; retain those as Gate D and deployment-topology blockers.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.

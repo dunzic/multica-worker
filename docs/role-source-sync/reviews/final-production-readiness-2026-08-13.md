@@ -19,7 +19,7 @@ remote-origin and runtime evidence that cannot be manufactured by unit tests.
 | --- | ---: | --- |
 | Architecture expert | 2/3 | The server is source-neutral; AgentWaker remains an adapter; source lifecycle, generation-isolated reload, artifact reachability, apply receipts, task pins, holds, retention and DR share explicit lock and provenance contracts. A 3 requires live PostgreSQL lock/failover, versioned-object-store and cross-runtime evidence. |
 | Product expert | 2/3 | Owners and members have a bounded read-only audit surface, drift/freshness evidence, retention preview and deliberate lifecycle operations. Mutation controls remain intentionally absent from broad UI; guided configuration, approval/apply/recovery and version-timeline UX still need controlled cohort validation. |
-| Test expert | 2/3 | Role-source unit, race, fuzz, static migration, redaction, capacity, DR and Helm gates pass; repository frontend typecheck/tests and Go vet pass. Real migrations, commit-timeout injection, 10,000-user database/S3 load, Kubernetes Jobs, failover and restore exercises remain mandatory. The unrelated `pkg/agent` suite also has a reproducible parallel five-second timing instability, although the observed cases pass serially. |
+| Test expert | 2/3 | Role-source unit, race, fuzz, redaction, capacity, DR and Helm gates pass; repository frontend typecheck/tests and Go vet pass. The 2026-08-14 update adds all 375 live migrations plus a 13-case atomic apply/commit-ambiguity matrix. 10,000-user database/S3 load, Kubernetes Jobs, real process kill, failover and restore exercises remain mandatory. The unrelated `pkg/agent` suite also has a reproducible parallel five-second timing instability, although the observed cases pass serially. |
 | CEO | 2/3 | The design creates a defensible multi-source control plane without binding the product to AgentWaker and keeps all customer/destructive exposure default-off. A production ROI/SLA decision would be unsupported until capacity, recovery time, support labor, failure rate and operator ownership are measured. |
 
 No perspective can be raised to 3 by document review alone.
@@ -30,7 +30,7 @@ No perspective can be raised to 3 by document review alone.
 | --- | --- | --- |
 | RS-01 source registry and lifecycle | GO, disabled | NO-GO pending live migration, contention, restart and 10,000-user evidence |
 | RS-02 scan and artifact contract | GO, disabled | NO-GO pending live remote-origin, versioned storage, GC/revival and readback evidence |
-| RS-03 plan, approval and safe apply | GO for read-only audit; apply disabled | NO-GO pending commit-timeout/restart/failure-injection and controlled operator UX |
+| RS-03 plan, approval and safe apply | GO for controlled default-off cohort after the 2026-08-14 live atomicity matrix | NO-GO pending database-outage/failover, real process-kill and recorded operator recovery evidence |
 | RS-04 materialization | GO, disabled | NO-GO pending live 1,000-role/10,000-skill write SLO and cross-runtime execution |
 | RS-05 secret and MCP transfer | GO, disabled | NO-GO pending live key rotation, expiry, restart/failover and exfiltration exercises |
 | RS-06 provenance, rollback and retention | GO, destructive workers disabled | NO-GO pending legal-hold/prune races, RACI and recorded restore with RPO/RTO |

@@ -69,7 +69,10 @@ Open objections:
 
 - exact retry, conflicting retry and concurrent approval need a live PostgreSQL integration suite;
 - migration up/down execution has not run against a live PostgreSQL instance in this environment;
-- apply failure injection, server restart and timeout-retry tests await materialization;
+- 2026-08-14 evidence update: the live PostgreSQL atomic-apply matrix now covers
+  ordered failure injection, post-commit timeout/cancellation and a newly
+  constructed control plane after simulated process loss; real container kill,
+  primary failover and database-total-outage durability remain open;
 - large plan/approval-list benchmark evidence is not yet available.
 
 ## CEO review

@@ -1270,8 +1270,9 @@ func TestApplyPreflightsObjectStorageBeforeMutationLocks(t *testing.T) {
 	if !strings.Contains(queryText, "ListRoleSourceArtifactsForApplyByDigests") || !strings.Contains(queryText, "FOR SHARE OF artifact, integrity;") {
 		t.Fatal("apply must recheck and share-lock the preflight artifact ledger in one batch")
 	}
-	if !strings.Contains(queryText, "UpsertRoleSourceObjectMappings") || !strings.Contains(queryText, "jsonb_to_recordset(@mappings::jsonb)") {
-		t.Fatal("large applies must flush mapping mutations through bounded typed recordsets")
+	if !strings.Contains(queryText, "UpsertRoleSourceObjectMappings") || !strings.Contains(queryText, "jsonb_array_elements(@mappings::jsonb)") ||
+		!strings.Contains(queryText, "(item ->> 'target_id')::UUID") {
+		t.Fatal("large applies must flush mapping mutations through bounded, typed JSON batches")
 	}
 }
 
@@ -1297,6 +1298,46 @@ func TestApplyFailureAuditRunsAfterInnerTransactionReturns(t *testing.T) {
 	rollbackAt := strings.Index(inner, "defer tx.Rollback(ctx)")
 	if beginAt < 0 || rollbackAt < 0 || beginAt >= rollbackAt {
 		t.Fatal("inner apply must install transaction rollback before mutation work")
+	}
+}
+
+func TestApplyFailurePointsArePrivateOrderedAndDefaultOff(t *testing.T) {
+	control := &ControlPlane{}
+	if control.applyFailurePoint != nil {
+		t.Fatal("production control plane unexpectedly enables apply failure injection")
+	}
+	if err := control.injectApplyFailure(applyFaultTransactionBegan); err != nil {
+		t.Fatalf("default failure point returned %v", err)
+	}
+	body, err := os.ReadFile("apply.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	ordered := []string{
+		"applyFaultTransactionBegan", "applyFaultApplyStarted", "applyFaultBeforeMaterialize",
+		"applyFaultAfterMaterialize", "applyFaultSecretsConsumed", "applyFaultSnapshotAdvanced",
+		"applyFaultReceiptCompleted", "applyFaultAuditAppended", "applyFaultOutboxInserted",
+		"applyFaultCommitResponseLost",
+	}
+	last := -1
+	for _, name := range ordered {
+		needle := "c.injectApplyFailure(" + name + ")"
+		if strings.Count(source, needle) != 1 {
+			t.Fatalf("failure point %s must be injected exactly once", name)
+		}
+		index := strings.Index(source, needle)
+		if index <= last {
+			t.Fatalf("failure point %s is out of transaction order", name)
+		}
+		last = index
+	}
+	controlBody, err := os.ReadFile("controlplane.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(controlBody), "SetApplyFailure") || strings.Contains(string(controlBody), "MULTICA_ROLE_SOURCE_APPLY_FAILURE") {
+		t.Fatal("test-only apply failure injection became externally configurable")
 	}
 }
 

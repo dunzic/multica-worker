@@ -2,8 +2,12 @@
 
 Date: 2026-08-13
 
+Live-evidence update: commit-timeout, cancellation and new-control-plane restart
+recovery are recorded in
+[`RS-03-atomic-apply-failure-evidence-2026-08-14.md`](RS-03-atomic-apply-failure-evidence-2026-08-14.md).
+
 Final decision: **GO to merge behind controlled apply; production remains
-conditional on failure injection and a recorded two-operator recovery drill.**
+conditional on a recorded two-operator outage/failover recovery drill.**
 
 ## Architecture review — 3/3
 
@@ -31,8 +35,10 @@ support bundle export and guided source restoration remain future work.
 
 Component tests prove recovery text, absence of a direct retry action, current-
 plan navigation and the exact evidence query families refreshed. Typecheck and
-full view tests pass. Missing: injected commit timeout/restart and operator drill
-showing time-to-diagnose and safe resolution.
+full view tests pass. The 2026-08-14 live matrix closes deterministic commit-
+timeout, cancellation and new-control-plane restart recovery. A production-
+topology outage/failover drill showing time-to-diagnose and safe resolution is
+still missing.
 
 ## CEO review — 2/3
 

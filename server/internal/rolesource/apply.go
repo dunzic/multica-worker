@@ -246,6 +246,26 @@ type applyAttemptTracker struct {
 	stage            string
 }
 
+const (
+	applyFaultTransactionBegan   = "transaction_began"
+	applyFaultApplyStarted       = "apply_started"
+	applyFaultBeforeMaterialize  = "before_materialize"
+	applyFaultAfterMaterialize   = "after_materialize"
+	applyFaultSecretsConsumed    = "secrets_consumed"
+	applyFaultSnapshotAdvanced   = "snapshot_advanced"
+	applyFaultReceiptCompleted   = "receipt_completed"
+	applyFaultAuditAppended      = "audit_appended"
+	applyFaultOutboxInserted     = "outbox_inserted"
+	applyFaultCommitResponseLost = "commit_response_lost"
+)
+
+func (c *ControlPlane) injectApplyFailure(point string) error {
+	if c.applyFailurePoint == nil {
+		return nil
+	}
+	return c.applyFailurePoint(point)
+}
+
 func (c *ControlPlane) ApplyPlan(ctx context.Context, input ApplyPlanInput) (db.RoleSourceApply, ApplyReceipt, error) {
 	tracker := applyAttemptTracker{mode: "unknown", stage: "preflight"}
 	row, receipt, err := c.applyPlan(ctx, input, &tracker)
@@ -363,6 +383,9 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := c.injectApplyFailure(applyFaultTransactionBegan); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
 	qtx := db.New(tx)
 	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
@@ -478,6 +501,9 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	if err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	if err := c.injectApplyFailure(applyFaultApplyStarted); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
 
 	tracker.stage = "materialization"
 	artifacts := preflight.artifacts
@@ -505,6 +531,9 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	if err := validateMaterializationNames(ctx, qtx, workspaceID, snapshot, plan, mappings); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	if err := c.injectApplyFailure(applyFaultBeforeMaterialize); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
 	receipt := ApplyReceipt{
 		ContractVersion: ApplyReceiptContractVersion, Mode: applyMode, ApplyID: util.UUIDToString(applyRow.ID),
 		SourceID: input.SourceID, WorkspaceID: input.WorkspaceID, SnapshotDigest: plan.ToSnapshotDigest,
@@ -522,7 +551,13 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	if err := state.materialize(ctx); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	if err := c.injectApplyFailure(applyFaultAfterMaterialize); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
 	if err := state.consumeSecretTransfers(ctx); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	if err := c.injectApplyFailure(applyFaultSecretsConsumed); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	tracker.stage = "finalize"
@@ -537,6 +572,9 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 		if errors.Is(err, pgx.ErrNoRows) {
 			return db.RoleSourceApply{}, ApplyReceipt{}, ErrApplyConflict
 		}
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	if err := c.injectApplyFailure(applyFaultSnapshotAdvanced); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	sort.Slice(receipt.Mappings, func(i, j int) bool {
@@ -559,6 +597,9 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	if err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	if err := c.injectApplyFailure(applyFaultReceiptCompleted); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
 	eventType := "apply_succeeded"
 	if plan.Mode == PlanModeRollback {
 		eventType = "rollback_succeeded"
@@ -569,6 +610,9 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 		UpdateCount: receipt.Counts.Updated, AdoptCount: receipt.Counts.Adopted, UnchangedCount: receipt.Counts.Unchanged,
 		ArchiveCount: receipt.Counts.Archived,
 	}); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	if err := c.injectApplyFailure(applyFaultAuditAppended); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	outboxID, err := newPGUUID()
@@ -583,8 +627,14 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	}); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	if err := c.injectApplyFailure(applyFaultOutboxInserted); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
 	tracker.stage = "commit"
 	if err := tx.Commit(ctx); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	if err := c.injectApplyFailure(applyFaultCommitResponseLost); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	return applyRow, receipt, nil

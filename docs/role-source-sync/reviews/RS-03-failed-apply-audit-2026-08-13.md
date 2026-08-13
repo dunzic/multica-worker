@@ -4,6 +4,10 @@ Date: 2026-08-13
 
 Gate: design and merge evidence
 
+Live-evidence update: the previously open PostgreSQL failure-injection and
+commit-ambiguity items are superseded by
+[`RS-03-atomic-apply-failure-evidence-2026-08-14.md`](RS-03-atomic-apply-failure-evidence-2026-08-14.md).
+
 Final decision: **GO for merge behind disabled flags; NO-GO for production apply operations**
 
 ## Customer and product outcome
@@ -49,4 +53,4 @@ An apply request that returns an error now leaves content-free, append-only evid
 
 ## Rollout decision
 
-Merge is allowed behind the existing disabled `role_source_sync` and `role_source_scan` read flags. The `role_source_apply` mutation flag remains disabled. Internal read-only evaluation may inspect records after a live PostgreSQL migration and failure-injection run. Customer apply rollout remains NO-GO.
+Merge is allowed behind the existing disabled `role_source_sync` and `role_source_scan` read flags. The `role_source_apply` mutation flag remains disabled. The 2026-08-14 live PostgreSQL migration and failure-injection run now permits a controlled default-off apply cohort; broad customer rollout remains NO-GO pending outage/failover and operator-recovery evidence.

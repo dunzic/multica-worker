@@ -42,7 +42,11 @@ type ControlPlane struct {
 	secretKeyID      string
 	materializeSlots chan struct{}
 	applyMetrics     ApplyMetrics
-	now              func() time.Time
+	// applyFailurePoint is intentionally unexported and has no setter or
+	// configuration binding. Same-package tests use it for deterministic
+	// transaction fault injection; production construction always leaves it nil.
+	applyFailurePoint func(string) error
+	now               func() time.Time
 }
 
 // ApplyMetrics accepts bounded operational labels only. Implementations must
