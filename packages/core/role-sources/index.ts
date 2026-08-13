@@ -22,6 +22,8 @@ export type {
   RoleSourcePlanImpactSummary,
   RoleSourcePlanImpactTask,
   RoleSourcePlanImpactWorker,
+  RoleSourceConfigurationChange,
+  RoleSourceConfigurationReview,
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
   RoleSourceScan,

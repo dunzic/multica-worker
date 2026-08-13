@@ -9,6 +9,8 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "plans", sourceId] as const,
   impact: (workspaceId: string, sourceId: string, planDigest: string) =>
     [...roleSourceKeys.all(workspaceId), "impact", sourceId, planDigest] as const,
+  configurationReview: (workspaceId: string, sourceId: string, planDigest: string) =>
+    [...roleSourceKeys.all(workspaceId), "configuration-review", sourceId, planDigest] as const,
   applyFailures: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "apply-failures", sourceId] as const,
   approvals: (workspaceId: string, sourceId: string, planDigest: string) =>
@@ -157,6 +159,18 @@ export function roleSourcePlanImpactOptions(
   return queryOptions({
     queryKey: roleSourceKeys.impact(workspaceId, sourceId, planDigest),
     queryFn: () => api.getRoleSourcePlanImpact(workspaceId, sourceId, planDigest),
+    enabled: Boolean(sourceId && planDigest),
+  });
+}
+
+export function roleSourceConfigurationReviewOptions(
+  workspaceId: string,
+  sourceId: string,
+  planDigest: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.configurationReview(workspaceId, sourceId, planDigest),
+    queryFn: () => api.getRoleSourceConfigurationReview(workspaceId, sourceId, planDigest),
     enabled: Boolean(sourceId && planDigest),
   });
 }

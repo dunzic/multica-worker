@@ -49,6 +49,7 @@ type RoleSourceControlPlane interface {
 	ClaimNextSecretTransfer(context.Context, string, time.Duration) (rolesource.ClaimedSecretTransfer, error)
 	ReportSecretTransfer(context.Context, rolesource.ReportSecretTransferInput) (db.RoleSourceSecretTransfer, error)
 	GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error)
+	GetPlanConfigurationReview(context.Context, string, string, string, int, int) (rolesource.ConfigurationChangeReview, error)
 	GetPlanImpact(context.Context, string, string, string) (rolesource.PlanImpact, error)
 	ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error)
 	ListApplyHistory(context.Context, string, string, int32) ([]rolesource.ApplyHistoryItem, error)
@@ -1073,6 +1074,35 @@ func (h *Handler) GetRoleSourcePlanImpact(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, impact)
+}
+
+func (h *Handler) GetRoleSourcePlanConfigurationReview(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	offset, err := strconv.Atoi(defaultQueryValue(r, "offset", "0"))
+	if err != nil || offset < 0 {
+		writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+		return
+	}
+	limit, err := strconv.Atoi(defaultQueryValue(r, "limit", "100"))
+	if err != nil || limit < 1 || limit > 100 {
+		writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+		return
+	}
+	review, err := h.RoleSources.GetPlanConfigurationReview(
+		r.Context(), workspaceID, chi.URLParam(r, "sourceId"), chi.URLParam(r, "planDigest"), offset, limit,
+	)
+	if err != nil {
+		if errors.Is(err, rolesource.ErrInvalidPlanRequest) {
+			writeError(w, http.StatusBadRequest, "invalid configuration review")
+			return
+		}
+		writeRoleSourceReadError(w, err, "failed to load configuration review")
+		return
+	}
+	writeJSON(w, http.StatusOK, review)
 }
 
 func (h *Handler) CreateRoleSourcePlan(w http.ResponseWriter, r *http.Request) {

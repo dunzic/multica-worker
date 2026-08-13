@@ -37,6 +37,7 @@ import { cn } from "@multica/ui/lib/utils";
 import {
   roleSourceApplyFailureListOptions,
   roleSourceApplyHistoryListOptions,
+  roleSourceConfigurationReviewOptions,
   roleSourceLegalHoldListOptions,
   roleSourceLifecycleEventListOptions,
   roleSourceLatestScanOptions,
@@ -369,6 +370,14 @@ export function RoleSourcesTab() {
   });
   const impact = useQuery({
     ...roleSourcePlanImpactOptions(
+      workspaceId,
+      selectedId,
+      latest?.plan.plan_digest ?? "",
+    ),
+    enabled: Boolean(workspaceId && selectedId && latest?.plan.plan_digest),
+  });
+  const configurationReview = useQuery({
+    ...roleSourceConfigurationReviewOptions(
       workspaceId,
       selectedId,
       latest?.plan.plan_digest ?? "",
@@ -1230,6 +1239,46 @@ export function RoleSourcesTab() {
                     ))}
                   </div>
                 ) : null}
+
+                <div className="space-y-3 p-4">
+                  <div>
+                    <div className="text-body font-medium">{t(($) => $.role_sources.configuration_review_title)}</div>
+                    <p className="mt-1 text-caption text-muted-foreground">{t(($) => $.role_sources.configuration_review_description)}</p>
+                  </div>
+                  {configurationReview.isLoading ? (
+                    <div className="flex items-center gap-2 text-caption text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t(($) => $.role_sources.loading)}
+                    </div>
+                  ) : configurationReview.isError || !configurationReview.data ? (
+                    <div className="text-caption text-destructive">{t(($) => $.role_sources.configuration_review_load_failed)}</div>
+                  ) : !configurationReview.data.total_changes ? (
+                    <div className="text-caption text-muted-foreground">{t(($) => $.role_sources.configuration_review_empty)}</div>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Badge variant="outline">{t(($) => $.role_sources.configuration_environment_count, { count: configurationReview.data.environment_count })}</Badge>
+                        <Badge variant="outline">{t(($) => $.role_sources.configuration_mcp_count, { count: configurationReview.data.mcp_count })}</Badge>
+                      </div>
+                      <div className="max-h-56 divide-y divide-surface-border overflow-y-auto rounded-md border border-surface-border">
+                        {configurationReview.data.changes.map((change) => (
+                          <div key={`${change.object_kind}:${change.role_id}:${change.object_id}`} className="flex items-center justify-between gap-3 px-3 py-2 text-caption">
+                            <span className="min-w-0">
+                              <span className="block truncate font-medium text-foreground">{change.object_id}</span>
+                              <span className="block truncate font-mono text-muted-foreground">{change.role_id} · {change.object_kind}</span>
+                            </span>
+                            <Badge variant={operationVariant(change.operation)}>{change.operation}</Badge>
+                          </div>
+                        ))}
+                      </div>
+                      {configurationReview.data.total_changes > configurationReview.data.changes.length ? (
+                        <div className="text-caption text-muted-foreground">
+                          {t(($) => $.role_sources.configuration_review_more, { count: configurationReview.data.total_changes - configurationReview.data.changes.length })}
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </div>
 
                 {roleSourceApplyEnabled && canManage && latest.plan.applyable ? (
                   <div className="space-y-4 p-4">

@@ -59,6 +59,7 @@ import type {
   RoleSourceLifecycleEvent,
   RoleSourceSnapshotSummary,
   RoleSourceSnapshotComparison,
+  RoleSourceConfigurationReview,
   ChannelDelivery,
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
@@ -141,6 +142,21 @@ export const RoleSourceSnapshotComparisonSchema: z.ZodType<RoleSourceSnapshotCom
     parent_id: z.string().optional(),
     display_name: z.string(),
     operation: z.enum(["added", "changed", "removed"]),
+  }).strict()).max(100),
+}).strict();
+
+export const RoleSourceConfigurationReviewSchema: z.ZodType<RoleSourceConfigurationReview> = z.object({
+  plan_digest: Sha256DigestSchema,
+  total_changes: z.number().int().nonnegative(),
+  environment_count: z.number().int().nonnegative(),
+  mcp_count: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(100),
+  changes: z.array(z.object({
+    object_kind: z.enum(["environment", "mcp"]),
+    role_id: z.string().min(1),
+    object_id: z.string().min(1),
+    operation: z.enum(["create", "update", "archive_candidate", "blocked"]),
   }).strict()).max(100),
 }).strict();
 

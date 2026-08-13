@@ -175,6 +175,31 @@ describe("ApiClient role-source runtime evidence", () => {
     );
   });
 
+  it("loads a plan-bound redacted configuration review and rejects extra fields", async () => {
+    const planDigest = `sha256:${"a".repeat(64)}`;
+    const review = {
+      plan_digest: planDigest,
+      total_changes: 2,
+      environment_count: 1,
+      mcp_count: 1,
+      offset: 0,
+      limit: 100,
+      changes: [
+        { object_kind: "environment", role_id: "writer", object_id: "OPENAI_API_KEY", operation: "update" },
+        { object_kind: "mcp", role_id: "writer", object_id: "browser", operation: "create" },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(review), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...review, changes: [{ ...review.changes[0], value_digest: "leak" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.getRoleSourceConfigurationReview("workspace-1", "source-1", planDigest)).resolves.toEqual(review);
+    await expect(client.getRoleSourceConfigurationReview("workspace-1", "source-1", planDigest)).resolves.toBeNull();
+  });
+
   it("lists verified channel delivery evidence and fails closed on mismatched terminal rows", async () => {
     const delivery = {
       id: "delivery-1",

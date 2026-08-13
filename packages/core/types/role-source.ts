@@ -408,6 +408,23 @@ export interface RoleSourcePlanImpact {
   tasks: RoleSourcePlanImpactTask[];
 }
 
+export interface RoleSourceConfigurationChange {
+  object_kind: "environment" | "mcp";
+  role_id: string;
+  object_id: string;
+  operation: "create" | "update" | "archive_candidate" | "blocked";
+}
+
+export interface RoleSourceConfigurationReview {
+  plan_digest: string;
+  total_changes: number;
+  environment_count: number;
+  mcp_count: number;
+  offset: number;
+  limit: number;
+  changes: RoleSourceConfigurationChange[];
+}
+
 export interface RoleSourceApplyFailure {
   id: string;
   source_id: string;

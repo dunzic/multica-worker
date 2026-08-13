@@ -100,6 +100,30 @@ func TestCompareSnapshotObjectsIsStableAndContentFree(t *testing.T) {
 	}
 }
 
+func TestConfigurationChangeReviewProjectionCannotContainValuesOrDefinitions(t *testing.T) {
+	fromManifest := planTestManifest()
+	fromManifest.Roles[0].Environment = []EnvironmentKey{{Name: "OPENAI_API_KEY", Secret: true, Configured: true, ValueDigest: testHMACSHA256("a")}}
+	fromManifest.Roles[0].MCP = []MCPServer{{ID: "browser", DefinitionHash: testSHA256("b"), Environment: []string{"OPENAI_API_KEY"}}}
+	toManifest := planTestManifest()
+	toManifest.Roles[0].Environment = []EnvironmentKey{{Name: "OPENAI_API_KEY", Secret: true, Configured: true, ValueDigest: testHMACSHA256("c")}}
+	toManifest.Roles[0].MCP = []MCPServer{{ID: "browser", DefinitionHash: testSHA256("d"), Environment: []string{"OPENAI_API_KEY"}}}
+	from, to := planTestSnapshot(t, fromManifest), planTestSnapshot(t, toManifest)
+	plan, err := BuildPlan("source-1", &from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := configurationChangeReview(plan, 0, 100)
+	if review.EnvironmentCount != 1 || review.MCPCount != 1 || len(review.Changes) != 2 {
+		t.Fatalf("configuration review = %+v", review)
+	}
+	body, _ := json.Marshal(review)
+	for _, forbidden := range []string{"value_digest", "definition_hash", `"environment":`, "description", "url", "header", "command"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("configuration review exposed %q: %s", forbidden, body)
+		}
+	}
+}
+
 func TestDecodePersistedPlanRevalidatesContentAndColumns(t *testing.T) {
 	target := planTestSnapshot(t, planTestManifest())
 	plan, err := BuildPlan("source-1", nil, target)

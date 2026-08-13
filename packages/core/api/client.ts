@@ -55,6 +55,7 @@ import type {
   RoleSourceLifecycleEvent,
   RoleSourceSnapshotSummary,
   RoleSourceSnapshotComparison,
+  RoleSourceConfigurationReview,
   ChannelDelivery,
   UpdateRoleSourceLifecycleRequest,
   RoleSourceLegalHold,
@@ -326,6 +327,7 @@ import {
   RoleSourceLifecycleEventListSchema,
   RoleSourceSnapshotSummaryListSchema,
   RoleSourceSnapshotComparisonSchema,
+  RoleSourceConfigurationReviewSchema,
   ChannelDeliveryListSchema,
   RoleSourcePlanRecordSchema,
   RoleSourcePlanRecordListSchema,
@@ -1792,6 +1794,23 @@ export class ApiClient {
       return null;
     }
     return comparison;
+  }
+
+  async getRoleSourceConfigurationReview(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+  ): Promise<RoleSourceConfigurationReview | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${planDigest}/configuration-review?offset=0&limit=100`,
+    );
+    const review = parseWithFallback<RoleSourceConfigurationReview | null>(
+      raw,
+      RoleSourceConfigurationReviewSchema,
+      null,
+      { endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/configuration-review" },
+    );
+    return review?.plan_digest === planDigest ? review : null;
   }
 
   async listChannelDeliveries(workspaceId: string): Promise<ChannelDelivery[]> {

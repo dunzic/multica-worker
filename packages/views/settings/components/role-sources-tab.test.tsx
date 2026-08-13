@@ -9,6 +9,7 @@ const queryFixtures = vi.hoisted(() => ({
   runtimes: [] as Array<Record<string, unknown>>,
   plans: [] as Array<Record<string, unknown>>,
   impact: undefined as Record<string, unknown> | undefined,
+  configurationReview: undefined as Record<string, unknown> | undefined,
   failures: [] as Array<Record<string, unknown>>,
   attestations: [] as Array<Record<string, unknown>>,
   legalHolds: [] as Array<Record<string, unknown>>,
@@ -88,6 +89,8 @@ vi.mock("@tanstack/react-query", async () => {
           ? queryFixtures.snapshotComparison
         : options.queryKey.includes("snapshot-summaries")
           ? queryFixtures.snapshotSummaries
+        : options.queryKey.includes("configuration-review")
+          ? queryFixtures.configurationReview
         : options.queryKey.includes("latest-scan")
         ? queryFixtures.latestScan
         : options.queryKey.includes("lifecycle-events")
@@ -331,6 +334,18 @@ beforeEach(() => {
       },
     ],
   };
+  queryFixtures.configurationReview = {
+    plan_digest: "sha256:plan1234567890abcdef",
+    total_changes: 2,
+    environment_count: 1,
+    mcp_count: 1,
+    offset: 0,
+    limit: 100,
+    changes: [
+      { object_kind: "environment", role_id: "writer", object_id: "OPENAI_API_KEY", operation: "update" },
+      { object_kind: "mcp", role_id: "writer", object_id: "browser", operation: "create" },
+    ],
+  };
   queryFixtures.failures = [
     {
       id: "failure-1",
@@ -404,6 +419,10 @@ describe("RoleSourcesTab", () => {
     expect(await screen.findByText("Blocked — no changes can be applied")).toBeInTheDocument();
     expect(screen.getByText("capability.external_write_not_supported")).toBeInTheDocument();
     expect(screen.getByText("Account actions")).toBeInTheDocument();
+    expect(screen.getByText("Environment and MCP change review")).toBeInTheDocument();
+    expect(screen.getByText("OPENAI_API_KEY")).toBeInTheDocument();
+    expect(screen.getByText("browser")).toBeInTheDocument();
+    expect(screen.queryByText(/value_digest|definition_hash|https:\/\/|Authorization/)).not.toBeInTheDocument();
     expect(screen.getByText("Affected workers and tasks")).toBeInTheDocument();
     expect(screen.getByText("2 cancel on apply")).toBeInTheDocument();
     expect(screen.getByText("1 continue current version")).toBeInTheDocument();

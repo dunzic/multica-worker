@@ -56,6 +56,23 @@ type SnapshotComparison struct {
 	Changes            []SnapshotChange `json:"changes"`
 }
 
+type ConfigurationChange struct {
+	ObjectKind string `json:"object_kind"`
+	RoleID     string `json:"role_id"`
+	ObjectID   string `json:"object_id"`
+	Operation  string `json:"operation"`
+}
+
+type ConfigurationChangeReview struct {
+	PlanDigest       string                `json:"plan_digest"`
+	TotalChanges     int                   `json:"total_changes"`
+	EnvironmentCount int                   `json:"environment_count"`
+	MCPCount         int                   `json:"mcp_count"`
+	Offset           int                   `json:"offset"`
+	Limit            int                   `json:"limit"`
+	Changes          []ConfigurationChange `json:"changes"`
+}
+
 type CreatePlanInput struct {
 	WorkspaceID          string
 	SourceID             string
@@ -378,6 +395,55 @@ func (c *ControlPlane) GetPlan(ctx context.Context, workspaceIDText, sourceIDTex
 		return db.RoleSourcePlan{}, errors.New("invalid plan identity")
 	}
 	return c.queries().GetRoleSourcePlan(ctx, db.GetRoleSourcePlanParams{SourceID: sourceID, WorkspaceID: workspaceID, PlanDigest: planDigest})
+}
+
+func (c *ControlPlane) GetPlanConfigurationReview(ctx context.Context, workspaceIDText, sourceIDText, planDigest string, offset, limit int) (ConfigurationChangeReview, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil || !sha256Pattern.MatchString(planDigest) || offset < 0 || offset > maxNormalizedObjects || limit < 1 || limit > snapshotComparisonPageSize {
+		return ConfigurationChangeReview{}, ErrInvalidPlanRequest
+	}
+	row, err := c.queries().GetRoleSourcePlan(ctx, db.GetRoleSourcePlanParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, PlanDigest: planDigest,
+	})
+	if err != nil {
+		return ConfigurationChangeReview{}, err
+	}
+	plan, err := DecodePersistedPlan(row)
+	if err != nil {
+		return ConfigurationChangeReview{}, fmt.Errorf("validate configuration review plan: %w", err)
+	}
+	return configurationChangeReview(plan, offset, limit), nil
+}
+
+func configurationChangeReview(plan Plan, offset, limit int) ConfigurationChangeReview {
+	changes := make([]ConfigurationChange, 0)
+	environmentCount, mcpCount := 0, 0
+	for _, action := range plan.Actions {
+		if action.Operation == PlanUnchanged || (action.Ref.Kind != "environment" && action.Ref.Kind != "mcp") {
+			continue
+		}
+		if action.Ref.Kind == "environment" {
+			environmentCount++
+		} else {
+			mcpCount++
+		}
+		changes = append(changes, ConfigurationChange{
+			ObjectKind: action.Ref.Kind, RoleID: action.Ref.ParentID,
+			ObjectID: action.Ref.ID, Operation: string(action.Operation),
+		})
+	}
+	end := offset + limit
+	if end > len(changes) {
+		end = len(changes)
+	}
+	page := []ConfigurationChange{}
+	if offset < len(changes) {
+		page = changes[offset:end]
+	}
+	return ConfigurationChangeReview{
+		PlanDigest: plan.PlanDigest, TotalChanges: len(changes), EnvironmentCount: environmentCount, MCPCount: mcpCount,
+		Offset: offset, Limit: limit, Changes: page,
+	}
 }
 
 func (c *ControlPlane) ListPlans(ctx context.Context, workspaceIDText, sourceIDText string, limit int32) ([]db.RoleSourcePlan, error) {

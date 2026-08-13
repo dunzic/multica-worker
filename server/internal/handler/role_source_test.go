@@ -87,6 +87,8 @@ type fakeRoleSourceControlPlane struct {
 	getPlanErr                error
 	planImpact                rolesource.PlanImpact
 	planImpactErr             error
+	configurationReview       rolesource.ConfigurationChangeReview
+	configurationReviewErr    error
 	planRows                  []db.RoleSourcePlan
 	planListErr               error
 	applyHistory              []rolesource.ApplyHistoryItem
@@ -263,6 +265,11 @@ func (f *fakeRoleSourceControlPlane) GetPlan(context.Context, string, string, st
 func (f *fakeRoleSourceControlPlane) GetPlanImpact(context.Context, string, string, string) (rolesource.PlanImpact, error) {
 	f.calls++
 	return f.planImpact, f.planImpactErr
+}
+
+func (f *fakeRoleSourceControlPlane) GetPlanConfigurationReview(context.Context, string, string, string, int, int) (rolesource.ConfigurationChangeReview, error) {
+	f.calls++
+	return f.configurationReview, f.configurationReviewErr
 }
 
 func (f *fakeRoleSourceControlPlane) ListPlans(context.Context, string, string, int32) ([]db.RoleSourcePlan, error) {
@@ -1073,6 +1080,32 @@ func TestGetRoleSourcePlanImpact_ReturnsContentFreeOperationalEvidence(t *testin
 	for _, forbidden := range []string{"prompt", "result", "context", "error"} {
 		if strings.Contains(w.Body.String(), `"`+forbidden+`"`) {
 			t.Fatalf("impact response exposed forbidden field %q: %s", forbidden, w.Body.String())
+		}
+	}
+}
+
+func TestGetRoleSourcePlanConfigurationReviewReturnsClosedProjection(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	fake := &fakeRoleSourceControlPlane{configurationReview: rolesource.ConfigurationChangeReview{
+		PlanDigest: digest, TotalChanges: 2, EnvironmentCount: 1, MCPCount: 1, Offset: 0, Limit: 100,
+		Changes: []rolesource.ConfigurationChange{
+			{ObjectKind: "environment", RoleID: "writer", ObjectID: "OPENAI_API_KEY", Operation: "update"},
+			{ObjectKind: "mcp", RoleID: "writer", ObjectID: "browser", Operation: "create"},
+		},
+	}}
+	h := roleSourceTestHandler(t, true, fake)
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", digest)
+	w := httptest.NewRecorder()
+
+	h.GetRoleSourcePlanConfigurationReview(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"object_id":"browser"`) {
+		t.Fatalf("configuration review status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, forbidden := range []string{"value_digest", "definition_hash", "description", "url", "headers", "command", "arguments"} {
+		if strings.Contains(w.Body.String(), `"`+forbidden+`"`) {
+			t.Fatalf("configuration review exposed %q: %s", forbidden, w.Body.String())
 		}
 	}
 }
