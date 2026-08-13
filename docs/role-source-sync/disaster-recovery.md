@@ -59,7 +59,11 @@ When running inside the Helm backend pod with local PVC storage, explicitly set
 volume at `/private/backup`; never write the bundle to the uploads PVC itself.
 For S3, use a dedicated backup job/pod based on the same image and credentials,
 with the output volume and KMS signing secret mounted only for that job. The
-chart does not schedule backups automatically.
+chart provides an explicitly default-off one-shot backup Job template; it does
+not schedule backups automatically. Set a unique DNS-safe `runName`, a separate
+backup PVC, a new single-directory `outputDirectory`, the signer Secret name
+and optional narrowly scoped storage Secret. The Job refuses retries and the
+backup tool refuses an existing directory.
 
 The command produces `database.dump`, `artifacts.tar` and `manifest.json`, all
 mode 0600 below a mode 0700 directory. Copy the bundle to approved encrypted,

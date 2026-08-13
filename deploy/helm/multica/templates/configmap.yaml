@@ -25,6 +25,13 @@ data:
   CLOUDFRONT_DOMAIN: {{ .Values.backend.config.cloudfrontDomain | quote }}
   CLOUDFRONT_KEY_PAIR_ID: {{ .Values.backend.config.cloudfrontKeyPairId | quote }}
   LOCAL_UPLOAD_BASE_URL: {{ .Values.backend.config.localUploadBaseUrl | quote }}
+  # Role-source product and destructive-worker gates are separate and closed
+  # by default. These map directly to the server's feature-flag kill switches.
+  FF_ROLE_SOURCE_SYNC: {{ .Values.roleSource.syncEnabled | quote }}
+  FF_ROLE_SOURCE_SCAN: {{ .Values.roleSource.scanEnabled | quote }}
+  FF_ROLE_SOURCE_APPLY: {{ .Values.roleSource.applyEnabled | quote }}
+  MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED: {{ .Values.roleSource.artifactGCEnabled | quote }}
+  MULTICA_ROLE_SOURCE_RETENTION_ENABLED: {{ .Values.roleSource.retentionEnabled | quote }}
 
   {{- if not .Values.postgres.external.enabled }}
   # --- PostgreSQL (consumed by the backend to build DATABASE_URL) ---

@@ -148,6 +148,80 @@ backend:
   tolerations: []
 
 # -----------------------------------------------------------------------------
+# Role-source rollout and explicit validation/recovery jobs
+# -----------------------------------------------------------------------------
+roleSource:
+  # Product/API flags are independently default-off. Apply stays separate so a
+  # read-only cohort cannot accidentally acquire mutation authority.
+  syncEnabled: false
+  scanEnabled: false
+  applyEnabled: false
+  # Destructive background workers remain independently default-off even when
+  # product flags are enabled. Gate B3/F must pass before changing these.
+  artifactGCEnabled: false
+  retentionEnabled: false
+
+  # The backend already imports existingSecret. Add these keys there only when
+  # one-time secret transfer is approved:
+  #   MULTICA_ROLE_SOURCE_SECRET_KEY
+  #   MULTICA_ROLE_SOURCE_SECRET_KEY_ID
+  #   MULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS (optional JSON key map)
+
+  jobs:
+    # Optional identity for IRSA/workload identity. Empty uses the namespace's
+    # default ServiceAccount; the chart never creates broad cloud permissions.
+    serviceAccountName: ""
+    affinity: {}
+    tolerations: []
+
+  capacityEvidence:
+    # Explicit one-shot read-only Gate E job. Enabling requires every scope and
+    # a separate evidence PVC; the report is never written to the app uploads.
+    enabled: false
+    existingClaim: ""
+    runName: ""
+    reportFile: role-source-capacity-read.json
+    workspaceId: ""
+    runtimeId: ""
+    samples: 500
+    concurrency: 32
+    minimumUsers: 10000
+    minimumWorkspaceMembers: 0
+    minimumWorkspaceRuntimes: 0
+    minimumWorkspaceSources: 0
+    minimumAttestationHistory: 0
+    activeDeadlineSeconds: 1800
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+
+  disasterRecovery:
+    backup:
+      # Explicit one-shot Gate F backup job. The output directory below the
+      # separate backup PVC must not already exist. Use a unique runName for
+      # every exercise so Kubernetes and the backup tool both refuse overwrite.
+      enabled: false
+      runName: ""
+      existingClaim: ""
+      outputDirectory: ""
+      signingSecretName: ""
+      # Optional narrowly scoped S3 credentials. Leave empty for workload
+      # identity or when using the backend uploads PVC.
+      storageSecretName: ""
+      activeDeadlineSeconds: 14400
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          cpu: 2000m
+          memory: 1Gi
+
+# -----------------------------------------------------------------------------
 # Frontend (Next.js standalone)
 # -----------------------------------------------------------------------------
 frontend:

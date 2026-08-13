@@ -229,6 +229,11 @@ timeout, runs concurrent source-list plus 100-entry history reads, summarizes
 `EXPLAIN ANALYZE` without exporting tenant filters, and writes a new private
 report. It never seeds or changes data:
 
+The Helm chart exposes the same command as the default-off
+`roleSource.capacityEvidence` one-shot Job. Supply the approved minima and a
+unique DNS-safe run name plus a separate evidence PVC; do not reuse the uploads
+or backup PVC.
+
 ```bash
 /app/role_source_capacity \
   --workspace-id VALIDATION_WORKSPACE_UUID \
