@@ -73,6 +73,31 @@ export function useCreateRoleSourcePlan(workspaceId: string, sourceId: string) {
   });
 }
 
+export function useCreateRoleSourceRollbackPlan(workspaceId: string, sourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (targetSnapshotDigest: string) => api.createRoleSourceRollbackPlan(
+      workspaceId,
+      sourceId,
+      { target_snapshot_digest: targetSnapshotDigest },
+    ),
+    onSuccess: (plan) => {
+      if (plan) {
+        queryClient.setQueryData(
+          roleSourceKeys.plans(workspaceId, sourceId),
+          (current: RoleSourcePlanRecord[] | undefined) => [
+            plan,
+            ...(current ?? []).filter((item) => item.plan.plan_digest !== plan.plan.plan_digest),
+          ],
+        );
+      }
+    },
+    onSettled: () => queryClient.invalidateQueries({
+      queryKey: roleSourceKeys.plans(workspaceId, sourceId),
+    }),
+  });
+}
+
 export function useCreateRoleSourcePlanApproval(
   workspaceId: string,
   sourceId: string,

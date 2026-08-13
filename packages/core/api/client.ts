@@ -1824,6 +1824,20 @@ export class ApiClient {
     });
   }
 
+  async createRoleSourceRollbackPlan(
+    workspaceId: string,
+    sourceId: string,
+    request: CreateRoleSourcePlanRequest,
+  ): Promise<RoleSourcePlanRecord | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/rollback-plans`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourcePlanRecord | null>(raw, RoleSourcePlanRecordSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/rollback-plans",
+    });
+  }
+
   async listRoleSourcePlanApprovals(
     workspaceId: string,
     sourceId: string,

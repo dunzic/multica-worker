@@ -277,6 +277,46 @@ describe("ApiClient role-source runtime evidence", () => {
     })).resolves.toBeNull();
     await expect(client.listRoleSourceSecretTransfers("workspace-1", "source-1", "plan", "approval-1")).resolves.toEqual([]);
   });
+
+  it("creates a forward rollback plan through the dedicated endpoint and fails closed on malformed evidence", async () => {
+    const rollbackPlan = {
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      created_by: "user-1",
+      created_at: "2026-08-13T01:00:00Z",
+      plan: {
+        contract_version: "role-source-plan/v1",
+        mode: "rollback",
+        source_id: "source-1",
+        from_snapshot_digest: `sha256:${"b".repeat(64)}`,
+        to_snapshot_digest: `sha256:${"a".repeat(64)}`,
+        plan_digest: `sha256:${"c".repeat(64)}`,
+        applyable: true,
+        summary: { create: 0, update: 1, unchanged: 0, archive_candidate: 0, blocked: 0 },
+        actions: [],
+        blockers: [],
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(rollbackPlan), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ plan: { mode: "rollback" } }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.createRoleSourceRollbackPlan("workspace-1", "source-1", {
+      target_snapshot_digest: rollbackPlan.plan.to_snapshot_digest,
+    })).resolves.toEqual(rollbackPlan);
+    await expect(client.createRoleSourceRollbackPlan("workspace-1", "source-1", {
+      target_snapshot_digest: "bad",
+    })).resolves.toBeNull();
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/rollback-plans");
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ target_snapshot_digest: rollbackPlan.plan.to_snapshot_digest }),
+    }));
+  });
 });
 
 describe("ApiClient pull-request response schema", () => {

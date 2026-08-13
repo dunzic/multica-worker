@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +28,7 @@ const apiMocks = vi.hoisted(() => ({
   releaseRoleSourceLegalHold: vi.fn(),
   updateRoleSourceRetentionPolicy: vi.fn(),
   createRoleSourcePlan: vi.fn(),
+  createRoleSourceRollbackPlan: vi.fn(),
   listRoleSourcePlanApprovals: vi.fn(),
   createRoleSourcePlanApproval: vi.fn(),
   applyRoleSourcePlan: vi.fn(),
@@ -352,6 +353,59 @@ describe("RoleSourcesTab", () => {
     );
   });
 
+  it("creates a forward rollback plan only after confirming a historical successful receipt", async () => {
+    featureFlags.roleSourceApply = true;
+    const historicalDigest = `sha256:${"a".repeat(64)}`;
+    queryFixtures.applies = [{
+      id: "apply-old",
+      status: "succeeded",
+      completed_at: "2026-08-12T04:00:00Z",
+      receipt: {
+        receipt_digest: `sha256:${"e".repeat(64)}`,
+        snapshot_digest: historicalDigest,
+        counts: { created: 1, updated: 0, unchanged: 0, archived: 0, retained: 0 },
+      },
+    }];
+    apiMocks.createRoleSourceRollbackPlan.mockResolvedValue({
+      ...queryFixtures.plans[0],
+      plan: {
+        ...(queryFixtures.plans[0]!.plan as Record<string, unknown>),
+        mode: "rollback",
+        to_snapshot_digest: historicalDigest,
+      },
+    });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Create rollback plan" }));
+    expect(screen.getByRole("heading", { name: "Create a forward rollback plan?" })).toBeInTheDocument();
+    expect(apiMocks.createRoleSourceRollbackPlan).not.toHaveBeenCalled();
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Create rollback plan" }));
+
+    expect(apiMocks.createRoleSourceRollbackPlan).toHaveBeenCalledWith(
+      "workspace-1",
+      "source-1",
+      { target_snapshot_digest: historicalDigest },
+    );
+  });
+
+  it("does not offer rollback to the currently active snapshot", () => {
+    featureFlags.roleSourceApply = true;
+    queryFixtures.applies = [{
+      id: "apply-current",
+      status: "succeeded",
+      completed_at: "2026-08-13T04:00:00Z",
+      receipt: {
+        receipt_digest: `sha256:${"e".repeat(64)}`,
+        snapshot_digest: queryFixtures.sources[0]!.current_snapshot_digest,
+        counts: { created: 0, updated: 0, unchanged: 1, archived: 0, retained: 0 },
+      },
+    }];
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.queryByRole("button", { name: "Create rollback plan" })).not.toBeInTheDocument();
+  });
+
   it("requires an explicit decision for every archive candidate and submits them in canonical order", async () => {
     featureFlags.roleSourceApply = true;
     queryFixtures.plans[0]!.plan = {
@@ -392,12 +446,10 @@ describe("RoleSourcesTab", () => {
     expect(approve).toBeDisabled();
     const alphaChoice = screen.getByRole("combobox", { name: "Alpha" });
     await user.click(alphaChoice);
-    await user.keyboard("r");
-    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("option", { name: "Retain existing object" }));
     expect(approve).toBeDisabled();
     const zetaChoice = screen.getByRole("combobox", { name: "Zeta" });
-    zetaChoice.focus();
-    await user.keyboard("{ArrowDown}");
+    await user.click(zetaChoice);
     const archiveOption = await screen.findByRole("option", { name: "Archive existing object" });
     await user.click(archiveOption);
     expect(approve).toBeEnabled();

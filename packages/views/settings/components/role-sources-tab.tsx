@@ -49,6 +49,7 @@ import {
   roleSourceKeys,
   useApplyRoleSourcePlan,
   useCreateRoleSourcePlan,
+  useCreateRoleSourceRollbackPlan,
   useCreateRoleSourcePlanApproval,
   useRequestRoleSourceScan,
   useRequestRoleSourceSecretTransfer,
@@ -183,6 +184,7 @@ export function RoleSourcesTab() {
   const [savingRetention, setSavingRetention] = React.useState(false);
   const [archiveDecisions, setArchiveDecisions] = React.useState<Record<string, RoleSourceArchiveDecision>>({});
   const [applyDialogOpen, setApplyDialogOpen] = React.useState(false);
+  const [rollbackSnapshotDigest, setRollbackSnapshotDigest] = React.useState("");
   const scanRequestKeyRef = React.useRef("");
   const approvalRequestKeyRef = React.useRef("");
   const applyRequestKeyRef = React.useRef("");
@@ -211,6 +213,7 @@ export function RoleSourcesTab() {
   const requestScan = useRequestRoleSourceScan(workspaceId, selectedId);
   const latest = plans.data?.[0];
   const createPlan = useCreateRoleSourcePlan(workspaceId, selectedId);
+  const createRollbackPlan = useCreateRoleSourceRollbackPlan(workspaceId, selectedId);
   const createApproval = useCreateRoleSourcePlanApproval(
     workspaceId,
     selectedId,
@@ -267,6 +270,7 @@ export function RoleSourcesTab() {
   React.useEffect(() => {
     setArchiveDecisions({});
     setApplyDialogOpen(false);
+    setRollbackSnapshotDigest("");
     approvalRequestKeyRef.current = "";
     applyRequestKeyRef.current = "";
     secretTransferRequestKeysRef.current = {};
@@ -481,6 +485,21 @@ export function RoleSourcesTab() {
       toast.success(t(($) => $.role_sources.plan_created));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.plan_create_failed));
+    }
+  }
+
+  async function generateRollbackPlan() {
+    if (!rollbackSnapshotDigest || createRollbackPlan.isPending) return;
+    try {
+      const plan = await createRollbackPlan.mutateAsync(rollbackSnapshotDigest);
+      if (!plan) {
+        toast.error(t(($) => $.role_sources.rollback_invalid_response));
+        return;
+      }
+      setRollbackSnapshotDigest("");
+      toast.success(t(($) => $.role_sources.rollback_plan_created));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.rollback_plan_failed));
     }
   }
 
@@ -956,6 +975,9 @@ export function RoleSourcesTab() {
                     <div className="flex items-center gap-2 text-body font-medium">
                       {latest.plan.applyable ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <AlertTriangle className="h-4 w-4 text-amber-600" />}
                       {latest.plan.applyable ? t(($) => $.role_sources.plan_ready) : t(($) => $.role_sources.plan_blocked)}
+                      {latest.plan.mode === "rollback" ? (
+                        <Badge variant="destructive">{t(($) => $.role_sources.plan_mode_rollback)}</Badge>
+                      ) : null}
                     </div>
                     <div className="mt-1 font-mono text-caption text-muted-foreground">{shortDigest(latest.plan.plan_digest)}</div>
                   </div>
@@ -1241,7 +1263,20 @@ export function RoleSourcesTab() {
                           {shortDigest(apply.receipt.snapshot_digest)} · {apply.completed_at ?? "—"}
                         </div>
                       </div>
-                      <Badge variant={apply.status === "succeeded" ? "secondary" : "outline"}>{apply.status}</Badge>
+                      <div className="flex items-center gap-2">
+                        {roleSourceApplyEnabled && canManage && apply.status === "succeeded" && apply.receipt.snapshot_digest !== selected.current_snapshot_digest ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={createRollbackPlan.isPending}
+                            onClick={() => setRollbackSnapshotDigest(apply.receipt.snapshot_digest)}
+                          >
+                            <Repeat2 className="h-4 w-4" />
+                            {t(($) => $.role_sources.rollback_create)}
+                          </Button>
+                        ) : null}
+                        <Badge variant={apply.status === "succeeded" ? "secondary" : "outline"}>{apply.status}</Badge>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1348,6 +1383,35 @@ export function RoleSourcesTab() {
             >
               {applyPlan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t(($) => $.role_sources.apply_confirm_action)}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={Boolean(rollbackSnapshotDigest)}
+        onOpenChange={(open) => !open && !createRollbackPlan.isPending && setRollbackSnapshotDigest("")}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(($) => $.role_sources.rollback_confirm_title)}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(($) => $.role_sources.rollback_confirm_description, {
+                digest: shortDigest(rollbackSnapshotDigest),
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={createRollbackPlan.isPending}>{t(($) => $.role_sources.cancel)}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={createRollbackPlan.isPending || !rollbackSnapshotDigest}
+              onClick={(event) => {
+                event.preventDefault();
+                void generateRollbackPlan();
+              }}
+            >
+              {createRollbackPlan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t(($) => $.role_sources.rollback_confirm_action)}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
