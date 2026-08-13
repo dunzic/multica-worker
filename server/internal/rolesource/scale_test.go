@@ -171,6 +171,44 @@ func TestThousandRoleTargetsFitBoundedBatches(t *testing.T) {
 	}
 }
 
+func TestTenThousandSkillTargetsFitBoundedBatches(t *testing.T) {
+	count := productionApplyRoleCount * productionApplySkillsPerRole
+	skills := make([]pendingRoleSourceSkill, count)
+	for index := range skills {
+		skills[index] = pendingRoleSourceSkill{
+			Ref:       ObjectRef{Kind: "skill", ParentID: fmt.Sprintf("role-%04d", index/productionApplySkillsPerRole), ID: fmt.Sprintf("skill-%05d", index)},
+			ID:        uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("skill-target-%05d", index))).String(),
+			Operation: "create", Name: fmt.Sprintf("Skill %05d", index), Description: "Managed by role source",
+			Content: "production-shaped skill content", Config: json.RawMessage(`{"managed_by":"role_source"}`), CreatedBy: uuid.NewString(),
+		}
+	}
+	batches, err := materializedSkillBatches(skills)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBatches := (count + materializedSkillBatchSize - 1) / materializedSkillBatchSize
+	if len(batches) != wantBatches {
+		t.Fatalf("skill target batches=%d, want=%d", len(batches), wantBatches)
+	}
+	actual := 0
+	for _, batch := range batches {
+		if len(batch) == 0 || len(batch) > materializedSkillBatchSize {
+			t.Fatalf("invalid skill target batch size=%d", len(batch))
+		}
+		body, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > materializedSkillBatchBytes {
+			t.Fatalf("skill target batch bytes=%d exceed limit=%d", len(body), materializedSkillBatchBytes)
+		}
+		actual += len(batch)
+	}
+	if actual != count {
+		t.Fatalf("skill target batch count=%d", actual)
+	}
+}
+
 func TestTenThousandMaterializationNamesFitOnePreflight(t *testing.T) {
 	snapshot := planTestSnapshot(t, productionScaleManifest())
 	plan, err := BuildPlan("scale-name-source", nil, snapshot)

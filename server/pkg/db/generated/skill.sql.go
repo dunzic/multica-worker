@@ -27,45 +27,6 @@ func (q *Queries) AddAgentSkill(ctx context.Context, arg AddAgentSkillParams) er
 	return err
 }
 
-const createRoleSourceSkill = `-- name: CreateRoleSourceSkill :one
-INSERT INTO skill (workspace_id, name, description, content, config, created_by)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, workspace_id, name, description, content, config, created_by, created_at, updated_at
-`
-
-type CreateRoleSourceSkillParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Content     string      `json:"content"`
-	Config      []byte      `json:"config"`
-	CreatedBy   pgtype.UUID `json:"created_by"`
-}
-
-func (q *Queries) CreateRoleSourceSkill(ctx context.Context, arg CreateRoleSourceSkillParams) (Skill, error) {
-	row := q.db.QueryRow(ctx, createRoleSourceSkill,
-		arg.WorkspaceID,
-		arg.Name,
-		arg.Description,
-		arg.Content,
-		arg.Config,
-		arg.CreatedBy,
-	)
-	var i Skill
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.Name,
-		&i.Description,
-		&i.Content,
-		&i.Config,
-		&i.CreatedBy,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const createSkill = `-- name: CreateSkill :one
 INSERT INTO skill (workspace_id, name, description, content, config, created_by)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -685,6 +646,69 @@ func (q *Queries) ListSkillsByWorkspace(ctx context.Context, workspaceID pgtype.
 	return items, nil
 }
 
+const materializeRoleSourceSkills = `-- name: MaterializeRoleSourceSkills :many
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'id')::UUID AS id,
+        item ->> 'operation' AS operation,
+        item ->> 'name' AS name,
+        item ->> 'description' AS description,
+        item ->> 'content' AS content,
+        item -> 'config' AS config,
+        (item ->> 'created_by')::UUID AS created_by
+    FROM jsonb_array_elements($1::jsonb) AS item
+), updated AS (
+    UPDATE skill target
+    SET name = input.name,
+        description = input.description,
+        content = input.content,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.id = input.id
+      AND target.workspace_id = $2
+    RETURNING target.id
+), inserted AS (
+    INSERT INTO skill (id, workspace_id, name, description, content, config, created_by)
+    SELECT id, $2, name, description, content, config, created_by
+    FROM input
+    WHERE operation = 'create'
+    RETURNING skill.id
+)
+SELECT id FROM updated
+UNION ALL
+SELECT id FROM inserted
+ORDER BY id
+`
+
+type MaterializeRoleSourceSkillsParams struct {
+	Skills      []byte      `json:"skills"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Create or update one bounded source-owned Skill batch. New identities are
+// allocated by the caller. Updates preserve config, creator and all fields not
+// listed in the SET clause. The caller verifies the exact returned ID set.
+func (q *Queries) MaterializeRoleSourceSkills(ctx context.Context, arg MaterializeRoleSourceSkillsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, materializeRoleSourceSkills, arg.Skills, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const removeAgentSkill = `-- name: RemoveAgentSkill :exec
 DELETE FROM agent_skill
 WHERE agent_id = $1 AND skill_id = $2
@@ -727,47 +751,6 @@ func (q *Queries) SetAgentSkillEnabled(ctx context.Context, arg SetAgentSkillEna
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const updateRoleSourceSkill = `-- name: UpdateRoleSourceSkill :one
-UPDATE skill
-SET name = $1,
-    description = $2,
-    content = $3,
-    updated_at = now()
-WHERE id = $4 AND workspace_id = $5
-RETURNING id, workspace_id, name, description, content, config, created_by, created_at, updated_at
-`
-
-type UpdateRoleSourceSkillParams struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Content     string      `json:"content"`
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) UpdateRoleSourceSkill(ctx context.Context, arg UpdateRoleSourceSkillParams) (Skill, error) {
-	row := q.db.QueryRow(ctx, updateRoleSourceSkill,
-		arg.Name,
-		arg.Description,
-		arg.Content,
-		arg.ID,
-		arg.WorkspaceID,
-	)
-	var i Skill
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.Name,
-		&i.Description,
-		&i.Content,
-		&i.Config,
-		&i.CreatedBy,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
 }
 
 const updateSkill = `-- name: UpdateSkill :one

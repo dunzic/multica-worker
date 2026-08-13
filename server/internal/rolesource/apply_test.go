@@ -685,6 +685,76 @@ func TestMaterializedAgentBatchRequiresExactReturnedIDs(t *testing.T) {
 	}
 }
 
+func TestMaterializedSkillBatchesRespectCountLimit(t *testing.T) {
+	skills := make([]pendingRoleSourceSkill, materializedSkillBatchSize+1)
+	for index := range skills {
+		skills[index] = pendingRoleSourceSkill{
+			Ref: ObjectRef{Kind: "skill", ParentID: "writer", ID: fmt.Sprintf("skill-%03d", index)},
+			ID:  uuid.NewString(), Operation: "create", Name: fmt.Sprintf("Skill %03d", index),
+			Description: "Managed by role source", Content: "bounded",
+			Config: json.RawMessage(`{"managed_by":"role_source"}`), CreatedBy: uuid.NewString(),
+		}
+	}
+	batches, err := materializedSkillBatches(skills)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != materializedSkillBatchSize || len(batches[1]) != 1 {
+		t.Fatalf("skill target batches=%v", []int{len(batches[0]), len(batches[1])})
+	}
+}
+
+func TestMaterializedSkillBatchPreservesSourceOwnedBoundary(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "skill.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(body)
+	start := strings.Index(query, "-- name: MaterializeRoleSourceSkills ")
+	end := strings.Index(query[start+1:], "\n-- name: ")
+	if start < 0 || end < 0 {
+		t.Fatal("skill target batch query is missing")
+	}
+	section := query[start : start+1+end]
+	for _, required := range []string{
+		"jsonb_array_elements(@skills::jsonb)", "(item ->> 'id')::UUID",
+		"target.workspace_id = @workspace_id", "WHERE operation = 'create'",
+		"RETURNING target.id", "RETURNING skill.id",
+	} {
+		if !strings.Contains(section, required) {
+			t.Errorf("skill target batch query missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"config =", "created_by ="} {
+		if strings.Contains(section, forbidden) {
+			t.Errorf("skill target batch updates user-owned field %q", forbidden)
+		}
+	}
+}
+
+func TestMaterializedSkillBatchRequiresExactReturnedIDs(t *testing.T) {
+	first := uuid.New()
+	second := uuid.New()
+	unexpected := uuid.New()
+	requested := []pendingRoleSourceSkill{{ID: first.String()}, {ID: second.String()}}
+	pgID := func(value uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: value, Valid: true} }
+
+	if _, err := exactMaterializedSkillIDs(requested, []pgtype.UUID{pgID(first), pgID(second)}); err != nil {
+		t.Fatalf("exact set error=%v", err)
+	}
+	for name, rows := range map[string][]pgtype.UUID{
+		"duplicate":  {pgID(first), pgID(first)},
+		"missing":    {pgID(first)},
+		"unexpected": {pgID(first), pgID(unexpected)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := exactMaterializedSkillIDs(requested, rows); !errors.Is(err, ErrApplyConflict) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestApplyPreflightsObjectStorageBeforeMutationLocks(t *testing.T) {
 	body, err := os.ReadFile("apply.go")
 	if err != nil {
@@ -750,7 +820,7 @@ func TestMaterializationQueriesPreserveUserManagedFields(t *testing.T) {
 	}{
 		{"agent.sql", "UpdateRoleSourceAgent", []string{"custom_env =", "mcp_config =", "model =", "permission_mode =", "status =", "archived_at ="}},
 		{"autopilot.sql", "UpdateRoleSourceAutopilot", []string{"status =", "enabled =", "assignee_id =", "execution_mode ="}},
-		{"skill.sql", "UpdateRoleSourceSkill", []string{"config =", "created_by ="}},
+		{"skill.sql", "MaterializeRoleSourceSkills", []string{"config =", "created_by ="}},
 	}
 	for _, test := range tests {
 		t.Run(test.query, func(t *testing.T) {

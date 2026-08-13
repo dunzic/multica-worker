@@ -36,24 +36,47 @@ INSERT INTO skill (workspace_id, name, description, content, config, created_by)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
--- name: CreateRoleSourceSkill :one
-INSERT INTO skill (workspace_id, name, description, content, config, created_by)
-VALUES (@workspace_id, @name, @description, @content, @config, @created_by)
-RETURNING *;
-
--- name: UpdateRoleSourceSkill :one
-UPDATE skill
-SET name = @name,
-    description = @description,
-    content = @content,
-    updated_at = now()
-WHERE id = @id AND workspace_id = @workspace_id
-RETURNING *;
-
 -- name: GetRoleSourceSkillForUpdate :one
 SELECT * FROM skill
 WHERE id = @id AND workspace_id = @workspace_id
 FOR UPDATE;
+
+-- name: MaterializeRoleSourceSkills :many
+-- Create or update one bounded source-owned Skill batch. New identities are
+-- allocated by the caller. Updates preserve config, creator and all fields not
+-- listed in the SET clause. The caller verifies the exact returned ID set.
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'id')::UUID AS id,
+        item ->> 'operation' AS operation,
+        item ->> 'name' AS name,
+        item ->> 'description' AS description,
+        item ->> 'content' AS content,
+        item -> 'config' AS config,
+        (item ->> 'created_by')::UUID AS created_by
+    FROM jsonb_array_elements(@skills::jsonb) AS item
+), updated AS (
+    UPDATE skill target
+    SET name = input.name,
+        description = input.description,
+        content = input.content,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.id = input.id
+      AND target.workspace_id = @workspace_id
+    RETURNING target.id
+), inserted AS (
+    INSERT INTO skill (id, workspace_id, name, description, content, config, created_by)
+    SELECT id, @workspace_id, name, description, content, config, created_by
+    FROM input
+    WHERE operation = 'create'
+    RETURNING skill.id
+)
+SELECT id FROM updated
+UNION ALL
+SELECT id FROM inserted
+ORDER BY id;
 
 -- name: UpdateSkill :one
 UPDATE skill SET
