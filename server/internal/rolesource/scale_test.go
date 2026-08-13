@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const productionScaleRoleCount = 10_000
@@ -106,5 +109,25 @@ func TestMaterializationPreflightCoversThousandRolesAndTenThousandSkills(t *test
 	}
 	if len(plan.Actions) != wantCount || !plan.Applyable {
 		t.Fatalf("apply-scale plan actions=%d applyable=%v", len(plan.Actions), plan.Applyable)
+	}
+}
+
+func TestTenThousandAgentSkillBindingsFitOneDeterministicBatch(t *testing.T) {
+	state := materializationState{}
+	agentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceOID, []byte("scale-agent")), Valid: true}
+	for index := 0; index < productionApplyRoleCount*productionApplySkillsPerRole; index++ {
+		skillID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("scale-skill-%05d", index))), Valid: true}
+		if err := state.stageAgentSkillBinding(agentID, skillID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bindings := state.orderedAgentSkillBindings()
+	if len(bindings) != productionApplyRoleCount*productionApplySkillsPerRole {
+		t.Fatalf("batch bindings=%d", len(bindings))
+	}
+	for index := 1; index < len(bindings); index++ {
+		if bindings[index-1].AgentID+"/"+bindings[index-1].SkillID >= bindings[index].AgentID+"/"+bindings[index].SkillID {
+			t.Fatal("10,000 binding batch is not deterministic")
+		}
 	}
 }

@@ -156,6 +156,76 @@ func (q *Queries) DeleteSkillFilesBySkill(ctx context.Context, skillID pgtype.UU
 	return err
 }
 
+const ensureRoleSourceAgentSkills = `-- name: EnsureRoleSourceAgentSkills :many
+WITH requested AS (
+    SELECT
+        (binding ->> 'agent_id')::UUID AS requested_agent_id,
+        (binding ->> 'skill_id')::UUID AS requested_skill_id
+    FROM jsonb_array_elements($1::jsonb) AS binding
+), valid AS (
+    SELECT requested.requested_agent_id AS agent_id, requested.requested_skill_id AS skill_id
+    FROM requested
+    JOIN agent ON agent.id = requested.requested_agent_id
+              AND agent.workspace_id = $2
+              AND agent.kind = 'user'
+              AND agent.archived_at IS NULL
+    JOIN skill ON skill.id = requested.requested_skill_id
+              AND skill.workspace_id = $2
+), inserted AS (
+    INSERT INTO agent_skill (agent_id, skill_id)
+    SELECT agent_id, skill_id FROM valid
+    ON CONFLICT DO NOTHING
+    RETURNING agent_id, skill_id
+)
+SELECT inserted.agent_id, inserted.skill_id FROM inserted
+UNION ALL
+SELECT valid.agent_id, valid.skill_id
+FROM valid
+JOIN agent_skill existing
+  ON existing.agent_id = valid.agent_id
+ AND existing.skill_id = valid.skill_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM inserted
+    WHERE inserted.agent_id = valid.agent_id
+      AND inserted.skill_id = valid.skill_id
+)
+ORDER BY 1, 2
+`
+
+type EnsureRoleSourceAgentSkillsParams struct {
+	Bindings    []byte      `json:"bindings"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type EnsureRoleSourceAgentSkillsRow struct {
+	AgentID pgtype.UUID `json:"agent_id"`
+	SkillID pgtype.UUID `json:"skill_id"`
+}
+
+// A large source apply can bind thousands of newly materialized skills. Keep
+// the association write set-based and tenant-validate both endpoints before
+// insertion. Existing disabled associations remain disabled, matching the
+// single-row AddAgentSkill ownership behavior.
+func (q *Queries) EnsureRoleSourceAgentSkills(ctx context.Context, arg EnsureRoleSourceAgentSkillsParams) ([]EnsureRoleSourceAgentSkillsRow, error) {
+	rows, err := q.db.Query(ctx, ensureRoleSourceAgentSkills, arg.Bindings, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EnsureRoleSourceAgentSkillsRow{}
+	for rows.Next() {
+		var i EnsureRoleSourceAgentSkillsRow
+		if err := rows.Scan(&i.AgentID, &i.SkillID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getRoleSourceSkillForUpdate = `-- name: GetRoleSourceSkillForUpdate :one
 SELECT id, workspace_id, name, description, content, config, created_by, created_at, updated_at FROM skill
 WHERE id = $1 AND workspace_id = $2

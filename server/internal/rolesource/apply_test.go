@@ -417,6 +417,73 @@ func TestMappingMutationsAreStagedAndDeduplicatedBeforeBatchFlush(t *testing.T) 
 	}
 }
 
+func TestAgentSkillBindingsAreStagedDeduplicatedAndOrdered(t *testing.T) {
+	agentA := util.MustParseUUID("00000000-0000-4000-8000-000000000021")
+	agentB := util.MustParseUUID("00000000-0000-4000-8000-000000000022")
+	skillA := util.MustParseUUID("00000000-0000-4000-8000-000000000031")
+	skillB := util.MustParseUUID("00000000-0000-4000-8000-000000000032")
+	state := materializationState{}
+	for _, pair := range [][2]pgtype.UUID{{agentB, skillB}, {agentA, skillB}, {agentA, skillA}, {agentA, skillA}} {
+		if err := state.stageAgentSkillBinding(pair[0], pair[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ordered := state.orderedAgentSkillBindings()
+	if len(ordered) != 3 {
+		t.Fatalf("ordered bindings=%d, want 3 unique", len(ordered))
+	}
+	for index := 1; index < len(ordered); index++ {
+		previous := ordered[index-1].AgentID + "/" + ordered[index-1].SkillID
+		current := ordered[index].AgentID + "/" + ordered[index].SkillID
+		if previous >= current {
+			t.Fatalf("bindings are not canonical: %q then %q", previous, current)
+		}
+	}
+	if err := state.stageAgentSkillBinding(pgtype.UUID{}, skillA); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("invalid binding error=%v", err)
+	}
+}
+
+func TestNewSkillWithoutSupportingFilesAvoidsEmptyLockQueries(t *testing.T) {
+	state := materializationState{mappings: map[string]db.RoleSourceObjectMapping{}}
+	mask, err := state.syncOwnedSkillFiles(
+		context.Background(), ObjectRef{Kind: "skill", ParentID: "role", ID: "new"},
+		util.MustParseUUID("00000000-0000-4000-8000-000000000041"), map[string]string{}, true,
+	)
+	if err != nil || len(mask) != 0 {
+		t.Fatalf("new empty skill file sync mask=%v err=%v", mask, err)
+	}
+}
+
+func TestRoleSourceAgentSkillBatchIsTenantValidatedAndDoesNotEnableRows(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "skill.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(body)
+	for _, required := range []string{
+		"EnsureRoleSourceAgentSkills", "jsonb_array_elements", "agent.workspace_id = @workspace_id",
+		"skill.workspace_id = @workspace_id", "agent.kind = 'user'", "agent.archived_at IS NULL",
+		"ON CONFLICT DO NOTHING",
+	} {
+		if !strings.Contains(query, required) {
+			t.Errorf("agent-skill batch query missing %q", required)
+		}
+	}
+	batchAt := strings.Index(query, "-- name: EnsureRoleSourceAgentSkills")
+	if batchAt < 0 {
+		t.Fatal("agent-skill batch query is missing")
+	}
+	nextAt := strings.Index(query[batchAt+1:], "-- name:")
+	if nextAt < 0 {
+		t.Fatal("agent-skill batch query bounds are missing")
+	}
+	batch := query[batchAt : batchAt+1+nextAt]
+	if strings.Contains(batch, "SET enabled") || strings.Contains(batch, "enabled = true") {
+		t.Fatal("role-source batch must not re-enable a user-disabled association")
+	}
+}
+
 func TestApplyPreflightsObjectStorageBeforeMutationLocks(t *testing.T) {
 	body, err := os.ReadFile("apply.go")
 	if err != nil {

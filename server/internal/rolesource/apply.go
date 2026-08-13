@@ -97,23 +97,24 @@ type verifiedArtifact struct {
 }
 
 type materializationState struct {
-	control         *ControlPlane
-	q               *db.Queries
-	workspaceID     pgtype.UUID
-	source          db.RoleSource
-	actorID         pgtype.UUID
-	snapshot        Snapshot
-	plan            Plan
-	decisions       map[string]ArchiveDecision
-	actions         map[string]PlanAction
-	artifacts       map[string]verifiedArtifact
-	mappings        map[string]db.RoleSourceObjectMapping
-	secretPayloads  map[string]SecretEnvelopePayload
-	secretTransfers map[string]db.RoleSourceSecretTransfer
-	runtimeMode     string
-	now             func() time.Time
-	receipt         *ApplyReceipt
-	pendingMappings map[string]pendingRoleSourceMapping
+	control            *ControlPlane
+	q                  *db.Queries
+	workspaceID        pgtype.UUID
+	source             db.RoleSource
+	actorID            pgtype.UUID
+	snapshot           Snapshot
+	plan               Plan
+	decisions          map[string]ArchiveDecision
+	actions            map[string]PlanAction
+	artifacts          map[string]verifiedArtifact
+	mappings           map[string]db.RoleSourceObjectMapping
+	secretPayloads     map[string]SecretEnvelopePayload
+	secretTransfers    map[string]db.RoleSourceSecretTransfer
+	runtimeMode        string
+	now                func() time.Time
+	receipt            *ApplyReceipt
+	pendingMappings    map[string]pendingRoleSourceMapping
+	pendingAgentSkills map[string]pendingRoleSourceAgentSkill
 }
 
 type pendingRoleSourceMapping struct {
@@ -131,6 +132,11 @@ type pendingRoleSourceMapping struct {
 type pendingRoleSourceSkillFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+}
+
+type pendingRoleSourceAgentSkill struct {
+	AgentID string `json:"agent_id"`
+	SkillID string `json:"skill_id"`
 }
 
 type applyPreflight struct {
@@ -412,7 +418,8 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 		decisions: decisions, actions: actionIndex(plan), artifacts: artifacts, mappings: mappingIndex(mappingRows),
 		secretPayloads: secretPayloads, secretTransfers: secretTransfers,
 		runtimeMode: runtime.RuntimeMode, now: c.now, receipt: &receipt,
-		pendingMappings: make(map[string]pendingRoleSourceMapping),
+		pendingMappings:    make(map[string]pendingRoleSourceMapping),
+		pendingAgentSkills: make(map[string]pendingRoleSourceAgentSkill),
 	}
 	if err := state.materialize(ctx); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
@@ -1047,6 +1054,9 @@ func (s *materializationState) materialize(ctx context.Context) error {
 			}
 		}
 	}
+	if err := s.flushAgentSkillBindings(ctx); err != nil {
+		return err
+	}
 	for _, role := range s.snapshot.Manifest.Roles {
 		for _, binding := range role.CapabilityBindings {
 			if err := s.materializeCapabilityBinding(ctx, role, binding); err != nil {
@@ -1352,7 +1362,7 @@ func (s *materializationState) materializeSkill(ctx context.Context, role Role, 
 		}
 		return err
 	}
-	if err := s.q.AddAgentSkill(ctx, db.AddAgentSkillParams{AgentID: roleMapping.TargetID, SkillID: target.ID}); err != nil {
+	if err := s.stageAgentSkillBinding(roleMapping.TargetID, target.ID); err != nil {
 		return err
 	}
 	desiredFiles := make(map[string]string, len(skill.Artifacts))
@@ -1363,7 +1373,7 @@ func (s *materializationState) materializeSkill(ctx context.Context, role Role, 
 		}
 		desiredFiles[artifact.Path] = verified.body
 	}
-	fileMask, err := s.syncOwnedSkillFiles(ctx, ref, target.ID, desiredFiles)
+	fileMask, err := s.syncOwnedSkillFiles(ctx, ref, target.ID, desiredFiles, !mapped)
 	if err != nil {
 		return err
 	}
@@ -1408,7 +1418,7 @@ func (s *materializationState) materializeCapabilityBinding(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	fileMask, err := s.syncOwnedSkillFiles(ctx, ref, skillMapping.TargetID, desiredFiles)
+	fileMask, err := s.syncOwnedSkillFiles(ctx, ref, skillMapping.TargetID, desiredFiles, false)
 	if err != nil {
 		return err
 	}
@@ -1465,16 +1475,27 @@ func (s *materializationState) capabilityBundleFiles(capability Capability, bind
 	return desired, nil
 }
 
-func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref ObjectRef, targetID pgtype.UUID, desired map[string]string) ([]string, error) {
-	if _, err := s.q.GetRoleSourceSkillForUpdate(ctx, db.GetRoleSourceSkillForUpdateParams{ID: targetID, WorkspaceID: s.workspaceID}); err != nil {
+func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref ObjectRef, targetID pgtype.UUID, desired map[string]string, newlyCreated bool) ([]string, error) {
+	if newlyCreated {
+		if _, exists := s.mappings[objectKey(ref)]; exists {
+			return nil, fmt.Errorf("%w: new skill-file target already has a mapping", ErrApplyConflict)
+		}
+		if len(desired) == 0 {
+			return []string{}, nil
+		}
+	} else if _, err := s.q.GetRoleSourceSkillForUpdate(ctx, db.GetRoleSourceSkillForUpdateParams{ID: targetID, WorkspaceID: s.workspaceID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("%w: mapped skill target is missing", ErrApplyConflict)
 		}
 		return nil, err
 	}
-	rows, err := s.q.ListRoleSourceSkillFilesForUpdate(ctx, db.ListRoleSourceSkillFilesForUpdateParams{SkillID: targetID, WorkspaceID: s.workspaceID})
-	if err != nil {
-		return nil, err
+	rows := []db.SkillFile{}
+	if !newlyCreated {
+		var err error
+		rows, err = s.q.ListRoleSourceSkillFilesForUpdate(ctx, db.ListRoleSourceSkillFilesForUpdateParams{SkillID: targetID, WorkspaceID: s.workspaceID})
+		if err != nil {
+			return nil, err
+		}
 	}
 	existing := make(map[string]bool, len(rows))
 	for _, row := range rows {
@@ -1632,7 +1653,7 @@ func (s *materializationState) materializeArchives(ctx context.Context) error {
 				return err
 			}
 		case "capability_binding":
-			if _, err := s.syncOwnedSkillFiles(ctx, action.Ref, mapping.TargetID, map[string]string{}); err != nil {
+			if _, err := s.syncOwnedSkillFiles(ctx, action.Ref, mapping.TargetID, map[string]string{}, false); err != nil {
 				return err
 			}
 		default:
@@ -1683,6 +1704,54 @@ func (s *materializationState) consumeSecretTransfers(ctx context.Context) error
 		}
 	}
 	return nil
+}
+
+func (s *materializationState) stageAgentSkillBinding(agentID, skillID pgtype.UUID) error {
+	if !agentID.Valid || !skillID.Valid {
+		return fmt.Errorf("%w: agent-skill binding has an invalid target", ErrApplyConflict)
+	}
+	if s.pendingAgentSkills == nil {
+		s.pendingAgentSkills = make(map[string]pendingRoleSourceAgentSkill)
+	}
+	key := util.UUIDToString(agentID) + "/" + util.UUIDToString(skillID)
+	s.pendingAgentSkills[key] = pendingRoleSourceAgentSkill{
+		AgentID: util.UUIDToString(agentID), SkillID: util.UUIDToString(skillID),
+	}
+	return nil
+}
+
+func (s *materializationState) flushAgentSkillBindings(ctx context.Context) error {
+	if len(s.pendingAgentSkills) == 0 {
+		return nil
+	}
+	bindings := s.orderedAgentSkillBindings()
+	body, err := json.Marshal(bindings)
+	if err != nil {
+		return err
+	}
+	rows, err := s.q.EnsureRoleSourceAgentSkills(ctx, db.EnsureRoleSourceAgentSkillsParams{
+		WorkspaceID: s.workspaceID, Bindings: body,
+	})
+	if err != nil {
+		return err
+	}
+	if len(rows) != len(bindings) {
+		return fmt.Errorf("%w: persisted %d of %d role-source agent-skill bindings", ErrApplyConflict, len(rows), len(bindings))
+	}
+	return nil
+}
+
+func (s *materializationState) orderedAgentSkillBindings() []pendingRoleSourceAgentSkill {
+	keys := make([]string, 0, len(s.pendingAgentSkills))
+	for key := range s.pendingAgentSkills {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	bindings := make([]pendingRoleSourceAgentSkill, 0, len(keys))
+	for _, key := range keys {
+		bindings = append(bindings, s.pendingAgentSkills[key])
+	}
+	return bindings
 }
 
 func (s *materializationState) upsertMapping(_ context.Context, ref ObjectRef, targetKind string, targetID pgtype.UUID, digest string, mask []string, archivedAt pgtype.Timestamptz) error {
