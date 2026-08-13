@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/rolesource"
@@ -28,10 +29,11 @@ import (
 type RoleSourceControlPlane interface {
 	RegisterSource(context.Context, rolesource.RegisterSourceInput) (db.RoleSource, error)
 	UpdateSourceLifecycle(context.Context, rolesource.UpdateSourceLifecycleInput) (db.RoleSource, error)
-	RequestScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error)
+	RequestScan(context.Context, string, string, string, string) (db.RoleSourceScanRequest, bool, error)
 	ListSources(context.Context, string) ([]db.RoleSource, error)
 	GetSource(context.Context, string, string) (db.RoleSource, error)
 	GetScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error)
+	GetLatestScan(context.Context, string, string) (db.RoleSourceScanRequest, error)
 	ClaimNextScan(context.Context, string, time.Duration) (rolesource.ClaimedScan, error)
 	RenewScanLease(context.Context, string, string, string, string, string, time.Duration) (db.RoleSourceScanRequest, error)
 	ReportScanSuccess(context.Context, rolesource.ReportScanSuccessInput) (db.RoleSourceSnapshot, error)
@@ -785,16 +787,40 @@ func (h *Handler) RequestRoleSourceScan(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusForbidden, "agents cannot request role source scans")
 		return
 	}
-	row, err := h.RoleSources.RequestScan(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), userID)
+	body := struct {
+		RequestKey string `json:"request_key"`
+	}{}
+	if r.ContentLength != 0 {
+		if err := decodeStrictRoleSourceJSON(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid scan request")
+			return
+		}
+	}
+	if strings.TrimSpace(body.RequestKey) == "" {
+		body.RequestKey = "legacy-role-source-scan-" + uuid.NewString()
+	}
+	if len(body.RequestKey) > 200 || strings.ContainsAny(body.RequestKey, "\r\n\x00") {
+		writeError(w, http.StatusBadRequest, "invalid scan request")
+		return
+	}
+	row, created, err := h.RoleSources.RequestScan(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), userID, body.RequestKey)
 	if err != nil {
 		switch {
 		case errors.Is(err, rolesource.ErrScanAlreadyActive):
-			writeError(w, http.StatusConflict, "a scan is already active for this source")
+			writeErrorCode(w, http.StatusConflict, "role_source_scan_already_active", "a scan is already active for this source")
+		case errors.Is(err, rolesource.ErrScanSourceState):
+			writeErrorCode(w, http.StatusConflict, "role_source_scan_source_state", "role source must be resumed before requesting a scan")
+		case errors.Is(err, rolesource.ErrIdempotencyConflict):
+			writeErrorCode(w, http.StatusConflict, "role_source_scan_request_conflict", "scan request key was already used by another actor")
 		case errors.Is(err, pgx.ErrNoRows):
 			writeError(w, http.StatusNotFound, "role source not found")
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to request scan")
 		}
+		return
+	}
+	if !created {
+		writeJSON(w, http.StatusOK, roleSourceScanToResponse(row))
 		return
 	}
 	if source, sourceErr := h.RoleSources.GetSource(r.Context(), workspaceID, chi.URLParam(r, "sourceId")); sourceErr != nil {
@@ -817,6 +843,23 @@ func (h *Handler) GetRoleSourceScan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to load scan")
+		return
+	}
+	writeJSON(w, http.StatusOK, roleSourceScanToResponse(row))
+}
+
+func (h *Handler) GetLatestRoleSourceScan(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	row, err := h.RoleSources.GetLatestScan(r.Context(), workspaceID, chi.URLParam(r, "sourceId"))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "scan not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load latest scan")
 		return
 	}
 	writeJSON(w, http.StatusOK, roleSourceScanToResponse(row))

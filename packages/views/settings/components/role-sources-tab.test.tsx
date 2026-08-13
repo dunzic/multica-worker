@@ -12,17 +12,31 @@ const queryFixtures = vi.hoisted(() => ({
   attestations: [] as Array<Record<string, unknown>>,
   legalHolds: [] as Array<Record<string, unknown>>,
   retention: undefined as Record<string, unknown> | undefined,
+  latestScan: undefined as Record<string, unknown> | undefined,
 }));
 
 const memberFixture = vi.hoisted(() => ({ role: "owner" }));
+const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 const apiMocks = vi.hoisted(() => ({
+  requestRoleSourceScan: vi.fn(),
   updateRoleSourceLifecycle: vi.fn(),
   createRoleSourceLegalHold: vi.fn(),
   releaseRoleSourceLegalHold: vi.fn(),
   updateRoleSourceRetentionPolicy: vi.fn(),
 }));
 
-vi.mock("@multica/core/api", () => ({ api: apiMocks }));
+vi.mock("sonner", () => ({ toast: toastMocks }));
+
+vi.mock("@multica/core/api", () => ({
+  api: apiMocks,
+  errorCode: (error: unknown) => {
+    if (!error || typeof error !== "object" || !("body" in error)) return undefined;
+    const body = (error as { body?: unknown }).body;
+    if (!body || typeof body !== "object" || !("code" in body)) return undefined;
+    const code = (body as { code?: unknown }).code;
+    return typeof code === "string" ? code : undefined;
+  },
+}));
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "workspace-1", name: "Acme" }),
@@ -39,8 +53,14 @@ vi.mock("@tanstack/react-query", async () => {
   return {
     ...actual,
     useQueryClient: () => ({ invalidateQueries: vi.fn().mockResolvedValue(undefined) }),
+    useMutation: (options: { mutationFn: (requestKey: string) => Promise<unknown> }) => ({
+      isPending: false,
+      mutateAsync: options.mutationFn,
+    }),
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
-      data: options.queryKey.includes("impact")
+      data: options.queryKey.includes("latest-scan")
+        ? queryFixtures.latestScan
+        : options.queryKey.includes("impact")
         ? queryFixtures.impact
         : options.queryKey.includes("apply-failures")
           ? queryFixtures.failures
@@ -90,6 +110,18 @@ beforeEach(() => {
       },
     },
   ];
+  queryFixtures.latestScan = {
+    id: "scan-1",
+    source_id: "source-1",
+    workspace_id: "workspace-1",
+    status: "succeeded",
+    expected_adapter_version: "1.0.0",
+    snapshot_digest: `sha256:${"d".repeat(64)}`,
+    error_code: null,
+    requested_at: "2026-08-13T00:10:00Z",
+    claimed_at: "2026-08-13T00:10:01Z",
+    completed_at: "2026-08-13T00:10:02Z",
+  };
   queryFixtures.plans = [
     {
       source_id: "source-1",
@@ -251,7 +283,77 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText(/apply · materialization/)).toBeInTheDocument();
     expect(screen.getByText(/automatic receipt check did not confirm/)).toBeInTheDocument();
     expect(screen.getByText(/Plan approval and apply remain read-only/)).toBeInTheDocument();
+    expect(screen.getByText("Read-only source scan")).toBeInTheDocument();
+    expect(screen.getByText("Succeeded")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run read-only scan" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve|apply|retry|recover/i })).not.toBeInTheDocument();
+  });
+
+  it("queues a read-only scan and does not expose approval or apply controls", async () => {
+    apiMocks.requestRoleSourceScan.mockResolvedValue({
+      ...queryFixtures.latestScan,
+      id: "scan-2",
+      status: "queued",
+      snapshot_digest: null,
+      completed_at: null,
+    });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Run read-only scan" }));
+
+    expect(apiMocks.requestRoleSourceScan).toHaveBeenCalledWith(
+      "workspace-1",
+      "source-1",
+      expect.stringMatching(/^role-source-scan-/),
+    );
+    expect(screen.queryByRole("button", { name: /approve|apply|retry|recover/i })).not.toBeInTheDocument();
+  });
+
+  it("reuses the scan idempotency key after an ambiguous response failure", async () => {
+    apiMocks.requestRoleSourceScan
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({ ...queryFixtures.latestScan, status: "queued" });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Run read-only scan" }));
+    await user.click(screen.getByRole("button", { name: "Run read-only scan" }));
+
+    const firstKey = apiMocks.requestRoleSourceScan.mock.calls[0]?.[2];
+    const secondKey = apiMocks.requestRoleSourceScan.mock.calls[1]?.[2];
+    expect(firstKey).toBe(secondKey);
+  });
+
+  it("explains when a scan request key belongs to another operator", async () => {
+    apiMocks.requestRoleSourceScan.mockRejectedValue({
+      body: { code: "role_source_scan_request_conflict" },
+    });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Run read-only scan" }));
+
+    expect(toastMocks.error).toHaveBeenCalledWith(
+      "This scan request belongs to another operator. Refresh the status before retrying.",
+    );
+  });
+
+  it("shows scan status to members but not the request control", () => {
+    memberFixture.role = "member";
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByText("Succeeded")).toBeInTheDocument();
+    expect(screen.getByText("Only workspace owners and admins can request a scan.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run read-only scan" })).not.toBeInTheDocument();
+  });
+
+  it("disables scan requests while a scan is active", () => {
+    queryFixtures.latestScan = { ...queryFixtures.latestScan, status: "claimed", completed_at: null };
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByRole("button", { name: "Run read-only scan" })).toBeDisabled();
+    expect(screen.getByText("Running")).toBeInTheDocument();
   });
 
   it("shows an explicit empty state without inventing configuration actions", () => {

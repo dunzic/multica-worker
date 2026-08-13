@@ -6,6 +6,19 @@ afterEach(() => {
 });
 
 describe("ApiClient role-source runtime evidence", () => {
+  const scan = {
+    id: "scan-1",
+    source_id: "source-1",
+    workspace_id: "workspace-1",
+    status: "queued",
+    expected_adapter_version: "1.0.0",
+    snapshot_digest: null,
+    error_code: null,
+    requested_at: "2026-08-13T00:00:00Z",
+    claimed_at: null,
+    completed_at: null,
+  };
+
   it("reads the server's sources key and requests bounded runtime attestation history", async () => {
     const source = { id: "source-1" };
     const attestation = { attestation_id: "sha256:evidence" };
@@ -52,6 +65,41 @@ describe("ApiClient role-source runtime evidence", () => {
         body: JSON.stringify({ action: "pause", expected_version: 3 }),
       }),
     );
+  });
+
+  it("reads and requests redacted role-source scan status", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(scan), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(scan), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.getLatestRoleSourceScan("workspace-1", "source-1")).resolves.toEqual(scan);
+    await expect(client.requestRoleSourceScan("workspace-1", "source-1", "scan-request-1")).resolves.toEqual(scan);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/scans/latest",
+    );
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/scans",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ request_key: "scan-request-1" }),
+      }),
+    ]);
+  });
+
+  it("treats empty scan history as null and malformed scan responses as unavailable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "scan not found" }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, status: "queued" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.getLatestRoleSourceScan("workspace-1", "source-1")).resolves.toBeNull();
+    await expect(client.getLatestRoleSourceScan("workspace-1", "source-1")).resolves.toBeNull();
   });
 
   it("lists, creates, and releases owner-only legal holds", async () => {

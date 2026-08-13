@@ -44,6 +44,7 @@ import type {
   RoleSourcePlanImpact,
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
+  RoleSourceScan,
   UpdateRoleSourceLifecycleRequest,
   RoleSourceLegalHold,
   CreateRoleSourceLegalHoldRequest,
@@ -309,6 +310,7 @@ import {
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
+  RoleSourceScanSchema,
   EMPTY_BILLING_BALANCE,
   EMPTY_BILLING_TRANSACTIONS_PAGE,
   EMPTY_BILLING_BATCHES_PAGE,
@@ -1680,6 +1682,37 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/role-sources/${sourceId}/runtime-attestations`,
     );
     return response.attestations ?? [];
+  }
+
+  async getLatestRoleSourceScan(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceScan | null> {
+    try {
+      const raw: unknown = await this.fetch(
+        `/api/workspaces/${workspaceId}/role-sources/${sourceId}/scans/latest`,
+      );
+      return parseWithFallback<RoleSourceScan | null>(raw, RoleSourceScanSchema, null, {
+        endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/scans/latest",
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async requestRoleSourceScan(
+    workspaceId: string,
+    sourceId: string,
+    requestKey: string,
+  ): Promise<RoleSourceScan | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/scans`,
+      { method: "POST", body: JSON.stringify({ request_key: requestKey }) },
+    );
+    return parseWithFallback<RoleSourceScan | null>(raw, RoleSourceScanSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/scans",
+    });
   }
 
   async updateRoleSourceLifecycle(

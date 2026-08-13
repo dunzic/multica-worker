@@ -23,6 +23,7 @@ var (
 	ErrScanAlreadyActive = errors.New("role source already has an active scan")
 	ErrScanLeaseLost     = errors.New("role source scan lease is stale or no longer owned")
 	ErrInvalidScanReport = errors.New("invalid role source scan report")
+	ErrScanSourceState   = errors.New("role source state does not accept scans")
 )
 
 type controlPlaneDB interface {
@@ -187,51 +188,67 @@ func (c *ControlPlane) RegisterSource(ctx context.Context, input RegisterSourceI
 	return source, nil
 }
 
-func (c *ControlPlane) RequestScan(ctx context.Context, workspaceIDText, sourceIDText, actorUserIDText string) (db.RoleSourceScanRequest, error) {
+func (c *ControlPlane) RequestScan(ctx context.Context, workspaceIDText, sourceIDText, actorUserIDText, requestKey string) (db.RoleSourceScanRequest, bool, error) {
+	requestKey = strings.TrimSpace(requestKey)
+	if !validLegalHoldRequestKey(requestKey) {
+		return db.RoleSourceScanRequest{}, false, fmt.Errorf("invalid role source scan request key")
+	}
 	workspaceID, sourceID, actorID, err := parseThreeUUIDs(workspaceIDText, sourceIDText, actorUserIDText)
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return db.RoleSourceScanRequest{}, false, err
 	}
 	requestID, err := newPGUUID()
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return db.RoleSourceScanRequest{}, false, err
 	}
 	tx, err := c.database.Begin(ctx)
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return db.RoleSourceScanRequest{}, false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	qtx := db.New(tx)
 	if _, err := qtx.LockWorkspaceForRoleSourceMutation(ctx, workspaceID); err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return db.RoleSourceScanRequest{}, false, err
 	}
 	source, err := qtx.GetRoleSourceForUpdate(ctx, db.GetRoleSourceForUpdateParams{ID: sourceID, WorkspaceID: workspaceID})
 	if err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return db.RoleSourceScanRequest{}, false, err
+	}
+	requestKeyDigest := roleSourceRequestKeyDigest(requestKey)
+	if existing, getErr := qtx.GetRoleSourceScanRequestByRequestKey(ctx, db.GetRoleSourceScanRequestByRequestKeyParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, RequestKeyDigest: pgtype.Text{String: requestKeyDigest, Valid: true},
+	}); getErr == nil {
+		if existing.RequestedBy != actorID {
+			return db.RoleSourceScanRequest{}, false, ErrIdempotencyConflict
+		}
+		return existing, false, nil
+	} else if !errors.Is(getErr, pgx.ErrNoRows) {
+		return db.RoleSourceScanRequest{}, false, getErr
 	}
 	if source.State == "detached" || source.State == "paused" {
-		return db.RoleSourceScanRequest{}, fmt.Errorf("role source state %q does not accept scans", source.State)
+		return db.RoleSourceScanRequest{}, false, fmt.Errorf("%w: %q", ErrScanSourceState, source.State)
 	}
 	request, err := qtx.CreateRoleSourceScanRequest(ctx, db.CreateRoleSourceScanRequestParams{
 		ID: requestID, SourceID: sourceID, WorkspaceID: workspaceID, RequestedBy: actorID,
 		ExpectedAdapterVersion: source.AdapterVersion,
+		RequestKeyDigest:       pgtype.Text{String: requestKeyDigest, Valid: true},
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return db.RoleSourceScanRequest{}, ErrScanAlreadyActive
+			return db.RoleSourceScanRequest{}, false, ErrScanAlreadyActive
 		}
-		return db.RoleSourceScanRequest{}, err
+		return db.RoleSourceScanRequest{}, false, err
 	}
 	if err := c.appendAudit(ctx, qtx, source, "scan_queued", AuditActor{Type: "user", ID: actorUserIDText}, AuditPayload{
 		OperationID: util.UUIDToString(request.ID), AdapterKind: Kind(source.Kind), AdapterVersion: source.AdapterVersion, Result: "queued",
 	}); err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return db.RoleSourceScanRequest{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return db.RoleSourceScanRequest{}, err
+		return db.RoleSourceScanRequest{}, false, err
 	}
-	return request, nil
+	return request, true, nil
 }
 
 type ClaimedScan struct {
@@ -308,6 +325,16 @@ func (c *ControlPlane) GetScan(ctx context.Context, workspaceIDText, sourceIDTex
 		return db.RoleSourceScanRequest{}, err
 	}
 	return c.queries().GetRoleSourceScanRequest(ctx, db.GetRoleSourceScanRequestParams{ID: requestID, SourceID: sourceID, WorkspaceID: workspaceID})
+}
+
+func (c *ControlPlane) GetLatestScan(ctx context.Context, workspaceIDText, sourceIDText string) (db.RoleSourceScanRequest, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil {
+		return db.RoleSourceScanRequest{}, err
+	}
+	return c.queries().GetLatestRoleSourceScanRequest(ctx, db.GetLatestRoleSourceScanRequestParams{
+		SourceID: sourceID, WorkspaceID: workspaceID,
+	})
 }
 
 func (c *ControlPlane) RenewScanLease(ctx context.Context, workspaceIDText, sourceIDText, requestIDText, runtimeIDText, leaseTokenText string, leaseDuration time.Duration) (db.RoleSourceScanRequest, error) {

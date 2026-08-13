@@ -1,4 +1,5 @@
 export * from "./queries";
+export * from "./mutations";
 export type {
   RoleSource,
   RoleSourcePlan,
@@ -11,6 +12,8 @@ export type {
   RoleSourcePlanImpactWorker,
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
+  RoleSourceScan,
+  RoleSourceScanStatus,
   RoleSourceLifecycleAction,
   UpdateRoleSourceLifecycleRequest,
   RoleSourceLegalHold,

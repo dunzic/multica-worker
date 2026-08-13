@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -36,9 +38,13 @@ type fakeRoleSourceControlPlane struct {
 	lifecycleRow              db.RoleSource
 	lifecycleErr              error
 	requestRow                db.RoleSourceScanRequest
+	requestCreated            bool
 	requestErr                error
+	requestKey                string
 	getScanRow                db.RoleSourceScanRequest
 	getScanErr                error
+	getLatestScanRow          db.RoleSourceScanRequest
+	getLatestScanErr          error
 	listRows                  []db.RoleSource
 	listErr                   error
 	getSourceRow              db.RoleSource
@@ -168,9 +174,10 @@ func (f *fakeRoleSourceControlPlane) UpdateSourceLifecycle(_ context.Context, in
 	return f.lifecycleRow, f.lifecycleErr
 }
 
-func (f *fakeRoleSourceControlPlane) RequestScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error) {
+func (f *fakeRoleSourceControlPlane) RequestScan(_ context.Context, _, _, _, requestKey string) (db.RoleSourceScanRequest, bool, error) {
 	f.calls++
-	return f.requestRow, f.requestErr
+	f.requestKey = requestKey
+	return f.requestRow, f.requestCreated, f.requestErr
 }
 
 func (f *fakeRoleSourceControlPlane) ListSources(context.Context, string) ([]db.RoleSource, error) {
@@ -186,6 +193,11 @@ func (f *fakeRoleSourceControlPlane) GetSource(context.Context, string, string) 
 func (f *fakeRoleSourceControlPlane) GetScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error) {
 	f.calls++
 	return f.getScanRow, f.getScanErr
+}
+
+func (f *fakeRoleSourceControlPlane) GetLatestScan(context.Context, string, string) (db.RoleSourceScanRequest, error) {
+	f.calls++
+	return f.getLatestScanRow, f.getLatestScanErr
 }
 
 func (f *fakeRoleSourceControlPlane) ClaimNextScan(context.Context, string, time.Duration) (rolesource.ClaimedScan, error) {
@@ -317,7 +329,7 @@ func roleSourceTestScanRow() db.RoleSourceScanRequest {
 	now := pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 10, 1, 0, 0, time.UTC), Valid: true}
 	return db.RoleSourceScanRequest{
 		ID: util.MustParseUUID(roleSourceTestScanID), SourceID: util.MustParseUUID(roleSourceTestSourceID),
-		WorkspaceID: util.MustParseUUID(testWorkspaceID), Status: "running", ExpectedAdapterVersion: "1.0.0",
+		WorkspaceID: util.MustParseUUID(testWorkspaceID), Status: "claimed", ExpectedAdapterVersion: "1.0.0",
 		LeaseToken: util.MustParseUUID("00000000-0000-4000-8000-000000000044"), RequestedAt: now, ClaimedAt: now,
 	}
 }
@@ -718,6 +730,26 @@ func TestRequestRoleSourceScan_MapsActiveScanToConflict(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("active scan: expected 409, got %d: %s", w.Code, w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), "role_source_scan_already_active") {
+		t.Fatalf("active scan response missing stable code: %s", w.Body.String())
+	}
+}
+
+func TestRequestRoleSourceScan_MapsPausedOrDetachedSourceToConflict(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{requestErr: fmt.Errorf("%w: paused", rolesource.ErrScanSourceState)}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.RequestRoleSourceScan(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("paused source: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "role_source_scan_source_state") {
+		t.Fatalf("paused source response missing stable code: %s", w.Body.String())
+	}
 }
 
 func TestGetRoleSourceScan_ResponseDoesNotExposeLeaseToken(t *testing.T) {
@@ -741,8 +773,41 @@ func TestGetRoleSourceScan_ResponseDoesNotExposeLeaseToken(t *testing.T) {
 	}
 }
 
+func TestGetLatestRoleSourceScan_ResponseDoesNotExposeLeaseOrRuntimeIdentity(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{getLatestScanRow: roleSourceTestScanRow()}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.GetLatestRoleSourceScan(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("get latest scan: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	for _, forbidden := range []string{"lease_token", "lease_expires_at", "claimed_by_runtime_id", "request_key_digest", "000000000044"} {
+		if strings.Contains(w.Body.String(), forbidden) {
+			t.Fatalf("latest scan response exposed %q: %s", forbidden, w.Body.String())
+		}
+	}
+}
+
+func TestGetLatestRoleSourceScan_MapsEmptyHistoryToNotFound(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{getLatestScanErr: pgx.ErrNoRows}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.GetLatestRoleSourceScan(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("empty latest scan: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRequestRoleSourceScan_WakesOwningRuntime(t *testing.T) {
-	fake := &fakeRoleSourceControlPlane{requestRow: roleSourceTestScanRow(), getSourceRow: roleSourceTestRow()}
+	fake := &fakeRoleSourceControlPlane{requestRow: roleSourceTestScanRow(), requestCreated: true, getSourceRow: roleSourceTestRow()}
 	h := roleSourceTestHandler(t, true, fake)
 	recorder := &roleSourcePendingWorkRecorder{}
 	h.DaemonPendingWork = recorder
@@ -757,6 +822,37 @@ func TestRequestRoleSourceScan_WakesOwningRuntime(t *testing.T) {
 	}
 	if recorder.calls != 1 || recorder.runtimeID != roleSourceTestRuntimeID || recorder.kind != protocol.PendingWorkKindRoleSourceScan {
 		t.Fatalf("runtime wakeup = %+v", recorder)
+	}
+}
+
+func TestRequestRoleSourceScan_IdempotentReplayDoesNotWakeRuntimeAgain(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{requestRow: roleSourceTestScanRow(), requestCreated: false}
+	h := roleSourceTestHandler(t, true, fake)
+	recorder := &roleSourcePendingWorkRecorder{}
+	h.DaemonPendingWork = recorder
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]string{
+		"request_key": "role-source-scan-stable-key",
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.RequestRoleSourceScan(w, req)
+
+	if w.Code != http.StatusOK || recorder.calls != 0 || fake.requestKey != "role-source-scan-stable-key" {
+		t.Fatalf("idempotent replay status=%d wakeups=%d key=%q body=%s", w.Code, recorder.calls, fake.requestKey, w.Body.String())
+	}
+}
+
+func TestRequestRoleSourceScan_LegacyEmptyBodyGetsBoundedServerKey(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{requestRow: roleSourceTestScanRow(), requestCreated: false}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.RequestRoleSourceScan(w, req)
+
+	if !strings.HasPrefix(fake.requestKey, "legacy-role-source-scan-") || len(fake.requestKey) > 200 {
+		t.Fatalf("legacy request key = %q", fake.requestKey)
 	}
 }
 

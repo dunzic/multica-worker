@@ -329,7 +329,7 @@ SET status = 'claimed',
     error_code = NULL
 FROM candidate
 WHERE request.id = candidate.id
-RETURNING request.id, request.source_id, request.workspace_id, request.status, request.requested_by, request.expected_adapter_version, request.claimed_by_runtime_id, request.lease_token, request.lease_expires_at, request.snapshot_digest, request.error_code, request.requested_at, request.claimed_at, request.completed_at
+RETURNING request.id, request.source_id, request.workspace_id, request.status, request.requested_by, request.expected_adapter_version, request.claimed_by_runtime_id, request.lease_token, request.lease_expires_at, request.snapshot_digest, request.error_code, request.requested_at, request.claimed_at, request.completed_at, request.request_key_digest
 `
 
 type ClaimNextRoleSourceScanParams struct {
@@ -356,6 +356,7 @@ func (q *Queries) ClaimNextRoleSourceScan(ctx context.Context, arg ClaimNextRole
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+		&i.RequestKeyDigest,
 	)
 	return i, err
 }
@@ -575,7 +576,7 @@ WHERE id = $2
   AND lease_token = $6
   AND status = 'claimed'
   AND lease_expires_at > now()
-RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at
+RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest
 `
 
 type CompleteRoleSourceScanFailureParams struct {
@@ -612,6 +613,7 @@ func (q *Queries) CompleteRoleSourceScanFailure(ctx context.Context, arg Complet
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+		&i.RequestKeyDigest,
 	)
 	return i, err
 }
@@ -628,7 +630,7 @@ WHERE id = $2
   AND lease_token = $6
   AND status = 'claimed'
   AND lease_expires_at > now()
-RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at
+RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest
 `
 
 type CompleteRoleSourceScanSuccessParams struct {
@@ -665,6 +667,7 @@ func (q *Queries) CompleteRoleSourceScanSuccess(ctx context.Context, arg Complet
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+		&i.RequestKeyDigest,
 	)
 	return i, err
 }
@@ -1063,11 +1066,11 @@ func (q *Queries) CreateRoleSourceLegalHoldRelease(ctx context.Context, arg Crea
 
 const createRoleSourceScanRequest = `-- name: CreateRoleSourceScanRequest :one
 INSERT INTO role_source_scan_request (
-    id, source_id, workspace_id, requested_by, expected_adapter_version
+    id, source_id, workspace_id, requested_by, expected_adapter_version, request_key_digest
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5, $6
 )
-RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at
+RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest
 `
 
 type CreateRoleSourceScanRequestParams struct {
@@ -1076,6 +1079,7 @@ type CreateRoleSourceScanRequestParams struct {
 	WorkspaceID            pgtype.UUID `json:"workspace_id"`
 	RequestedBy            pgtype.UUID `json:"requested_by"`
 	ExpectedAdapterVersion string      `json:"expected_adapter_version"`
+	RequestKeyDigest       pgtype.Text `json:"request_key_digest"`
 }
 
 func (q *Queries) CreateRoleSourceScanRequest(ctx context.Context, arg CreateRoleSourceScanRequestParams) (RoleSourceScanRequest, error) {
@@ -1085,6 +1089,7 @@ func (q *Queries) CreateRoleSourceScanRequest(ctx context.Context, arg CreateRol
 		arg.WorkspaceID,
 		arg.RequestedBy,
 		arg.ExpectedAdapterVersion,
+		arg.RequestKeyDigest,
 	)
 	var i RoleSourceScanRequest
 	err := row.Scan(
@@ -1102,6 +1107,7 @@ func (q *Queries) CreateRoleSourceScanRequest(ctx context.Context, arg CreateRol
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+		&i.RequestKeyDigest,
 	)
 	return i, err
 }
@@ -1444,6 +1450,41 @@ func (q *Queries) GetLatestRoleSourceRetentionPolicy(ctx context.Context, arg Ge
 		&i.KeepSuccessfulSnapshots,
 		&i.CreatedBy,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getLatestRoleSourceScanRequest = `-- name: GetLatestRoleSourceScanRequest :one
+SELECT id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest FROM role_source_scan_request
+WHERE source_id = $1 AND workspace_id = $2
+ORDER BY requested_at DESC, id
+LIMIT 1
+`
+
+type GetLatestRoleSourceScanRequestParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetLatestRoleSourceScanRequest(ctx context.Context, arg GetLatestRoleSourceScanRequestParams) (RoleSourceScanRequest, error) {
+	row := q.db.QueryRow(ctx, getLatestRoleSourceScanRequest, arg.SourceID, arg.WorkspaceID)
+	var i RoleSourceScanRequest
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.WorkspaceID,
+		&i.Status,
+		&i.RequestedBy,
+		&i.ExpectedAdapterVersion,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.SnapshotDigest,
+		&i.ErrorCode,
+		&i.RequestedAt,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.RequestKeyDigest,
 	)
 	return i, err
 }
@@ -2050,7 +2091,7 @@ func (q *Queries) GetRoleSourceRuntimeAttestationForShare(ctx context.Context, a
 }
 
 const getRoleSourceScanRequest = `-- name: GetRoleSourceScanRequest :one
-SELECT id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at FROM role_source_scan_request
+SELECT id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest FROM role_source_scan_request
 WHERE id = $1 AND source_id = $2 AND workspace_id = $3
 `
 
@@ -2078,12 +2119,49 @@ func (q *Queries) GetRoleSourceScanRequest(ctx context.Context, arg GetRoleSourc
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+		&i.RequestKeyDigest,
+	)
+	return i, err
+}
+
+const getRoleSourceScanRequestByRequestKey = `-- name: GetRoleSourceScanRequestByRequestKey :one
+SELECT id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest FROM role_source_scan_request
+WHERE source_id = $1
+  AND workspace_id = $2
+  AND request_key_digest = $3
+`
+
+type GetRoleSourceScanRequestByRequestKeyParams struct {
+	SourceID         pgtype.UUID `json:"source_id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	RequestKeyDigest pgtype.Text `json:"request_key_digest"`
+}
+
+func (q *Queries) GetRoleSourceScanRequestByRequestKey(ctx context.Context, arg GetRoleSourceScanRequestByRequestKeyParams) (RoleSourceScanRequest, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceScanRequestByRequestKey, arg.SourceID, arg.WorkspaceID, arg.RequestKeyDigest)
+	var i RoleSourceScanRequest
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.WorkspaceID,
+		&i.Status,
+		&i.RequestedBy,
+		&i.ExpectedAdapterVersion,
+		&i.ClaimedByRuntimeID,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.SnapshotDigest,
+		&i.ErrorCode,
+		&i.RequestedAt,
+		&i.ClaimedAt,
+		&i.CompletedAt,
+		&i.RequestKeyDigest,
 	)
 	return i, err
 }
 
 const getRoleSourceScanRequestForUpdate = `-- name: GetRoleSourceScanRequestForUpdate :one
-SELECT id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at FROM role_source_scan_request
+SELECT id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest FROM role_source_scan_request
 WHERE id = $1 AND source_id = $2 AND workspace_id = $3
 FOR UPDATE
 `
@@ -2112,6 +2190,7 @@ func (q *Queries) GetRoleSourceScanRequestForUpdate(ctx context.Context, arg Get
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+		&i.RequestKeyDigest,
 	)
 	return i, err
 }
@@ -4744,7 +4823,7 @@ WHERE id = $2
   AND lease_token = $6
   AND status = 'claimed'
   AND lease_expires_at > now()
-RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at
+RETURNING id, source_id, workspace_id, status, requested_by, expected_adapter_version, claimed_by_runtime_id, lease_token, lease_expires_at, snapshot_digest, error_code, requested_at, claimed_at, completed_at, request_key_digest
 `
 
 type RenewRoleSourceScanLeaseParams struct {
@@ -4781,6 +4860,7 @@ func (q *Queries) RenewRoleSourceScanLease(ctx context.Context, arg RenewRoleSou
 		&i.RequestedAt,
 		&i.ClaimedAt,
 		&i.CompletedAt,
+		&i.RequestKeyDigest,
 	)
 	return i, err
 }

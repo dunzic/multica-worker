@@ -55,6 +55,7 @@ import type {
   NotificationPreferenceResponse,
   ResourceLabelsResponse,
   RuntimeModelListRequest,
+  RoleSourceScan,
   SearchIssuesResponse,
   SearchProjectsResponse,
   Squad,
@@ -64,6 +65,32 @@ import type {
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+
+export const RoleSourceScanSchema = z.object({
+  id: z.string(),
+  source_id: z.string(),
+  workspace_id: z.string(),
+  status: z.string(),
+  expected_adapter_version: z.string().default(""),
+  snapshot_digest: z.string().nullable().optional().default(null),
+  error_code: z.string().nullable().optional().default(null),
+  requested_at: z.string(),
+  claimed_at: z.string().nullable().optional().default(null),
+  completed_at: z.string().nullable().optional().default(null),
+}).loose();
+
+export const EMPTY_ROLE_SOURCE_SCAN: RoleSourceScan = {
+  id: "",
+  source_id: "",
+  workspace_id: "",
+  status: "failed",
+  expected_adapter_version: "",
+  snapshot_digest: null,
+  error_code: null,
+  requested_at: "",
+  claimed_at: null,
+  completed_at: null,
+};
 
 export const GitHubInstallationSchema = z.object({
   id: z.string(),

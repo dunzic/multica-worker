@@ -155,6 +155,33 @@ shared storage or integrity incident. Do not initiate bulk re-upload or GC. A
 restore is acceptable only through the isolated DR workflow and its semantic
 verifier; restoring PostgreSQL metadata alone cannot restore missing bodies.
 
+## Read-only scan workflow
+
+Use Settings > Role Sources to select the intended source and review its
+current runtime evidence before requesting a scan. Only a workspace owner or
+admin may queue one; workspace members may inspect the redacted result. A scan
+records an immutable snapshot and proposed plan but never approves or applies
+workspace changes.
+
+1. Confirm the source is not `paused` or `detached`, the runtime is current,
+   and the loaded configuration evidence matches the expected adapter version.
+2. Select **Run read-only scan** once. If another operator already queued or
+   claimed work, the server returns a stable conflict and the page refreshes
+   the same latest status; do not repeatedly submit requests. If the response
+   is lost, the current page reuses its private request key so a retry returns
+   the original durable scan instead of creating or waking another one.
+3. Keep the page open for two-second polling or return later. The latest scan
+   is read from durable tenant-scoped history, so refresh and operator handoff
+   do not lose it. Polling stops at `succeeded`, `failed`, or `cancelled`.
+4. On success, review the refreshed immutable plan and impact preview. Success
+   does not mean approval or apply occurred. On failure, retain the stable
+   error code and timestamps; do not paste paths, digests, raw configuration,
+   provider errors or artifact bodies into an ordinary ticket.
+
+The page deliberately has no approval, apply, retry or recovery action. Those
+operations remain separately gated until their production evidence and RACI
+are approved.
+
 ## Attestation status recovery
 
 The effective status and last evidence status answer different questions. A

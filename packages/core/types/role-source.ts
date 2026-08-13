@@ -147,6 +147,26 @@ export interface RoleSourceRuntimeAttestation {
   observation_count: number;
 }
 
+export type RoleSourceScanStatus =
+  | "queued"
+  | "claimed"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface RoleSourceScan {
+  id: string;
+  source_id: string;
+  workspace_id: string;
+  status: RoleSourceScanStatus;
+  expected_adapter_version: string;
+  snapshot_digest: string | null;
+  error_code: string | null;
+  requested_at: string;
+  claimed_at: string | null;
+  completed_at: string | null;
+}
+
 export type RoleSourcePlanOperation =
   | "create"
   | "update"

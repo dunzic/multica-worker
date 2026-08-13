@@ -1202,6 +1202,7 @@ type RoleSourceScanRequest struct {
 	RequestedAt            pgtype.Timestamptz `json:"requested_at"`
 	ClaimedAt              pgtype.Timestamptz `json:"claimed_at"`
 	CompletedAt            pgtype.Timestamptz `json:"completed_at"`
+	RequestKeyDigest       pgtype.Text        `json:"request_key_digest"`
 }
 
 type RoleSourceSecretTransfer struct {

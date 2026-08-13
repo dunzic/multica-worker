@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2, PauseCircle, PlayCircle, Repeat2, ShieldAlert, Unplug } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2, PauseCircle, PlayCircle, RefreshCw, Repeat2, ShieldAlert, Unplug } from "lucide-react";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -37,12 +37,14 @@ import { cn } from "@multica/ui/lib/utils";
 import {
   roleSourceApplyFailureListOptions,
   roleSourceLegalHoldListOptions,
+  roleSourceLatestScanOptions,
   roleSourceListOptions,
   roleSourcePlanImpactOptions,
   roleSourcePlanListOptions,
   roleSourceRuntimeAttestationListOptions,
   roleSourceRetentionPreviewOptions,
   roleSourceKeys,
+  useRequestRoleSourceScan,
   type RoleSourceLifecycleAction,
   type RoleSourceLegalHold,
   type RoleSourceLegalHoldReason,
@@ -50,7 +52,7 @@ import {
   type RoleSourceLegalHoldScope,
   type RoleSourcePlanAction,
 } from "@multica/core/role-sources";
-import { api } from "@multica/core/api";
+import { api, errorCode } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useT } from "../../i18n";
@@ -85,6 +87,36 @@ function runtimeConfigTranslationKey(status: string) {
       return "runtime_unavailable" as const;
     default:
       return "runtime_unattested" as const;
+  }
+}
+
+function scanStatusTranslationKey(status: string) {
+  switch (status) {
+    case "queued":
+      return "scan_status_queued" as const;
+    case "claimed":
+      return "scan_status_claimed" as const;
+    case "succeeded":
+      return "scan_status_succeeded" as const;
+    case "failed":
+      return "scan_status_failed" as const;
+    case "cancelled":
+      return "scan_status_cancelled" as const;
+    default:
+      return "scan_status_unknown" as const;
+  }
+}
+
+function scanRequestErrorTranslationKey(error: unknown) {
+  switch (errorCode(error)) {
+    case "role_source_scan_already_active":
+      return "scan_already_active" as const;
+    case "role_source_scan_source_state":
+      return "scan_source_state" as const;
+    case "role_source_scan_request_conflict":
+      return "scan_request_conflict" as const;
+    default:
+      return "scan_request_failed" as const;
   }
 }
 
@@ -135,6 +167,7 @@ export function RoleSourcesTab() {
   const [retentionMinimumDays, setRetentionMinimumDays] = React.useState("90");
   const [retentionKeepSuccessful, setRetentionKeepSuccessful] = React.useState("10");
   const [savingRetention, setSavingRetention] = React.useState(false);
+  const scanRequestKeyRef = React.useRef("");
 
   React.useEffect(() => {
     if (!sources.data?.length) {
@@ -151,6 +184,12 @@ export function RoleSourcesTab() {
     enabled: Boolean(workspaceId && selectedId),
   });
   const selected = sources.data?.find((source) => source.id === selectedId);
+  const latestScan = useQuery({
+    ...roleSourceLatestScanOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId),
+  });
+  const latestScanData = latestScan.data;
+  const requestScan = useRequestRoleSourceScan(workspaceId, selectedId);
   const latest = plans.data?.[0];
   const impact = useQuery({
     ...roleSourcePlanImpactOptions(
@@ -176,6 +215,12 @@ export function RoleSourcesTab() {
     ...roleSourceRetentionPreviewOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId && isOwner),
   });
+
+  React.useEffect(() => {
+    if (latestScan.data?.status !== "succeeded") return;
+    void queryClient.invalidateQueries({ queryKey: roleSourceKeys.list(workspaceId) });
+    void queryClient.invalidateQueries({ queryKey: roleSourceKeys.plans(workspaceId, selectedId) });
+  }, [latestScan.data?.id, latestScan.data?.status, queryClient, selectedId, workspaceId]);
 
   React.useEffect(() => {
     if (!retention.data?.policy) return;
@@ -285,6 +330,25 @@ export function RoleSourcesTab() {
       toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.lifecycle_failed));
     } finally {
       setSavingLifecycle(false);
+    }
+  }
+
+  async function runReadOnlyScan() {
+    if (!selected || requestScan.isPending) return;
+    if (!scanRequestKeyRef.current) {
+      scanRequestKeyRef.current = `role-source-scan-${globalThis.crypto.randomUUID()}`;
+    }
+    try {
+      const scan = await requestScan.mutateAsync(scanRequestKeyRef.current);
+      if (!scan) {
+        toast.error(t(($) => $.role_sources.scan_invalid_response));
+        return;
+      }
+      scanRequestKeyRef.current = "";
+      toast.success(t(($) => $.role_sources.scan_requested));
+    } catch (error) {
+      if (errorCode(error)) scanRequestKeyRef.current = "";
+      toast.error(t(($) => $.role_sources[scanRequestErrorTranslationKey(error)]));
     }
   }
 
@@ -399,6 +463,86 @@ export function RoleSourcesTab() {
                   <div className="text-caption text-muted-foreground">{t(($) => $.role_sources.lifecycle_admin_only)}</div>
                 )}
               </div>
+            </SettingsCard>
+          </SettingsSection>
+
+          <SettingsSection
+            title={t(($) => $.role_sources.scan_title)}
+            description={t(($) => $.role_sources.scan_description)}
+          >
+            <SettingsCard>
+              {latestScan.isLoading ? (
+                <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t(($) => $.role_sources.scan_loading)}
+                </div>
+              ) : latestScan.isError ? (
+                <div className="p-4 text-caption text-destructive">
+                  {t(($) => $.role_sources.scan_load_failed)}
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-start justify-between gap-4 p-4">
+                  <div className="min-w-0 space-y-1">
+                    {latestScanData ? (
+                      <>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={latestScanData.status === "failed" ? "destructive" : "outline"}>
+                            {t(($) => $.role_sources[scanStatusTranslationKey(latestScanData.status)])}
+                          </Badge>
+                          <span className="font-mono text-caption text-muted-foreground">
+                            {shortDigest(latestScanData.id)}
+                          </span>
+                        </div>
+                        <div className="text-caption text-muted-foreground">
+                          {t(($) => $.role_sources.scan_requested_at, { time: latestScanData.requested_at })}
+                          {latestScanData.completed_at
+                            ? ` · ${t(($) => $.role_sources.scan_completed_at, { time: latestScanData.completed_at })}`
+                            : ""}
+                        </div>
+                        {latestScanData.snapshot_digest ? (
+                          <div className="font-mono text-caption text-muted-foreground">
+                            {t(($) => $.role_sources.scan_snapshot)}: {shortDigest(latestScanData.snapshot_digest)}
+                          </div>
+                        ) : null}
+                        {latestScanData.error_code ? (
+                          <div className="font-mono text-caption text-destructive">
+                            {t(($) => $.role_sources.scan_error_code)}: {latestScanData.error_code}
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="text-caption text-muted-foreground">
+                        {t(($) => $.role_sources.scan_empty)}
+                      </div>
+                    )}
+                  </div>
+                  {canManage ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={
+                        requestScan.isPending ||
+                        latestScanData?.status === "queued" ||
+                        latestScanData?.status === "claimed" ||
+                        selected.state === "paused" ||
+                        selected.state === "detached"
+                      }
+                      onClick={() => void runReadOnlyScan()}
+                    >
+                      {requestScan.isPending || latestScanData?.status === "queued" || latestScanData?.status === "claimed" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4" />
+                      )}
+                      {t(($) => $.role_sources.scan_request)}
+                    </Button>
+                  ) : (
+                    <div className="text-caption text-muted-foreground">
+                      {t(($) => $.role_sources.scan_admin_only)}
+                    </div>
+                  )}
+                </div>
+              )}
             </SettingsCard>
           </SettingsSection>
 

@@ -84,6 +84,25 @@ func TestRoleSourceSecretTransferPersistenceIsCiphertextOnlyAndSelfClearing(t *t
 	}
 }
 
+func TestRoleSourceScanRequestKeysAreDigestOnlyAndConcurrentlyUnique(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	column, err := os.ReadFile(filepath.Join(root, "358_role_source_scan_request_key.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := os.ReadFile(filepath.Join(root, "359_role_source_scan_request_unique.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(column), "request_key_digest") || strings.Contains(string(column), "request_key TEXT") {
+		t.Fatal("scan request idempotency must persist only a digest")
+	}
+	if !strings.Contains(string(index), "CREATE UNIQUE INDEX CONCURRENTLY") ||
+		!strings.Contains(string(index), "source_id, request_key_digest") {
+		t.Fatal("scan request idempotency requires a source-scoped concurrent unique index")
+	}
+}
+
 func TestRoleSourcePersistenceNeverStoresRawSourceConfig(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "273_role_source_control_plane.up.sql"))
 	if err != nil {

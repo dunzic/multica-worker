@@ -17,6 +17,8 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "legal-holds", sourceId] as const,
   retention: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "retention", sourceId] as const,
+  latestScan: (workspaceId: string, sourceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "latest-scan", sourceId] as const,
 };
 
 export function roleSourceListOptions(workspaceId: string) {
@@ -56,6 +58,22 @@ export function roleSourceRuntimeAttestationListOptions(
     queryKey: roleSourceKeys.runtimeAttestations(workspaceId, sourceId),
     queryFn: () => api.listRoleSourceRuntimeAttestations(workspaceId, sourceId),
     enabled: Boolean(sourceId),
+  });
+}
+
+export function roleSourceLatestScanOptions(
+  workspaceId: string,
+  sourceId: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.latestScan(workspaceId, sourceId),
+    queryFn: () => api.getLatestRoleSourceScan(workspaceId, sourceId),
+    enabled: Boolean(sourceId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "claimed" ? 2000 : false;
+    },
+    staleTime: 0,
   });
 }
 

@@ -763,15 +763,27 @@ FROM role_source_artifact_delete_intent;
 
 -- name: CreateRoleSourceScanRequest :one
 INSERT INTO role_source_scan_request (
-    id, source_id, workspace_id, requested_by, expected_adapter_version
+    id, source_id, workspace_id, requested_by, expected_adapter_version, request_key_digest
 ) VALUES (
-    @id, @source_id, @workspace_id, @requested_by, @expected_adapter_version
+    @id, @source_id, @workspace_id, @requested_by, @expected_adapter_version, @request_key_digest
 )
 RETURNING *;
+
+-- name: GetRoleSourceScanRequestByRequestKey :one
+SELECT * FROM role_source_scan_request
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND request_key_digest = @request_key_digest;
 
 -- name: GetRoleSourceScanRequest :one
 SELECT * FROM role_source_scan_request
 WHERE id = @id AND source_id = @source_id AND workspace_id = @workspace_id;
+
+-- name: GetLatestRoleSourceScanRequest :one
+SELECT * FROM role_source_scan_request
+WHERE source_id = @source_id AND workspace_id = @workspace_id
+ORDER BY requested_at DESC, id
+LIMIT 1;
 
 -- name: GetRoleSourceScanRequestForUpdate :one
 SELECT * FROM role_source_scan_request

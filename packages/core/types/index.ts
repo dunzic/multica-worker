@@ -100,6 +100,8 @@ export type {
   RoleSourcePlanImpactWorker,
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
+  RoleSourceScan,
+  RoleSourceScanStatus,
   RoleSourceLifecycleAction,
   UpdateRoleSourceLifecycleRequest,
   RoleSourceLegalHold,
