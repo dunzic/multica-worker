@@ -1,9 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, Notification, screen } from "electron";
+import { execFileSync } from "node:child_process";
 import { homedir } from "os";
 import { join } from "path";
 import { pathToFileURL } from "url";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
-import fixPath from "fix-path";
 import { setupAutoUpdater } from "./updater";
 import { setupDaemonManager } from "./daemon-manager";
 import { setupLocalDirectory } from "./local-directory";
@@ -104,7 +104,39 @@ const BUNDLED_ICON_PATH = join(__dirname, "../../resources/icon.png").replace(
 // ES module imports are hoisted, so this block executes before createWindow
 // or any daemon-manager spawn.
 if (process.platform !== "win32") {
-  fixPath();
+  // Keep this inline instead of importing the ESM-only `fix-path` package.
+  // electron-vite externalizes main-process dependencies into a CommonJS
+  // bundle, and the ESM/CJS default bridge made packaged builds crash before
+  // their first window was created. A bounded login-shell lookup gives us the
+  // same PATH recovery without a runtime module-format boundary.
+  const shell =
+    process.env.SHELL ||
+    (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh");
+  try {
+    const marker = "__MULTICA_LOGIN_PATH__";
+    const output = execFileSync(
+      shell,
+      ["-ilc", `command printf '${marker}%s${marker}' "$PATH"`],
+      {
+        encoding: "utf-8",
+        timeout: 5_000,
+        stdio: ["ignore", "pipe", "ignore"],
+        env: {
+          ...process.env,
+          DISABLE_AUTO_UPDATE: "true",
+          ZSH_TMUX_AUTOSTART: "false",
+          ZSH_TMUX_AUTOSTARTED: "true",
+        },
+      },
+    );
+    const start = output.lastIndexOf(marker);
+    const end = start < 0 ? -1 : output.indexOf(marker, start + marker.length);
+    if (start >= 0 && end > start + marker.length) {
+      process.env.PATH = output.slice(start + marker.length, end);
+    }
+  } catch {
+    // The explicit fallback below still provides the normal GUI app paths.
+  }
   // Fallback: prepend common install locations in case fix-path came up
   // short (broken shell rc, non-interactive $SHELL, missing entries). Safe
   // to duplicate — PATH lookups short-circuit on first match.
