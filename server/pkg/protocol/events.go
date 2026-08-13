@@ -71,6 +71,11 @@ const (
 	EventSkillUpdated = "skill:updated"
 	EventSkillDeleted = "skill:deleted"
 
+	// Role-source events are durable invalidation signals. The payload names
+	// the committed apply/rollback receipt; clients refetch authoritative
+	// source and materialized Agent/Skill/Autopilot projections.
+	EventRoleSourceApplied = "role_source:applied"
+
 	// Chat events
 	EventChatMessage = "chat:message"
 	EventChatDone    = "chat:done"

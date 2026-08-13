@@ -197,6 +197,10 @@ type RouterOptions struct {
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
 	// tests leave this nil and get the legacy synchronous behavior.
 	HeartbeatScheduler handler.HeartbeatScheduler
+	// DurableBroadcaster is the failure-reporting realtime path used by the
+	// role-source transactional outbox. Tests may leave it nil; main always
+	// supplies the selected single-node or Redis-backed broadcaster.
+	DurableBroadcaster realtime.DurableBroadcaster
 }
 
 // NewRouterWithOptions builds the fully-configured Chi router and
@@ -305,6 +309,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h.RoleSourceCatalog = roleSourceCatalog
 	h.RoleSources = roleSourceControlPlane
+	if opts.DurableBroadcaster != nil {
+		h.RoleSourceOutboxDispatcher = &service.RoleSourceOutboxDispatcher{
+			Queries: queries, Broadcaster: opts.DurableBroadcaster, Logger: slog.Default(), Metrics: opts.RoleSourceMetrics,
+		}
+	}
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics

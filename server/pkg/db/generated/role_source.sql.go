@@ -242,6 +242,61 @@ func (q *Queries) ClaimNextRoleSourceArtifactIntegrity(ctx context.Context, arg 
 	return i, err
 }
 
+const claimNextRoleSourceOutboxEvent = `-- name: ClaimNextRoleSourceOutboxEvent :one
+WITH candidate AS (
+    SELECT id
+    FROM role_source_outbox
+    WHERE status IN ('pending', 'publishing')
+      AND attempt < 20
+      AND next_attempt_at <= now()
+      AND (status = 'pending' OR lease_expires_at <= now())
+    ORDER BY next_attempt_at, created_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_outbox outbox
+SET status = 'publishing',
+    attempt = outbox.attempt + 1,
+    lease_token = $1,
+    lease_expires_at = now() + $2::interval,
+    last_error_code = NULL
+FROM candidate
+WHERE outbox.id = candidate.id
+RETURNING outbox.id, outbox.workspace_id, outbox.source_id, outbox.event_type, outbox.actor_type, outbox.actor_id, outbox.apply_id, outbox.mode, outbox.snapshot_digest, outbox.plan_digest, outbox.receipt_digest, outbox.status, outbox.attempt, outbox.lease_token, outbox.lease_expires_at, outbox.next_attempt_at, outbox.last_error_code, outbox.published_at, outbox.created_at
+`
+
+type ClaimNextRoleSourceOutboxEventParams struct {
+	LeaseToken    pgtype.UUID     `json:"lease_token"`
+	LeaseDuration pgtype.Interval `json:"lease_duration"`
+}
+
+func (q *Queries) ClaimNextRoleSourceOutboxEvent(ctx context.Context, arg ClaimNextRoleSourceOutboxEventParams) (RoleSourceOutbox, error) {
+	row := q.db.QueryRow(ctx, claimNextRoleSourceOutboxEvent, arg.LeaseToken, arg.LeaseDuration)
+	var i RoleSourceOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.EventType,
+		&i.ActorType,
+		&i.ActorID,
+		&i.ApplyID,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.ReceiptDigest,
+		&i.Status,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.LastErrorCode,
+		&i.PublishedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const claimNextRoleSourceRetentionCandidate = `-- name: ClaimNextRoleSourceRetentionCandidate :one
 WITH candidate AS MATERIALIZED (
     SELECT id
@@ -861,6 +916,34 @@ func (q *Queries) CountRoleSourceMaterializationNameConflicts(ctx context.Contex
 	return column_1, err
 }
 
+const countRoleSourceOutboxState = `-- name: CountRoleSourceOutboxState :one
+WITH active AS (
+    SELECT count(*)::bigint AS active_count, min(created_at) AS oldest_created_at
+    FROM role_source_outbox
+    WHERE status IN ('pending', 'publishing')
+), dead AS (
+    SELECT count(*)::bigint AS dead_count
+    FROM role_source_outbox
+    WHERE status = 'dead'
+)
+SELECT active.active_count, dead.dead_count,
+    COALESCE(EXTRACT(EPOCH FROM (now() - active.oldest_created_at)), 0)::bigint AS oldest_active_seconds
+FROM active CROSS JOIN dead
+`
+
+type CountRoleSourceOutboxStateRow struct {
+	ActiveCount         int64 `json:"active_count"`
+	DeadCount           int64 `json:"dead_count"`
+	OldestActiveSeconds int64 `json:"oldest_active_seconds"`
+}
+
+func (q *Queries) CountRoleSourceOutboxState(ctx context.Context) (CountRoleSourceOutboxStateRow, error) {
+	row := q.db.QueryRow(ctx, countRoleSourceOutboxState)
+	var i CountRoleSourceOutboxStateRow
+	err := row.Scan(&i.ActiveCount, &i.DeadCount, &i.OldestActiveSeconds)
+	return i, err
+}
+
 const countRoleSourceRetentionCandidates = `-- name: CountRoleSourceRetentionCandidates :one
 SELECT
     count(*) FILTER (WHERE state <> 'completed')::bigint AS active_count,
@@ -1109,6 +1192,50 @@ func (q *Queries) CreateRoleSourceScanRequest(ctx context.Context, arg CreateRol
 		&i.RequestKeyDigest,
 	)
 	return i, err
+}
+
+const deleteDeadRoleSourceOutboxEvents = `-- name: DeleteDeadRoleSourceOutboxEvents :execrows
+WITH settled AS (
+    SELECT id
+    FROM role_source_outbox
+    WHERE status = 'dead'
+      AND created_at < now() - interval '30 days'
+    ORDER BY created_at, id
+    LIMIT $1
+)
+DELETE FROM role_source_outbox outbox
+USING settled
+WHERE outbox.id = settled.id
+`
+
+func (q *Queries) DeleteDeadRoleSourceOutboxEvents(ctx context.Context, deleteLimit int32) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeadRoleSourceOutboxEvents, deleteLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deletePublishedRoleSourceOutboxEvents = `-- name: DeletePublishedRoleSourceOutboxEvents :execrows
+WITH settled AS (
+    SELECT id
+    FROM role_source_outbox
+    WHERE status = 'published'
+      AND published_at < now() - interval '7 days'
+    ORDER BY published_at, id
+    LIMIT $1
+)
+DELETE FROM role_source_outbox outbox
+USING settled
+WHERE outbox.id = settled.id
+`
+
+func (q *Queries) DeletePublishedRoleSourceOutboxEvents(ctx context.Context, deleteLimit int32) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePublishedRoleSourceOutboxEvents, deleteLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteRoleSourceSnapshotArtifacts = `-- name: DeleteRoleSourceSnapshotArtifacts :exec
@@ -2741,6 +2868,71 @@ func (q *Queries) InsertRoleSourceCapabilityVersion(ctx context.Context, arg Ins
 		&i.ObjectDigest,
 		&i.Definition,
 		&i.SnapshotDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertRoleSourceOutboxEvent = `-- name: InsertRoleSourceOutboxEvent :one
+INSERT INTO role_source_outbox (
+    id, workspace_id, source_id, event_type, actor_type, actor_id,
+    apply_id, mode, snapshot_digest, plan_digest, receipt_digest
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6::uuid, $7, $8, $9,
+    $10, $11
+)
+RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at
+`
+
+type InsertRoleSourceOutboxEventParams struct {
+	ID             pgtype.UUID `json:"id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	EventType      string      `json:"event_type"`
+	ActorType      string      `json:"actor_type"`
+	ActorID        pgtype.UUID `json:"actor_id"`
+	ApplyID        pgtype.UUID `json:"apply_id"`
+	Mode           string      `json:"mode"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+	PlanDigest     string      `json:"plan_digest"`
+	ReceiptDigest  string      `json:"receipt_digest"`
+}
+
+func (q *Queries) InsertRoleSourceOutboxEvent(ctx context.Context, arg InsertRoleSourceOutboxEventParams) (RoleSourceOutbox, error) {
+	row := q.db.QueryRow(ctx, insertRoleSourceOutboxEvent,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.EventType,
+		arg.ActorType,
+		arg.ActorID,
+		arg.ApplyID,
+		arg.Mode,
+		arg.SnapshotDigest,
+		arg.PlanDigest,
+		arg.ReceiptDigest,
+	)
+	var i RoleSourceOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.EventType,
+		&i.ActorType,
+		&i.ActorID,
+		&i.ApplyID,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.ReceiptDigest,
+		&i.Status,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.LastErrorCode,
+		&i.PublishedAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -4549,6 +4741,21 @@ func (q *Queries) LockWorkspaceForRoleSourceMutation(ctx context.Context, worksp
 	return id, err
 }
 
+const markExhaustedRoleSourceOutboxEventsDead = `-- name: MarkExhaustedRoleSourceOutboxEventsDead :execrows
+UPDATE role_source_outbox
+SET status = 'dead', lease_token = NULL, lease_expires_at = NULL,
+    last_error_code = COALESCE(last_error_code, 'lease_expired_after_max_attempts')
+WHERE status = 'publishing' AND attempt >= 20 AND lease_expires_at <= now()
+`
+
+func (q *Queries) MarkExhaustedRoleSourceOutboxEventsDead(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, markExhaustedRoleSourceOutboxEventsDead)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markRoleSourceApplyRunning = `-- name: MarkRoleSourceApplyRunning :one
 UPDATE role_source_apply
 SET status = 'running'
@@ -4640,6 +4847,46 @@ func (q *Queries) MarkRoleSourceArtifactUploadedForIntegrity(ctx context.Context
 		&i.LastVerifiedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const markRoleSourceOutboxPublished = `-- name: MarkRoleSourceOutboxPublished :one
+UPDATE role_source_outbox
+SET status = 'published', lease_token = NULL, lease_expires_at = NULL,
+    published_at = now(), last_error_code = NULL
+WHERE id = $1 AND status = 'publishing' AND lease_token = $2
+RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at
+`
+
+type MarkRoleSourceOutboxPublishedParams struct {
+	ID         pgtype.UUID `json:"id"`
+	LeaseToken pgtype.UUID `json:"lease_token"`
+}
+
+func (q *Queries) MarkRoleSourceOutboxPublished(ctx context.Context, arg MarkRoleSourceOutboxPublishedParams) (RoleSourceOutbox, error) {
+	row := q.db.QueryRow(ctx, markRoleSourceOutboxPublished, arg.ID, arg.LeaseToken)
+	var i RoleSourceOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.EventType,
+		&i.ActorType,
+		&i.ActorID,
+		&i.ApplyID,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.ReceiptDigest,
+		&i.Status,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.LastErrorCode,
+		&i.PublishedAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -5152,6 +5399,56 @@ func (q *Queries) ReleaseRoleSourceArtifactIntegrity(ctx context.Context, arg Re
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const releaseRoleSourceOutboxEvent = `-- name: ReleaseRoleSourceOutboxEvent :one
+UPDATE role_source_outbox
+SET status = CASE WHEN attempt >= 20 THEN 'dead' ELSE 'pending' END,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    next_attempt_at = now() + $1::interval,
+    last_error_code = $2
+WHERE id = $3 AND status = 'publishing' AND lease_token = $4
+RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at
+`
+
+type ReleaseRoleSourceOutboxEventParams struct {
+	RetryDelay    pgtype.Interval `json:"retry_delay"`
+	LastErrorCode pgtype.Text     `json:"last_error_code"`
+	ID            pgtype.UUID     `json:"id"`
+	LeaseToken    pgtype.UUID     `json:"lease_token"`
+}
+
+func (q *Queries) ReleaseRoleSourceOutboxEvent(ctx context.Context, arg ReleaseRoleSourceOutboxEventParams) (RoleSourceOutbox, error) {
+	row := q.db.QueryRow(ctx, releaseRoleSourceOutboxEvent,
+		arg.RetryDelay,
+		arg.LastErrorCode,
+		arg.ID,
+		arg.LeaseToken,
+	)
+	var i RoleSourceOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.EventType,
+		&i.ActorType,
+		&i.ActorID,
+		&i.ApplyID,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.ReceiptDigest,
+		&i.Status,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.LastErrorCode,
+		&i.PublishedAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const releaseRoleSourceRetentionCandidate = `-- name: ReleaseRoleSourceRetentionCandidate :execrows

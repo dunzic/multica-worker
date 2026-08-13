@@ -10,6 +10,10 @@ type RoleSourceMetrics struct {
 	failureAuditWrites    *prometheus.CounterVec
 	commitReconciliations *prometheus.CounterVec
 	runtimeAttestations   *prometheus.CounterVec
+	outboxDispatches      *prometheus.CounterVec
+	outboxActive          prometheus.Gauge
+	outboxDead            prometheus.Gauge
+	outboxOldestSeconds   prometheus.Gauge
 }
 
 func NewRoleSourceMetrics() *RoleSourceMetrics {
@@ -30,11 +34,30 @@ func NewRoleSourceMetrics() *RoleSourceMetrics {
 			Namespace: "multica", Subsystem: "role_source", Name: "runtime_config_attestations_total",
 			Help: "Bounded outcomes for daemon loaded-configuration attestation attempts.",
 		}, []string{"outcome"}),
+		outboxDispatches: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "role_source", Name: "outbox_dispatches_total",
+			Help: "Bounded outcomes for durable role-source realtime event dispatch.",
+		}, []string{"outcome"}),
+		outboxActive: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "multica", Subsystem: "role_source", Name: "outbox_active",
+			Help: "Pending or leased role-source realtime outbox events.",
+		}),
+		outboxDead: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "multica", Subsystem: "role_source", Name: "outbox_dead",
+			Help: "Role-source realtime outbox events that exhausted delivery retries.",
+		}),
+		outboxOldestSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "multica", Subsystem: "role_source", Name: "outbox_oldest_active_seconds",
+			Help: "Age in seconds of the oldest pending or leased role-source realtime event.",
+		}),
 	}
 }
 
 func (m *RoleSourceMetrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.applyErrors, m.failureAuditWrites, m.commitReconciliations, m.runtimeAttestations}
+	return []prometheus.Collector{
+		m.applyErrors, m.failureAuditWrites, m.commitReconciliations, m.runtimeAttestations,
+		m.outboxDispatches, m.outboxActive, m.outboxDead, m.outboxOldestSeconds,
+	}
 }
 
 func (m *RoleSourceMetrics) RecordApplyError(mode, stage, code string) {
@@ -51,6 +74,16 @@ func (m *RoleSourceMetrics) RecordApplyCommitReconciliation(outcome string) {
 
 func (m *RoleSourceMetrics) RecordRuntimeConfigAttestation(outcome string) {
 	m.runtimeAttestations.WithLabelValues(roleSourceRuntimeAttestationOutcome(outcome)).Inc()
+}
+
+func (m *RoleSourceMetrics) RecordOutboxDispatch(outcome string) {
+	m.outboxDispatches.WithLabelValues(roleSourceOutboxOutcome(outcome)).Inc()
+}
+
+func (m *RoleSourceMetrics) SetOutboxState(active, dead, oldestSeconds int64) {
+	m.outboxActive.Set(float64(max(active, 0)))
+	m.outboxDead.Set(float64(max(dead, 0)))
+	m.outboxOldestSeconds.Set(float64(max(oldestSeconds, 0)))
 }
 
 func roleSourceMode(value string) string {
@@ -106,5 +139,14 @@ func roleSourceRuntimeAttestationOutcome(value string) string {
 		return value
 	default:
 		return "invalid"
+	}
+}
+
+func roleSourceOutboxOutcome(value string) string {
+	switch value {
+	case "published", "publish_failed", "dead", "claim_failed", "ack_failed", "release_failed", "cleanup_failed":
+		return value
+	default:
+		return "unknown"
 	}
 }

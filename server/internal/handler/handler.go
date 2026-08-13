@@ -268,6 +268,10 @@ type Handler struct {
 	// policies. It remains independently default-off and is wired only when
 	// permanent artifact GC is also available.
 	RoleSourceRetentionReconciler *service.RoleSourceRetentionReconciler
+	// RoleSourceOutboxDispatcher delivers transactionally recorded apply and
+	// rollback invalidations. It is always wired; the process owner runs it
+	// alongside the other bounded background workers.
+	RoleSourceOutboxDispatcher *service.RoleSourceOutboxDispatcher
 	// SlackInstall owns the bring-your-own-app Slack install lifecycle (register
 	// pasted tokens / list / revoke) and the at-rest encryption of each app's bot
 	// + app tokens (MUL-3666). Nil unless MULTICA_SLACK_SECRET_KEY is set.

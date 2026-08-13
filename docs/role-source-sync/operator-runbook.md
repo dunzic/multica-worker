@@ -155,6 +155,36 @@ shared storage or integrity incident. Do not initiate bulk re-upload or GC. A
 restore is acceptable only through the isolated DR workflow and its semantic
 verifier; restoring PostgreSQL metadata alone cannot restore missing bodies.
 
+## Durable apply-event backlog and dead letters
+
+`role_source:applied` is an invalidation signal, not the apply authority. A
+successful receipt and hash-chain audit remain authoritative even when realtime
+delivery is delayed. Never repeat an apply or rollback request merely because a
+browser did not refresh.
+
+On `MulticaRoleSourceOutboxDeliveryFailed`,
+`MulticaRoleSourceOutboxBacklogOld` or
+`MulticaRoleSourceOutboxDeadLetters`:
+
+1. Disable `role_source_apply` for the affected rollout cohort; leave scan and
+   read-only evidence available if PostgreSQL is healthy.
+2. Check PostgreSQL and the selected Redis realtime relay. Preserve outbox rows,
+   application logs and metrics; do not edit attempt, lease, status or event ID.
+3. Confirm the corresponding apply receipt and audit event. If either is absent,
+   treat it as apply/commit reconciliation, not an outbox incident.
+4. Restore the dependency and let pending/expired leases retry. A retry must
+   publish the existing database UUID; clients deduplicate it.
+5. A `dead` row exhausted 20 attempts. Do not copy its payload into an ad-hoc
+   websocket, delete it or replay the apply. Escalate to the named incident
+   owner; production rollout requires an authorized audited replay tool that
+   preserves the original event ID.
+6. Resolve only after active age and dead gauges return to the expected baseline,
+   connected clients refetch authoritative state, and no new ack/release errors
+   occur through one full alert window.
+
+Published rows are retained seven days and dead rows 30 days. These are evidence
+and bounded-capacity defaults, not permission for manual early deletion.
+
 ## Read-only scan workflow
 
 Use Settings > Role Sources to select the intended source and review its

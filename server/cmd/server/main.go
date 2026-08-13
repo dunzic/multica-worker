@@ -252,6 +252,7 @@ func main() {
 	// operations.
 	relayCtx, relayCancel := context.WithCancel(context.Background())
 	var broadcaster realtime.Broadcaster = hub
+	var durableBroadcaster realtime.DurableBroadcaster = hub
 	var storeRedis *redis.Client
 	var relayWriteRedis *redis.Client
 	var relayReadRedis *redis.Client
@@ -306,7 +307,9 @@ func main() {
 				daemonWakeup = daemonws.NewRelayNotifier(daemonHub, sharded)
 			}
 			relay.Start(relayCtx)
-			broadcaster = realtime.NewDualWriteBroadcaster(hub, relay)
+			dualWrite := realtime.NewDualWriteBroadcaster(hub, relay)
+			broadcaster = dualWrite
+			durableBroadcaster = dualWrite
 			slog.Info(
 				"realtime: Redis relay enabled",
 				"node_id", relay.NodeID(),
@@ -416,6 +419,7 @@ func main() {
 		DaemonWakeup:           daemonWakeup,
 		FeatureFlags:           flags,
 		HeartbeatScheduler:     heartbeatScheduler,
+		DurableBroadcaster:     durableBroadcaster,
 	})
 
 	srv := &http.Server{
@@ -484,6 +488,9 @@ func main() {
 	if h.RoleSourceRetentionReconciler != nil {
 		h.RoleSourceRetentionReconciler.Metrics = roleSourceRetentionMetrics
 		go h.RoleSourceRetentionReconciler.Run(sweepCtx)
+	}
+	if h.RoleSourceOutboxDispatcher != nil {
+		go h.RoleSourceOutboxDispatcher.Run(sweepCtx)
 	}
 	if h.ChannelDeliveryReconciler != nil {
 		go h.ChannelDeliveryReconciler.Run(sweepCtx)

@@ -150,6 +150,42 @@ Pass criteria:
 - backup restore and point-in-time recovery restore active holds, policy
   revisions, candidates, snapshots, edges and task pins consistently.
 
+## Gate B4 — transactional apply-event outbox
+
+First run the real generated-query lease state machine against disposable
+PostgreSQL 17:
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_OUTBOX_TEST=1 \
+  go -C server test -count=1 -run '^TestRoleSourceOutboxPostgresLeaseAndRetryStateMachine$' ./internal/rolesource
+```
+
+Then use two API replicas with the candidate Redis relay. Commit distinct
+no-op/apply/rollback fixtures and inject process death after PostgreSQL commit,
+before Redis publish, after Redis acceptance and before outbox acknowledgement.
+Interrupt Redis before and after XADD, expire the owning lease, fail over the
+PostgreSQL primary and restart both replicas with a backlog larger than one
+worker batch.
+
+Pass criteria:
+
+- each committed receipt has exactly one outbox UUID in the same transaction;
+- only one live lease owns an event and a stale token can neither acknowledge
+  nor release it;
+- every retry keeps the same event ID, and browser clients observe at most one
+  effective invalidation despite local/relay/retry delivery;
+- an event accepted by Redis but not acknowledged is retried after lease expiry
+  without re-running apply or producing another outbox row;
+- attempt 20 becomes a visible dead letter; no exhausted lease remains
+  `publishing`, and no automated blind replay or deletion occurs;
+- backlog, oldest age, dead letters and bounded outcomes alert as configured;
+  seven-day published and 30-day dead cleanup runs in bounded batches only;
+- one event per apply refreshes source/Agent/Skill/Autopilot state regardless of
+  object count; measured Redis, DB, CPU and browser refetch load fits Gate E;
+- an operator repairs dependencies and replays only the original stable event
+  ID through an approved audited procedure; the apply request is never replayed
+  to repair notification delivery.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.

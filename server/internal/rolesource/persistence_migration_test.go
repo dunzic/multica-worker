@@ -205,6 +205,73 @@ func TestRoleSourceApplyFailurePersistenceIsContentFree(t *testing.T) {
 	}
 }
 
+func TestRoleSourceOutboxIsBoundedLeasedAndTransactionallyInserted(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	schemaBody, err := os.ReadFile(filepath.Join(root, "362_role_source_outbox.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(schemaBody))
+	for _, forbidden := range []string{"payload", "jsonb", "request_key", "manifest", "artifact_body", "secret", "credential", "plaintext", "error_message"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("role-source outbox retains forbidden content %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"create table role_source_outbox", "apply_id uuid", "mode text", "snapshot_digest text", "plan_digest text", "receipt_digest text",
+		"lease_token", "lease_expires_at", "next_attempt_at", "attempt between 0 and 20",
+		"status in ('pending', 'publishing', 'published', 'dead')",
+	} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("role-source outbox schema is missing %q", required)
+		}
+	}
+	for name, fragment := range map[string]string{
+		"363_role_source_outbox_id_unique.up.sql":               "CREATE UNIQUE INDEX CONCURRENTLY",
+		"364_role_source_outbox_due_index.up.sql":               "WHERE status IN ('pending', 'publishing')",
+		"365_role_source_outbox_status_index.up.sql":            "CREATE INDEX CONCURRENTLY",
+		"366_role_source_outbox_published_cleanup_index.up.sql": "WHERE status = 'published'",
+		"367_role_source_outbox_dead_cleanup_index.up.sql":      "WHERE status = 'dead'",
+		"368_role_source_outbox_workspace_index.up.sql":         "workspace_id, id",
+	} {
+		body, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil || !strings.Contains(string(body), fragment) {
+			t.Fatalf("%s must contain %q: %v", name, fragment, readErr)
+		}
+	}
+	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queryBody)
+	for _, required := range []string{
+		"InsertRoleSourceOutboxEvent", "ClaimNextRoleSourceOutboxEvent", "FOR UPDATE SKIP LOCKED",
+		"MarkRoleSourceOutboxPublished", "ReleaseRoleSourceOutboxEvent", "MarkExhaustedRoleSourceOutboxEventsDead",
+		"DeletePublishedRoleSourceOutboxEvents",
+		"DeleteDeadRoleSourceOutboxEvents",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("role-source outbox query contract is missing %q", required)
+		}
+	}
+	applyBody, err := os.ReadFile("apply.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := string(applyBody)
+	insertAt := strings.Index(apply, "qtx.InsertRoleSourceOutboxEvent(ctx")
+	commitAt := strings.Index(apply[insertAt:], "tx.Commit(ctx)")
+	if insertAt < 0 || commitAt < 0 {
+		t.Fatal("successful apply must insert its durable event before committing")
+	}
+	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
+		cleanup, readErr := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if readErr != nil || !strings.Contains(string(cleanup), "DELETE FROM role_source_outbox") {
+			t.Fatalf("%s must explicitly delete role-source outbox rows: %v", name, readErr)
+		}
+	}
+}
+
 func TestRoleSourceArtifactDeleteIntentSurvivesTenantTeardownWithoutContent(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "331_role_source_artifact_delete_intent.up.sql"))
 	if err != nil {

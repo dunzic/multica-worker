@@ -110,6 +110,11 @@ func (r *MirroredRelay) PublishWithID(scopeType, scopeID, exclude string, frame 
 	return errors.Join(primaryErr, mirrorErr)
 }
 
+func (r *MirroredRelay) PublishDurable(scopeType, scopeID, exclude string, frame []byte, id string) error {
+	return r.PublishWithID(scopeType, scopeID, exclude, frame, id)
+}
+
 var _ ManagedRelay = (*RedisRelay)(nil)
 var _ ManagedRelay = (*ShardedStreamRelay)(nil)
 var _ ManagedRelay = (*MirroredRelay)(nil)
+var _ DurableBroadcaster = (*MirroredRelay)(nil)

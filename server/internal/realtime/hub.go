@@ -526,6 +526,22 @@ func (h *Hub) BroadcastToScopeDedup(scopeType, scopeID string, message []byte, e
 	}
 }
 
+// PublishDurable is the single-node durable-outbox delivery path. The outbox
+// worker controls retries; the stable eventID makes an ambiguous retry a no-op
+// for clients that already received the first attempt.
+func (h *Hub) PublishDurable(scopeType, scopeID, exclude string, message []byte, eventID string) error {
+	frame := injectEventID(message, eventID)
+	switch scopeType {
+	case ScopeUser:
+		h.fanoutUser(scopeID, frame, exclude, eventID)
+	case "global":
+		h.fanoutAllDedup(frame, exclude, eventID)
+	default:
+		h.BroadcastToScopeDedup(scopeType, scopeID, frame, eventID)
+	}
+	return nil
+}
+
 // fanoutAll delivers message to every connected client. If excludeWorkspace
 // is non-empty, clients whose workspaceID matches are skipped (used by the
 // member:added dedup semantics carried over from SendToUser). eventID is the

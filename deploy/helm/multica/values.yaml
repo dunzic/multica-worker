@@ -290,6 +290,8 @@ monitoring:
     # delay short and severity separate from sampler health.
     roleSourceAuditWriteFailureFor: 1m
     roleSourceCommitReconciliationFailureFor: 1m
+    roleSourceOutboxFailureFor: 1m
+    roleSourceOutboxBacklogFor: 5m
     # DB-stale role-source runtimes are held long enough to absorb heartbeat
     # flush lag before paging. The metric itself uses the shared 150s cutoff.
     roleSourceRuntimeUnavailableFor: 10m

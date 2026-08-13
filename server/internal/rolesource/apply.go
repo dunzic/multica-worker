@@ -571,6 +571,18 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	}); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
+	outboxID, err := newPGUUID()
+	if err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	if _, err := qtx.InsertRoleSourceOutboxEvent(ctx, db.InsertRoleSourceOutboxEventParams{
+		ID: outboxID, WorkspaceID: workspaceID, SourceID: sourceID,
+		EventType: protocol.EventRoleSourceApplied, ActorType: "user", ActorID: actorID,
+		ApplyID: applyID, Mode: applyMode, SnapshotDigest: receipt.SnapshotDigest,
+		PlanDigest: receipt.PlanDigest, ReceiptDigest: receiptDigest,
+	}); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
 	tracker.stage = "commit"
 	if err := tx.Commit(ctx); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err

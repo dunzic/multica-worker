@@ -4,6 +4,102 @@
 -- from committing child data after the explicit no-FK cleanup sweep.
 SELECT id FROM workspace WHERE id = @workspace_id FOR KEY SHARE;
 
+-- name: InsertRoleSourceOutboxEvent :one
+INSERT INTO role_source_outbox (
+    id, workspace_id, source_id, event_type, actor_type, actor_id,
+    apply_id, mode, snapshot_digest, plan_digest, receipt_digest
+) VALUES (
+    @id, @workspace_id, @source_id, @event_type, @actor_type,
+    sqlc.narg('actor_id')::uuid, @apply_id, @mode, @snapshot_digest,
+    @plan_digest, @receipt_digest
+)
+RETURNING *;
+
+-- name: ClaimNextRoleSourceOutboxEvent :one
+WITH candidate AS (
+    SELECT id
+    FROM role_source_outbox
+    WHERE status IN ('pending', 'publishing')
+      AND attempt < 20
+      AND next_attempt_at <= now()
+      AND (status = 'pending' OR lease_expires_at <= now())
+    ORDER BY next_attempt_at, created_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_outbox outbox
+SET status = 'publishing',
+    attempt = outbox.attempt + 1,
+    lease_token = @lease_token,
+    lease_expires_at = now() + @lease_duration::interval,
+    last_error_code = NULL
+FROM candidate
+WHERE outbox.id = candidate.id
+RETURNING outbox.*;
+
+-- name: MarkRoleSourceOutboxPublished :one
+UPDATE role_source_outbox
+SET status = 'published', lease_token = NULL, lease_expires_at = NULL,
+    published_at = now(), last_error_code = NULL
+WHERE id = @id AND status = 'publishing' AND lease_token = @lease_token
+RETURNING *;
+
+-- name: MarkExhaustedRoleSourceOutboxEventsDead :execrows
+UPDATE role_source_outbox
+SET status = 'dead', lease_token = NULL, lease_expires_at = NULL,
+    last_error_code = COALESCE(last_error_code, 'lease_expired_after_max_attempts')
+WHERE status = 'publishing' AND attempt >= 20 AND lease_expires_at <= now();
+
+-- name: ReleaseRoleSourceOutboxEvent :one
+UPDATE role_source_outbox
+SET status = CASE WHEN attempt >= 20 THEN 'dead' ELSE 'pending' END,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    next_attempt_at = now() + @retry_delay::interval,
+    last_error_code = @last_error_code
+WHERE id = @id AND status = 'publishing' AND lease_token = @lease_token
+RETURNING *;
+
+-- name: CountRoleSourceOutboxState :one
+WITH active AS (
+    SELECT count(*)::bigint AS active_count, min(created_at) AS oldest_created_at
+    FROM role_source_outbox
+    WHERE status IN ('pending', 'publishing')
+), dead AS (
+    SELECT count(*)::bigint AS dead_count
+    FROM role_source_outbox
+    WHERE status = 'dead'
+)
+SELECT active.active_count, dead.dead_count,
+    COALESCE(EXTRACT(EPOCH FROM (now() - active.oldest_created_at)), 0)::bigint AS oldest_active_seconds
+FROM active CROSS JOIN dead;
+
+-- name: DeletePublishedRoleSourceOutboxEvents :execrows
+WITH settled AS (
+    SELECT id
+    FROM role_source_outbox
+    WHERE status = 'published'
+      AND published_at < now() - interval '7 days'
+    ORDER BY published_at, id
+    LIMIT @delete_limit
+)
+DELETE FROM role_source_outbox outbox
+USING settled
+WHERE outbox.id = settled.id;
+
+-- name: DeleteDeadRoleSourceOutboxEvents :execrows
+WITH settled AS (
+    SELECT id
+    FROM role_source_outbox
+    WHERE status = 'dead'
+      AND created_at < now() - interval '30 days'
+    ORDER BY created_at, id
+    LIMIT @delete_limit
+)
+DELETE FROM role_source_outbox outbox
+USING settled
+WHERE outbox.id = settled.id;
+
 -- name: LockRoleSourceRuntimeForRegistration :one
 -- Runtime deletion takes FOR UPDATE before checking role_source references.
 -- This shared lock prevents a source from appearing after that check and

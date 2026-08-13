@@ -17,6 +17,8 @@ func TestRoleSourceMetricsReportBoundedApplyAndAuditOutcomes(t *testing.T) {
 	m.RecordApplyFailureAudit("apply", "materialization", "state_conflict", "persist_failed")
 	m.RecordApplyCommitReconciliation("confirmed_succeeded")
 	m.RecordRuntimeConfigAttestation("accepted_loaded")
+	m.RecordOutboxDispatch("published")
+	m.SetOutboxState(2, 1, 30)
 
 	if got := testutil.ToFloat64(m.applyErrors.WithLabelValues("apply", "materialization", "state_conflict")); got != 1 {
 		t.Fatalf("apply error metric=%v, want 1", got)
@@ -32,6 +34,18 @@ func TestRoleSourceMetricsReportBoundedApplyAndAuditOutcomes(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.runtimeAttestations.WithLabelValues("accepted_loaded")); got != 1 {
 		t.Fatalf("runtime attestation metric=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.outboxDispatches.WithLabelValues("published")); got != 1 {
+		t.Fatalf("outbox dispatch metric=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.outboxActive); got != 2 {
+		t.Fatalf("outbox active metric=%v, want 2", got)
+	}
+	if got := testutil.ToFloat64(m.outboxDead); got != 1 {
+		t.Fatalf("outbox dead metric=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.outboxOldestSeconds); got != 30 {
+		t.Fatalf("outbox oldest metric=%v, want 30", got)
 	}
 }
 
@@ -63,6 +77,7 @@ func TestRoleSourceMetricsNormalizeUnboundedCallerValues(t *testing.T) {
 	m.RecordApplyFailureAudit("workspace-123", "request-456", "private database error for tenant-789", "source-abc")
 	m.RecordApplyCommitReconciliation("workspace-123")
 	m.RecordRuntimeConfigAttestation("workspace-123")
+	m.RecordOutboxDispatch("workspace-123")
 
 	if got := testutil.ToFloat64(m.applyErrors.WithLabelValues("unknown", "unknown", "internal_failure")); got != 1 {
 		t.Fatalf("normalized apply error metric=%v, want 1", got)
@@ -75,6 +90,9 @@ func TestRoleSourceMetricsNormalizeUnboundedCallerValues(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.runtimeAttestations.WithLabelValues("invalid")); got != 1 {
 		t.Fatalf("normalized runtime attestation metric=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.outboxDispatches.WithLabelValues("unknown")); got != 1 {
+		t.Fatalf("normalized outbox metric=%v, want 1", got)
 	}
 }
 
@@ -112,6 +130,10 @@ func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.
 		"multica_role_source_apply_failure_audit_writes_total":   {labelMode, labelStage, labelCode, labelOutcome},
 		"multica_role_source_apply_commit_reconciliations_total": {labelOutcome},
 		"multica_role_source_runtime_config_attestations_total":  {labelOutcome},
+		"multica_role_source_outbox_dispatches_total":            {labelOutcome},
+		"multica_role_source_outbox_active":                      {},
+		"multica_role_source_outbox_dead":                        {},
+		"multica_role_source_outbox_oldest_active_seconds":       {},
 		"multica_role_source_runtime_availability":               {labelStatus},
 		"multica_role_source_artifact_integrity_outcomes_total":  {labelOutcome},
 		"multica_role_source_artifact_integrity_failures_total":  {labelStage},
@@ -139,6 +161,8 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 	r.RoleSource.RecordApplyFailureAudit("unknown", "preflight", "capacity_exhausted", "id_generation_failed")
 	r.RoleSource.RecordApplyCommitReconciliation("query_failed")
 	r.RoleSource.RecordRuntimeConfigAttestation("accepted_unloaded")
+	r.RoleSource.RecordOutboxDispatch("published")
+	r.RoleSource.SetOutboxState(1, 2, 3)
 	r.RoleSourceArtifactGC.DeleteFailures.Inc()
 	r.RoleSourceArtifactIntegrity.RecordOutcome("read_failed")
 	r.RoleSourceArtifactIntegrity.RecordFailure("claim")
@@ -154,6 +178,10 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 		"multica_role_source_apply_failure_audit_writes_total":   false,
 		"multica_role_source_apply_commit_reconciliations_total": false,
 		"multica_role_source_runtime_config_attestations_total":  false,
+		"multica_role_source_outbox_dispatches_total":            false,
+		"multica_role_source_outbox_active":                      false,
+		"multica_role_source_outbox_dead":                        false,
+		"multica_role_source_outbox_oldest_active_seconds":       false,
 		"multica_role_source_artifact_gc_delete_failures_total":  false,
 		"multica_role_source_artifact_integrity_outcomes_total":  false,
 		"multica_role_source_artifact_integrity_failures_total":  false,
@@ -183,6 +211,9 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 	for _, required := range []string{
 		"MulticaRoleSourceApplyFailureAuditWriteFailed",
 		"MulticaRoleSourceApplyCommitReconciliationFailed",
+		"MulticaRoleSourceOutboxDeliveryFailed",
+		"MulticaRoleSourceOutboxBacklogOld",
+		"MulticaRoleSourceOutboxDeadLetters",
 		"MulticaRoleSourceArtifactGCDeleteFailures",
 		"MulticaRoleSourceArtifactIntegrityQuarantined",
 		"MulticaRoleSourceArtifactIntegrityReadFailures",
@@ -193,10 +224,15 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 		"MulticaRoleSourceRuntimeUnavailable",
 		"multica_role_source_apply_failure_audit_writes_total",
 		"multica_role_source_apply_commit_reconciliations_total",
+		"multica_role_source_outbox_dispatches_total",
+		"multica_role_source_outbox_oldest_active_seconds",
+		"multica_role_source_outbox_dead",
 		"multica_role_source_runtime_config_attestations_total",
 		"multica_role_source_runtime_availability",
 		`outcome=~"persist_failed|id_generation_failed"`,
 		"roleSourceAuditWriteFailureFor",
+		"roleSourceOutboxFailureFor",
+		"roleSourceOutboxBacklogFor",
 		"roleSourceSeverity",
 		"roleSourceRuntimeUnavailableFor",
 	} {
@@ -217,6 +253,8 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 	values := string(valuesBody)
 	if !strings.Contains(values, "roleSourceAuditWriteFailureFor: 1m") ||
 		!strings.Contains(values, "roleSourceCommitReconciliationFailureFor: 1m") ||
+		!strings.Contains(values, "roleSourceOutboxFailureFor: 1m") ||
+		!strings.Contains(values, "roleSourceOutboxBacklogFor: 5m") ||
 		!strings.Contains(values, "roleSourceRuntimeUnavailableFor: 10m") ||
 		!strings.Contains(values, "roleSourceSeverity: critical") {
 		t.Fatal("role-source audit alert defaults must stay short and critical")

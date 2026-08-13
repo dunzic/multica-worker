@@ -1107,6 +1107,28 @@ type RoleSourceObjectMapping struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
+type RoleSourceOutbox struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	SourceID       pgtype.UUID        `json:"source_id"`
+	EventType      string             `json:"event_type"`
+	ActorType      string             `json:"actor_type"`
+	ActorID        pgtype.UUID        `json:"actor_id"`
+	ApplyID        pgtype.UUID        `json:"apply_id"`
+	Mode           string             `json:"mode"`
+	SnapshotDigest string             `json:"snapshot_digest"`
+	PlanDigest     string             `json:"plan_digest"`
+	ReceiptDigest  string             `json:"receipt_digest"`
+	Status         string             `json:"status"`
+	Attempt        int16              `json:"attempt"`
+	LeaseToken     pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	NextAttemptAt  pgtype.Timestamptz `json:"next_attempt_at"`
+	LastErrorCode  pgtype.Text        `json:"last_error_code"`
+	PublishedAt    pgtype.Timestamptz `json:"published_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type RoleSourcePlan struct {
 	SourceID           pgtype.UUID        `json:"source_id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`

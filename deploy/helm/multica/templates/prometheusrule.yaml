@@ -64,6 +64,33 @@ spec:
           annotations:
             summary: "Role-source apply commit outcome could not be reconciled"
             description: "An apply COMMIT returned an error and the independent receipt check could not safely establish the outcome (outcome={{ "{{ $labels.outcome }}" }}). Stop apply rollout and reconcile the request against successful receipts before retry or recovery."
+        - alert: MulticaRoleSourceOutboxDeliveryFailed
+          expr: |
+            sum by (outcome) (
+              increase(multica_role_source_outbox_dispatches_total{outcome=~"dead|ack_failed|release_failed"}[5m])
+            ) > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceOutboxFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source realtime outbox cannot confirm delivery"
+            description: "A durable role-source event exhausted retries or its publish outcome could not be durably acknowledged (outcome={{ "{{ $labels.outcome }}" }}). Materialization is already committed; inspect PostgreSQL and Redis, preserve the outbox row, and do not replay the apply request."
+        - alert: MulticaRoleSourceOutboxBacklogOld
+          expr: multica_role_source_outbox_oldest_active_seconds > 300
+          for: {{ .Values.monitoring.prometheusRule.roleSourceOutboxBacklogFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source realtime outbox is delayed"
+            description: "The oldest pending role-source invalidation is more than five minutes old. Authoritative data remains committed and clients recover by refetch; inspect worker, PostgreSQL and Redis health before the backlog grows."
+        - alert: MulticaRoleSourceOutboxDeadLetters
+          expr: multica_role_source_outbox_dead > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceOutboxFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source realtime outbox has dead letters"
+            description: "At least one durable role-source invalidation exhausted 20 delivery attempts. Do not delete the evidence before PostgreSQL/Redis recovery and an operator-approved replay procedure."
         - alert: MulticaRoleSourceArtifactGCDeleteFailures
           expr: increase(multica_role_source_artifact_gc_delete_failures_total[15m]) > 20
           for: 15m

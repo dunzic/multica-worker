@@ -49,6 +49,7 @@ export type WSEventType =
   | "skill:created"
   | "skill:updated"
   | "skill:deleted"
+  | "role_source:applied"
   | "subscriber:added"
   | "subscriber:removed"
   | "activity:created"
@@ -158,6 +159,16 @@ export interface AgentArchivedPayload {
 
 export interface AgentRestoredPayload {
   agent: Agent;
+}
+
+export interface RoleSourceAppliedPayload {
+  event_id: string;
+  source_id: string;
+  apply_id: string;
+  mode: "apply" | "rollback";
+  snapshot_digest: string;
+  plan_digest: string;
+  receipt_digest: string;
 }
 
 export interface InboxNewPayload {
