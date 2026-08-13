@@ -472,6 +472,60 @@ describe("RoleSourcesTab", () => {
     );
   });
 
+  it("pages large archive reviews and still requires a decision for every candidate", async () => {
+    featureFlags.roleSourceApply = true;
+    const actions = Array.from({ length: 51 }, (_, index) => ({
+      ref: { kind: "skill", parent_id: "writer", id: `skill-${String(index).padStart(2, "0")}` },
+      display_name: `Skill ${String(index).padStart(2, "0")}`,
+      operation: "archive_candidate",
+      risk: "high",
+      reason: "Removed from source.",
+    }));
+    queryFixtures.plans[0]!.plan = {
+      ...(queryFixtures.plans[0]!.plan as Record<string, unknown>),
+      applyable: true,
+      summary: { create: 0, update: 0, unchanged: 0, archive_candidate: actions.length, blocked: 0 },
+      blockers: [],
+      actions,
+    };
+    apiMocks.createRoleSourcePlanApproval.mockResolvedValue({
+      id: "approval-large",
+      decision: "approved",
+      created_at: "2026-08-13T04:00:00Z",
+    });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByText("0 of 51 decisions complete · page 1 of 2")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Skill 00" })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Skill 50" })).not.toBeInTheDocument();
+    const approve = screen.getByRole("button", { name: "Approve exact plan" });
+    await user.click(screen.getByRole("button", { name: "Retain this page" }));
+    expect(screen.getByText("50 of 51 decisions complete · page 1 of 2")).toBeInTheDocument();
+    expect(approve).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Next candidates" }));
+    expect(screen.getByRole("combobox", { name: "Skill 50" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Archive this page" }));
+    expect(screen.getByText("51 of 51 decisions complete · page 2 of 2")).toBeInTheDocument();
+    expect(approve).toBeEnabled();
+    await user.click(approve);
+
+    expect(apiMocks.createRoleSourcePlanApproval).toHaveBeenCalledWith(
+      "workspace-1",
+      "source-1",
+      "sha256:plan1234567890abcdef",
+      expect.objectContaining({
+        decisions: expect.objectContaining({
+          archives: [
+            expect.objectContaining({ ref: expect.objectContaining({ id: "skill-00" }), decision: "retain" }),
+            ...Array.from({ length: 49 }, () => expect.anything()),
+            expect.objectContaining({ ref: expect.objectContaining({ id: "skill-50" }), decision: "archive" }),
+          ],
+        }),
+      }),
+    );
+  });
+
   it("requires a second confirmation and reuses the apply idempotency key after an ambiguous failure", async () => {
     featureFlags.roleSourceApply = true;
     queryFixtures.plans[0]!.plan = {

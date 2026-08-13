@@ -135,6 +135,7 @@ function scanRequestErrorTranslationKey(error: unknown) {
 }
 
 const sha256DigestPattern = /^sha256:[0-9a-f]{64}$/;
+const archiveDecisionPageSize = 50;
 
 function legalHoldRequestKey(prefix: "create" | "release") {
   return `role-source-legal-hold-${prefix}-${globalThis.crypto.randomUUID()}`;
@@ -183,6 +184,7 @@ export function RoleSourcesTab() {
   const [retentionKeepSuccessful, setRetentionKeepSuccessful] = React.useState("10");
   const [savingRetention, setSavingRetention] = React.useState(false);
   const [archiveDecisions, setArchiveDecisions] = React.useState<Record<string, RoleSourceArchiveDecision>>({});
+  const [archivePage, setArchivePage] = React.useState(0);
   const [applyDialogOpen, setApplyDialogOpen] = React.useState(false);
   const [rollbackSnapshotDigest, setRollbackSnapshotDigest] = React.useState("");
   const scanRequestKeyRef = React.useRef("");
@@ -269,6 +271,7 @@ export function RoleSourcesTab() {
 
   React.useEffect(() => {
     setArchiveDecisions({});
+    setArchivePage(0);
     setApplyDialogOpen(false);
     setRollbackSnapshotDigest("");
     approvalRequestKeyRef.current = "";
@@ -419,6 +422,29 @@ export function RoleSourcesTab() {
   const allArchiveCandidatesDecided = archiveCandidates.every(
     (action) => Boolean(archiveDecisions[objectRefKey(action.ref)]),
   );
+  const decidedArchiveCandidateCount = archiveCandidates.reduce(
+    (count, action) => count + (archiveDecisions[objectRefKey(action.ref)] ? 1 : 0),
+    0,
+  );
+  const archivePageCount = Math.max(1, Math.ceil(archiveCandidates.length / archiveDecisionPageSize));
+  const visibleArchiveCandidates = archiveCandidates.slice(
+    archivePage * archiveDecisionPageSize,
+    (archivePage + 1) * archiveDecisionPageSize,
+  );
+
+  React.useEffect(() => {
+    setArchivePage((current) => Math.min(current, archivePageCount - 1));
+  }, [archivePageCount]);
+
+  function decideVisibleArchiveCandidates(decision: RoleSourceArchiveDecision) {
+    setArchiveDecisions((current) => {
+      const next = { ...current };
+      for (const action of visibleArchiveCandidates) {
+        next[objectRefKey(action.ref)] = decision;
+      }
+      return next;
+    });
+  }
   const approvedApproval = createApproval.data?.decision === "approved"
     ? createApproval.data
     : approvals.data?.find((approval) => approval.decision === "approved");
@@ -1012,7 +1038,25 @@ export function RoleSourcesTab() {
                     </div>
                     {archiveCandidates.length ? (
                       <div className="space-y-3">
-                        {archiveCandidates.map((action) => {
+                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-surface-border p-3">
+                          <div className="text-caption text-muted-foreground">
+                            {t(($) => $.role_sources.archive_progress, {
+                              decided: decidedArchiveCandidateCount,
+                              total: archiveCandidates.length,
+                              page: archivePage + 1,
+                              pages: archivePageCount,
+                            })}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button variant="outline" size="sm" onClick={() => decideVisibleArchiveCandidates("retain")}>
+                              {t(($) => $.role_sources.archive_page_retain)}
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => decideVisibleArchiveCandidates("archive")}>
+                              {t(($) => $.role_sources.archive_page_archive)}
+                            </Button>
+                          </div>
+                        </div>
+                        {visibleArchiveCandidates.map((action) => {
                           const key = objectRefKey(action.ref);
                           const inputId = `archive-decision-${action.ref.kind}-${action.ref.parent_id ?? "root"}-${action.ref.id}`;
                           return (
@@ -1045,6 +1089,29 @@ export function RoleSourcesTab() {
                             </div>
                           );
                         })}
+                        {archivePageCount > 1 ? (
+                          <div className="flex items-center justify-between gap-3">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={archivePage === 0}
+                              onClick={() => setArchivePage((current) => Math.max(0, current - 1))}
+                            >
+                              {t(($) => $.role_sources.archive_previous_page)}
+                            </Button>
+                            <span className="text-caption text-muted-foreground">
+                              {t(($) => $.role_sources.archive_page, { page: archivePage + 1, pages: archivePageCount })}
+                            </span>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={archivePage >= archivePageCount - 1}
+                              onClick={() => setArchivePage((current) => Math.min(archivePageCount - 1, current + 1))}
+                            >
+                              {t(($) => $.role_sources.archive_next_page)}
+                            </Button>
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <div className="text-caption text-muted-foreground">
