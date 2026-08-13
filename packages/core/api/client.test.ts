@@ -48,6 +48,55 @@ describe("ApiClient role-source runtime evidence", () => {
     );
   });
 
+  it("lists trusted adapters and registers only a daemon-local config handle", async () => {
+    const descriptor = {
+      kind: "agentwaker",
+      display_name: "AgentWaker",
+      adapter_version: "1.0.0",
+      contract_version: "1.0",
+      capabilities: { change_hints: true, secret_transfer: true, binary_artifacts: false, provenance: true },
+    };
+    const source = {
+      id: "source-1", workspace_id: "workspace-1", runtime_id: "runtime-1", name: "Production roles",
+      kind: "agentwaker", adapter_version: "1.0.0", config_summary: { configured: true, attributes: [] },
+      policy: {}, state: "registered", current_snapshot_digest: null, version: 1,
+      created_at: "2026-08-13T00:00:00Z", updated_at: "2026-08-13T00:00:00Z",
+      runtime_config: {
+        status: "unattested", attestation_status: "unattested", runtime_status: "online",
+        attestation_id: null, revision: null, observed_at: null, changed_at: null,
+      },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ adapters: [descriptor] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(source), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listRoleSourceAdapters("workspace-1")).resolves.toEqual([descriptor]);
+    await expect(client.createRoleSource("workspace-1", {
+      runtime_id: "runtime-1", name: "Production roles", kind: "agentwaker", adapter_version: "1.0.0",
+      daemon_config_id: "agentwaker-production", config_summary: { configured: true, attributes: [] }, policy: {},
+    })).resolves.toEqual(source);
+    const request = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(request.body).toBe(JSON.stringify({
+      runtime_id: "runtime-1", name: "Production roles", kind: "agentwaker", adapter_version: "1.0.0",
+      daemon_config_id: "agentwaker-production", config_summary: { configured: true, attributes: [] }, policy: {},
+    }));
+    expect(String(request.body)).not.toMatch(/root_path|credential|token|signing_key/);
+  });
+
+  it("fails closed for malformed adapter and registration responses", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ adapters: [{ kind: "agentwaker", root_path: "/private" }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "source-1", daemon_config_id: "secret" }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listRoleSourceAdapters("workspace-1")).resolves.toEqual([]);
+    await expect(client.createRoleSource("workspace-1", {
+      runtime_id: "runtime-1", name: "Production roles", kind: "agentwaker", adapter_version: "1.0.0",
+      daemon_config_id: "agentwaker-production", config_summary: { configured: true, attributes: [] }, policy: {},
+    })).resolves.toBeNull();
+  });
+
   it("sends lifecycle changes as a versioned PATCH", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);

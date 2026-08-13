@@ -6,6 +6,7 @@ import { renderWithI18n } from "../../test/i18n";
 
 const queryFixtures = vi.hoisted(() => ({
   sources: [] as Array<Record<string, unknown>>,
+  adapters: [] as Array<Record<string, unknown>>,
   runtimes: [] as Array<Record<string, unknown>>,
   plans: [] as Array<Record<string, unknown>>,
   impact: undefined as Record<string, unknown> | undefined,
@@ -30,6 +31,7 @@ const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 const queryClientMocks = vi.hoisted(() => ({ invalidateQueries: vi.fn().mockResolvedValue(undefined) }));
 const apiMocks = vi.hoisted(() => ({
   requestRoleSourceScan: vi.fn(),
+  createRoleSource: vi.fn(),
   updateRoleSourceLifecycle: vi.fn(),
   createRoleSourceLegalHold: vi.fn(),
   releaseRoleSourceLegalHold: vi.fn(),
@@ -85,6 +87,8 @@ vi.mock("@tanstack/react-query", async () => {
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
       data: options.queryKey.includes("runtimes")
         ? queryFixtures.runtimes
+        : options.queryKey.includes("adapters")
+          ? queryFixtures.adapters
         : options.queryKey.includes("snapshot-comparison")
           ? queryFixtures.snapshotComparison
         : options.queryKey.includes("snapshot-summaries")
@@ -176,6 +180,20 @@ beforeEach(() => {
       last_seen_at: "2026-08-13T05:00:00Z",
       created_at: "2026-08-13T00:00:00Z",
       updated_at: "2026-08-13T05:00:00Z",
+    },
+  ];
+  queryFixtures.adapters = [
+    {
+      kind: "agentwaker",
+      display_name: "AgentWaker",
+      adapter_version: "1.0.0",
+      contract_version: "1.0",
+      capabilities: {
+        change_hints: true,
+        secret_transfer: true,
+        binary_artifacts: false,
+        provenance: true,
+      },
     },
   ];
   queryFixtures.latestScan = {
@@ -902,6 +920,59 @@ describe("RoleSourcesTab", () => {
         daemon_config_id: "agentwaker-production",
       },
     );
+  });
+
+  it("registers a source from trusted metadata without collecting private configuration", async () => {
+    const created = {
+      ...queryFixtures.sources[0],
+      id: "source-created",
+      state: "registered",
+      runtime_config: {
+        status: "unattested",
+        attestation_status: "unattested",
+        runtime_status: "online",
+        attestation_id: null,
+        revision: null,
+        observed_at: null,
+        changed_at: null,
+      },
+    };
+    apiMocks.createRoleSource.mockResolvedValue(created);
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Register source" }));
+    expect(screen.getByText(/Never paste a filesystem path/)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /path|credential|token|signing/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Runtime" }));
+    await user.click(await screen.findByRole("option", { name: "Build runtime (Codex) · online" }));
+    await user.click(screen.getByRole("combobox", { name: "Trusted adapter" }));
+    await user.click(await screen.findByRole("option", { name: "AgentWaker · 1.0.0" }));
+    await user.type(screen.getByRole("textbox", { name: "Source display name" }), "Production roles");
+    await user.type(screen.getByRole("textbox", { name: "Daemon config handle" }), "agentwaker-production");
+    await user.click(screen.getByRole("button", { name: "Register and verify" }));
+
+    expect(apiMocks.createRoleSource).toHaveBeenCalledWith("workspace-1", {
+      runtime_id: "00000000-0000-4000-8000-000000000011",
+      name: "Production roles",
+      kind: "agentwaker",
+      adapter_version: "1.0.0",
+      daemon_config_id: "agentwaker-production",
+      config_summary: { configured: true, attributes: [] },
+      policy: {},
+    });
+  });
+
+  it("keeps scanning disabled until the selected Runtime config is attested as loaded", () => {
+    queryFixtures.sources[0] = {
+      ...queryFixtures.sources[0],
+      runtime_config: {
+        ...(queryFixtures.sources[0]?.runtime_config as Record<string, unknown>),
+        status: "unattested",
+      },
+    };
+    renderWithI18n(<RoleSourcesTab />);
+    expect(screen.getByRole("button", { name: "Run read-only scan" })).toBeDisabled();
   });
 
   it("shows owner-only legal holds as retention controls, not lifecycle controls", () => {

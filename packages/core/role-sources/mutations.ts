@@ -7,8 +7,31 @@ import type {
   RoleSourcePlanApproval,
   RoleSourcePlanRecord,
   RequestRoleSourceSecretTransferRequest,
+  CreateRoleSourceRequest,
+  RoleSource,
 } from "../types/role-source";
 import { roleSourceKeys } from "./queries";
+
+export function useCreateRoleSource(workspaceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: CreateRoleSourceRequest) => api.createRoleSource(workspaceId, request),
+    onSuccess: (source) => {
+      if (source) {
+        queryClient.setQueryData(
+          roleSourceKeys.list(workspaceId),
+          (current: RoleSource[] | undefined) => [
+            ...(current ?? []).filter((item) => item.id !== source.id),
+            source,
+          ],
+        );
+      }
+    },
+    onSettled: () => queryClient.invalidateQueries({
+      queryKey: roleSourceKeys.list(workspaceId),
+    }),
+  });
+}
 
 export function useRequestRoleSourceScan(workspaceId: string, sourceId: string) {
   const queryClient = useQueryClient();

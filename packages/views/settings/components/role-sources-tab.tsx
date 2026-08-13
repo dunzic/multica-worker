@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2, PauseCircle, PlayCircle, RefreshCw, Repeat2, ShieldAlert, Unplug } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2, PauseCircle, PlayCircle, Plus, RefreshCw, Repeat2, ShieldAlert, Unplug } from "lucide-react";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -36,6 +36,7 @@ import {
 import { cn } from "@multica/ui/lib/utils";
 import {
   roleSourceApplyFailureListOptions,
+  roleSourceAdapterListOptions,
   roleSourceApplyHistoryListOptions,
   roleSourceConfigurationReviewOptions,
   roleSourceLegalHoldListOptions,
@@ -53,6 +54,7 @@ import {
   roleSourceRetentionPreviewOptions,
   roleSourceKeys,
   useApplyRoleSourcePlan,
+  useCreateRoleSource,
   useCreateRoleSourcePlan,
   useCreateRoleSourceRollbackPlan,
   useCreateRoleSourcePlanApproval,
@@ -245,11 +247,20 @@ export function RoleSourcesTab() {
     ...roleSourceListOptions(workspaceId),
     enabled: Boolean(workspaceId),
   });
+  const adapters = useQuery({
+    ...roleSourceAdapterListOptions(workspaceId),
+    enabled: Boolean(workspaceId && canManage),
+  });
   const runtimes = useQuery({
     ...runtimeListOptions(workspaceId),
     enabled: Boolean(workspaceId && canManage),
   });
   const [selectedId, setSelectedId] = React.useState("");
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [createRuntimeId, setCreateRuntimeId] = React.useState("");
+  const [createAdapterKind, setCreateAdapterKind] = React.useState("");
+  const [createName, setCreateName] = React.useState("");
+  const [createConfigId, setCreateConfigId] = React.useState("");
   const [pendingAction, setPendingAction] = React.useState<Exclude<RoleSourceLifecycleAction, "rebind"> | null>(null);
   const [rebindOpen, setRebindOpen] = React.useState(false);
   const [rebindRuntimeId, setRebindRuntimeId] = React.useState("");
@@ -302,6 +313,8 @@ export function RoleSourcesTab() {
     enabled: Boolean(workspaceId && selectedId),
   });
   const selected = sources.data?.find((source) => source.id === selectedId);
+  const createSource = useCreateRoleSource(workspaceId);
+  const selectedAdapter = adapters.data?.find((adapter) => adapter.kind === createAdapterKind);
   const rebindRuntimeOptions = React.useMemo(
     () => [...(runtimes.data ?? [])]
       .sort((left, right) => {
@@ -313,6 +326,10 @@ export function RoleSourcesTab() {
         label: `${runtimeDisplayLabel(runtime)} · ${runtime.status}`,
       })),
     [runtimes.data],
+  );
+  const createRuntimeOptions = React.useMemo(
+    () => rebindRuntimeOptions.filter((option) => option.label.endsWith(" · online")),
+    [rebindRuntimeOptions],
   );
   const latestScan = useQuery({
     ...roleSourceLatestScanOptions(workspaceId, selectedId),
@@ -542,6 +559,34 @@ export function RoleSourcesTab() {
     }
   }
 
+  async function registerSource() {
+    if (!selectedAdapter || !createRuntimeId || !createName.trim() || !createConfigId.trim() || createSource.isPending) return;
+    try {
+      const source = await createSource.mutateAsync({
+        runtime_id: createRuntimeId,
+        name: createName.trim(),
+        kind: selectedAdapter.kind,
+        adapter_version: selectedAdapter.adapter_version,
+        daemon_config_id: createConfigId.trim(),
+        config_summary: { configured: true, attributes: [] },
+        policy: {},
+      });
+      if (!source) {
+        toast.error(t(($) => $.role_sources.create_invalid_response));
+        return;
+      }
+      setSelectedId(source.id);
+      setCreateOpen(false);
+      setCreateRuntimeId("");
+      setCreateAdapterKind("");
+      setCreateName("");
+      setCreateConfigId("");
+      toast.success(t(($) => $.role_sources.create_success));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.create_failed));
+    }
+  }
+
   async function runReadOnlyScan() {
     if (!selected || requestScan.isPending) return;
     if (!scanRequestKeyRef.current) {
@@ -764,8 +809,20 @@ export function RoleSourcesTab() {
         </div>
       </div>
 
-      <SettingsSection title={t(($) => $.role_sources.sources_title)}>
+      <SettingsSection
+        title={t(($) => $.role_sources.sources_title)}
+        description={t(($) => $.role_sources.sources_description)}
+      >
         <SettingsCard>
+          {canManage ? (
+            <div className="flex items-center justify-between gap-4 border-b border-surface-border p-4">
+              <div className="text-caption text-muted-foreground">{t(($) => $.role_sources.create_boundary)}</div>
+              <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
+                <Plus className="h-4 w-4" />
+                {t(($) => $.role_sources.create_action)}
+              </Button>
+            </div>
+          ) : null}
           {sources.isLoading ? (
             <div className="flex min-h-24 items-center justify-center gap-2 text-caption text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -971,7 +1028,8 @@ export function RoleSourcesTab() {
                         latestScanData?.status === "queued" ||
                         latestScanData?.status === "claimed" ||
                         selected.state === "paused" ||
-                        selected.state === "detached"
+                        selected.state === "detached" ||
+                        selected.runtime_config.status !== "loaded"
                       }
                       onClick={() => void runReadOnlyScan()}
                     >
@@ -1988,6 +2046,60 @@ export function RoleSourcesTab() {
             >
               {savingLifecycle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t(($) => $.role_sources.rebind)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={createOpen} onOpenChange={(open) => !createSource.isPending && setCreateOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.role_sources.create_title)}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-caption text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+              {t(($) => $.role_sources.create_private_config_notice)}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="role-source-create-runtime">{t(($) => $.role_sources.create_runtime)}</Label>
+              <Select items={createRuntimeOptions} value={createRuntimeId || null} onValueChange={(value) => setCreateRuntimeId(value ?? "")}>
+                <SelectTrigger id="role-source-create-runtime"><SelectValue placeholder={t(($) => $.role_sources.rebind_runtime_placeholder)} /></SelectTrigger>
+                <SelectContent>{createRuntimeOptions.map((runtime) => <SelectItem key={runtime.value} value={runtime.value}>{runtime.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="role-source-create-adapter">{t(($) => $.role_sources.create_adapter)}</Label>
+              <Select
+                items={(adapters.data ?? []).map((adapter) => ({ value: adapter.kind, label: `${adapter.display_name} · ${adapter.adapter_version}` }))}
+                value={createAdapterKind || null}
+                onValueChange={(value) => setCreateAdapterKind(value ?? "")}
+              >
+                <SelectTrigger id="role-source-create-adapter"><SelectValue placeholder={t(($) => $.role_sources.create_adapter_placeholder)} /></SelectTrigger>
+                <SelectContent>{(adapters.data ?? []).map((adapter) => <SelectItem key={adapter.kind} value={adapter.kind}>{adapter.display_name} · {adapter.adapter_version}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="role-source-create-name">{t(($) => $.role_sources.create_name)}</Label>
+              <Input id="role-source-create-name" value={createName} onChange={(event) => setCreateName(event.target.value)} autoComplete="off" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="role-source-create-config">{t(($) => $.role_sources.create_config_id)}</Label>
+              <Input id="role-source-create-config" value={createConfigId} onChange={(event) => setCreateConfigId(event.target.value)} autoComplete="off" />
+              <p className="text-caption text-muted-foreground">{t(($) => $.role_sources.create_config_help)}</p>
+            </div>
+            {selectedAdapter ? (
+              <div className="flex flex-wrap gap-2">
+                {selectedAdapter.capabilities.change_hints ? <Badge variant="outline">{t(($) => $.role_sources.create_capability_change_hints)}</Badge> : null}
+                {selectedAdapter.capabilities.secret_transfer ? <Badge variant="outline">{t(($) => $.role_sources.create_capability_secret_transfer)}</Badge> : null}
+                {selectedAdapter.capabilities.provenance ? <Badge variant="outline">{t(($) => $.role_sources.create_capability_provenance)}</Badge> : null}
+              </div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={createSource.isPending} onClick={() => setCreateOpen(false)}>{t(($) => $.role_sources.cancel)}</Button>
+            <Button disabled={createSource.isPending || !selectedAdapter || !createRuntimeId || !createName.trim() || !createConfigId.trim()} onClick={() => void registerSource()}>
+              {createSource.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t(($) => $.role_sources.create_register)}
             </Button>
           </DialogFooter>
         </DialogContent>

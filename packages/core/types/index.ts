@@ -85,6 +85,8 @@ export { RUNTIME_PROFILE_PROTOCOL_FAMILIES } from "./agent";
 export type { Workspace, WorkspaceRepo, Member, MemberRole, User, MemberWithUser, Invitation } from "./workspace";
 export type {
   RoleSource,
+  RoleSourceAdapterDescriptor,
+  CreateRoleSourceRequest,
   RoleSourceConfigAttribute,
   RoleSourceConfigSummary,
   RoleSourceObjectRef,

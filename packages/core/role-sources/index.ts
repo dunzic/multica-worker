@@ -2,6 +2,8 @@ export * from "./queries";
 export * from "./mutations";
 export type {
   RoleSource,
+  RoleSourceAdapterDescriptor,
+  CreateRoleSourceRequest,
   RoleSourcePlan,
   RoleSourcePlanAction,
   RoleSourceSecretTransferStatus,

@@ -8,6 +8,29 @@ export interface RoleSourceConfigSummary {
   attributes: RoleSourceConfigAttribute[];
 }
 
+export interface RoleSourceAdapterDescriptor {
+  kind: string;
+  display_name: string;
+  adapter_version: string;
+  contract_version: string;
+  capabilities: {
+    change_hints: boolean;
+    secret_transfer: boolean;
+    binary_artifacts: boolean;
+    provenance: boolean;
+  };
+}
+
+export interface CreateRoleSourceRequest {
+  runtime_id: string;
+  name: string;
+  kind: string;
+  adapter_version: string;
+  daemon_config_id: string;
+  config_summary: RoleSourceConfigSummary;
+  policy: Record<string, unknown>;
+}
+
 export type RoleSourceAttestationStatus =
   | "unattested"
   | "not_loaded"

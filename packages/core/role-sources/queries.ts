@@ -5,6 +5,8 @@ export const roleSourceKeys = {
   all: (workspaceId: string) => ["role-sources", workspaceId] as const,
   list: (workspaceId: string) =>
     [...roleSourceKeys.all(workspaceId), "list"] as const,
+  adapters: (workspaceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "adapters"] as const,
   plans: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "plans", sourceId] as const,
   impact: (workspaceId: string, sourceId: string, planDigest: string) =>
@@ -41,6 +43,13 @@ export function roleSourceListOptions(workspaceId: string) {
   return queryOptions({
     queryKey: roleSourceKeys.list(workspaceId),
     queryFn: () => api.listRoleSources(workspaceId),
+  });
+}
+
+export function roleSourceAdapterListOptions(workspaceId: string) {
+  return queryOptions({
+    queryKey: roleSourceKeys.adapters(workspaceId),
+    queryFn: () => api.listRoleSourceAdapters(workspaceId),
   });
 }
 

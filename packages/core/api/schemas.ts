@@ -56,6 +56,8 @@ import type {
   ResourceLabelsResponse,
   RuntimeModelListRequest,
   RoleSourceScan,
+  RoleSource,
+  RoleSourceAdapterDescriptor,
   RoleSourceLifecycleEvent,
   RoleSourceSnapshotSummary,
   RoleSourceSnapshotComparison,
@@ -87,6 +89,51 @@ export const RoleSourceScanSchema = z.object({
   claimed_at: z.string().nullable().optional().default(null),
   completed_at: z.string().nullable().optional().default(null),
 }).loose();
+
+export const RoleSourceAdapterDescriptorSchema: z.ZodType<RoleSourceAdapterDescriptor> = z.object({
+  kind: z.string().min(1),
+  display_name: z.string().min(1),
+  adapter_version: z.string().min(1),
+  contract_version: z.string().min(1),
+  capabilities: z.object({
+    change_hints: z.boolean(),
+    secret_transfer: z.boolean(),
+    binary_artifacts: z.boolean(),
+    provenance: z.boolean(),
+  }).strict(),
+}).strict();
+
+export const RoleSourceAdapterDescriptorListSchema = z.object({
+  adapters: z.array(RoleSourceAdapterDescriptorSchema).max(64),
+}).strict();
+
+export const RoleSourceSchema: z.ZodType<RoleSource> = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  runtime_id: z.string(),
+  name: z.string(),
+  kind: z.string(),
+  adapter_version: z.string(),
+  config_summary: z.object({
+    configured: z.boolean(),
+    attributes: z.array(z.object({ name: z.string(), value: z.string() }).strict()).max(64),
+  }).strict(),
+  policy: z.record(z.string(), z.unknown()),
+  state: z.string(),
+  current_snapshot_digest: z.string().nullable(),
+  version: z.number().int().nonnegative(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  runtime_config: z.object({
+    status: z.enum(["unattested", "not_loaded", "config_missing", "kind_mismatch", "adapter_version_mismatch", "invalid_attestation", "loaded", "runtime_unavailable"]),
+    attestation_status: z.enum(["unattested", "not_loaded", "config_missing", "kind_mismatch", "adapter_version_mismatch", "invalid_attestation", "loaded"]),
+    runtime_status: z.enum(["online", "offline", "unknown"]),
+    attestation_id: z.string().nullable(),
+    revision: z.string().nullable(),
+    observed_at: z.string().nullable(),
+    changed_at: z.string().nullable(),
+  }).strict(),
+}).strict();
 
 export const RoleSourceScanListSchema = z.object({
   scans: z.array(RoleSourceScanSchema),

@@ -40,6 +40,8 @@ import type {
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
   RoleSource,
+  RoleSourceAdapterDescriptor,
+  CreateRoleSourceRequest,
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
   RoleSourceApplyResult,
@@ -328,6 +330,8 @@ import {
   RoleSourceSnapshotSummaryListSchema,
   RoleSourceSnapshotComparisonSchema,
   RoleSourceConfigurationReviewSchema,
+  RoleSourceAdapterDescriptorListSchema,
+  RoleSourceSchema,
   ChannelDeliveryListSchema,
   RoleSourcePlanRecordSchema,
   RoleSourcePlanRecordListSchema,
@@ -1700,6 +1704,28 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/role-sources`,
     );
     return response.sources ?? [];
+  }
+
+  async listRoleSourceAdapters(workspaceId: string): Promise<RoleSourceAdapterDescriptor[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-source-adapters`,
+    );
+    return parseWithFallback(raw, RoleSourceAdapterDescriptorListSchema, { adapters: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-source-adapters",
+    }).adapters;
+  }
+
+  async createRoleSource(
+    workspaceId: string,
+    request: CreateRoleSourceRequest,
+  ): Promise<RoleSource | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSource | null>(raw, RoleSourceSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources",
+    });
   }
 
   async listRoleSourceRuntimeAttestations(
