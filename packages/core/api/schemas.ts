@@ -296,6 +296,11 @@ const RoleSourcePlanActionSchema = z.object({
   after_digest: z.string().optional(),
   reason: z.string(),
   blocking_diagnostics: z.array(z.string()).optional(),
+  adoption_candidate: z.object({
+    target_kind: z.enum(["agent", "skill", "autopilot"]),
+    target_id: z.string(),
+    version_commitment: z.string(),
+  }).optional(),
 }).loose();
 
 const RoleSourcePlanSchema = z.object({
@@ -340,6 +345,12 @@ const RoleSourceApprovalDecisionsSchema = z.object({
     ref: RoleSourceObjectRefSchema,
     decision: z.string(),
   }).loose()),
+  adoptions: z.array(z.object({
+    ref: RoleSourceObjectRefSchema,
+    target_kind: z.enum(["agent", "skill", "autopilot"]),
+    target_id: z.string(),
+    version_commitment: z.string(),
+  }).loose()).default([]),
 }).loose();
 
 export const RoleSourcePlanApprovalSchema = z.object({
@@ -370,6 +381,7 @@ const RoleSourceApplyReceiptSchema = z.object({
   counts: z.object({
     created: z.number(),
     updated: z.number(),
+    adopted: z.number().default(0),
     unchanged: z.number(),
     archived: z.number(),
     retained: z.number(),

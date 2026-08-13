@@ -984,8 +984,8 @@ WHERE mapping.source_id = @source_id
 -- mapping and a user-owned object share a skill/autopilot name.
 WITH requested AS (
     SELECT
-        item ->> 'target_kind' AS target_kind,
-        item ->> 'name' AS requested_name,
+        (item ->> 'target_kind')::TEXT AS target_kind,
+        (item ->> 'name')::TEXT AS requested_name,
         NULLIF(item ->> 'allowed_id', '')::UUID AS allowed_id
     FROM jsonb_array_elements(@names::jsonb) AS item
 )
@@ -995,7 +995,6 @@ WHERE
     (target_kind = 'agent' AND EXISTS (
         SELECT 1 FROM agent target
         WHERE target.workspace_id = @workspace_id
-          AND target.kind = 'user'
           AND target.name = requested.requested_name
           AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
     ))
@@ -1012,6 +1011,83 @@ WHERE
           AND target.title = requested.requested_name
           AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
     ));
+
+-- name: ListRoleSourceAdoptionTargetsForUpdate :many
+-- Resolve same-name targets in one canonical, tenant-scoped query. During plan
+-- creation target_id is empty and every matching row is returned so ambiguity
+-- is explicit. During apply target_id is the immutable approved identity. The
+-- selected rows are locked before their version commitment is revalidated.
+-- managed_by_source_id is deliberately returned: a target already controlled
+-- by any live role-source mapping can never be adopted by another source key.
+WITH requested AS MATERIALIZED (
+    SELECT
+        item ->> 'target_kind' AS target_kind,
+        item ->> 'name' AS requested_name,
+        NULLIF(item ->> 'target_id', '')::UUID AS target_id
+    FROM jsonb_array_elements(@targets::jsonb) AS item
+), agent_targets AS (
+    SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
+           target.updated_at, (target.kind = 'user' AND target.archived_at IS NULL) AS adoption_eligible,
+           (SELECT mapping.source_id
+            FROM role_source_object_mapping mapping
+            WHERE mapping.workspace_id = @workspace_id
+              AND mapping.target_kind = 'agent'
+              AND mapping.target_id = target.id
+            ORDER BY mapping.source_id, mapping.source_kind, mapping.source_parent_id, mapping.source_object_id
+            LIMIT 1) AS managed_by_source_id
+    FROM requested
+    JOIN agent target
+      ON requested.target_kind = 'agent'
+     AND target.workspace_id = @workspace_id
+     AND target.name = requested.requested_name
+     AND (requested.target_id IS NULL OR target.id = requested.target_id)
+    FOR UPDATE OF target
+), skill_targets AS (
+    SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
+           target.updated_at, TRUE AS adoption_eligible,
+           (SELECT mapping.source_id
+            FROM role_source_object_mapping mapping
+            WHERE mapping.workspace_id = @workspace_id
+              AND mapping.target_kind = 'skill'
+              AND mapping.target_id = target.id
+            ORDER BY mapping.source_id, mapping.source_kind, mapping.source_parent_id, mapping.source_object_id
+            LIMIT 1) AS managed_by_source_id
+    FROM requested
+    JOIN skill target
+      ON requested.target_kind = 'skill'
+     AND target.workspace_id = @workspace_id
+     AND target.name = requested.requested_name
+     AND (requested.target_id IS NULL OR target.id = requested.target_id)
+    FOR UPDATE OF target
+), autopilot_targets AS (
+    SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
+           target.updated_at, TRUE AS adoption_eligible,
+           (SELECT mapping.source_id
+            FROM role_source_object_mapping mapping
+            WHERE mapping.workspace_id = @workspace_id
+              AND mapping.target_kind = 'autopilot'
+              AND mapping.target_id = target.id
+            ORDER BY mapping.source_id, mapping.source_kind, mapping.source_parent_id, mapping.source_object_id
+            LIMIT 1) AS managed_by_source_id
+    FROM requested
+    JOIN autopilot target
+      ON requested.target_kind = 'autopilot'
+     AND target.workspace_id = @workspace_id
+     AND target.status <> 'archived'
+     AND target.title = requested.requested_name
+     AND (requested.target_id IS NULL OR target.id = requested.target_id)
+    FOR UPDATE OF target
+), matches AS (
+    SELECT * FROM agent_targets
+    UNION ALL
+    SELECT * FROM skill_targets
+    UNION ALL
+    SELECT * FROM autopilot_targets
+)
+SELECT target_kind::TEXT AS target_kind, requested_name::TEXT AS requested_name,
+       target_id, updated_at, adoption_eligible, managed_by_source_id
+FROM matches
+ORDER BY target_kind, requested_name, target_id;
 
 -- name: MaterializeRoleSourceAgents :many
 -- Create or update one bounded role batch. The caller preallocates every new

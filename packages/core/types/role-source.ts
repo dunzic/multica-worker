@@ -261,6 +261,11 @@ export interface RoleSourcePlanAction {
   after_digest?: string;
   reason: string;
   blocking_diagnostics?: string[];
+  adoption_candidate?: {
+    target_kind: "agent" | "skill" | "autopilot";
+    target_id: string;
+    version_commitment: string;
+  };
 }
 
 export interface RoleSourceSecretTransferStatus {
@@ -326,6 +331,12 @@ export interface RoleSourceArchiveActionDecision {
 export interface RoleSourceApprovalDecisions {
   contract_version: string;
   archives: RoleSourceArchiveActionDecision[];
+  adoptions: Array<{
+    ref: RoleSourceObjectRef;
+    target_kind: "agent" | "skill" | "autopilot";
+    target_id: string;
+    version_commitment: string;
+  }>;
 }
 
 export interface CreateRoleSourcePlanRequest {
@@ -358,6 +369,7 @@ export interface ApplyRoleSourcePlanRequest {
 export interface RoleSourceApplyCounts {
   created: number;
   updated: number;
+  adopted: number;
   unchanged: number;
   archived: number;
   retained: number;

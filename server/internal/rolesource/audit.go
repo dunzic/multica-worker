@@ -38,6 +38,7 @@ type AuditPayload struct {
 	ErrorCode              string `json:"error_code,omitempty"`
 	CreateCount            int    `json:"create_count,omitempty"`
 	UpdateCount            int    `json:"update_count,omitempty"`
+	AdoptCount             int    `json:"adopt_count,omitempty"`
 	UnchangedCount         int    `json:"unchanged_count,omitempty"`
 	ArchiveCount           int    `json:"archive_count,omitempty"`
 	BlockedCount           int    `json:"blocked_count,omitempty"`
@@ -172,7 +173,7 @@ func validateAuditPayload(payload AuditPayload) error {
 		}
 	}
 	counts := []int{
-		payload.CreateCount, payload.UpdateCount, payload.UnchangedCount,
+		payload.CreateCount, payload.UpdateCount, payload.AdoptCount, payload.UnchangedCount,
 		payload.ArchiveCount, payload.BlockedCount, payload.DiagnosticCount,
 		payload.CancelledScanCount, payload.CancelledTransferCount,
 	}

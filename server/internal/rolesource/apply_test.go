@@ -266,6 +266,40 @@ func TestApplyReceiptDigestDetectsTampering(t *testing.T) {
 	}
 }
 
+func TestDecodeApplyReceiptAcceptsHistoricalVersionWithoutAdoptedCount(t *testing.T) {
+	applyID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
+	receipt := ApplyReceipt{
+		ContractVersion: "1.1", Mode: "apply", ApplyID: util.UUIDToString(applyID),
+		SourceID: "00000000-0000-4000-8000-000000000042", WorkspaceID: "00000000-0000-4000-8000-000000000001",
+		SnapshotDigest: testSHA256("a"), PlanDigest: testSHA256("b"), ApprovalID: "00000000-0000-4000-8000-000000000044",
+		Mappings: []ApplyMapping{},
+	}
+	_, digest, err := encodeApplyReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.ReceiptDigest = digest
+	body, _, err := encodeApplyReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte(`"adopted"`)) {
+		t.Fatal("historical receipt unexpectedly serialized the new adopted count")
+	}
+	row := db.RoleSourceApply{
+		ID: applyID, SourceID: util.MustParseUUID(receipt.SourceID), WorkspaceID: util.MustParseUUID(receipt.WorkspaceID),
+		Mode: "apply", Status: "succeeded", SnapshotDigest: receipt.SnapshotDigest, PlanDigest: receipt.PlanDigest,
+		ReceiptDigest: pgtype.Text{String: digest, Valid: true}, Receipt: body,
+	}
+	decoded, err := decodeApplyReceipt(row)
+	if err != nil {
+		t.Fatalf("historical receipt rejected: %v", err)
+	}
+	if decoded.Counts.Adopted != 0 {
+		t.Fatalf("historical adopted count=%d", decoded.Counts.Adopted)
+	}
+}
+
 func TestMatchReconciledApplyRequiresExactSuccessfulReceipt(t *testing.T) {
 	applyID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
 	workspaceID := util.MustParseUUID("00000000-0000-4000-8000-000000000001")
@@ -771,6 +805,41 @@ func TestMaterializationNamesRejectDuplicateSourceNamespace(t *testing.T) {
 	}
 }
 
+func TestApplyAdoptionMappingsBindsExactApprovedTargets(t *testing.T) {
+	ref := ObjectRef{Kind: "skill", ParentID: "writer", ID: "draft"}
+	targetID := "00000000-0000-4000-8000-000000000051"
+	sourceID := util.MustParseUUID("00000000-0000-4000-8000-000000000042")
+	workspaceID := util.MustParseUUID("00000000-0000-4000-8000-000000000001")
+	mappings := map[string]db.RoleSourceObjectMapping{}
+	decision := AdoptionActionDecision{Ref: ref, TargetKind: "skill", TargetID: targetID, VersionCommitment: testSHA256("version")}
+	if err := applyAdoptionMappings(mappings, map[string]AdoptionActionDecision{objectKey(ref): decision}, sourceID, workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	mapping := mappings[objectKey(ref)]
+	if mapping.SourceID != sourceID || mapping.WorkspaceID != workspaceID || mapping.TargetKind != "skill" || util.UUIDToString(mapping.TargetID) != targetID || string(mapping.OwnershipMask) != "[]" {
+		t.Fatalf("adoption mapping=%+v", mapping)
+	}
+	if err := applyAdoptionMappings(mappings, map[string]AdoptionActionDecision{objectKey(ref): decision}, sourceID, workspaceID); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("duplicate adoption error=%v", err)
+	}
+}
+
+func TestAdoptionVersionCommitmentDetectsTargetMutation(t *testing.T) {
+	first := pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 10, 0, 0, 123, time.UTC), Valid: true}
+	second := pgtype.Timestamptz{Time: first.Time.Add(time.Nanosecond), Valid: true}
+	a, err := adoptionVersionCommitment(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := adoptionVersionCommitment(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b || !sha256Pattern.MatchString(a) || !sha256Pattern.MatchString(b) {
+		t.Fatalf("commitments a=%q b=%q", a, b)
+	}
+}
+
 func TestMaterializationNameConflictSQLRejectsAnyNonMappedMatch(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
 	if err != nil {
@@ -779,11 +848,21 @@ func TestMaterializationNameConflictSQLRejectsAnyNonMappedMatch(t *testing.T) {
 	query := string(body)
 	for _, required := range []string{
 		"CountRoleSourceMaterializationNameConflicts", "jsonb_array_elements", "target.workspace_id = @workspace_id",
-		"target.id <> requested.allowed_id", "target.kind = 'user'", "target.status <> 'archived'",
+		"target.id <> requested.allowed_id", "adoption_eligible", "target.status <> 'archived'",
 	} {
 		if !strings.Contains(query, required) {
 			t.Errorf("materialization name batch query missing %q", required)
 		}
+	}
+	for _, required := range []string{"ListRoleSourceAdoptionTargetsForUpdate", "FOR UPDATE OF target", "managed_by_source_id", "target.id = requested.target_id"} {
+		if !strings.Contains(query, required) {
+			t.Errorf("adoption target query missing %q", required)
+		}
+	}
+	adoptionStart := strings.Index(query, "-- name: ListRoleSourceAdoptionTargetsForUpdate")
+	adoptionEnd := strings.Index(query[adoptionStart:], "-- name: MaterializeRoleSourceAgents")
+	if adoptionStart < 0 || adoptionEnd < 0 || strings.Contains(query[adoptionStart:adoptionStart+adoptionEnd], "mapping.archived_at IS NULL") {
+		t.Fatal("adoption query must reject targets with active or historical provenance mappings")
 	}
 	if strings.Contains(query, "FindRoleSourceSkillNameConflict") || strings.Contains(query, "FindRoleSourceAutopilotTitleConflict") {
 		t.Fatal("per-object nondeterministic name conflict queries remain")

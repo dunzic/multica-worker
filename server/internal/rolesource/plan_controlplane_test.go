@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -145,5 +146,94 @@ func TestDecodePersistedPlanRevalidatesContentAndColumns(t *testing.T) {
 	row.ToSnapshotDigest = "sha256:" + strings.Repeat("0", 64)
 	if _, err := DecodePersistedPlan(row); err == nil {
 		t.Fatal("persisted plan accepted a mismatched target column")
+	}
+}
+
+func TestResolveAdoptionCandidatesFreezesOneUnmanagedTarget(t *testing.T) {
+	snapshot := planTestSnapshot(t, planTestManifest())
+	plan, err := BuildPlan("source-1", nil, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests, refs, err := collectAdoptionTargetRequests(snapshot, plan)
+	if err != nil || len(requests) == 0 {
+		t.Fatalf("adoption requests=%+v err=%v", requests, err)
+	}
+	request := refs[objectKey(ObjectRef{Kind: "role", ID: "writer"})]
+	row := db.ListRoleSourceAdoptionTargetsForUpdateRow{
+		TargetKind: request.TargetKind, RequestedName: request.Name,
+		TargetID:         util.MustParseUUID("00000000-0000-4000-8000-000000000051"),
+		UpdatedAt:        pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), Valid: true},
+		AdoptionEligible: pgtype.Bool{Bool: true, Valid: true},
+	}
+	if err := resolveAdoptionCandidates(&plan, refs, []db.ListRoleSourceAdoptionTargetsForUpdateRow{row}); err != nil {
+		t.Fatal(err)
+	}
+	action := actionIndex(plan)[objectKey(ObjectRef{Kind: "role", ID: "writer"})]
+	if action.AdoptionCandidate == nil || action.AdoptionCandidate.TargetID != util.UUIDToString(row.TargetID) || action.Risk != PlanRiskHigh {
+		t.Fatalf("adoption action=%+v", action)
+	}
+	if err := ValidatePlan(plan); err != nil {
+		t.Fatalf("resolved plan invalid: %v", err)
+	}
+}
+
+func TestResolveAdoptionCandidatesBlocksAmbiguousOrManagedTarget(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		rows func(adoptionTargetRequest) []db.ListRoleSourceAdoptionTargetsForUpdateRow
+		code string
+	}{
+		{
+			name: "ambiguous",
+			rows: func(request adoptionTargetRequest) []db.ListRoleSourceAdoptionTargetsForUpdateRow {
+				return []db.ListRoleSourceAdoptionTargetsForUpdateRow{
+					{TargetKind: request.TargetKind, RequestedName: request.Name, TargetID: util.MustParseUUID("00000000-0000-4000-8000-000000000051")},
+					{TargetKind: request.TargetKind, RequestedName: request.Name, TargetID: util.MustParseUUID("00000000-0000-4000-8000-000000000052")},
+				}
+			},
+			code: "adoption_target_ambiguous",
+		},
+		{
+			name: "managed",
+			rows: func(request adoptionTargetRequest) []db.ListRoleSourceAdoptionTargetsForUpdateRow {
+				return []db.ListRoleSourceAdoptionTargetsForUpdateRow{{
+					TargetKind: request.TargetKind, RequestedName: request.Name, TargetID: util.MustParseUUID("00000000-0000-4000-8000-000000000051"),
+					ManagedBySourceID: util.MustParseUUID("00000000-0000-4000-8000-000000000042"),
+				}}
+			},
+			code: "adoption_target_managed",
+		},
+		{
+			name: "ineligible",
+			rows: func(request adoptionTargetRequest) []db.ListRoleSourceAdoptionTargetsForUpdateRow {
+				return []db.ListRoleSourceAdoptionTargetsForUpdateRow{{
+					TargetKind: request.TargetKind, RequestedName: request.Name, TargetID: util.MustParseUUID("00000000-0000-4000-8000-000000000051"),
+				}}
+			},
+			code: "adoption_target_ineligible",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := planTestSnapshot(t, planTestManifest())
+			plan, err := BuildPlan("source-1", nil, snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, refs, err := collectAdoptionTargetRequests(snapshot, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := refs[objectKey(ObjectRef{Kind: "role", ID: "writer"})]
+			if err := resolveAdoptionCandidates(&plan, refs, test.rows(request)); err != nil {
+				t.Fatal(err)
+			}
+			if plan.Applyable || len(plan.Blockers) != 1 || plan.Blockers[0].Code != test.code {
+				t.Fatalf("blocked plan=%+v", plan)
+			}
+			if err := ValidatePlan(plan); err != nil {
+				t.Fatalf("blocked plan invalid: %v", err)
+			}
+		})
 	}
 }

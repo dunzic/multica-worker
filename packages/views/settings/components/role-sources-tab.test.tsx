@@ -624,6 +624,64 @@ describe("RoleSourcesTab", () => {
             { ref: { kind: "role", id: "alpha" }, decision: "retain" },
             { ref: { kind: "role", id: "zeta" }, decision: "archive" },
           ],
+          adoptions: [],
+        },
+      }),
+    );
+  });
+
+  it("requires explicit adoption of the immutable target and allows undo before approval", async () => {
+    featureFlags.roleSourceApply = true;
+    queryFixtures.plans[0]!.plan = {
+      ...(queryFixtures.plans[0]!.plan as Record<string, unknown>),
+      applyable: true,
+      summary: { create: 1, update: 0, unchanged: 0, archive_candidate: 0, blocked: 0 },
+      blockers: [],
+      actions: [{
+        ref: { kind: "skill", parent_id: "writer", id: "draft" },
+        display_name: "Draft",
+        operation: "create",
+        risk: "high",
+        reason: "One unmanaged same-name target exists.",
+        adoption_candidate: {
+          target_kind: "skill",
+          target_id: "00000000-0000-4000-8000-000000000051",
+          version_commitment: `sha256:${"c".repeat(64)}`,
+        },
+      }],
+    };
+    apiMocks.createRoleSourcePlanApproval.mockResolvedValue({
+      id: "approval-adoption",
+      decision: "approved",
+      created_at: "2026-08-13T04:00:00Z",
+    });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    const approve = screen.getByRole("button", { name: "Approve exact plan" });
+    const confirm = screen.getByRole("button", { name: "Confirm adoption" });
+    expect(approve).toBeDisabled();
+    await user.click(confirm);
+    expect(approve).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Undo confirmation" }));
+    expect(approve).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Confirm adoption" }));
+    await user.click(approve);
+
+    expect(apiMocks.createRoleSourcePlanApproval).toHaveBeenCalledWith(
+      "workspace-1",
+      "source-1",
+      "sha256:plan1234567890abcdef",
+      expect.objectContaining({
+        decisions: {
+          contract_version: "role-source-plan/v1",
+          archives: [],
+          adoptions: [{
+            ref: { kind: "skill", parent_id: "writer", id: "draft" },
+            target_kind: "skill",
+            target_id: "00000000-0000-4000-8000-000000000051",
+            version_commitment: `sha256:${"c".repeat(64)}`,
+          }],
         },
       }),
     );

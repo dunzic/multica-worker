@@ -417,7 +417,7 @@ func roleSourceTestPlanRow(t *testing.T) db.RoleSourcePlan {
 func roleSourceTestApprovalRow(t *testing.T, plan db.RoleSourcePlan) db.RoleSourcePlanApproval {
 	t.Helper()
 	decisions, err := json.Marshal(rolesource.ApprovalDecisions{
-		ContractVersion: rolesource.PlanContractVersion, Archives: []rolesource.ArchiveActionDecision{},
+		ContractVersion: rolesource.PlanContractVersion, Archives: []rolesource.ArchiveActionDecision{}, Adoptions: []rolesource.AdoptionActionDecision{},
 	})
 	if err != nil {
 		t.Fatal(err)

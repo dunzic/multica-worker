@@ -413,7 +413,7 @@ describe("ApiClient role-source runtime evidence", () => {
       workspace_id: "workspace-1",
       plan_digest: plan.plan.plan_digest,
       decision: "approved",
-      decisions: { contract_version: "role-source-plan/v1", archives: [] },
+      decisions: { contract_version: "role-source-plan/v1", archives: [], adoptions: [] },
       actor_user_id: "user-1",
       created_at: "2026-08-13T00:01:00Z",
     };
@@ -432,7 +432,7 @@ describe("ApiClient role-source runtime evidence", () => {
         snapshot_digest: plan.plan.to_snapshot_digest,
         plan_digest: plan.plan.plan_digest,
         approval_id: "approval-1",
-        counts: { created: 1, updated: 0, unchanged: 0, archived: 0, retained: 0 },
+        counts: { created: 1, updated: 0, adopted: 0, unchanged: 0, archived: 0, retained: 0 },
         receipt_digest: `sha256:${"c".repeat(64)}`,
       },
       completed_at: "2026-08-13T00:02:00Z",
@@ -461,7 +461,7 @@ describe("ApiClient role-source runtime evidence", () => {
     await expect(client.createRoleSourcePlanApproval("workspace-1", "source-1", plan.plan.plan_digest, {
       request_key: "approval-request-1",
       decision: "approved",
-      decisions: { contract_version: "role-source-plan/v1", archives: [] },
+      decisions: { contract_version: "role-source-plan/v1", archives: [], adoptions: [] },
     })).resolves.toEqual(approval);
     await expect(client.applyRoleSourcePlan("workspace-1", "source-1", plan.plan.plan_digest, {
       request_key: "apply-request-1",

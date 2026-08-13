@@ -289,6 +289,7 @@ export function RoleSourcesTab() {
   const [retentionKeepSuccessful, setRetentionKeepSuccessful] = React.useState("10");
   const [savingRetention, setSavingRetention] = React.useState(false);
   const [archiveDecisions, setArchiveDecisions] = React.useState<Record<string, RoleSourceArchiveDecision>>({});
+  const [adoptionDecisions, setAdoptionDecisions] = React.useState<Record<string, boolean>>({});
   const [archivePage, setArchivePage] = React.useState(0);
   const [applyDialogOpen, setApplyDialogOpen] = React.useState(false);
   const [rollbackSnapshotDigest, setRollbackSnapshotDigest] = React.useState("");
@@ -427,6 +428,7 @@ export function RoleSourcesTab() {
 
   React.useEffect(() => {
     setArchiveDecisions({});
+    setAdoptionDecisions({});
     setArchivePage(0);
     setApplyDialogOpen(false);
     setRollbackSnapshotDigest("");
@@ -619,6 +621,15 @@ export function RoleSourcesTab() {
   const allArchiveCandidatesDecided = archiveCandidates.every(
     (action) => Boolean(archiveDecisions[objectRefKey(action.ref)]),
   );
+  const adoptionCandidates = React.useMemo(
+    () => (latest?.plan.actions ?? [])
+      .filter((action) => Boolean(action.adoption_candidate))
+      .sort((left, right) => objectRefKey(left.ref).localeCompare(objectRefKey(right.ref))),
+    [latest?.plan.actions],
+  );
+  const allAdoptionCandidatesDecided = adoptionCandidates.every(
+    (action) => adoptionDecisions[objectRefKey(action.ref)] === true,
+  );
   const decidedArchiveCandidateCount = archiveCandidates.reduce(
     (count, action) => count + (archiveDecisions[objectRefKey(action.ref)] ? 1 : 0),
     0,
@@ -740,7 +751,7 @@ export function RoleSourcesTab() {
   }
 
   async function approveLatestPlan() {
-    if (!latest?.plan.applyable || !allArchiveCandidatesDecided || createApproval.isPending) return;
+    if (!latest?.plan.applyable || !allArchiveCandidatesDecided || !allAdoptionCandidatesDecided || createApproval.isPending) return;
     if (!approvalRequestKeyRef.current) {
       approvalRequestKeyRef.current = `role-source-approval-${globalThis.crypto.randomUUID()}`;
     }
@@ -753,6 +764,12 @@ export function RoleSourcesTab() {
           archives: archiveCandidates.map((action) => ({
             ref: action.ref,
             decision: archiveDecisions[objectRefKey(action.ref)]!,
+          })),
+          adoptions: adoptionCandidates.map((action) => ({
+            ref: action.ref,
+            target_kind: action.adoption_candidate!.target_kind,
+            target_id: action.adoption_candidate!.target_id,
+            version_commitment: action.adoption_candidate!.version_commitment,
           })),
         },
       });
@@ -1428,6 +1445,37 @@ export function RoleSourcesTab() {
                         {t(($) => $.role_sources.archive_none)}
                       </div>
                     )}
+                    {adoptionCandidates.length ? (
+                      <div className="space-y-3 rounded-md border border-surface-border bg-muted/30 p-3">
+                        <div>
+                          <div className="text-caption font-medium">{t(($) => $.role_sources.adoption_title)}</div>
+                          <p className="mt-1 text-caption text-muted-foreground">{t(($) => $.role_sources.adoption_description)}</p>
+                        </div>
+                        {adoptionCandidates.map((action) => {
+                          const key = objectRefKey(action.ref);
+                          return (
+                            <div key={key} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-surface-border bg-surface px-3 py-2">
+                              <div className="min-w-0">
+                                <div className="text-label font-medium">{action.display_name || action.ref.id}</div>
+                                <div className="mt-1 text-caption text-muted-foreground">
+                                  {action.adoption_candidate!.target_kind} · {action.adoption_candidate!.target_id}
+                                </div>
+                              </div>
+                              <Button
+                                aria-pressed={adoptionDecisions[key] === true}
+                                variant={adoptionDecisions[key] ? "secondary" : "outline"}
+                                size="sm"
+                                onClick={() => setAdoptionDecisions((current) => ({ ...current, [key]: !current[key] }))}
+                              >
+                                {adoptionDecisions[key]
+                                  ? t(($) => $.role_sources.adoption_revoke)
+                                  : t(($) => $.role_sources.adoption_confirm)}
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="text-caption text-muted-foreground">
                         {approvedApproval
@@ -1438,7 +1486,7 @@ export function RoleSourcesTab() {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={createApproval.isPending || !allArchiveCandidatesDecided || Boolean(approvedApproval)}
+                          disabled={createApproval.isPending || !allArchiveCandidatesDecided || !allAdoptionCandidatesDecided || Boolean(approvedApproval)}
                           onClick={() => void approveLatestPlan()}
                         >
                           {createApproval.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
@@ -1819,6 +1867,7 @@ export function RoleSourcesTab() {
                           {t(($) => $.role_sources.receipt_counts, {
                             created: apply.receipt.counts.created,
                             updated: apply.receipt.counts.updated,
+                            adopted: apply.receipt.counts.adopted,
                             unchanged: apply.receipt.counts.unchanged,
                             archived: apply.receipt.counts.archived,
                             retained: apply.receipt.counts.retained,

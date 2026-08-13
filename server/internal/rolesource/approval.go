@@ -18,13 +18,21 @@ const (
 // conflict/adoption decisions extend this typed structure under a new contract
 // version rather than accepting arbitrary JSON.
 type ApprovalDecisions struct {
-	ContractVersion string                  `json:"contract_version"`
-	Archives        []ArchiveActionDecision `json:"archives"`
+	ContractVersion string                   `json:"contract_version"`
+	Archives        []ArchiveActionDecision  `json:"archives"`
+	Adoptions       []AdoptionActionDecision `json:"adoptions"`
 }
 
 type ArchiveActionDecision struct {
 	Ref      ObjectRef       `json:"ref"`
 	Decision ArchiveDecision `json:"decision"`
+}
+
+type AdoptionActionDecision struct {
+	Ref               ObjectRef `json:"ref"`
+	TargetKind        string    `json:"target_kind"`
+	TargetID          string    `json:"target_id"`
+	VersionCommitment string    `json:"version_commitment"`
 }
 
 func ValidateApprovalDecisions(plan Plan, decision string, decisions *ApprovalDecisions) error {
@@ -76,6 +84,36 @@ func ValidateApprovalDecisions(plan Plan, decision string, decisions *ApprovalDe
 	if len(seen) != len(wanted) {
 		return errors.New("every archive candidate requires an explicit archive or retain decision")
 	}
+
+	wantedAdoptions := make(map[string]AdoptionCandidate)
+	for _, action := range plan.Actions {
+		if action.AdoptionCandidate != nil {
+			wantedAdoptions[objectKey(action.Ref)] = *action.AdoptionCandidate
+		}
+	}
+	seenAdoptions := make(map[string]bool, len(decisions.Adoptions))
+	previous = ""
+	for index, adoption := range decisions.Adoptions {
+		if err := validateObjectRef(adoption.Ref); err != nil {
+			return fmt.Errorf("adoption decision %d: %w", index, err)
+		}
+		key := objectKey(adoption.Ref)
+		if index > 0 && key <= previous {
+			return errors.New("adoption decisions are not in unique canonical order")
+		}
+		previous = key
+		candidate, ok := wantedAdoptions[key]
+		if !ok {
+			return fmt.Errorf("adoption decision %d does not match a plan candidate", index)
+		}
+		if adoption.TargetKind != candidate.TargetKind || adoption.TargetID != candidate.TargetID || adoption.VersionCommitment != candidate.VersionCommitment {
+			return fmt.Errorf("adoption decision %d does not match the immutable plan candidate", index)
+		}
+		seenAdoptions[key] = true
+	}
+	if len(seenAdoptions) != len(wantedAdoptions) {
+		return errors.New("every adoption candidate requires an explicit exact-target decision")
+	}
 	return nil
 }
 
@@ -85,5 +123,8 @@ func CanonicalizeApprovalDecisions(decisions *ApprovalDecisions) {
 	}
 	sort.Slice(decisions.Archives, func(i, j int) bool {
 		return objectKey(decisions.Archives[i].Ref) < objectKey(decisions.Archives[j].Ref)
+	})
+	sort.Slice(decisions.Adoptions, func(i, j int) bool {
+		return objectKey(decisions.Adoptions[i].Ref) < objectKey(decisions.Adoptions[j].Ref)
 	})
 }

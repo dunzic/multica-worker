@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	ApplyReceiptContractVersion      = "1.1"
+	ApplyReceiptContractVersion      = "1.2"
 	maxApplyArtifacts                = 20_000
 	maxApplyArtifactBytes            = 128 << 20
 	maxConcurrentArtifactReads       = 16
@@ -70,6 +70,7 @@ type ApplyPlanInput struct {
 type ApplyCounts struct {
 	Created   int `json:"created"`
 	Updated   int `json:"updated"`
+	Adopted   int `json:"adopted,omitempty"`
 	Unchanged int `json:"unchanged"`
 	Archived  int `json:"archived"`
 	Retained  int `json:"retained"`
@@ -124,6 +125,7 @@ type materializationState struct {
 	snapshot           Snapshot
 	plan               Plan
 	decisions          map[string]ArchiveDecision
+	adoptions          map[string]AdoptionActionDecision
 	actions            map[string]PlanAction
 	artifacts          map[string]verifiedArtifact
 	capabilities       map[string]Capability
@@ -414,7 +416,7 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	if err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
-	decisions, err := decodeApprovedDecisions(plan, approval)
+	decisions, adoptions, err := decodeApprovedDecisions(plan, approval)
 	if err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, fmt.Errorf("%w: %v", ErrInvalidApplyRequest, err)
 	}
@@ -493,7 +495,14 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	if invalidMappings != 0 {
 		return db.RoleSourceApply{}, ApplyReceipt{}, fmt.Errorf("%w: %d object mappings have missing, mismatched or cross-tenant targets", ErrApplyConflict, invalidMappings)
 	}
-	if err := validateMaterializationNames(ctx, qtx, workspaceID, snapshot, plan, mappingIndex(mappingRows)); err != nil {
+	if err := lockAndValidateAdoptionTargets(ctx, qtx, workspaceID, snapshot, plan, adoptions); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	mappings := mappingIndex(mappingRows)
+	if err := applyAdoptionMappings(mappings, adoptions, sourceID, workspaceID); err != nil {
+		return db.RoleSourceApply{}, ApplyReceipt{}, err
+	}
+	if err := validateMaterializationNames(ctx, qtx, workspaceID, snapshot, plan, mappings); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
 	receipt := ApplyReceipt{
@@ -504,7 +513,7 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	}
 	state := materializationState{
 		control: c, q: qtx, tx: tx, workspaceID: workspaceID, source: source, actorID: actorID, snapshot: snapshot, plan: plan,
-		decisions: decisions, actions: actionIndex(plan), artifacts: artifacts, capabilities: capabilityIndex(snapshot.Manifest.Capabilities), mappings: mappingIndex(mappingRows),
+		decisions: decisions, adoptions: adoptions, actions: actionIndex(plan), artifacts: artifacts, capabilities: capabilityIndex(snapshot.Manifest.Capabilities), mappings: mappings,
 		secretPayloads: secretPayloads, secretTransfers: secretTransfers,
 		runtimeMode: runtime.RuntimeMode, now: c.now, receipt: &receipt,
 		pendingMappings:    make(map[string]pendingRoleSourceMapping),
@@ -557,7 +566,7 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	if err := c.appendAudit(ctx, qtx, source, eventType, AuditActor{Type: "user", ID: input.ActorUserID}, AuditPayload{
 		OperationID: receipt.ApplyID, SnapshotDigest: receipt.SnapshotDigest, PlanDigest: receipt.PlanDigest,
 		ReceiptDigest: receiptDigest, Result: "succeeded", CreateCount: receipt.Counts.Created,
-		UpdateCount: receipt.Counts.Updated, UnchangedCount: receipt.Counts.Unchanged,
+		UpdateCount: receipt.Counts.Updated, AdoptCount: receipt.Counts.Adopted, UnchangedCount: receipt.Counts.Unchanged,
 		ArchiveCount: receipt.Counts.Archived,
 	}); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
@@ -738,22 +747,26 @@ func snapshotCASMatches(current pgtype.Text, expected string) bool {
 	return (expected == "" && !current.Valid) || (current.Valid && current.String == expected)
 }
 
-func decodeApprovedDecisions(plan Plan, approval db.RoleSourcePlanApproval) (map[string]ArchiveDecision, error) {
+func decodeApprovedDecisions(plan Plan, approval db.RoleSourcePlanApproval) (map[string]ArchiveDecision, map[string]AdoptionActionDecision, error) {
 	if approval.Decision != "approved" {
-		return nil, errors.New("apply requires an approved plan")
+		return nil, nil, errors.New("apply requires an approved plan")
 	}
 	var decisions ApprovalDecisions
 	if err := json.Unmarshal(approval.Decisions, &decisions); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := ValidateApprovalDecisions(plan, approval.Decision, &decisions); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	result := make(map[string]ArchiveDecision, len(decisions.Archives))
+	archives := make(map[string]ArchiveDecision, len(decisions.Archives))
 	for _, decision := range decisions.Archives {
-		result[objectKey(decision.Ref)] = decision.Decision
+		archives[objectKey(decision.Ref)] = decision.Decision
 	}
-	return result, nil
+	adoptions := make(map[string]AdoptionActionDecision, len(decisions.Adoptions))
+	for _, decision := range decisions.Adoptions {
+		adoptions[objectKey(decision.Ref)] = decision
+	}
+	return archives, adoptions, nil
 }
 
 func validateMaterializationScope(snapshot Snapshot, plan Plan, decisions map[string]ArchiveDecision) error {
@@ -969,7 +982,7 @@ func (c *ControlPlane) preflightApply(
 	if err != nil {
 		return applyPreflight{}, err
 	}
-	decisions, err := decodeApprovedDecisions(plan, approval)
+	decisions, _, err := decodeApprovedDecisions(plan, approval)
 	if err != nil {
 		return applyPreflight{}, fmt.Errorf("%w: %v", ErrInvalidApplyRequest, err)
 	}
@@ -1194,6 +1207,95 @@ func collectMaterializationNames(snapshot Snapshot, plan Plan, mappings map[stri
 		}
 	}
 	return names, nil
+}
+
+func lockAndValidateAdoptionTargets(
+	ctx context.Context,
+	q *db.Queries,
+	workspaceID pgtype.UUID,
+	snapshot Snapshot,
+	plan Plan,
+	adoptions map[string]AdoptionActionDecision,
+) error {
+	if len(adoptions) == 0 {
+		return nil
+	}
+	_, refs, err := collectAdoptionTargetRequests(snapshot, plan)
+	if err != nil {
+		return err
+	}
+	requests := make([]adoptionTargetRequest, 0, len(adoptions))
+	for key, decision := range adoptions {
+		request, ok := refs[key]
+		if !ok || request.TargetKind != decision.TargetKind {
+			return fmt.Errorf("%w: adoption decision has no matching create target", ErrApplyConflict)
+		}
+		request.TargetID = decision.TargetID
+		requests = append(requests, request)
+	}
+	sort.Slice(requests, func(i, j int) bool {
+		return requests[i].TargetKind+"\x00"+requests[i].Name+"\x00"+requests[i].TargetID < requests[j].TargetKind+"\x00"+requests[j].Name+"\x00"+requests[j].TargetID
+	})
+	body, err := json.Marshal(requests)
+	if err != nil {
+		return err
+	}
+	rows, err := q.ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
+		Targets: body, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return err
+	}
+	if len(rows) != len(requests) {
+		return fmt.Errorf("%w: an approved adoption target disappeared, was renamed or archived", ErrApplyConflict)
+	}
+	byID := make(map[string]db.ListRoleSourceAdoptionTargetsForUpdateRow, len(rows))
+	for _, row := range rows {
+		id := util.UUIDToString(row.TargetID)
+		if _, duplicate := byID[id]; duplicate {
+			return fmt.Errorf("%w: adoption query returned a duplicate target", ErrApplyConflict)
+		}
+		if row.ManagedBySourceID.Valid {
+			return fmt.Errorf("%w: adoption target is already managed by a source", ErrApplyConflict)
+		}
+		if !row.AdoptionEligible.Valid || !row.AdoptionEligible.Bool {
+			return fmt.Errorf("%w: adoption target is no longer eligible", ErrApplyConflict)
+		}
+		byID[id] = row
+	}
+	for _, decision := range adoptions {
+		row, ok := byID[decision.TargetID]
+		if !ok || row.TargetKind != decision.TargetKind {
+			return fmt.Errorf("%w: adoption target identity changed", ErrApplyConflict)
+		}
+		commitment, err := adoptionVersionCommitment(row.UpdatedAt)
+		if err != nil || commitment != decision.VersionCommitment {
+			return fmt.Errorf("%w: adoption target changed after plan creation", ErrApplyConflict)
+		}
+	}
+	return nil
+}
+
+func applyAdoptionMappings(
+	mappings map[string]db.RoleSourceObjectMapping,
+	adoptions map[string]AdoptionActionDecision,
+	sourceID, workspaceID pgtype.UUID,
+) error {
+	for key, decision := range adoptions {
+		if _, exists := mappings[key]; exists {
+			return fmt.Errorf("%w: adoption source object already has a mapping", ErrApplyConflict)
+		}
+		targetID, err := util.ParseUUID(decision.TargetID)
+		if err != nil {
+			return fmt.Errorf("%w: invalid adoption target", ErrApplyConflict)
+		}
+		mappings[key] = db.RoleSourceObjectMapping{
+			SourceID: sourceID, WorkspaceID: workspaceID,
+			SourceKind: decision.Ref.Kind, SourceParentID: decision.Ref.ParentID, SourceObjectID: decision.Ref.ID,
+			TargetKind: decision.TargetKind, TargetID: targetID, OwnershipMask: []byte(`[]`),
+		}
+	}
+	return nil
 }
 
 func (s *materializationState) materialize(ctx context.Context) error {
@@ -1546,6 +1648,8 @@ func (s *materializationState) materializeRoles(ctx context.Context) error {
 			}
 			if item.Operation == "create" {
 				s.receipt.Counts.Created++
+			} else if _, adopted := s.adoptions[objectKey(item.Ref)]; adopted {
+				s.receipt.Counts.Adopted++
 			} else {
 				s.receipt.Counts.Updated++
 			}
@@ -1696,6 +1800,8 @@ func (s *materializationState) materializeSkills(ctx context.Context) error {
 			}
 			if item.Operation == "create" {
 				s.receipt.Counts.Created++
+			} else if _, adopted := s.adoptions[objectKey(item.Ref)]; adopted {
+				s.receipt.Counts.Adopted++
 			} else {
 				s.receipt.Counts.Updated++
 			}
@@ -2335,6 +2441,8 @@ func (s *materializationState) materializeAutomations(ctx context.Context) error
 			}
 			if item.Operation == "create" {
 				s.receipt.Counts.Created++
+			} else if _, adopted := s.adoptions[objectKey(item.Ref)]; adopted {
+				s.receipt.Counts.Adopted++
 			} else {
 				s.receipt.Counts.Updated++
 			}
@@ -2817,7 +2925,8 @@ func decodeApplyReceipt(row db.RoleSourceApply) (ApplyReceipt, error) {
 		return receipt, err
 	}
 	legacyModeValid := receipt.ContractVersion == "1.0" && receipt.Mode == "" && row.Mode == "apply"
-	currentModeValid := receipt.ContractVersion == ApplyReceiptContractVersion && receipt.Mode == row.Mode && (receipt.Mode == "apply" || receipt.Mode == "rollback")
+	currentModeValid := (receipt.ContractVersion == "1.1" || receipt.ContractVersion == ApplyReceiptContractVersion) &&
+		receipt.Mode == row.Mode && (receipt.Mode == "apply" || receipt.Mode == "rollback")
 	if receipt.ReceiptDigest != row.ReceiptDigest.String || digest != row.ReceiptDigest.String || receipt.ApplyID != util.UUIDToString(row.ID) ||
 		receipt.PlanDigest != row.PlanDigest || receipt.SnapshotDigest != row.SnapshotDigest || (!legacyModeValid && !currentModeValid) {
 		return receipt, errors.New("stored apply receipt does not match indexed apply record")

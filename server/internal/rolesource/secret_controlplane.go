@@ -121,7 +121,7 @@ func (c *ControlPlane) RequestSecretTransfer(ctx context.Context, input RequestS
 	if err != nil {
 		return db.RoleSourceSecretTransfer{}, err
 	}
-	if _, err := decodeApprovedDecisions(plan, approval); err != nil {
+	if _, _, err := decodeApprovedDecisions(plan, approval); err != nil {
 		return db.RoleSourceSecretTransfer{}, fmt.Errorf("%w: approval is not usable", ErrInvalidSecretTransfer)
 	}
 	snapshotRow, err := qtx.GetRoleSourceSnapshot(ctx, db.GetRoleSourceSnapshotParams{SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: plan.ToSnapshotDigest})

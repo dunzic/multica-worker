@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 const maxNormalizedObjects = 100_000
@@ -224,6 +226,19 @@ func validateObjectRef(ref ObjectRef) error {
 }
 
 func validateActionSemantics(action PlanAction) error {
+	if action.AdoptionCandidate != nil {
+		candidate := action.AdoptionCandidate
+		if action.Operation != PlanCreate || action.Risk != PlanRiskHigh || (candidate.TargetKind != "agent" && candidate.TargetKind != "skill" && candidate.TargetKind != "autopilot") {
+			return errors.New("adoption candidate must belong to a create action and supported target kind")
+		}
+		if _, err := util.ParseUUID(candidate.TargetID); err != nil || !sha256Pattern.MatchString(candidate.VersionCommitment) {
+			return errors.New("adoption candidate has invalid target identity or version commitment")
+		}
+		expectedKind, ok := materializationTargetKind(action.Ref.Kind)
+		if !ok || expectedKind != candidate.TargetKind {
+			return errors.New("adoption candidate target kind does not match source object")
+		}
+	}
 	if action.NeedsSecretTransfer && (action.Ref.Kind != "role" || action.Operation == PlanArchiveCandidate || action.AfterDigest == "") {
 		return errors.New("secret transfer requirement must identify a target role")
 	}
@@ -259,6 +274,19 @@ func validateActionSemantics(action PlanAction) error {
 		return fmt.Errorf("invalid operation %q", action.Operation)
 	}
 	return nil
+}
+
+func materializationTargetKind(sourceKind string) (string, bool) {
+	switch sourceKind {
+	case "role":
+		return "agent", true
+	case "skill":
+		return "skill", true
+	case "automation":
+		return "autopilot", true
+	default:
+		return "", false
+	}
 }
 
 func validatedSnapshotCopy(snapshot Snapshot) (Snapshot, error) {

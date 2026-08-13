@@ -3,6 +3,8 @@ package rolesource
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -87,6 +89,146 @@ type CreateRollbackPlanInput struct {
 	ActorUserID          string
 }
 
+type adoptionTargetRequest struct {
+	TargetKind string `json:"target_kind"`
+	Name       string `json:"name"`
+	TargetID   string `json:"target_id,omitempty"`
+}
+
+func adoptionVersionCommitment(updatedAt pgtype.Timestamptz) (string, error) {
+	if !updatedAt.Valid {
+		return "", errors.New("adoption target has no version timestamp")
+	}
+	sum := sha256.Sum256([]byte(updatedAt.Time.UTC().Format(time.RFC3339Nano)))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func (c *ControlPlane) attachAdoptionCandidates(
+	ctx context.Context,
+	q *db.Queries,
+	workspaceID pgtype.UUID,
+	snapshot Snapshot,
+	plan *Plan,
+) error {
+	requests, refs, err := collectAdoptionTargetRequests(snapshot, *plan)
+	if err != nil || len(requests) == 0 {
+		return err
+	}
+	body, err := json.Marshal(requests)
+	if err != nil {
+		return err
+	}
+	rows, err := q.ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
+		Targets: body, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return err
+	}
+	return resolveAdoptionCandidates(plan, refs, rows)
+}
+
+func resolveAdoptionCandidates(
+	plan *Plan,
+	refs map[string]adoptionTargetRequest,
+	rows []db.ListRoleSourceAdoptionTargetsForUpdateRow,
+) error {
+	byIdentity := make(map[string][]db.ListRoleSourceAdoptionTargetsForUpdateRow)
+	for _, row := range rows {
+		byIdentity[row.TargetKind+"\x00"+row.RequestedName] = append(byIdentity[row.TargetKind+"\x00"+row.RequestedName], row)
+	}
+	for index := range plan.Actions {
+		action := &plan.Actions[index]
+		request, ok := refs[objectKey(action.Ref)]
+		if !ok {
+			continue
+		}
+		matches := byIdentity[request.TargetKind+"\x00"+request.Name]
+		if len(matches) == 0 {
+			continue
+		}
+		action.Risk = PlanRiskHigh
+		if len(matches) > 1 {
+			action.Reason = "object is new in the source but its same-name target is ambiguous"
+			plan.Blockers = append(plan.Blockers, PlanBlocker{
+				Code: "adoption_target_ambiguous", Message: "more than one existing object matches this source object name; rename or consolidate the existing objects before applying",
+				Object: action.Ref,
+			})
+			continue
+		}
+		if matches[0].ManagedBySourceID.Valid {
+			action.Reason = "object is new in the source but its same-name target is already managed"
+			plan.Blockers = append(plan.Blockers, PlanBlocker{
+				Code: "adoption_target_managed", Message: "the existing same-name object is already managed by a role source and cannot be adopted",
+				Object: action.Ref,
+			})
+			continue
+		}
+		if !matches[0].AdoptionEligible.Valid || !matches[0].AdoptionEligible.Bool {
+			action.Reason = "object is new in the source but its same-name target is not eligible for adoption"
+			plan.Blockers = append(plan.Blockers, PlanBlocker{
+				Code: "adoption_target_ineligible", Message: "the existing same-name object is archived or reserved for system use and cannot be adopted",
+				Object: action.Ref,
+			})
+			continue
+		}
+		commitment, err := adoptionVersionCommitment(matches[0].UpdatedAt)
+		if err != nil {
+			return err
+		}
+		action.AdoptionCandidate = &AdoptionCandidate{
+			TargetKind: request.TargetKind, TargetID: util.UUIDToString(matches[0].TargetID), VersionCommitment: commitment,
+		}
+		action.Reason = "object is new in the source and has one explicit unmanaged same-name adoption candidate"
+	}
+	sortPlanBlockers(plan.Blockers)
+	plan.Applyable = len(plan.Blockers) == 0 && plan.Summary.Blocked == 0
+	plan.PlanDigest = ""
+	var err error
+	plan.PlanDigest, err = digestPlan(*plan)
+	return err
+}
+
+func collectAdoptionTargetRequests(snapshot Snapshot, plan Plan) ([]adoptionTargetRequest, map[string]adoptionTargetRequest, error) {
+	actions := actionIndex(plan)
+	requests := make([]adoptionTargetRequest, 0)
+	refs := make(map[string]adoptionTargetRequest)
+	seenIdentities := make(map[string]struct{})
+	appendRequest := func(ref ObjectRef, targetKind, name string) error {
+		action, ok := actions[objectKey(ref)]
+		if !ok || action.Operation != PlanCreate {
+			return nil
+		}
+		identity := targetKind + "\x00" + name
+		if _, duplicate := seenIdentities[identity]; duplicate {
+			return fmt.Errorf("%w: source objects request the same %s name %q", ErrInvalidPlanRequest, targetKind, name)
+		}
+		seenIdentities[identity] = struct{}{}
+		request := adoptionTargetRequest{TargetKind: targetKind, Name: name}
+		requests = append(requests, request)
+		refs[objectKey(ref)] = request
+		return nil
+	}
+	for _, role := range snapshot.Manifest.Roles {
+		if err := appendRequest(ObjectRef{Kind: "role", ID: role.ID}, "agent", role.DisplayName); err != nil {
+			return nil, nil, err
+		}
+		for _, skill := range role.Skills {
+			if err := appendRequest(ObjectRef{Kind: "skill", ParentID: role.ID, ID: skill.ID}, "skill", skill.Name); err != nil {
+				return nil, nil, err
+			}
+		}
+		for _, automation := range role.Automations {
+			if err := appendRequest(ObjectRef{Kind: "automation", ParentID: role.ID, ID: automation.ID}, "autopilot", automationTitle(role.DisplayName, automation.Name)); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	sort.Slice(requests, func(i, j int) bool {
+		return requests[i].TargetKind+"\x00"+requests[i].Name < requests[j].TargetKind+"\x00"+requests[j].Name
+	})
+	return requests, refs, nil
+}
+
 func (c *ControlPlane) CreatePlan(ctx context.Context, input CreatePlanInput) (db.RoleSourcePlan, error) {
 	if !sha256Pattern.MatchString(input.TargetSnapshotDigest) {
 		return db.RoleSourcePlan{}, fmt.Errorf("%w: invalid target snapshot digest", ErrInvalidPlanRequest)
@@ -134,6 +276,9 @@ func (c *ControlPlane) CreatePlan(ctx context.Context, input CreatePlanInput) (d
 	}
 	plan, err := BuildPlan(util.UUIDToString(sourceID), base, target)
 	if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	if err := c.attachAdoptionCandidates(ctx, qtx, workspaceID, target, &plan); err != nil {
 		return db.RoleSourcePlan{}, err
 	}
 	body, err := json.Marshal(plan)
@@ -238,6 +383,9 @@ func (c *ControlPlane) CreateRollbackPlan(ctx context.Context, input CreateRollb
 	}
 	plan, err := BuildRollbackPlan(util.UUIDToString(sourceID), current, target)
 	if err != nil {
+		return db.RoleSourcePlan{}, err
+	}
+	if err := c.attachAdoptionCandidates(ctx, qtx, workspaceID, target, &plan); err != nil {
 		return db.RoleSourcePlan{}, err
 	}
 	body, err := json.Marshal(plan)

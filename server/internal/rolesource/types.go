@@ -295,16 +295,26 @@ type ObjectRef struct {
 }
 
 type PlanAction struct {
-	Ref                 ObjectRef     `json:"ref"`
-	DisplayName         string        `json:"display_name,omitempty"`
-	NeedsSecretTransfer bool          `json:"needs_secret_transfer,omitempty"`
-	Operation           PlanOperation `json:"operation"`
-	ProposedOperation   PlanOperation `json:"proposed_operation,omitempty"`
-	Risk                PlanRisk      `json:"risk"`
-	BeforeDigest        string        `json:"before_digest,omitempty"`
-	AfterDigest         string        `json:"after_digest,omitempty"`
-	Reason              string        `json:"reason"`
-	BlockingDiagnostics []string      `json:"blocking_diagnostics,omitempty"`
+	Ref                 ObjectRef          `json:"ref"`
+	DisplayName         string             `json:"display_name,omitempty"`
+	NeedsSecretTransfer bool               `json:"needs_secret_transfer,omitempty"`
+	Operation           PlanOperation      `json:"operation"`
+	ProposedOperation   PlanOperation      `json:"proposed_operation,omitempty"`
+	Risk                PlanRisk           `json:"risk"`
+	BeforeDigest        string             `json:"before_digest,omitempty"`
+	AfterDigest         string             `json:"after_digest,omitempty"`
+	Reason              string             `json:"reason"`
+	BlockingDiagnostics []string           `json:"blocking_diagnostics,omitempty"`
+	AdoptionCandidate   *AdoptionCandidate `json:"adoption_candidate,omitempty"`
+}
+
+// AdoptionCandidate freezes the only eligible unmanaged same-name Multica
+// object into the plan digest. VersionCommitment is a content-free commitment
+// to the target row's updated_at value, revalidated under a row lock at apply.
+type AdoptionCandidate struct {
+	TargetKind        string `json:"target_kind"`
+	TargetID          string `json:"target_id"`
+	VersionCommitment string `json:"version_commitment"`
 }
 
 type PlanBlocker struct {

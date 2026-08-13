@@ -48,3 +48,34 @@ func TestApprovalDecisionsRejectBlockedPlanAndRejectedPayload(t *testing.T) {
 		t.Fatal("rejection accepted apply decisions")
 	}
 }
+
+func TestApprovalDecisionsRequireExactImmutableAdoptionCandidate(t *testing.T) {
+	plan := Plan{
+		ContractVersion: PlanContractVersion, SourceID: "source-1", ToSnapshotDigest: testSHA256("a"),
+		Applyable: true, Summary: PlanSummary{Create: 1}, Actions: []PlanAction{{
+			Ref: ObjectRef{Kind: "skill", ParentID: "writer", ID: "draft"}, DisplayName: "Draft",
+			Operation: PlanCreate, Risk: PlanRiskHigh, AfterDigest: testSHA256("b"), Reason: "adoption candidate",
+			AdoptionCandidate: &AdoptionCandidate{TargetKind: "skill", TargetID: "00000000-0000-4000-8000-000000000051", VersionCommitment: testSHA256("c")},
+		}},
+	}
+	digest, err := digestPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.PlanDigest = digest
+	decisions := &ApprovalDecisions{ContractVersion: PlanContractVersion, Archives: []ArchiveActionDecision{}, Adoptions: []AdoptionActionDecision{}}
+	if err := ValidateApprovalDecisions(plan, "approved", decisions); err == nil {
+		t.Fatal("approval accepted a missing adoption decision")
+	}
+	decisions.Adoptions = []AdoptionActionDecision{{
+		Ref: plan.Actions[0].Ref, TargetKind: "skill", TargetID: plan.Actions[0].AdoptionCandidate.TargetID,
+		VersionCommitment: plan.Actions[0].AdoptionCandidate.VersionCommitment,
+	}}
+	if err := ValidateApprovalDecisions(plan, "approved", decisions); err != nil {
+		t.Fatalf("exact adoption decision rejected: %v", err)
+	}
+	decisions.Adoptions[0].TargetID = "00000000-0000-4000-8000-000000000052"
+	if err := ValidateApprovalDecisions(plan, "approved", decisions); err == nil {
+		t.Fatal("approval accepted a substituted adoption target")
+	}
+}
