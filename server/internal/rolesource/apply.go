@@ -495,10 +495,10 @@ func (c *ControlPlane) applyPlan(ctx context.Context, input ApplyPlanInput, trac
 	if invalidMappings != 0 {
 		return db.RoleSourceApply{}, ApplyReceipt{}, fmt.Errorf("%w: %d object mappings have missing, mismatched or cross-tenant targets", ErrApplyConflict, invalidMappings)
 	}
-	if err := lockAndValidateAdoptionTargets(ctx, qtx, workspaceID, snapshot, plan, adoptions); err != nil {
+	mappings := mappingIndex(mappingRows)
+	if err := lockAndValidateAdoptionTargets(ctx, qtx, workspaceID, snapshot, plan, adoptions, mappings); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
-	mappings := mappingIndex(mappingRows)
 	if err := applyAdoptionMappings(mappings, adoptions, sourceID, workspaceID); err != nil {
 		return db.RoleSourceApply{}, ApplyReceipt{}, err
 	}
@@ -1216,6 +1216,7 @@ func lockAndValidateAdoptionTargets(
 	snapshot Snapshot,
 	plan Plan,
 	adoptions map[string]AdoptionActionDecision,
+	mappings map[string]db.RoleSourceObjectMapping,
 ) error {
 	if len(adoptions) == 0 {
 		return nil
@@ -1271,6 +1272,18 @@ func lockAndValidateAdoptionTargets(
 		commitment, err := adoptionVersionCommitment(row.UpdatedAt)
 		if err != nil || commitment != decision.VersionCommitment {
 			return fmt.Errorf("%w: adoption target changed after plan creation", ErrApplyConflict)
+		}
+		if decision.Ref.Kind == "automation" {
+			expectedAgentID := ""
+			roleKey := objectKey(ObjectRef{Kind: "role", ID: decision.Ref.ParentID})
+			if mapping, ok := mappings[roleKey]; ok && !mapping.ArchivedAt.Valid && mapping.TargetKind == "agent" {
+				expectedAgentID = util.UUIDToString(mapping.TargetID)
+			} else if roleAdoption, ok := adoptions[roleKey]; ok && roleAdoption.TargetKind == "agent" {
+				expectedAgentID = roleAdoption.TargetID
+			}
+			if expectedAgentID == "" || util.UUIDToString(row.DependencyTargetID) != expectedAgentID {
+				return fmt.Errorf("%w: adopted Autopilot assignment is incompatible with its source role", ErrApplyConflict)
+			}
 		}
 	}
 	return nil

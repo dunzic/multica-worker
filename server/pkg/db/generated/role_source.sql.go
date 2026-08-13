@@ -3263,6 +3263,7 @@ WITH requested AS MATERIALIZED (
 ), agent_targets AS (
     SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
            target.updated_at, (target.kind = 'user' AND target.archived_at IS NULL) AS adoption_eligible,
+           NULL::UUID AS dependency_target_id,
            (SELECT mapping.source_id
             FROM role_source_object_mapping mapping
             WHERE mapping.workspace_id = $2
@@ -3279,7 +3280,7 @@ WITH requested AS MATERIALIZED (
     FOR UPDATE OF target
 ), skill_targets AS (
     SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
-           target.updated_at, TRUE AS adoption_eligible,
+           target.updated_at, TRUE AS adoption_eligible, NULL::UUID AS dependency_target_id,
            (SELECT mapping.source_id
             FROM role_source_object_mapping mapping
             WHERE mapping.workspace_id = $2
@@ -3296,7 +3297,8 @@ WITH requested AS MATERIALIZED (
     FOR UPDATE OF target
 ), autopilot_targets AS (
     SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
-           target.updated_at, TRUE AS adoption_eligible,
+           target.updated_at, (target.assignee_type = 'agent') AS adoption_eligible,
+           target.assignee_id AS dependency_target_id,
            (SELECT mapping.source_id
             FROM role_source_object_mapping mapping
             WHERE mapping.workspace_id = $2
@@ -3313,14 +3315,14 @@ WITH requested AS MATERIALIZED (
      AND (requested.target_id IS NULL OR target.id = requested.target_id)
     FOR UPDATE OF target
 ), matches AS (
-    SELECT target_kind, requested_name, target_id, updated_at, adoption_eligible, managed_by_source_id FROM agent_targets
+    SELECT target_kind, requested_name, target_id, updated_at, adoption_eligible, dependency_target_id, managed_by_source_id FROM agent_targets
     UNION ALL
-    SELECT target_kind, requested_name, target_id, updated_at, adoption_eligible, managed_by_source_id FROM skill_targets
+    SELECT target_kind, requested_name, target_id, updated_at, adoption_eligible, dependency_target_id, managed_by_source_id FROM skill_targets
     UNION ALL
-    SELECT target_kind, requested_name, target_id, updated_at, adoption_eligible, managed_by_source_id FROM autopilot_targets
+    SELECT target_kind, requested_name, target_id, updated_at, adoption_eligible, dependency_target_id, managed_by_source_id FROM autopilot_targets
 )
 SELECT target_kind::TEXT AS target_kind, requested_name::TEXT AS requested_name,
-       target_id, updated_at, adoption_eligible, managed_by_source_id
+       target_id, updated_at, adoption_eligible, dependency_target_id, managed_by_source_id
 FROM matches
 ORDER BY target_kind, requested_name, target_id
 `
@@ -3331,12 +3333,13 @@ type ListRoleSourceAdoptionTargetsForUpdateParams struct {
 }
 
 type ListRoleSourceAdoptionTargetsForUpdateRow struct {
-	TargetKind        string             `json:"target_kind"`
-	RequestedName     string             `json:"requested_name"`
-	TargetID          pgtype.UUID        `json:"target_id"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
-	AdoptionEligible  pgtype.Bool        `json:"adoption_eligible"`
-	ManagedBySourceID pgtype.UUID        `json:"managed_by_source_id"`
+	TargetKind         string             `json:"target_kind"`
+	RequestedName      string             `json:"requested_name"`
+	TargetID           pgtype.UUID        `json:"target_id"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	AdoptionEligible   pgtype.Bool        `json:"adoption_eligible"`
+	DependencyTargetID pgtype.UUID        `json:"dependency_target_id"`
+	ManagedBySourceID  pgtype.UUID        `json:"managed_by_source_id"`
 }
 
 // Resolve same-name targets in one canonical, tenant-scoped query. During plan
@@ -3360,6 +3363,7 @@ func (q *Queries) ListRoleSourceAdoptionTargetsForUpdate(ctx context.Context, ar
 			&i.TargetID,
 			&i.UpdatedAt,
 			&i.AdoptionEligible,
+			&i.DependencyTargetID,
 			&i.ManagedBySourceID,
 		); err != nil {
 			return nil, err

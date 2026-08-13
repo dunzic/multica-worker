@@ -166,7 +166,7 @@ func TestResolveAdoptionCandidatesFreezesOneUnmanagedTarget(t *testing.T) {
 		UpdatedAt:        pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), Valid: true},
 		AdoptionEligible: pgtype.Bool{Bool: true, Valid: true},
 	}
-	if err := resolveAdoptionCandidates(&plan, refs, []db.ListRoleSourceAdoptionTargetsForUpdateRow{row}); err != nil {
+	if err := resolveAdoptionCandidates(&plan, refs, []db.ListRoleSourceAdoptionTargetsForUpdateRow{row}, nil); err != nil {
 		t.Fatal(err)
 	}
 	action := actionIndex(plan)[objectKey(ObjectRef{Kind: "role", ID: "writer"})]
@@ -225,7 +225,7 @@ func TestResolveAdoptionCandidatesBlocksAmbiguousOrManagedTarget(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := refs[objectKey(ObjectRef{Kind: "role", ID: "writer"})]
-			if err := resolveAdoptionCandidates(&plan, refs, test.rows(request)); err != nil {
+			if err := resolveAdoptionCandidates(&plan, refs, test.rows(request), nil); err != nil {
 				t.Fatal(err)
 			}
 			if plan.Applyable || len(plan.Blockers) != 1 || plan.Blockers[0].Code != test.code {
@@ -235,5 +235,103 @@ func TestResolveAdoptionCandidatesBlocksAmbiguousOrManagedTarget(t *testing.T) {
 				t.Fatalf("blocked plan invalid: %v", err)
 			}
 		})
+	}
+}
+
+func TestResolveAdoptionCandidatesRequiresCompatibleAutopilotAssignee(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		roleTargetID     string
+		autopilotAgentID string
+		wantBlocked      bool
+	}{
+		{name: "compatible", roleTargetID: "00000000-0000-4000-8000-000000000051", autopilotAgentID: "00000000-0000-4000-8000-000000000051"},
+		{name: "different agent", roleTargetID: "00000000-0000-4000-8000-000000000051", autopilotAgentID: "00000000-0000-4000-8000-000000000052", wantBlocked: true},
+		{name: "unresolved role", autopilotAgentID: "00000000-0000-4000-8000-000000000052", wantBlocked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := planTestManifest()
+			manifest.Roles[0].Automations = []Automation{{
+				ID: "daily", Name: "Daily", Schedule: "0 9 * * *", Timezone: "UTC", Prompt: testArtifact("automations/daily.md"),
+			}}
+			snapshot := planTestSnapshot(t, manifest)
+			plan, err := BuildPlan("source-1", nil, snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, refs, err := collectAdoptionTargetRequests(snapshot, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			automationRef := ObjectRef{Kind: "automation", ParentID: "writer", ID: "daily"}
+			request := refs[objectKey(automationRef)]
+			rows := []db.ListRoleSourceAdoptionTargetsForUpdateRow{{
+				TargetKind: "autopilot", RequestedName: request.Name,
+				TargetID:         util.MustParseUUID("00000000-0000-4000-8000-000000000053"),
+				UpdatedAt:        pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), Valid: true},
+				AdoptionEligible: pgtype.Bool{Bool: true, Valid: true}, DependencyTargetID: util.MustParseUUID(test.autopilotAgentID),
+			}}
+			mappings := map[string]db.RoleSourceObjectMapping{}
+			if test.roleTargetID != "" {
+				mappings[objectKey(ObjectRef{Kind: "role", ID: "writer"})] = db.RoleSourceObjectMapping{
+					TargetKind: "agent", TargetID: util.MustParseUUID(test.roleTargetID),
+				}
+			}
+			if err := resolveAdoptionCandidates(&plan, refs, rows, mappings); err != nil {
+				t.Fatal(err)
+			}
+			action := actionIndex(plan)[objectKey(automationRef)]
+			if test.wantBlocked {
+				if plan.Applyable || action.AdoptionCandidate != nil || len(plan.Blockers) != 1 || plan.Blockers[0].Code != "adoption_dependency_incompatible" {
+					t.Fatalf("incompatible plan=%+v action=%+v", plan, action)
+				}
+			} else if !plan.Applyable || action.AdoptionCandidate == nil || len(plan.Blockers) != 0 {
+				t.Fatalf("compatible plan=%+v action=%+v", plan, action)
+			}
+			if err := ValidatePlan(plan); err != nil {
+				t.Fatalf("resolved plan invalid: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveAdoptionCandidatesAcceptsRoleAndAutopilotTogether(t *testing.T) {
+	manifest := planTestManifest()
+	manifest.Roles[0].Automations = []Automation{{
+		ID: "daily", Name: "Daily", Schedule: "0 9 * * *", Timezone: "UTC", Prompt: testArtifact("automations/daily.md"),
+	}}
+	snapshot := planTestSnapshot(t, manifest)
+	plan, err := BuildPlan("source-1", nil, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, refs, err := collectAdoptionTargetRequests(snapshot, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID := util.MustParseUUID("00000000-0000-4000-8000-000000000051")
+	updatedAt := pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC), Valid: true}
+	rows := []db.ListRoleSourceAdoptionTargetsForUpdateRow{
+		{
+			TargetKind: "agent", RequestedName: refs[objectKey(ObjectRef{Kind: "role", ID: "writer"})].Name,
+			TargetID: agentID, UpdatedAt: updatedAt, AdoptionEligible: pgtype.Bool{Bool: true, Valid: true},
+		},
+		{
+			TargetKind: "autopilot", RequestedName: refs[objectKey(ObjectRef{Kind: "automation", ParentID: "writer", ID: "daily"})].Name,
+			TargetID: util.MustParseUUID("00000000-0000-4000-8000-000000000052"), UpdatedAt: updatedAt,
+			AdoptionEligible: pgtype.Bool{Bool: true, Valid: true}, DependencyTargetID: agentID,
+		},
+	}
+	if err := resolveAdoptionCandidates(&plan, refs, rows, nil); err != nil {
+		t.Fatal(err)
+	}
+	actions := actionIndex(plan)
+	if !plan.Applyable || len(plan.Blockers) != 0 ||
+		actions[objectKey(ObjectRef{Kind: "role", ID: "writer"})].AdoptionCandidate == nil ||
+		actions[objectKey(ObjectRef{Kind: "automation", ParentID: "writer", ID: "daily"})].AdoptionCandidate == nil {
+		t.Fatalf("joint adoption plan=%+v", plan)
+	}
+	if err := ValidatePlan(plan); err != nil {
+		t.Fatalf("joint adoption plan invalid: %v", err)
 	}
 }

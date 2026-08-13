@@ -90,6 +90,11 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("resolved %d targets, want 3: %+v", len(rows), rows)
 	}
+	for _, row := range rows {
+		if row.TargetKind == "autopilot" && util.UUIDToString(row.DependencyTargetID) != agentID.String() {
+			t.Fatalf("autopilot dependency target=%s, want %s", util.UUIDToString(row.DependencyTargetID), agentID)
+		}
+	}
 	ineligibleBody, _ := json.Marshal([]adoptionTargetRequest{{TargetKind: "agent", Name: "Reserved Writer"}})
 	ineligible, err := queries.ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
 		Targets: ineligibleBody, WorkspaceID: util.MustParseUUID(workspaceID.String()),

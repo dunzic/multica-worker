@@ -27,7 +27,10 @@ blockers rather than silent creates or overwrites.
 Adoption does not broaden field authority: role, Skill and Autopilot updates use
 the same narrow ownership masks as normal source updates. Existing permission,
 owner, lifecycle, model, secret, MCP, enablement and unrelated Skill-file state
-remain workspace-owned. The apply receipt contract advances to 1.2 with a
+remain workspace-owned. An Autopilot is eligible only when it is already
+assigned to the exact Agent mapped or adopted for its source role; otherwise
+the plan blocks instead of changing the workspace-owned assignment or failing
+after approval. The apply receipt contract advances to 1.2 with a
 separate adopted count; strict validation still accepts historical 1.0/1.1
 receipts without changing their digest serialization.
 

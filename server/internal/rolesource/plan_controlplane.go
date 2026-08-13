@@ -106,7 +106,7 @@ func adoptionVersionCommitment(updatedAt pgtype.Timestamptz) (string, error) {
 func (c *ControlPlane) attachAdoptionCandidates(
 	ctx context.Context,
 	q *db.Queries,
-	workspaceID pgtype.UUID,
+	workspaceID, sourceID pgtype.UUID,
 	snapshot Snapshot,
 	plan *Plan,
 ) error {
@@ -124,13 +124,31 @@ func (c *ControlPlane) attachAdoptionCandidates(
 	if err != nil {
 		return err
 	}
-	return resolveAdoptionCandidates(plan, refs, rows)
+	mappings := map[string]db.RoleSourceObjectMapping{}
+	needsAutomationDependencies := false
+	for _, request := range requests {
+		if request.TargetKind == "autopilot" {
+			needsAutomationDependencies = true
+			break
+		}
+	}
+	if needsAutomationDependencies {
+		mappingRows, err := q.ListRoleSourceObjectMappingsForUpdate(ctx, db.ListRoleSourceObjectMappingsForUpdateParams{
+			SourceID: sourceID, WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return err
+		}
+		mappings = mappingIndex(mappingRows)
+	}
+	return resolveAdoptionCandidates(plan, refs, rows, mappings)
 }
 
 func resolveAdoptionCandidates(
 	plan *Plan,
 	refs map[string]adoptionTargetRequest,
 	rows []db.ListRoleSourceAdoptionTargetsForUpdateRow,
+	mappings map[string]db.RoleSourceObjectMapping,
 ) error {
 	byIdentity := make(map[string][]db.ListRoleSourceAdoptionTargetsForUpdateRow)
 	for _, row := range rows {
@@ -179,6 +197,32 @@ func resolveAdoptionCandidates(
 			TargetKind: request.TargetKind, TargetID: util.UUIDToString(matches[0].TargetID), VersionCommitment: commitment,
 		}
 		action.Reason = "object is new in the source and has one explicit unmanaged same-name adoption candidate"
+	}
+	actions := actionIndex(*plan)
+	for index := range plan.Actions {
+		action := &plan.Actions[index]
+		if action.Ref.Kind != "automation" || action.AdoptionCandidate == nil {
+			continue
+		}
+		matches := byIdentity[action.AdoptionCandidate.TargetKind+"\x00"+refs[objectKey(action.Ref)].Name]
+		if len(matches) != 1 {
+			continue
+		}
+		expectedAgentID := ""
+		roleRef := ObjectRef{Kind: "role", ID: action.Ref.ParentID}
+		if mapping, ok := mappings[objectKey(roleRef)]; ok && !mapping.ArchivedAt.Valid && mapping.TargetKind == "agent" {
+			expectedAgentID = util.UUIDToString(mapping.TargetID)
+		} else if roleAction, ok := actions[objectKey(roleRef)]; ok && roleAction.AdoptionCandidate != nil {
+			expectedAgentID = roleAction.AdoptionCandidate.TargetID
+		}
+		if expectedAgentID == "" || util.UUIDToString(matches[0].DependencyTargetID) != expectedAgentID {
+			action.AdoptionCandidate = nil
+			action.Reason = "object is new in the source but its same-name Autopilot is assigned to a different Agent"
+			plan.Blockers = append(plan.Blockers, PlanBlocker{
+				Code: "adoption_dependency_incompatible", Message: "the existing same-name Autopilot is not assigned to this source role's exact Agent target and cannot be adopted without changing workspace-owned assignment",
+				Object: action.Ref,
+			})
+		}
 	}
 	sortPlanBlockers(plan.Blockers)
 	plan.Applyable = len(plan.Blockers) == 0 && plan.Summary.Blocked == 0
@@ -278,7 +322,7 @@ func (c *ControlPlane) CreatePlan(ctx context.Context, input CreatePlanInput) (d
 	if err != nil {
 		return db.RoleSourcePlan{}, err
 	}
-	if err := c.attachAdoptionCandidates(ctx, qtx, workspaceID, target, &plan); err != nil {
+	if err := c.attachAdoptionCandidates(ctx, qtx, workspaceID, sourceID, target, &plan); err != nil {
 		return db.RoleSourcePlan{}, err
 	}
 	body, err := json.Marshal(plan)
@@ -385,7 +429,7 @@ func (c *ControlPlane) CreateRollbackPlan(ctx context.Context, input CreateRollb
 	if err != nil {
 		return db.RoleSourcePlan{}, err
 	}
-	if err := c.attachAdoptionCandidates(ctx, qtx, workspaceID, target, &plan); err != nil {
+	if err := c.attachAdoptionCandidates(ctx, qtx, workspaceID, sourceID, target, &plan); err != nil {
 		return db.RoleSourcePlan{}, err
 	}
 	body, err := json.Marshal(plan)

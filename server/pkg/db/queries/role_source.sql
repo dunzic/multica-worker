@@ -1028,6 +1028,7 @@ WITH requested AS MATERIALIZED (
 ), agent_targets AS (
     SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
            target.updated_at, (target.kind = 'user' AND target.archived_at IS NULL) AS adoption_eligible,
+           NULL::UUID AS dependency_target_id,
            (SELECT mapping.source_id
             FROM role_source_object_mapping mapping
             WHERE mapping.workspace_id = @workspace_id
@@ -1044,7 +1045,7 @@ WITH requested AS MATERIALIZED (
     FOR UPDATE OF target
 ), skill_targets AS (
     SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
-           target.updated_at, TRUE AS adoption_eligible,
+           target.updated_at, TRUE AS adoption_eligible, NULL::UUID AS dependency_target_id,
            (SELECT mapping.source_id
             FROM role_source_object_mapping mapping
             WHERE mapping.workspace_id = @workspace_id
@@ -1061,7 +1062,8 @@ WITH requested AS MATERIALIZED (
     FOR UPDATE OF target
 ), autopilot_targets AS (
     SELECT requested.target_kind, requested.requested_name, target.id AS target_id,
-           target.updated_at, TRUE AS adoption_eligible,
+           target.updated_at, (target.assignee_type = 'agent') AS adoption_eligible,
+           target.assignee_id AS dependency_target_id,
            (SELECT mapping.source_id
             FROM role_source_object_mapping mapping
             WHERE mapping.workspace_id = @workspace_id
@@ -1085,7 +1087,7 @@ WITH requested AS MATERIALIZED (
     SELECT * FROM autopilot_targets
 )
 SELECT target_kind::TEXT AS target_kind, requested_name::TEXT AS requested_name,
-       target_id, updated_at, adoption_eligible, managed_by_source_id
+       target_id, updated_at, adoption_eligible, dependency_target_id, managed_by_source_id
 FROM matches
 ORDER BY target_kind, requested_name, target_id;
 
