@@ -39,3 +39,16 @@ func TestChannelDeliveryMetricsNormalizeCallerValuesAndCarryNoIdentity(t *testin
 		}
 	}
 }
+
+func TestChannelDeliveryMetricsTypedNilIsNoop(t *testing.T) {
+	var m *ChannelDeliveryMetrics
+
+	if got := m.Collectors(); got != nil {
+		t.Fatalf("typed-nil collectors = %#v, want nil", got)
+	}
+	// A typed nil pointer can be stored in the delivery metrics interface when
+	// METRICS_ADDR is unset. Both background reconciliation and connector
+	// transitions must remain no-ops instead of panicking the server.
+	m.RecordChannelDeliveryReconcile("completed")
+	m.RecordChannelDeliveryTransition("slack", "chat_reply", "delivered", "none")
+}

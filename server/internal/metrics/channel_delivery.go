@@ -24,14 +24,23 @@ func NewChannelDeliveryMetrics() *ChannelDeliveryMetrics {
 }
 
 func (m *ChannelDeliveryMetrics) Collectors() []prometheus.Collector {
+	if m == nil {
+		return nil
+	}
 	return []prometheus.Collector{m.transitions, m.reconciles}
 }
 
 func (m *ChannelDeliveryMetrics) RecordChannelDeliveryTransition(connector, operation, status, errorCode string) {
+	if m == nil || m.transitions == nil {
+		return
+	}
 	m.transitions.WithLabelValues(channelDeliveryConnector(connector), channelDeliveryOperation(operation), channelDeliveryStatus(status), channelDeliveryError(errorCode)).Inc()
 }
 
 func (m *ChannelDeliveryMetrics) RecordChannelDeliveryReconcile(outcome string) {
+	if m == nil || m.reconciles == nil {
+		return
+	}
 	switch outcome {
 	case "completed", "query_failed":
 	default:
