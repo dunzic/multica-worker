@@ -261,6 +261,9 @@ type Handler struct {
 	// RoleSourceArtifactReconciler reclaims unreachable content-addressed
 	// bodies and workspace-deletion leftovers through a durable tombstone tail.
 	RoleSourceArtifactReconciler *service.RoleSourceArtifactReconciler
+	// RoleSourceArtifactIntegrityReconciler performs bounded storage readback
+	// verification. It is independently default-off from destructive GC.
+	RoleSourceArtifactIntegrityReconciler *service.RoleSourceArtifactIntegrityReconciler
 	// RoleSourceRetentionReconciler applies owner-approved historical snapshot
 	// policies. It remains independently default-off and is wired only when
 	// permanent artifact GC is also available.

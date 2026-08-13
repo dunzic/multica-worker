@@ -386,6 +386,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				}
 			}
 		}
+		if enabled := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_ARTIFACT_INTEGRITY_ENABLED")); enabled == "true" || enabled == "1" {
+			h.RoleSourceArtifactIntegrityReconciler = &service.RoleSourceArtifactIntegrityReconciler{
+				Queries: queries, Storage: store, Logger: slog.Default(),
+			}
+		}
 	}
 	h.ChannelSupervisor = engine.NewSupervisor(
 		lark.NewChannelInstallationStore(queries),

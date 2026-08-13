@@ -1022,6 +1022,26 @@ type RoleSourceArtifactDeleteIntent struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+type RoleSourceArtifactIntegrity struct {
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ArtifactDigest string             `json:"artifact_digest"`
+	StorageKey     string             `json:"storage_key"`
+	SizeBytes      int64              `json:"size_bytes"`
+	State          string             `json:"state"`
+	LastOutcome    pgtype.Text        `json:"last_outcome"`
+	LeaseToken     pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	Attempt        int32              `json:"attempt"`
+	CheckCount     int64              `json:"check_count"`
+	FailureCount   int64              `json:"failure_count"`
+	RepairCount    int64              `json:"repair_count"`
+	NextCheckAt    pgtype.Timestamptz `json:"next_check_at"`
+	LastCheckedAt  pgtype.Timestamptz `json:"last_checked_at"`
+	LastVerifiedAt pgtype.Timestamptz `json:"last_verified_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RoleSourceAuditEvent struct {
 	ID                  pgtype.UUID        `json:"id"`
 	SourceID            pgtype.UUID        `json:"source_id"`

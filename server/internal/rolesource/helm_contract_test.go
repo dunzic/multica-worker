@@ -12,7 +12,7 @@ func TestRoleSourceChartIsClosedByDefaultAndJobsAreExplicit(t *testing.T) {
 	values := readRoleSourceChartContract(t, filepath.Join(chart, "values.yaml"))
 	for _, required := range []string{
 		"roleSource:\n", "syncEnabled: false", "scanEnabled: false", "applyEnabled: false",
-		"artifactGCEnabled: false", "retentionEnabled: false", "capacityEvidence:\n",
+		"artifactGCEnabled: false", "artifactIntegrityEnabled: false", "retentionEnabled: false", "capacityEvidence:\n",
 		"disasterRecovery:\n", "backup:\n", "enabled: false", "runName:", "existingClaim:", "signingSecretName:",
 	} {
 		if !strings.Contains(values, required) {
@@ -22,7 +22,7 @@ func TestRoleSourceChartIsClosedByDefaultAndJobsAreExplicit(t *testing.T) {
 	config := readRoleSourceChartContract(t, filepath.Join(chart, "templates", "configmap.yaml"))
 	for _, required := range []string{
 		"FF_ROLE_SOURCE_SYNC", "FF_ROLE_SOURCE_SCAN", "FF_ROLE_SOURCE_APPLY",
-		"MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED", "MULTICA_ROLE_SOURCE_RETENTION_ENABLED",
+		"MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED", "MULTICA_ROLE_SOURCE_ARTIFACT_INTEGRITY_ENABLED", "MULTICA_ROLE_SOURCE_RETENTION_ENABLED",
 	} {
 		if !strings.Contains(config, required) {
 			t.Errorf("config map omits role-source gate %q", required)

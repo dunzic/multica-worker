@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -109,6 +111,10 @@ func (s *LocalStorage) GetReader(ctx context.Context, key string) (io.ReadCloser
 	}
 	return f, nil
 }
+
+// IsObjectNotFound reports only filesystem absence. Permission, traversal and
+// other read failures remain transient integrity-check failures.
+func (s *LocalStorage) IsObjectNotFound(err error) bool { return errors.Is(err, fs.ErrNotExist) }
 
 func (s *LocalStorage) Delete(ctx context.Context, key string) {
 	if err := s.DeleteObject(ctx, key); err != nil {

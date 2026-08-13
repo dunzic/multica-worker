@@ -134,6 +134,21 @@ One heartbeat can lease at most one scan. The command contains source/workspace 
 
 After normalization, the daemon sends artifact references in batches of at most 1,000 and uploads only missing digests while the same scan lease remains active. The initial AgentWaker transport accepts at most 8 MiB per artifact. Each server process admits at most 16 simultaneous spools, writes each body to a private temporary file, recomputes exact size and SHA-256 before object storage, and uses `role-source-artifacts/<workspace>/<digest>` as the deterministic key. Only then may the immutable readiness row be inserted. A snapshot is rejected unless every referenced digest/size has a readiness row. A source file changed between scan and reopen fails with `source_changed`; paths and bodies never enter heartbeat JSON, audit payloads or member APIs.
 
+Readiness metadata is not treated as permanent proof that object bytes still
+exist. An independent, default-off integrity reconciler leases at most 100 due
+objects per sweep, reads at most eight bodies concurrently with a 30-second
+deadline, and recomputes exact size and SHA-256. Confirmed absence or byte
+mismatch moves a separate mutable integrity row to `quarantined`; transient
+transport, authorization and close errors return to bounded retry and never
+trigger repair. Missing-body preflight then requests the same content-addressed
+upload again. An exact upload atomically restores the row to `pending`, records
+a repair count, and schedules immediate readback. Snapshot and apply accept only
+`pending` or `healthy` rows and lock readiness plus integrity together;
+`checking` and `quarantined` fail closed, so a verifier cannot discover corrupt
+bytes while a new snapshot or apply commits them. Healthy bodies are rechecked
+every seven days. Metrics expose only bounded outcomes and fleet counts—never
+tenant, digest, storage key, path, body, or raw provider errors.
+
 Snapshot acceptance takes a shared database lock on every referenced readiness
 row, inserts the immutable snapshot, and writes one explicit
 `role_source_snapshot_artifact` reachability edge per canonical digest in the

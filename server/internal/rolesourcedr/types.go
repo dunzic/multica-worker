@@ -14,6 +14,7 @@ var tableNames = [...]string{
 	"role_source_apply_failure",
 	"role_source_audit_event",
 	"role_source_artifact",
+	"role_source_artifact_integrity",
 	"role_source_snapshot_artifact",
 	"role_source_artifact_delete_intent",
 	"role_source_object_mapping",

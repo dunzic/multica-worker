@@ -159,6 +159,9 @@ roleSource:
   # Destructive background workers remain independently default-off even when
   # product flags are enabled. Gate B3/F must pass before changing these.
   artifactGCEnabled: false
+  # Continuously reads content-addressed bodies back and quarantines confirmed
+  # missing/corrupt objects. Independent from destructive GC and default-off.
+  artifactIntegrityEnabled: false
   retentionEnabled: false
 
   # The backend already imports existingSecret. Add these keys there only when

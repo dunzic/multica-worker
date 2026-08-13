@@ -102,6 +102,8 @@ var operationalMetricLabels = map[string][]string{
 	"multica_role_source_apply_commit_reconciliations_total": {labelOutcome},
 	"multica_role_source_runtime_config_attestations_total":  {labelOutcome},
 	"multica_role_source_runtime_availability":               {labelStatus},
+	"multica_role_source_artifact_integrity_outcomes_total":  {labelOutcome},
+	"multica_role_source_artifact_integrity_failures_total":  {labelStage},
 }
 
 var forbiddenMetricLabels = map[string]struct{}{

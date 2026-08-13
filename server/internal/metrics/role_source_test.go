@@ -78,6 +78,34 @@ func TestRoleSourceMetricsNormalizeUnboundedCallerValues(t *testing.T) {
 	}
 }
 
+func TestRoleSourceArtifactIntegrityMetricsAreBoundedAndIdentityFree(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewRoleSourceArtifactIntegrityMetrics()
+	reg.MustRegister(m.Collectors()...)
+	m.RecordOutcome("workspace-private-object-key")
+	m.RecordFailure("workspace-private-object-key")
+
+	if got := testutil.ToFloat64(m.Outcomes.WithLabelValues("read_failed")); got != 1 {
+		t.Fatalf("normalized integrity outcome=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.Failures.WithLabelValues("unknown")); got != 1 {
+		t.Fatalf("normalized integrity failure=%v, want 1", got)
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if _, forbidden := forbiddenMetricLabels[label.GetName()]; forbidden {
+					t.Fatalf("%s has forbidden label %q", family.GetName(), label.GetName())
+				}
+			}
+		}
+	}
+}
+
 func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.T) {
 	for metric, want := range map[string][]string{
 		"multica_role_source_apply_errors_total":                 {labelMode, labelStage, labelCode},
@@ -85,6 +113,8 @@ func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.
 		"multica_role_source_apply_commit_reconciliations_total": {labelOutcome},
 		"multica_role_source_runtime_config_attestations_total":  {labelOutcome},
 		"multica_role_source_runtime_availability":               {labelStatus},
+		"multica_role_source_artifact_integrity_outcomes_total":  {labelOutcome},
+		"multica_role_source_artifact_integrity_failures_total":  {labelStage},
 	} {
 		got, ok := operationalMetricLabels[metric]
 		if !ok {
@@ -103,13 +133,16 @@ func TestRoleSourceMetricLabelsArePartOfTheGlobalCardinalityContract(t *testing.
 
 func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 	r := NewRegistry(RegistryOptions{})
-	if r.RoleSource == nil || r.RoleSourceArtifactGC == nil || r.RoleSourceRetention == nil {
+	if r.RoleSource == nil || r.RoleSourceArtifactGC == nil || r.RoleSourceArtifactIntegrity == nil || r.RoleSourceRetention == nil {
 		t.Fatal("role-source metrics are not wired into the production registry")
 	}
 	r.RoleSource.RecordApplyFailureAudit("unknown", "preflight", "capacity_exhausted", "id_generation_failed")
 	r.RoleSource.RecordApplyCommitReconciliation("query_failed")
 	r.RoleSource.RecordRuntimeConfigAttestation("accepted_unloaded")
 	r.RoleSourceArtifactGC.DeleteFailures.Inc()
+	r.RoleSourceArtifactIntegrity.RecordOutcome("read_failed")
+	r.RoleSourceArtifactIntegrity.RecordFailure("claim")
+	r.RoleSourceArtifactIntegrity.Quarantined.Set(1)
 	r.RoleSourceRetention.Failures.Inc()
 	r.RoleSourceRetention.RecordOutcome("legal_hold")
 
@@ -122,6 +155,9 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 		"multica_role_source_apply_commit_reconciliations_total": false,
 		"multica_role_source_runtime_config_attestations_total":  false,
 		"multica_role_source_artifact_gc_delete_failures_total":  false,
+		"multica_role_source_artifact_integrity_outcomes_total":  false,
+		"multica_role_source_artifact_integrity_failures_total":  false,
+		"multica_role_source_artifact_integrity_quarantined":     false,
 		"multica_role_source_retention_failures_total":           false,
 		"multica_role_source_retention_outcomes_total":           false,
 	}
@@ -148,6 +184,9 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 		"MulticaRoleSourceApplyFailureAuditWriteFailed",
 		"MulticaRoleSourceApplyCommitReconciliationFailed",
 		"MulticaRoleSourceArtifactGCDeleteFailures",
+		"MulticaRoleSourceArtifactIntegrityQuarantined",
+		"MulticaRoleSourceArtifactIntegrityReadFailures",
+		"MulticaRoleSourceArtifactIntegrityWorkerFailures",
 		"MulticaRoleSourceRetentionFailures",
 		"MulticaRoleSourceRetentionBacklogOld",
 		"MulticaRoleSourceRuntimeAttestationPersistenceFailed",

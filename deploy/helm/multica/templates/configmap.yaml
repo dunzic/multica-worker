@@ -31,6 +31,7 @@ data:
   FF_ROLE_SOURCE_SCAN: {{ .Values.roleSource.scanEnabled | quote }}
   FF_ROLE_SOURCE_APPLY: {{ .Values.roleSource.applyEnabled | quote }}
   MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED: {{ .Values.roleSource.artifactGCEnabled | quote }}
+  MULTICA_ROLE_SOURCE_ARTIFACT_INTEGRITY_ENABLED: {{ .Values.roleSource.artifactIntegrityEnabled | quote }}
   MULTICA_ROLE_SOURCE_RETENTION_ENABLED: {{ .Values.roleSource.retentionEnabled | quote }}
 
   {{- if not .Values.postgres.external.enabled }}

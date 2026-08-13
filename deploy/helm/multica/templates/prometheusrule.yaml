@@ -72,6 +72,30 @@ spec:
           annotations:
             summary: "Role-source artifact garbage collection cannot permanently purge objects"
             description: "More than 20 role-source artifact purges failed in 15 minutes and the failure rate stayed elevated. The durable intents are retained for retry; inspect object-storage availability, version-list/version-delete permissions, Object Lock/legal hold and backend purge support before backlog growth exhausts capacity."
+        - alert: MulticaRoleSourceArtifactIntegrityQuarantined
+          expr: multica_role_source_artifact_integrity_quarantined > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Role-source artifact bodies are quarantined"
+            description: "Confirmed missing or corrupt role-source artifact bodies must be reuploaded by a fresh source scan before snapshot acceptance or apply."
+        - alert: MulticaRoleSourceArtifactIntegrityReadFailures
+          expr: increase(multica_role_source_artifact_integrity_outcomes_total{outcome="read_failed"}[15m]) > 20
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source artifact readback verification is failing"
+            description: "Repeated readback failures may indicate object-storage availability or permission issues. Objects are not quarantined on transient reads."
+        - alert: MulticaRoleSourceArtifactIntegrityWorkerFailures
+          expr: increase(multica_role_source_artifact_integrity_failures_total[15m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source artifact integrity worker cannot persist progress"
+            description: "The bounded integrity worker is failing to claim, persist, or count verification state. Quarantine and pending gauges may be stale until database health and worker progress recover."
         - alert: MulticaRoleSourceRetentionFailures
           expr: increase(multica_role_source_retention_failures_total[15m]) > 0
           for: 15m

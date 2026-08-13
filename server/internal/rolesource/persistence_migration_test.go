@@ -191,6 +191,43 @@ func TestRoleSourceArtifactDeleteIntentSurvivesTenantTeardownWithoutContent(t *t
 	}
 }
 
+func TestRoleSourceArtifactIntegrityMigrationContract(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	for _, required := range []struct {
+		name string
+		text []string
+	}{
+		{"354_role_source_artifact_integrity.up.sql", []string{"CREATE TABLE role_source_artifact_integrity", "quarantined", "lease_token", "CHECK"}},
+		{"355_role_source_artifact_integrity_unique.up.sql", []string{"CREATE UNIQUE INDEX CONCURRENTLY", "workspace_id, artifact_digest"}},
+		{"356_role_source_artifact_integrity_due_index.up.sql", []string{"CREATE INDEX CONCURRENTLY", "WHERE state IN"}},
+		{"357_role_source_artifact_integrity_backfill.up.sql", []string{"FROM role_source_artifact", "ON CONFLICT"}},
+	} {
+		body, err := os.ReadFile(filepath.Join(root, required.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fragment := range required.text {
+			if !strings.Contains(string(body), fragment) {
+				t.Errorf("%s missing %q", required.name, fragment)
+			}
+		}
+	}
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(queries)
+	for _, fragment := range []string{
+		"MarkRoleSourceArtifactUploadedForIntegrity", "ClaimNextRoleSourceArtifactIntegrity",
+		"QuarantineRoleSourceArtifactIntegrity", "ReleaseRoleSourceArtifactIntegrity",
+		"integrity.state IN ('pending', 'healthy')", "FOR SHARE OF artifact, integrity", "removed_integrity",
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("role-source SQL missing integrity contract %q", fragment)
+		}
+	}
+}
+
 func TestRoleSourceRuntimeAttestationIsBoundedRedactedAndExplicitlyDeleted(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "334_role_source_runtime_attestation.up.sql"))
 	if err != nil {

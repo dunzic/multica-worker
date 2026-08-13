@@ -473,6 +473,10 @@ queued_role_source_artifact_deletes AS (
     FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
     ON CONFLICT (storage_key) DO NOTHING
 ),
+deleted_role_source_artifact_integrity AS (
+    DELETE FROM role_source_artifact_integrity
+    WHERE role_source_artifact_integrity.workspace_id = $1
+),
 deleted_artifacts AS (
     DELETE FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
 ),

@@ -539,30 +539,122 @@ SELECT * FROM role_source_artifact
 WHERE workspace_id = @workspace_id AND digest = @digest;
 
 -- name: ListRoleSourceArtifactsByDigests :many
-SELECT * FROM role_source_artifact
-WHERE workspace_id = @workspace_id
-  AND digest = ANY(@digests::text[])
-ORDER BY digest;
+SELECT artifact.* FROM role_source_artifact artifact
+JOIN role_source_artifact_integrity integrity
+  ON integrity.workspace_id = artifact.workspace_id
+ AND integrity.artifact_digest = artifact.digest
+WHERE artifact.workspace_id = @workspace_id
+  AND artifact.digest = ANY(@digests::text[])
+  AND integrity.state IN ('pending', 'healthy')
+ORDER BY artifact.digest;
 
 -- name: ListRoleSourceArtifactsForApplyByDigests :many
 -- Apply preloads verified bodies before its mutation transaction, then takes
 -- short shared ledger locks in one batch so concurrent retention/GC cannot
 -- remove or retarget those digests before commit.
-SELECT * FROM role_source_artifact
-WHERE workspace_id = @workspace_id
-  AND digest = ANY(@digests::text[])
-ORDER BY digest
-FOR SHARE;
+SELECT artifact.* FROM role_source_artifact artifact
+JOIN role_source_artifact_integrity integrity
+  ON integrity.workspace_id = artifact.workspace_id
+ AND integrity.artifact_digest = artifact.digest
+WHERE artifact.workspace_id = @workspace_id
+  AND artifact.digest = ANY(@digests::text[])
+  AND integrity.state IN ('pending', 'healthy')
+ORDER BY artifact.digest
+FOR SHARE OF artifact, integrity;
 
 -- name: ListRoleSourceArtifactsForSnapshotByDigests :many
 -- Snapshot acceptance locks every ready body before it publishes reachability
 -- edges. A collector uses FOR UPDATE SKIP LOCKED, so exactly one side wins:
 -- either the snapshot commits its edge or the report observes the body absent.
-SELECT * FROM role_source_artifact
+SELECT artifact.* FROM role_source_artifact artifact
+JOIN role_source_artifact_integrity integrity
+  ON integrity.workspace_id = artifact.workspace_id
+ AND integrity.artifact_digest = artifact.digest
+WHERE artifact.workspace_id = @workspace_id
+  AND artifact.digest = ANY(@digests::text[])
+  AND integrity.state IN ('pending', 'healthy')
+ORDER BY artifact.digest
+FOR SHARE OF artifact, integrity;
+
+-- name: MarkRoleSourceArtifactUploadedForIntegrity :one
+INSERT INTO role_source_artifact_integrity (
+    workspace_id, artifact_digest, storage_key, size_bytes, state, next_check_at
+) VALUES (
+    @workspace_id, @artifact_digest, @storage_key, @size_bytes, 'pending', now()
+)
+ON CONFLICT (workspace_id, artifact_digest) DO UPDATE
+SET storage_key = EXCLUDED.storage_key,
+    size_bytes = EXCLUDED.size_bytes,
+    state = 'pending',
+    last_outcome = CASE
+        WHEN role_source_artifact_integrity.state = 'quarantined' THEN 'reuploaded'
+        ELSE role_source_artifact_integrity.last_outcome
+    END,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    attempt = 0,
+    repair_count = role_source_artifact_integrity.repair_count +
+        CASE WHEN role_source_artifact_integrity.state = 'quarantined' THEN 1 ELSE 0 END,
+    next_check_at = now(),
+    updated_at = now()
+RETURNING *;
+
+-- name: ClaimNextRoleSourceArtifactIntegrity :one
+WITH candidate AS MATERIALIZED (
+    SELECT workspace_id, artifact_digest
+    FROM role_source_artifact_integrity
+    WHERE (state IN ('pending', 'healthy') AND next_check_at <= now())
+       OR (state = 'checking' AND lease_expires_at < now())
+    ORDER BY next_check_at, workspace_id, artifact_digest
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_artifact_integrity integrity
+SET state = 'checking', lease_token = @lease_token,
+    lease_expires_at = now() + @lease_duration::interval,
+    attempt = attempt + 1, updated_at = now()
+FROM candidate
+WHERE integrity.workspace_id = candidate.workspace_id
+  AND integrity.artifact_digest = candidate.artifact_digest
+RETURNING integrity.*;
+
+-- name: CompleteRoleSourceArtifactIntegrityHealthy :execrows
+UPDATE role_source_artifact_integrity
+SET state = 'healthy', last_outcome = 'healthy',
+    lease_token = NULL, lease_expires_at = NULL, attempt = 0,
+    check_count = check_count + 1,
+    next_check_at = now() + @next_delay::interval,
+    last_checked_at = now(), last_verified_at = now(), updated_at = now()
 WHERE workspace_id = @workspace_id
-  AND digest = ANY(@digests::text[])
-ORDER BY digest
-FOR SHARE;
+  AND artifact_digest = @artifact_digest
+  AND state = 'checking' AND lease_token = @lease_token;
+
+-- name: QuarantineRoleSourceArtifactIntegrity :execrows
+UPDATE role_source_artifact_integrity
+SET state = 'quarantined', last_outcome = @outcome,
+    lease_token = NULL, lease_expires_at = NULL,
+    check_count = check_count + 1, failure_count = failure_count + 1,
+    last_checked_at = now(), updated_at = now()
+WHERE workspace_id = @workspace_id
+  AND artifact_digest = @artifact_digest
+  AND state = 'checking' AND lease_token = @lease_token;
+
+-- name: ReleaseRoleSourceArtifactIntegrity :execrows
+UPDATE role_source_artifact_integrity
+SET state = 'pending', last_outcome = 'read_failed',
+    lease_token = NULL, lease_expires_at = NULL,
+    check_count = check_count + 1, failure_count = failure_count + 1,
+    next_check_at = now() + @retry_delay::interval,
+    last_checked_at = now(), updated_at = now()
+WHERE workspace_id = @workspace_id
+  AND artifact_digest = @artifact_digest
+  AND state = 'checking' AND lease_token = @lease_token;
+
+-- name: CountRoleSourceArtifactIntegrityStates :one
+SELECT
+    count(*) FILTER (WHERE state IN ('pending', 'checking'))::bigint AS pending_count,
+    count(*) FILTER (WHERE state = 'quarantined')::bigint AS quarantined_count
+FROM role_source_artifact_integrity;
 
 -- name: InsertRoleSourceSnapshotArtifacts :execrows
 INSERT INTO role_source_snapshot_artifact (
@@ -606,6 +698,11 @@ WITH candidate AS MATERIALIZED (
     SELECT storage_key, digest, size_bytes, 'unreachable' FROM candidate
     ON CONFLICT (storage_key) DO NOTHING
     RETURNING *
+), removed_integrity AS (
+    DELETE FROM role_source_artifact_integrity integrity
+    USING queued
+    WHERE integrity.storage_key = queued.storage_key
+    RETURNING integrity.storage_key
 ), removed AS (
     DELETE FROM role_source_artifact artifact
     USING queued

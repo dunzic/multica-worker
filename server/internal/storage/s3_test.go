@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,7 +16,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
+
+func TestS3StorageObjectNotFoundClassificationIsNarrow(t *testing.T) {
+	store := &S3Storage{}
+	for _, err := range []error{
+		&types.NoSuchKey{},
+		&smithy.GenericAPIError{Code: "NoSuchKey"},
+		fmt.Errorf("wrapped: %w", &smithy.GenericAPIError{Code: "NotFound"}),
+	} {
+		if !store.IsObjectNotFound(err) {
+			t.Fatalf("confirmed absence was not classified: %T %v", err, err)
+		}
+	}
+	for _, err := range []error{
+		errors.New("connection reset"),
+		&smithy.GenericAPIError{Code: "AccessDenied"},
+		&smithy.GenericAPIError{Code: "SlowDown"},
+	} {
+		if store.IsObjectNotFound(err) {
+			t.Fatalf("transient/authorization failure classified as missing: %T %v", err, err)
+		}
+	}
+}
 
 func TestS3StorageUploadStreamUsesFixedLengthRequest(t *testing.T) {
 	type observedRequest struct {

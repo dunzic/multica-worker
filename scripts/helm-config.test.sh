@@ -26,6 +26,7 @@ require_rendered_value "$default_config" 'FF_ROLE_SOURCE_SYNC: "false"'
 require_rendered_value "$default_config" 'FF_ROLE_SOURCE_SCAN: "false"'
 require_rendered_value "$default_config" 'FF_ROLE_SOURCE_APPLY: "false"'
 require_rendered_value "$default_config" 'MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED: "false"'
+require_rendered_value "$default_config" 'MULTICA_ROLE_SOURCE_ARTIFACT_INTEGRITY_ENABLED: "false"'
 require_rendered_value "$default_config" 'MULTICA_ROLE_SOURCE_RETENTION_ENABLED: "false"'
 
 disabled_config="$(

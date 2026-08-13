@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 type S3Storage struct {
@@ -270,6 +272,24 @@ func (s *S3Storage) GetReader(ctx context.Context, key string) (io.ReadCloser, e
 		return nil, fmt.Errorf("s3 GetObject: %w", err)
 	}
 	return out.Body, nil
+}
+
+// IsObjectNotFound lets background integrity workers distinguish an absent
+// object from a transport or authorization failure without depending on AWS
+// SDK types. Only a confirmed absence may quarantine readiness automatically.
+func (s *S3Storage) IsObjectNotFound(err error) bool {
+	var noSuchKey *types.NoSuchKey
+	if errors.As(err, &noSuchKey) {
+		return true
+	}
+	var apiError smithy.APIError
+	if errors.As(err, &apiError) {
+		switch apiError.ErrorCode() {
+		case "NoSuchKey", "NotFound", "404":
+			return true
+		}
+	}
+	return false
 }
 
 func (s *S3Storage) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {

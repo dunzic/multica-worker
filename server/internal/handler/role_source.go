@@ -1399,7 +1399,10 @@ func (h *Handler) UploadRoleSourceArtifact(w http.ResponseWriter, r *http.Reques
 		_, uploadErr = streamStore.UploadStream(r.Context(), storageKey, temporary, written, "application/octet-stream", "")
 	}
 	if uploadErr != nil {
-		slog.Error("store role source artifact failed", "workspace_id", workspaceID, "digest", digest, "error", uploadErr)
+		// Provider errors can embed the request URL (and therefore tenant and
+		// digest identity). Keep ordinary logs content-free; storage telemetry
+		// and the HTTP outcome carry the bounded operational signal.
+		slog.Error("store role source artifact failed")
 		writeError(w, http.StatusServiceUnavailable, "failed to store artifact")
 		return
 	}

@@ -164,8 +164,13 @@ func (c *ControlPlane) StoreArtifactRecord(ctx context.Context, input StoreArtif
 	if err != nil {
 		return db.RoleSourceArtifact{}, false, err
 	}
-	if row.SizeBytes != input.SizeBytes {
+	if row.SizeBytes != input.SizeBytes || row.StorageKey != input.StorageKey {
 		return db.RoleSourceArtifact{}, false, errors.New("artifact digest conflicts with persisted size")
+	}
+	if _, err := qtx.MarkRoleSourceArtifactUploadedForIntegrity(ctx, db.MarkRoleSourceArtifactUploadedForIntegrityParams{
+		WorkspaceID: workspaceID, ArtifactDigest: input.Digest, StorageKey: input.StorageKey, SizeBytes: input.SizeBytes,
+	}); err != nil {
+		return db.RoleSourceArtifact{}, false, fmt.Errorf("mark artifact for integrity verification: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.RoleSourceArtifact{}, false, err

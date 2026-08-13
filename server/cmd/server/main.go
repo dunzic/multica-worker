@@ -346,6 +346,7 @@ func main() {
 	var wecomMetrics *obsmetrics.WecomMetrics
 	var roleSourceMetrics *obsmetrics.RoleSourceMetrics
 	var roleSourceArtifactGCMetrics *obsmetrics.RoleSourceArtifactGCMetrics
+	var roleSourceArtifactIntegrityMetrics *obsmetrics.RoleSourceArtifactIntegrityMetrics
 	var roleSourceRetentionMetrics *obsmetrics.RoleSourceRetentionMetrics
 	if metricsConfig.Enabled() {
 		// Build a dedicated tiny pool for the BusinessSamplerCollector
@@ -378,6 +379,7 @@ func main() {
 		wecomMetrics = metricsRegistry.Wecom
 		roleSourceMetrics = metricsRegistry.RoleSource
 		roleSourceArtifactGCMetrics = metricsRegistry.RoleSourceArtifactGC
+		roleSourceArtifactIntegrityMetrics = metricsRegistry.RoleSourceArtifactIntegrity
 		roleSourceRetentionMetrics = metricsRegistry.RoleSourceRetention
 		// Forward inbound daemon WS frames into the per-kind counter so
 		// dashboards can split heartbeat / unknown / invalid traffic.
@@ -471,6 +473,10 @@ func main() {
 	if h.RoleSourceArtifactReconciler != nil {
 		h.RoleSourceArtifactReconciler.Metrics = roleSourceArtifactGCMetrics
 		go h.RoleSourceArtifactReconciler.Run(sweepCtx)
+	}
+	if h.RoleSourceArtifactIntegrityReconciler != nil {
+		h.RoleSourceArtifactIntegrityReconciler.Metrics = roleSourceArtifactIntegrityMetrics
+		go h.RoleSourceArtifactIntegrityReconciler.Run(sweepCtx)
 	}
 	if h.RoleSourceRetentionReconciler != nil {
 		h.RoleSourceRetentionReconciler.Metrics = roleSourceRetentionMetrics

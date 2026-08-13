@@ -117,6 +117,44 @@ digest/receipt/audit evidence left and are intentionally no longer runnable.
 Before broad rollout, complete the PostgreSQL race, object-storage purge and
 backup/restore gates in `production-validation.md`.
 
+## Artifact-integrity quarantine operations
+
+The integrity worker is independently default-off. Enable
+`MULTICA_ROLE_SOURCE_ARTIFACT_INTEGRITY_ENABLED=true` only after the object
+store read identity, request limits, alerts and this response path have been
+tested in the target environment. The worker verifies current bytes; it never
+deletes or overwrites an object.
+
+`MulticaRoleSourceArtifactIntegrityQuarantined` means at least one body is
+confirmed missing, the wrong size, or the wrong SHA-256. Snapshot and apply
+fail closed for that digest. `MulticaRoleSourceArtifactIntegrityReadFailures`
+means repeated transient read/open/close failures; those rows remain retryable
+and are not quarantined. `MulticaRoleSourceArtifactIntegrityWorkerFailures`
+means database claim/state/count progress failed, so fleet gauges may be stale.
+
+1. Check object-store availability, credentials, throttling and version state.
+   Do not copy an object key, digest, source path or provider error into an
+   ordinary ticket or metric label.
+2. Pause apply for the affected operational cohort while quarantine is nonzero.
+   Existing materialized workers keep their pinned bytes; do not infer that a
+   new scan is safe merely because the source is online.
+3. Trigger an authorized read-only source scan. Missing-artifact preflight will
+   request the exact digest from the owning daemon, which reopens the bounded
+   source file and uploads only after revalidating size and SHA-256.
+4. Never clear `role_source_artifact_integrity` manually and never copy an
+   arbitrary object into the deterministic key. A valid exact upload is the
+   only ordinary repair path; it records `reuploaded`, increments the repair
+   count and returns the row to immediate verification.
+5. Resolve the incident only after the quarantine fleet count falls, the body
+   reaches `healthy`, a new read-only scan succeeds, and no read-failure alert
+   remains. A transient recovery without healthy readback is not repair proof.
+
+If quarantine grows across unrelated workspaces, disable the integrity worker
+gate, preserve database and object-store audit evidence, and treat it as a
+shared storage or integrity incident. Do not initiate bulk re-upload or GC. A
+restore is acceptable only through the isolated DR workflow and its semantic
+verifier; restoring PostgreSQL metadata alone cannot restore missing bodies.
+
 ## Attestation status recovery
 
 The effective status and last evidence status answer different questions. A

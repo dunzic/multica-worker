@@ -192,6 +192,56 @@ func (q *Queries) ClaimNextRoleSourceArtifactDeleteIntent(ctx context.Context, a
 	return i, err
 }
 
+const claimNextRoleSourceArtifactIntegrity = `-- name: ClaimNextRoleSourceArtifactIntegrity :one
+WITH candidate AS MATERIALIZED (
+    SELECT workspace_id, artifact_digest
+    FROM role_source_artifact_integrity
+    WHERE (state IN ('pending', 'healthy') AND next_check_at <= now())
+       OR (state = 'checking' AND lease_expires_at < now())
+    ORDER BY next_check_at, workspace_id, artifact_digest
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_artifact_integrity integrity
+SET state = 'checking', lease_token = $1,
+    lease_expires_at = now() + $2::interval,
+    attempt = attempt + 1, updated_at = now()
+FROM candidate
+WHERE integrity.workspace_id = candidate.workspace_id
+  AND integrity.artifact_digest = candidate.artifact_digest
+RETURNING integrity.workspace_id, integrity.artifact_digest, integrity.storage_key, integrity.size_bytes, integrity.state, integrity.last_outcome, integrity.lease_token, integrity.lease_expires_at, integrity.attempt, integrity.check_count, integrity.failure_count, integrity.repair_count, integrity.next_check_at, integrity.last_checked_at, integrity.last_verified_at, integrity.created_at, integrity.updated_at
+`
+
+type ClaimNextRoleSourceArtifactIntegrityParams struct {
+	LeaseToken    pgtype.UUID     `json:"lease_token"`
+	LeaseDuration pgtype.Interval `json:"lease_duration"`
+}
+
+func (q *Queries) ClaimNextRoleSourceArtifactIntegrity(ctx context.Context, arg ClaimNextRoleSourceArtifactIntegrityParams) (RoleSourceArtifactIntegrity, error) {
+	row := q.db.QueryRow(ctx, claimNextRoleSourceArtifactIntegrity, arg.LeaseToken, arg.LeaseDuration)
+	var i RoleSourceArtifactIntegrity
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.ArtifactDigest,
+		&i.StorageKey,
+		&i.SizeBytes,
+		&i.State,
+		&i.LastOutcome,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.Attempt,
+		&i.CheckCount,
+		&i.FailureCount,
+		&i.RepairCount,
+		&i.NextCheckAt,
+		&i.LastCheckedAt,
+		&i.LastVerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const claimNextRoleSourceRetentionCandidate = `-- name: ClaimNextRoleSourceRetentionCandidate :one
 WITH candidate AS MATERIALIZED (
     SELECT id
@@ -461,6 +511,38 @@ func (q *Queries) CompleteRoleSourceArtifactDeleteIntent(ctx context.Context, ar
 	return result.RowsAffected(), nil
 }
 
+const completeRoleSourceArtifactIntegrityHealthy = `-- name: CompleteRoleSourceArtifactIntegrityHealthy :execrows
+UPDATE role_source_artifact_integrity
+SET state = 'healthy', last_outcome = 'healthy',
+    lease_token = NULL, lease_expires_at = NULL, attempt = 0,
+    check_count = check_count + 1,
+    next_check_at = now() + $1::interval,
+    last_checked_at = now(), last_verified_at = now(), updated_at = now()
+WHERE workspace_id = $2
+  AND artifact_digest = $3
+  AND state = 'checking' AND lease_token = $4
+`
+
+type CompleteRoleSourceArtifactIntegrityHealthyParams struct {
+	NextDelay      pgtype.Interval `json:"next_delay"`
+	WorkspaceID    pgtype.UUID     `json:"workspace_id"`
+	ArtifactDigest string          `json:"artifact_digest"`
+	LeaseToken     pgtype.UUID     `json:"lease_token"`
+}
+
+func (q *Queries) CompleteRoleSourceArtifactIntegrityHealthy(ctx context.Context, arg CompleteRoleSourceArtifactIntegrityHealthyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeRoleSourceArtifactIntegrityHealthy,
+		arg.NextDelay,
+		arg.WorkspaceID,
+		arg.ArtifactDigest,
+		arg.LeaseToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const completeRoleSourceRetentionCandidate = `-- name: CompleteRoleSourceRetentionCandidate :execrows
 UPDATE role_source_retention_candidate
 SET state = 'completed', lease_token = NULL, lease_expires_at = NULL,
@@ -706,6 +788,25 @@ func (q *Queries) CountRoleSourceArtifactDeleteIntents(ctx context.Context) (Cou
 	row := q.db.QueryRow(ctx, countRoleSourceArtifactDeleteIntents)
 	var i CountRoleSourceArtifactDeleteIntentsRow
 	err := row.Scan(&i.ActiveCount, &i.TombstoneCount)
+	return i, err
+}
+
+const countRoleSourceArtifactIntegrityStates = `-- name: CountRoleSourceArtifactIntegrityStates :one
+SELECT
+    count(*) FILTER (WHERE state IN ('pending', 'checking'))::bigint AS pending_count,
+    count(*) FILTER (WHERE state = 'quarantined')::bigint AS quarantined_count
+FROM role_source_artifact_integrity
+`
+
+type CountRoleSourceArtifactIntegrityStatesRow struct {
+	PendingCount     int64 `json:"pending_count"`
+	QuarantinedCount int64 `json:"quarantined_count"`
+}
+
+func (q *Queries) CountRoleSourceArtifactIntegrityStates(ctx context.Context) (CountRoleSourceArtifactIntegrityStatesRow, error) {
+	row := q.db.QueryRow(ctx, countRoleSourceArtifactIntegrityStates)
+	var i CountRoleSourceArtifactIntegrityStatesRow
+	err := row.Scan(&i.PendingCount, &i.QuarantinedCount)
 	return i, err
 }
 
@@ -3047,10 +3148,14 @@ func (q *Queries) ListRoleSourceApplyFailures(ctx context.Context, arg ListRoleS
 }
 
 const listRoleSourceArtifactsByDigests = `-- name: ListRoleSourceArtifactsByDigests :many
-SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
-WHERE workspace_id = $1
-  AND digest = ANY($2::text[])
-ORDER BY digest
+SELECT artifact.workspace_id, artifact.digest, artifact.size_bytes, artifact.storage_key, artifact.uploaded_by_runtime_id, artifact.first_source_id, artifact.first_scan_request_id, artifact.created_at FROM role_source_artifact artifact
+JOIN role_source_artifact_integrity integrity
+  ON integrity.workspace_id = artifact.workspace_id
+ AND integrity.artifact_digest = artifact.digest
+WHERE artifact.workspace_id = $1
+  AND artifact.digest = ANY($2::text[])
+  AND integrity.state IN ('pending', 'healthy')
+ORDER BY artifact.digest
 `
 
 type ListRoleSourceArtifactsByDigestsParams struct {
@@ -3088,11 +3193,15 @@ func (q *Queries) ListRoleSourceArtifactsByDigests(ctx context.Context, arg List
 }
 
 const listRoleSourceArtifactsForApplyByDigests = `-- name: ListRoleSourceArtifactsForApplyByDigests :many
-SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
-WHERE workspace_id = $1
-  AND digest = ANY($2::text[])
-ORDER BY digest
-FOR SHARE
+SELECT artifact.workspace_id, artifact.digest, artifact.size_bytes, artifact.storage_key, artifact.uploaded_by_runtime_id, artifact.first_source_id, artifact.first_scan_request_id, artifact.created_at FROM role_source_artifact artifact
+JOIN role_source_artifact_integrity integrity
+  ON integrity.workspace_id = artifact.workspace_id
+ AND integrity.artifact_digest = artifact.digest
+WHERE artifact.workspace_id = $1
+  AND artifact.digest = ANY($2::text[])
+  AND integrity.state IN ('pending', 'healthy')
+ORDER BY artifact.digest
+FOR SHARE OF artifact, integrity
 `
 
 type ListRoleSourceArtifactsForApplyByDigestsParams struct {
@@ -3133,11 +3242,15 @@ func (q *Queries) ListRoleSourceArtifactsForApplyByDigests(ctx context.Context, 
 }
 
 const listRoleSourceArtifactsForSnapshotByDigests = `-- name: ListRoleSourceArtifactsForSnapshotByDigests :many
-SELECT workspace_id, digest, size_bytes, storage_key, uploaded_by_runtime_id, first_source_id, first_scan_request_id, created_at FROM role_source_artifact
-WHERE workspace_id = $1
-  AND digest = ANY($2::text[])
-ORDER BY digest
-FOR SHARE
+SELECT artifact.workspace_id, artifact.digest, artifact.size_bytes, artifact.storage_key, artifact.uploaded_by_runtime_id, artifact.first_source_id, artifact.first_scan_request_id, artifact.created_at FROM role_source_artifact artifact
+JOIN role_source_artifact_integrity integrity
+  ON integrity.workspace_id = artifact.workspace_id
+ AND integrity.artifact_digest = artifact.digest
+WHERE artifact.workspace_id = $1
+  AND artifact.digest = ANY($2::text[])
+  AND integrity.state IN ('pending', 'healthy')
+ORDER BY artifact.digest
+FOR SHARE OF artifact, integrity
 `
 
 type ListRoleSourceArtifactsForSnapshotByDigestsParams struct {
@@ -4025,6 +4138,98 @@ func (q *Queries) MarkRoleSourceApplyRunning(ctx context.Context, arg MarkRoleSo
 	return i, err
 }
 
+const markRoleSourceArtifactUploadedForIntegrity = `-- name: MarkRoleSourceArtifactUploadedForIntegrity :one
+INSERT INTO role_source_artifact_integrity (
+    workspace_id, artifact_digest, storage_key, size_bytes, state, next_check_at
+) VALUES (
+    $1, $2, $3, $4, 'pending', now()
+)
+ON CONFLICT (workspace_id, artifact_digest) DO UPDATE
+SET storage_key = EXCLUDED.storage_key,
+    size_bytes = EXCLUDED.size_bytes,
+    state = 'pending',
+    last_outcome = CASE
+        WHEN role_source_artifact_integrity.state = 'quarantined' THEN 'reuploaded'
+        ELSE role_source_artifact_integrity.last_outcome
+    END,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    attempt = 0,
+    repair_count = role_source_artifact_integrity.repair_count +
+        CASE WHEN role_source_artifact_integrity.state = 'quarantined' THEN 1 ELSE 0 END,
+    next_check_at = now(),
+    updated_at = now()
+RETURNING workspace_id, artifact_digest, storage_key, size_bytes, state, last_outcome, lease_token, lease_expires_at, attempt, check_count, failure_count, repair_count, next_check_at, last_checked_at, last_verified_at, created_at, updated_at
+`
+
+type MarkRoleSourceArtifactUploadedForIntegrityParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ArtifactDigest string      `json:"artifact_digest"`
+	StorageKey     string      `json:"storage_key"`
+	SizeBytes      int64       `json:"size_bytes"`
+}
+
+func (q *Queries) MarkRoleSourceArtifactUploadedForIntegrity(ctx context.Context, arg MarkRoleSourceArtifactUploadedForIntegrityParams) (RoleSourceArtifactIntegrity, error) {
+	row := q.db.QueryRow(ctx, markRoleSourceArtifactUploadedForIntegrity,
+		arg.WorkspaceID,
+		arg.ArtifactDigest,
+		arg.StorageKey,
+		arg.SizeBytes,
+	)
+	var i RoleSourceArtifactIntegrity
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.ArtifactDigest,
+		&i.StorageKey,
+		&i.SizeBytes,
+		&i.State,
+		&i.LastOutcome,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.Attempt,
+		&i.CheckCount,
+		&i.FailureCount,
+		&i.RepairCount,
+		&i.NextCheckAt,
+		&i.LastCheckedAt,
+		&i.LastVerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const quarantineRoleSourceArtifactIntegrity = `-- name: QuarantineRoleSourceArtifactIntegrity :execrows
+UPDATE role_source_artifact_integrity
+SET state = 'quarantined', last_outcome = $1,
+    lease_token = NULL, lease_expires_at = NULL,
+    check_count = check_count + 1, failure_count = failure_count + 1,
+    last_checked_at = now(), updated_at = now()
+WHERE workspace_id = $2
+  AND artifact_digest = $3
+  AND state = 'checking' AND lease_token = $4
+`
+
+type QuarantineRoleSourceArtifactIntegrityParams struct {
+	Outcome        pgtype.Text `json:"outcome"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ArtifactDigest string      `json:"artifact_digest"`
+	LeaseToken     pgtype.UUID `json:"lease_token"`
+}
+
+func (q *Queries) QuarantineRoleSourceArtifactIntegrity(ctx context.Context, arg QuarantineRoleSourceArtifactIntegrityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, quarantineRoleSourceArtifactIntegrity,
+		arg.Outcome,
+		arg.WorkspaceID,
+		arg.ArtifactDigest,
+		arg.LeaseToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const queueEligibleRoleSourceRetentionCandidates = `-- name: QueueEligibleRoleSourceRetentionCandidates :many
 WITH latest_policy AS MATERIALIZED (
     SELECT DISTINCT ON (policy.source_id) policy.id, policy.workspace_id, policy.source_id, policy.version, policy.request_key_digest, policy.enabled, policy.minimum_age_days, policy.keep_successful_snapshots, policy.created_by, policy.created_at
@@ -4155,6 +4360,11 @@ WITH candidate AS MATERIALIZED (
     SELECT storage_key, digest, size_bytes, 'unreachable' FROM candidate
     ON CONFLICT (storage_key) DO NOTHING
     RETURNING storage_key, artifact_digest, size_bytes, reason, state, lease_token, lease_expires_at, attempt, tombstone_pass, next_attempt_at, created_at, updated_at
+), removed_integrity AS (
+    DELETE FROM role_source_artifact_integrity integrity
+    USING queued
+    WHERE integrity.storage_key = queued.storage_key
+    RETURNING integrity.storage_key
 ), removed AS (
     DELETE FROM role_source_artifact artifact
     USING queued
@@ -4385,6 +4595,38 @@ type ReleaseRoleSourceArtifactDeleteIntentParams struct {
 
 func (q *Queries) ReleaseRoleSourceArtifactDeleteIntent(ctx context.Context, arg ReleaseRoleSourceArtifactDeleteIntentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, releaseRoleSourceArtifactDeleteIntent, arg.RetryDelay, arg.StorageKey, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const releaseRoleSourceArtifactIntegrity = `-- name: ReleaseRoleSourceArtifactIntegrity :execrows
+UPDATE role_source_artifact_integrity
+SET state = 'pending', last_outcome = 'read_failed',
+    lease_token = NULL, lease_expires_at = NULL,
+    check_count = check_count + 1, failure_count = failure_count + 1,
+    next_check_at = now() + $1::interval,
+    last_checked_at = now(), updated_at = now()
+WHERE workspace_id = $2
+  AND artifact_digest = $3
+  AND state = 'checking' AND lease_token = $4
+`
+
+type ReleaseRoleSourceArtifactIntegrityParams struct {
+	RetryDelay     pgtype.Interval `json:"retry_delay"`
+	WorkspaceID    pgtype.UUID     `json:"workspace_id"`
+	ArtifactDigest string          `json:"artifact_digest"`
+	LeaseToken     pgtype.UUID     `json:"lease_token"`
+}
+
+func (q *Queries) ReleaseRoleSourceArtifactIntegrity(ctx context.Context, arg ReleaseRoleSourceArtifactIntegrityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseRoleSourceArtifactIntegrity,
+		arg.RetryDelay,
+		arg.WorkspaceID,
+		arg.ArtifactDigest,
+		arg.LeaseToken,
+	)
 	if err != nil {
 		return 0, err
 	}
