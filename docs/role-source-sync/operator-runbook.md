@@ -174,16 +174,98 @@ On `MulticaRoleSourceOutboxDeliveryFailed`,
    treat it as apply/commit reconciliation, not an outbox incident.
 4. Restore the dependency and let pending/expired leases retry. A retry must
    publish the existing database UUID; clients deduplicate it.
-5. A `dead` row exhausted 20 attempts. Do not copy its payload into an ad-hoc
-   websocket, delete it or replay the apply. Escalate to the named incident
-   owner; production rollout requires an authorized audited replay tool that
-   preserves the original event ID.
+5. A `dead` row exhausted 20 attempts. Do not copy an event into an ad-hoc
+   websocket, delete it or replay the apply. If delivery is still required,
+   follow the controlled replay procedure below.
 6. Resolve only after active age and dead gauges return to the expected baseline,
    connected clients refetch authoritative state, and no new ack/release errors
    occur through one full alert window.
 
 Published rows are retained seven days and dead rows 30 days. These are evidence
-and bounded-capacity defaults, not permission for manual early deletion.
+and bounded-capacity defaults, not permission for manual early deletion. Once
+an event has a replay receipt, its outbox row and receipt remain until explicit
+workspace teardown so the authorization chain cannot be orphaned.
+
+### Controlled dead-letter replay
+
+This is an offline platform incident action. It is not a workspace owner/admin
+action and has no HTTP, UI or ordinary service-process endpoint. Use a protected
+operator session with direct PostgreSQL 17 access only after the incident owner
+has confirmed that the downstream dependency recovered and the original apply
+receipt remains authoritative.
+
+1. Assign different requester and approver operators. Record an approved
+   incident reference in the controlled incident system, then place that one-line
+   reference in a new mode-0600 file. Do not put credentials, payloads, paths or
+   customer content in the reference.
+2. Inspect the exact dead event. Keep the JSON output in the protected incident
+   record; it contains tenant-scoped identifiers and commitments.
+
+   ```bash
+   DATABASE_URL="$REPLAY_DATABASE_URL" \
+     /app/role_source_outbox_replay inspect \
+     --event-id "$OUTBOX_EVENT_ID"
+   ```
+
+   Inspection fails closed unless the successful apply receipt, the exactly
+   matching success audit event and its complete hash chain all validate.
+3. Prepare a single-use canonical authorization. The output path must not
+   already exist and is created mode 0600. Its lifetime is exactly 15 minutes.
+
+   ```bash
+   DATABASE_URL="$REPLAY_DATABASE_URL" \
+     /app/role_source_outbox_replay prepare \
+     --event-id "$OUTBOX_EVENT_ID" \
+     --reason-code dependency_recovered \
+     --incident-reference-file /secure/incident-reference.txt \
+     --output /secure/replay-authorization.json
+   ```
+
+   The only allowed reason codes are `dependency_recovered`,
+   `incident_recovery` and `delivery_reconciliation`.
+4. Both operators independently sign the exact bytes of
+   `replay-authorization.json` through the approved KMS/HSM workflow. Do not
+   normalize, pretty-print or add a newline. Export only the base64 Ed25519
+   signatures to two distinct mode-0600 files. The configured public-key JSON
+   object must contain 2–32 distinct key IDs and base64 Ed25519 public keys;
+   aliases of one public key are rejected.
+5. Execute with the immutable authorization and two different configured key
+   IDs. The public keyring may be read-only but must not be group- or
+   world-writable.
+
+   ```bash
+   DATABASE_URL="$REPLAY_DATABASE_URL" \
+   MULTICA_ROLE_SOURCE_REPLAY_PUBLIC_KEYS_FILE=/secure/replay-public-keys.json \
+     /app/role_source_outbox_replay execute \
+     --authorization /secure/replay-authorization.json \
+     --requester-key-id requester_2026_01 \
+     --requester-signature-file /secure/requester.sig \
+     --approver-key-id approver_2026_01 \
+     --approver-signature-file /secure/approver.sig
+   ```
+
+   The transaction first writes an immutable content-free replay receipt, then
+   requeues the same outbox UUID. It does not accept an event payload and cannot
+   invoke apply or rollback. At most three replay generations are permitted.
+6. If the command loses its response after commit, rerun the exact same
+   authorization and signature files. The authorization ID reconciles to the
+   existing receipt even after the 15-minute window; changing any signed field,
+   key or signature fails closed. Never prepare a new authorization merely to
+   resolve an ambiguous command response.
+7. Inspect again and verify the same event UUID is `pending`, its attempt count
+   reset to zero and its replay count advanced exactly once. Then observe normal
+   delivery metrics through one alert window and confirm clients refetch the
+   authoritative receipt-backed state.
+8. Retain the canonical authorization, both signatures, KMS/HSM approval logs,
+   public-key version, incident record and returned replay receipt under the
+   incident retention policy. PostgreSQL stores only SHA-256 commitments and
+   key IDs, not those external records. Keep retired public keys and their trust
+   evidence available for the required audit period and include the outbox and
+   replay tables in DR verification.
+
+Stop immediately on a receipt/audit-chain mismatch, unexpected generation,
+signature failure, serializable conflict or fourth-generation refusal. Preserve
+evidence and escalate; do not edit the outbox or replay tables with SQL.
 
 ## Read-only scan workflow
 

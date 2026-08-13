@@ -413,6 +413,9 @@ deleted_runtime_attestation_observations AS (
 deleted_runtime_attestations AS (
     DELETE FROM role_source_runtime_attestation WHERE role_source_runtime_attestation.workspace_id = $1
 ),
+deleted_outbox_replays AS (
+    DELETE FROM role_source_outbox_replay WHERE role_source_outbox_replay.workspace_id = $1
+),
 deleted_outbox_events AS (
     DELETE FROM role_source_outbox WHERE role_source_outbox.workspace_id = $1
 ),

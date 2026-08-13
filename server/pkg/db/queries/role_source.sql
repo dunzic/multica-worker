@@ -15,6 +15,78 @@ INSERT INTO role_source_outbox (
 )
 RETURNING *;
 
+-- name: GetRoleSourceOutboxForReplay :one
+SELECT * FROM role_source_outbox
+WHERE id = @id
+FOR UPDATE;
+
+-- name: GetRoleSourceOutboxByID :one
+SELECT * FROM role_source_outbox
+WHERE id = @id;
+
+-- name: GetRoleSourceApplyForOutboxReplay :one
+SELECT * FROM role_source_apply
+WHERE id = @apply_id
+  AND workspace_id = @workspace_id
+  AND source_id = @source_id
+  AND status = 'succeeded';
+
+-- name: ListRoleSourceApplyAuditEventsForOutboxReplay :many
+SELECT * FROM role_source_audit_event
+WHERE workspace_id = @workspace_id
+  AND source_id = @source_id
+  AND event_type = @event_type
+  AND payload ->> 'operation_id' = @apply_id::text
+  AND payload ->> 'receipt_digest' = sqlc.arg('receipt_digest')::text
+ORDER BY sequence DESC
+LIMIT 2;
+
+-- name: ListRoleSourceAuditChainForOutboxReplay :many
+SELECT * FROM role_source_audit_event
+WHERE workspace_id = @workspace_id
+  AND source_id = @source_id
+  AND sequence <= @through_sequence
+ORDER BY sequence
+LIMIT @result_limit;
+
+-- name: GetLatestRoleSourceOutboxReplay :one
+SELECT * FROM role_source_outbox_replay
+WHERE outbox_id = @outbox_id
+ORDER BY generation DESC
+LIMIT 1;
+
+-- name: GetRoleSourceOutboxReplayByAuthorization :one
+SELECT * FROM role_source_outbox_replay
+WHERE authorization_id = @authorization_id;
+
+-- name: InsertRoleSourceOutboxReplay :one
+INSERT INTO role_source_outbox_replay (
+    id, outbox_id, workspace_id, source_id, apply_id, authorization_id, generation,
+    reason_code, incident_reference_digest, requester_key_id,
+    approver_key_id, authorization_digest, requester_signature_digest,
+    approver_signature_digest, expected_receipt_digest,
+    previous_replay_digest, replay_digest, created_at
+) VALUES (
+    @id, @outbox_id, @workspace_id, @source_id, @apply_id, @authorization_id, @generation,
+    @reason_code, @incident_reference_digest, @requester_key_id,
+    @approver_key_id, @authorization_digest, @requester_signature_digest,
+    @approver_signature_digest, @expected_receipt_digest,
+    sqlc.narg('previous_replay_digest')::text, @replay_digest, @created_at
+)
+RETURNING *;
+
+-- name: RequeueDeadRoleSourceOutboxEvent :one
+UPDATE role_source_outbox
+SET status = 'pending', attempt = 0, lease_token = NULL,
+    lease_expires_at = NULL, next_attempt_at = now(), last_error_code = NULL,
+    published_at = NULL, replay_count = replay_count + 1,
+    last_replayed_at = @replayed_at
+WHERE id = @id
+  AND status = 'dead'
+  AND replay_count = @expected_replay_count
+  AND replay_count < 3
+RETURNING *;
+
 -- name: ClaimNextRoleSourceOutboxEvent :one
 WITH candidate AS (
     SELECT id
@@ -80,6 +152,10 @@ WITH settled AS (
     FROM role_source_outbox
     WHERE status = 'published'
       AND published_at < now() - interval '7 days'
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_outbox_replay replay
+          WHERE replay.outbox_id = role_source_outbox.id
+      )
     ORDER BY published_at, id
     LIMIT @delete_limit
 )
@@ -93,6 +169,10 @@ WITH settled AS (
     FROM role_source_outbox
     WHERE status = 'dead'
       AND created_at < now() - interval '30 days'
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_outbox_replay replay
+          WHERE replay.outbox_id = role_source_outbox.id
+      )
     ORDER BY created_at, id
     LIMIT @delete_limit
 )

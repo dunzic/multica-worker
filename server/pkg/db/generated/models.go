@@ -1127,6 +1127,29 @@ type RoleSourceOutbox struct {
 	LastErrorCode  pgtype.Text        `json:"last_error_code"`
 	PublishedAt    pgtype.Timestamptz `json:"published_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ReplayCount    int16              `json:"replay_count"`
+	LastReplayedAt pgtype.Timestamptz `json:"last_replayed_at"`
+}
+
+type RoleSourceOutboxReplay struct {
+	ID                       pgtype.UUID        `json:"id"`
+	OutboxID                 pgtype.UUID        `json:"outbox_id"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	SourceID                 pgtype.UUID        `json:"source_id"`
+	ApplyID                  pgtype.UUID        `json:"apply_id"`
+	AuthorizationID          pgtype.UUID        `json:"authorization_id"`
+	Generation               int16              `json:"generation"`
+	ReasonCode               string             `json:"reason_code"`
+	IncidentReferenceDigest  string             `json:"incident_reference_digest"`
+	RequesterKeyID           string             `json:"requester_key_id"`
+	ApproverKeyID            string             `json:"approver_key_id"`
+	AuthorizationDigest      string             `json:"authorization_digest"`
+	RequesterSignatureDigest string             `json:"requester_signature_digest"`
+	ApproverSignatureDigest  string             `json:"approver_signature_digest"`
+	ExpectedReceiptDigest    string             `json:"expected_receipt_digest"`
+	PreviousReplayDigest     pgtype.Text        `json:"previous_replay_digest"`
+	ReplayDigest             string             `json:"replay_digest"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
 }
 
 type RoleSourcePlan struct {

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/rolesource"
+	"github.com/multica-ai/multica/server/internal/rolesourcereplay"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -76,6 +77,9 @@ func Verify(ctx context.Context, tx pgx.Tx, options VerificationOptions) (Report
 	if err := verifyAuditChains(ctx, tx, &report); err != nil {
 		return report, err
 	}
+	if err := verifyOutboxReplayReceipts(ctx, tx, &report); err != nil {
+		return report, err
+	}
 	if err := verifyRelationalInvariants(ctx, tx, now, &report); err != nil {
 		return report, err
 	}
@@ -89,6 +93,43 @@ func Verify(ctx context.Context, tx pgx.Tx, options VerificationOptions) (Report
 		report.Status = "passed"
 	}
 	return report, nil
+}
+
+func verifyOutboxReplayReceipts(ctx context.Context, tx pgx.Tx, report *Report) error {
+	rows, err := tx.Query(ctx, `
+SELECT id,outbox_id,workspace_id,source_id,apply_id,authorization_id,generation,
+       reason_code,incident_reference_digest,requester_key_id,approver_key_id,
+       authorization_digest,requester_signature_digest,approver_signature_digest,
+       expected_receipt_digest,previous_replay_digest,replay_digest,created_at
+FROM role_source_outbox_replay ORDER BY outbox_id,generation`)
+	if err != nil {
+		return fmt.Errorf("read outbox replay receipts for DR verification: %w", err)
+	}
+	defer rows.Close()
+	type chainState struct {
+		generation int16
+		digest     string
+	}
+	chains := map[string]chainState{}
+	for rows.Next() {
+		var row db.RoleSourceOutboxReplay
+		if err := rows.Scan(&row.ID, &row.OutboxID, &row.WorkspaceID, &row.SourceID, &row.ApplyID, &row.AuthorizationID, &row.Generation,
+			&row.ReasonCode, &row.IncidentReferenceDigest, &row.RequesterKeyID, &row.ApproverKeyID,
+			&row.AuthorizationDigest, &row.RequesterSignatureDigest, &row.ApproverSignatureDigest,
+			&row.ExpectedReceiptDigest, &row.PreviousReplayDigest, &row.ReplayDigest, &row.CreatedAt); err != nil {
+			return err
+		}
+		outboxID := util.UUIDToString(row.OutboxID)
+		state := chains[outboxID]
+		receipt, decodeErr := rolesourcereplay.DecodePersistedReplayReceipt(row)
+		if decodeErr != nil || receipt.Generation != state.generation+1 || receipt.PreviousReplayDigest != state.digest {
+			addFinding(report, "outbox_replay_chain_invalid", 1)
+		} else {
+			report.Database.ReplayReceiptsValidated++
+		}
+		chains[outboxID] = chainState{generation: row.Generation, digest: row.ReplayDigest}
+	}
+	return rows.Err()
 }
 
 func verifyRuntimeAttestations(ctx context.Context, tx pgx.Tx, report *Report) error {
@@ -442,6 +483,13 @@ SELECT code, count(*)::bigint FROM (
   UNION ALL SELECT 'apply_failure_plan_missing' FROM role_source_apply_failure f LEFT JOIN role_source_plan p ON p.source_id=f.source_id AND p.workspace_id=f.workspace_id AND p.plan_digest=f.plan_digest WHERE p.source_id IS NULL
   UNION ALL SELECT 'apply_failure_approval_missing' FROM role_source_apply_failure f LEFT JOIN role_source_plan_approval a ON a.id=f.approval_id AND a.source_id=f.source_id AND a.workspace_id=f.workspace_id WHERE a.id IS NULL
   UNION ALL SELECT 'audit_source_missing' FROM role_source_audit_event a LEFT JOIN role_source s ON s.id=a.source_id AND s.workspace_id=a.workspace_id WHERE s.id IS NULL
+  UNION ALL SELECT 'outbox_apply_missing' FROM role_source_outbox o LEFT JOIN role_source_apply a ON a.id=o.apply_id AND a.source_id=o.source_id AND a.workspace_id=o.workspace_id AND a.status='succeeded' WHERE a.id IS NULL
+  UNION ALL SELECT 'outbox_apply_commitment_mismatch' FROM role_source_outbox o JOIN role_source_apply a ON a.id=o.apply_id AND a.source_id=o.source_id AND a.workspace_id=o.workspace_id WHERE a.status<>'succeeded' OR o.mode<>a.mode OR o.snapshot_digest<>a.snapshot_digest OR o.plan_digest<>a.plan_digest OR o.receipt_digest IS DISTINCT FROM a.receipt_digest OR o.actor_type<>'user' OR o.actor_id IS DISTINCT FROM a.actor_user_id
+  UNION ALL SELECT 'outbox_audit_mismatch' FROM role_source_outbox o WHERE (SELECT count(*) FROM role_source_audit_event e WHERE e.workspace_id=o.workspace_id AND e.source_id=o.source_id AND e.event_type=CASE WHEN o.mode='rollback' THEN 'rollback_succeeded' ELSE 'apply_succeeded' END AND e.actor_type='user' AND e.actor_id=o.actor_id AND e.payload->>'operation_id'=o.apply_id::text AND e.payload->>'snapshot_digest'=o.snapshot_digest AND e.payload->>'plan_digest'=o.plan_digest AND e.payload->>'receipt_digest'=o.receipt_digest AND e.payload->>'result'='succeeded')<>1
+  UNION ALL SELECT 'outbox_source_missing' FROM role_source_outbox o LEFT JOIN role_source s ON s.id=o.source_id AND s.workspace_id=o.workspace_id WHERE s.id IS NULL
+  UNION ALL SELECT 'outbox_replay_event_missing' FROM role_source_outbox_replay r LEFT JOIN role_source_outbox o ON o.id=r.outbox_id AND o.source_id=r.source_id AND o.workspace_id=r.workspace_id AND o.apply_id=r.apply_id WHERE o.id IS NULL
+  UNION ALL SELECT 'outbox_replay_receipt_mismatch' FROM role_source_outbox_replay r JOIN role_source_outbox o ON o.id=r.outbox_id WHERE r.expected_receipt_digest<>o.receipt_digest
+  UNION ALL SELECT 'outbox_replay_count_mismatch' FROM role_source_outbox o LEFT JOIN (SELECT outbox_id,count(*) n,COALESCE(max(generation),0) max_generation FROM role_source_outbox_replay GROUP BY outbox_id) r ON r.outbox_id=o.id WHERE o.replay_count<>COALESCE(r.n,0) OR o.replay_count<>COALESCE(r.max_generation,0)
   UNION ALL SELECT 'artifact_edge_snapshot_missing' FROM role_source_snapshot_artifact e LEFT JOIN role_source_snapshot x ON x.source_id=e.source_id AND x.workspace_id=e.workspace_id AND x.snapshot_digest=e.snapshot_digest WHERE x.source_id IS NULL
   UNION ALL SELECT 'artifact_edge_ledger_missing' FROM role_source_snapshot_artifact e LEFT JOIN role_source_artifact a ON a.workspace_id=e.workspace_id AND a.digest=e.artifact_digest AND a.size_bytes=e.size_bytes WHERE a.digest IS NULL
   UNION ALL SELECT 'artifact_workspace_missing' FROM role_source_artifact a LEFT JOIN workspace w ON w.id=a.workspace_id WHERE w.id IS NULL

@@ -271,11 +271,12 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 FULL_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-build: ## Build the server, CLI, migration, role-source DR and capacity binaries into server/bin
+build: ## Build server, CLI, migration and role-source operator binaries into server/bin
 	cd server && go build -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o bin/server ./cmd/server
 	cd server && go build -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)" -o bin/multica ./cmd/multica
 	cd server && go build -o bin/migrate ./cmd/migrate
 	cd server && go build -o bin/role_source_dr ./cmd/role_source_dr
+	cd server && go build -o bin/role_source_outbox_replay ./cmd/role_source_outbox_replay
 	cd server && go build -ldflags "-X main.commit=$(FULL_COMMIT)" -o bin/role_source_capacity ./cmd/role_source_capacity
 
 test: ## Run Go tests after ensuring the target DB exists and migrations are applied

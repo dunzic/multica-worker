@@ -50,3 +50,18 @@ func TestAuditEventRejectsInvalidActorAndDigest(t *testing.T) {
 		t.Fatal("BuildAuditEvent accepted a non-digest previous event")
 	}
 }
+
+func TestAuditDigestCanonicalizesEquivalentTimestampZones(t *testing.T) {
+	when := time.Date(2026, 8, 14, 1, 2, 3, 456789123, time.UTC)
+	event, err := BuildAuditEvent("source-1", "workspace-1", 1, "scan", AuditActor{Type: "system"}, "", AuditPayload{}, when)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.OccurredAt = event.OccurredAt.In(time.FixedZone("CST", 8*60*60))
+	if err := ValidateAuditEvent(event); err != nil {
+		t.Fatalf("same instant in another zone failed validation: %v", err)
+	}
+	if event.OccurredAt.Nanosecond() != 456789000 {
+		t.Fatalf("audit timestamp was not canonicalized to PostgreSQL microseconds: %s", event.OccurredAt)
+	}
+}

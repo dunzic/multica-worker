@@ -154,6 +154,11 @@ cleared_vcs_prs AS (
 cleared_vcs_connections AS (
     DELETE FROM vcs_connection WHERE workspace_id = $1
 ),
+cleared_role_source_outbox_replays AS (
+    DELETE FROM role_source_outbox_replay
+    WHERE role_source_outbox_replay.workspace_id = $1
+      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)
+),
 cleared_role_source_outbox AS (
     DELETE FROM role_source_outbox WHERE role_source_outbox.workspace_id = $1
 ),

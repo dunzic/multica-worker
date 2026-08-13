@@ -186,6 +186,55 @@ Pass criteria:
   ID through an approved audited procedure; the apply request is never replayed
   to repair notification delivery.
 
+## Gate B5 — controlled dead-letter replay
+
+Apply migrations 369–375 to disposable PostgreSQL 17 and run the real replay
+state machine:
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_REPLAY_TEST=1 \
+  go -C server test -count=1 -run '^TestRoleSourceOutboxReplayPostgresStateMachine$' ./internal/rolesourcereplay
+```
+
+Then repeat the operator runbook in the production-shaped staging topology with
+two named people and the candidate KMS/HSM Ed25519 keys. Kill the operator
+process before commit, during commit response and immediately after the
+database commit. Race two executions of one authorization, retry its exact
+files after expiry, rotate one active key while retaining its public evidence,
+cycle one event through all three generations, and attempt a fourth replay.
+Back up and restore after each of generations zero through three.
+
+Pass criteria:
+
+- inspect and execute reject an altered outbox commitment, invalid apply
+  receipt, missing/duplicate success audit or any broken link from audit
+  sequence one through the matching event;
+- the canonical authorization is valid for exactly 15 minutes and only two
+  configured, distinct Ed25519 keys held by different operators can authorize
+  it; unknown, aliased, duplicate or malformed key material fails closed;
+- prepare and execute refuse symlinked, over-broad, oversized, replaced or
+  trailing-content operator files; no private key enters the command, image,
+  database, log or Helm values;
+- exactly one serializable transaction consumes a generation, writes its
+  immutable hash-chained receipt and requeues the original UUID with attempt
+  zero; no event payload is accepted and apply is never invoked;
+- an exact retry reconciles to the same receipt before or after authorization
+  expiry, while a changed field, key ID or signature cannot reuse the consumed
+  authorization ID;
+- generation four is impossible, receipt update/delete is database-rejected,
+  and settled cleanup cannot orphan a replay receipt; explicit workspace
+  teardown removes receipt and event in the guarded order;
+- DR export/restore includes outbox and replay rows and rejects broken receipt
+  chains, generation/count mismatches, missing events or receipt commitment
+  mismatch;
+- the incident archive retains authorization bytes, both signatures, KMS/HSM
+  approval evidence, historical public keys and returned receipts for the
+  approved audit period; database SHA-256 commitments reproduce every retained
+  artifact exactly;
+- measured time to authorize, deliver and resolve fits the incident SLO, and
+  two-replica Redis/process-death exercises from Gate B4 still deduplicate the
+  stable UUID after replay.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.

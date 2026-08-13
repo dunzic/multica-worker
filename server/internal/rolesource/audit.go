@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const AuditContractVersion = "1.0"
@@ -89,7 +92,9 @@ func BuildAuditEvent(sourceID, workspaceID string, sequence int64, eventType str
 		ContractVersion: AuditContractVersion,
 		SourceID:        sourceID, WorkspaceID: workspaceID, Sequence: sequence,
 		EventType: eventType, Actor: actor, PreviousEventDigest: previousDigest,
-		Payload: payload, OccurredAt: occurredAt.UTC(),
+		// PostgreSQL TIMESTAMPTZ stores microseconds. Canonicalize before
+		// hashing so a persisted event can always be independently rebuilt.
+		Payload: payload, OccurredAt: occurredAt.UTC().Truncate(time.Microsecond),
 	}
 	digest, err := digestAuditEvent(event)
 	if err != nil {
@@ -114,6 +119,42 @@ func ValidateAuditEvent(event AuditEvent) error {
 	copy.EventDigest = ""
 	_, err = BuildAuditEvent(copy.SourceID, copy.WorkspaceID, copy.Sequence, copy.EventType, copy.Actor, copy.PreviousEventDigest, copy.Payload, copy.OccurredAt)
 	return err
+}
+
+// DecodePersistedAuditEvent reconstructs and verifies a stored hash-chain
+// event. Operator and disaster-recovery tools use this instead of trusting the
+// indexed columns or arbitrary JSON independently.
+func DecodePersistedAuditEvent(row db.RoleSourceAuditEvent) (AuditEvent, error) {
+	var payload AuditPayload
+	if err := json.Unmarshal(row.Payload, &payload); err != nil {
+		return AuditEvent{}, err
+	}
+	event := AuditEvent{
+		ContractVersion: AuditContractVersion,
+		SourceID:        util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+		Sequence: row.Sequence, EventType: row.EventType,
+		Actor:               AuditActor{Type: row.ActorType, ID: auditUUIDText(row.ActorID)},
+		PreviousEventDigest: auditTextValue(row.PreviousEventDigest), Payload: payload,
+		OccurredAt: row.CreatedAt.Time, EventDigest: row.EventDigest,
+	}
+	if err := ValidateAuditEvent(event); err != nil {
+		return AuditEvent{}, err
+	}
+	return event, nil
+}
+
+func auditUUIDText(value pgtype.UUID) string {
+	if !value.Valid {
+		return ""
+	}
+	return util.UUIDToString(value)
+}
+
+func auditTextValue(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
 }
 
 func validateAuditActor(actor AuditActor) error {
@@ -193,6 +234,10 @@ func validateAuditPayload(payload AuditPayload) error {
 
 func digestAuditEvent(event AuditEvent) (string, error) {
 	event.EventDigest = ""
+	// PostgreSQL TIMESTAMPTZ preserves an instant at microsecond precision, not
+	// its original zone or extra nanoseconds. Canonicalize both properties so a
+	// driver/server ScanLocation cannot change persisted verification.
+	event.OccurredAt = event.OccurredAt.UTC().Truncate(time.Microsecond)
 	body, err := json.Marshal(event)
 	if err != nil {
 		return "", err

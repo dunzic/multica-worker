@@ -262,7 +262,7 @@ SET status = 'publishing',
     last_error_code = NULL
 FROM candidate
 WHERE outbox.id = candidate.id
-RETURNING outbox.id, outbox.workspace_id, outbox.source_id, outbox.event_type, outbox.actor_type, outbox.actor_id, outbox.apply_id, outbox.mode, outbox.snapshot_digest, outbox.plan_digest, outbox.receipt_digest, outbox.status, outbox.attempt, outbox.lease_token, outbox.lease_expires_at, outbox.next_attempt_at, outbox.last_error_code, outbox.published_at, outbox.created_at
+RETURNING outbox.id, outbox.workspace_id, outbox.source_id, outbox.event_type, outbox.actor_type, outbox.actor_id, outbox.apply_id, outbox.mode, outbox.snapshot_digest, outbox.plan_digest, outbox.receipt_digest, outbox.status, outbox.attempt, outbox.lease_token, outbox.lease_expires_at, outbox.next_attempt_at, outbox.last_error_code, outbox.published_at, outbox.created_at, outbox.replay_count, outbox.last_replayed_at
 `
 
 type ClaimNextRoleSourceOutboxEventParams struct {
@@ -293,6 +293,8 @@ func (q *Queries) ClaimNextRoleSourceOutboxEvent(ctx context.Context, arg ClaimN
 		&i.LastErrorCode,
 		&i.PublishedAt,
 		&i.CreatedAt,
+		&i.ReplayCount,
+		&i.LastReplayedAt,
 	)
 	return i, err
 }
@@ -1200,6 +1202,10 @@ WITH settled AS (
     FROM role_source_outbox
     WHERE status = 'dead'
       AND created_at < now() - interval '30 days'
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_outbox_replay replay
+          WHERE replay.outbox_id = role_source_outbox.id
+      )
     ORDER BY created_at, id
     LIMIT $1
 )
@@ -1222,6 +1228,10 @@ WITH settled AS (
     FROM role_source_outbox
     WHERE status = 'published'
       AND published_at < now() - interval '7 days'
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_outbox_replay replay
+          WHERE replay.outbox_id = role_source_outbox.id
+      )
     ORDER BY published_at, id
     LIMIT $1
 )
@@ -1518,6 +1528,39 @@ func (q *Queries) GetLatestRoleSourceAuditEvent(ctx context.Context, arg GetLate
 	return i, err
 }
 
+const getLatestRoleSourceOutboxReplay = `-- name: GetLatestRoleSourceOutboxReplay :one
+SELECT id, outbox_id, workspace_id, source_id, apply_id, authorization_id, generation, reason_code, incident_reference_digest, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, expected_receipt_digest, previous_replay_digest, replay_digest, created_at FROM role_source_outbox_replay
+WHERE outbox_id = $1
+ORDER BY generation DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestRoleSourceOutboxReplay(ctx context.Context, outboxID pgtype.UUID) (RoleSourceOutboxReplay, error) {
+	row := q.db.QueryRow(ctx, getLatestRoleSourceOutboxReplay, outboxID)
+	var i RoleSourceOutboxReplay
+	err := row.Scan(
+		&i.ID,
+		&i.OutboxID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.ApplyID,
+		&i.AuthorizationID,
+		&i.Generation,
+		&i.ReasonCode,
+		&i.IncidentReferenceDigest,
+		&i.RequesterKeyID,
+		&i.ApproverKeyID,
+		&i.AuthorizationDigest,
+		&i.RequesterSignatureDigest,
+		&i.ApproverSignatureDigest,
+		&i.ExpectedReceiptDigest,
+		&i.PreviousReplayDigest,
+		&i.ReplayDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getLatestRoleSourcePlanApproval = `-- name: GetLatestRoleSourcePlanApproval :one
 SELECT id, source_id, workspace_id, plan_digest, decision, decisions, actor_user_id, created_at, request_key FROM role_source_plan_approval
 WHERE source_id = $1
@@ -1668,6 +1711,42 @@ type GetRoleSourceApplyByRequestParams struct {
 
 func (q *Queries) GetRoleSourceApplyByRequest(ctx context.Context, arg GetRoleSourceApplyByRequestParams) (RoleSourceApply, error) {
 	row := q.db.QueryRow(ctx, getRoleSourceApplyByRequest, arg.SourceID, arg.WorkspaceID, arg.RequestKey)
+	var i RoleSourceApply
+	err := row.Scan(
+		&i.ID,
+		&i.SourceID,
+		&i.WorkspaceID,
+		&i.RequestKey,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.Status,
+		&i.ActorUserID,
+		&i.ReceiptDigest,
+		&i.Receipt,
+		&i.ErrorCode,
+		&i.CreatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceApplyForOutboxReplay = `-- name: GetRoleSourceApplyForOutboxReplay :one
+SELECT id, source_id, workspace_id, request_key, mode, snapshot_digest, plan_digest, status, actor_user_id, receipt_digest, receipt, error_code, created_at, completed_at FROM role_source_apply
+WHERE id = $1
+  AND workspace_id = $2
+  AND source_id = $3
+  AND status = 'succeeded'
+`
+
+type GetRoleSourceApplyForOutboxReplayParams struct {
+	ApplyID     pgtype.UUID `json:"apply_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+}
+
+func (q *Queries) GetRoleSourceApplyForOutboxReplay(ctx context.Context, arg GetRoleSourceApplyForOutboxReplayParams) (RoleSourceApply, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceApplyForOutboxReplay, arg.ApplyID, arg.WorkspaceID, arg.SourceID)
 	var i RoleSourceApply
 	err := row.Scan(
 		&i.ID,
@@ -1930,6 +2009,106 @@ func (q *Queries) GetRoleSourceLegalHoldRelease(ctx context.Context, arg GetRole
 		&i.ReferenceDigest,
 		&i.ReleasedBy,
 		&i.ReleasedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceOutboxByID = `-- name: GetRoleSourceOutboxByID :one
+SELECT id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at, replay_count, last_replayed_at FROM role_source_outbox
+WHERE id = $1
+`
+
+func (q *Queries) GetRoleSourceOutboxByID(ctx context.Context, id pgtype.UUID) (RoleSourceOutbox, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceOutboxByID, id)
+	var i RoleSourceOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.EventType,
+		&i.ActorType,
+		&i.ActorID,
+		&i.ApplyID,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.ReceiptDigest,
+		&i.Status,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.LastErrorCode,
+		&i.PublishedAt,
+		&i.CreatedAt,
+		&i.ReplayCount,
+		&i.LastReplayedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceOutboxForReplay = `-- name: GetRoleSourceOutboxForReplay :one
+SELECT id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at, replay_count, last_replayed_at FROM role_source_outbox
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetRoleSourceOutboxForReplay(ctx context.Context, id pgtype.UUID) (RoleSourceOutbox, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceOutboxForReplay, id)
+	var i RoleSourceOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.EventType,
+		&i.ActorType,
+		&i.ActorID,
+		&i.ApplyID,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.ReceiptDigest,
+		&i.Status,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.LastErrorCode,
+		&i.PublishedAt,
+		&i.CreatedAt,
+		&i.ReplayCount,
+		&i.LastReplayedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceOutboxReplayByAuthorization = `-- name: GetRoleSourceOutboxReplayByAuthorization :one
+SELECT id, outbox_id, workspace_id, source_id, apply_id, authorization_id, generation, reason_code, incident_reference_digest, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, expected_receipt_digest, previous_replay_digest, replay_digest, created_at FROM role_source_outbox_replay
+WHERE authorization_id = $1
+`
+
+func (q *Queries) GetRoleSourceOutboxReplayByAuthorization(ctx context.Context, authorizationID pgtype.UUID) (RoleSourceOutboxReplay, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceOutboxReplayByAuthorization, authorizationID)
+	var i RoleSourceOutboxReplay
+	err := row.Scan(
+		&i.ID,
+		&i.OutboxID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.ApplyID,
+		&i.AuthorizationID,
+		&i.Generation,
+		&i.ReasonCode,
+		&i.IncidentReferenceDigest,
+		&i.RequesterKeyID,
+		&i.ApproverKeyID,
+		&i.AuthorizationDigest,
+		&i.RequesterSignatureDigest,
+		&i.ApproverSignatureDigest,
+		&i.ExpectedReceiptDigest,
+		&i.PreviousReplayDigest,
+		&i.ReplayDigest,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -2882,7 +3061,7 @@ INSERT INTO role_source_outbox (
     $6::uuid, $7, $8, $9,
     $10, $11
 )
-RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at
+RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at, replay_count, last_replayed_at
 `
 
 type InsertRoleSourceOutboxEventParams struct {
@@ -2933,6 +3112,91 @@ func (q *Queries) InsertRoleSourceOutboxEvent(ctx context.Context, arg InsertRol
 		&i.NextAttemptAt,
 		&i.LastErrorCode,
 		&i.PublishedAt,
+		&i.CreatedAt,
+		&i.ReplayCount,
+		&i.LastReplayedAt,
+	)
+	return i, err
+}
+
+const insertRoleSourceOutboxReplay = `-- name: InsertRoleSourceOutboxReplay :one
+INSERT INTO role_source_outbox_replay (
+    id, outbox_id, workspace_id, source_id, apply_id, authorization_id, generation,
+    reason_code, incident_reference_digest, requester_key_id,
+    approver_key_id, authorization_digest, requester_signature_digest,
+    approver_signature_digest, expected_receipt_digest,
+    previous_replay_digest, replay_digest, created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10,
+    $11, $12, $13,
+    $14, $15,
+    $16::text, $17, $18
+)
+RETURNING id, outbox_id, workspace_id, source_id, apply_id, authorization_id, generation, reason_code, incident_reference_digest, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, expected_receipt_digest, previous_replay_digest, replay_digest, created_at
+`
+
+type InsertRoleSourceOutboxReplayParams struct {
+	ID                       pgtype.UUID        `json:"id"`
+	OutboxID                 pgtype.UUID        `json:"outbox_id"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	SourceID                 pgtype.UUID        `json:"source_id"`
+	ApplyID                  pgtype.UUID        `json:"apply_id"`
+	AuthorizationID          pgtype.UUID        `json:"authorization_id"`
+	Generation               int16              `json:"generation"`
+	ReasonCode               string             `json:"reason_code"`
+	IncidentReferenceDigest  string             `json:"incident_reference_digest"`
+	RequesterKeyID           string             `json:"requester_key_id"`
+	ApproverKeyID            string             `json:"approver_key_id"`
+	AuthorizationDigest      string             `json:"authorization_digest"`
+	RequesterSignatureDigest string             `json:"requester_signature_digest"`
+	ApproverSignatureDigest  string             `json:"approver_signature_digest"`
+	ExpectedReceiptDigest    string             `json:"expected_receipt_digest"`
+	PreviousReplayDigest     pgtype.Text        `json:"previous_replay_digest"`
+	ReplayDigest             string             `json:"replay_digest"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) InsertRoleSourceOutboxReplay(ctx context.Context, arg InsertRoleSourceOutboxReplayParams) (RoleSourceOutboxReplay, error) {
+	row := q.db.QueryRow(ctx, insertRoleSourceOutboxReplay,
+		arg.ID,
+		arg.OutboxID,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.ApplyID,
+		arg.AuthorizationID,
+		arg.Generation,
+		arg.ReasonCode,
+		arg.IncidentReferenceDigest,
+		arg.RequesterKeyID,
+		arg.ApproverKeyID,
+		arg.AuthorizationDigest,
+		arg.RequesterSignatureDigest,
+		arg.ApproverSignatureDigest,
+		arg.ExpectedReceiptDigest,
+		arg.PreviousReplayDigest,
+		arg.ReplayDigest,
+		arg.CreatedAt,
+	)
+	var i RoleSourceOutboxReplay
+	err := row.Scan(
+		&i.ID,
+		&i.OutboxID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.ApplyID,
+		&i.AuthorizationID,
+		&i.Generation,
+		&i.ReasonCode,
+		&i.IncidentReferenceDigest,
+		&i.RequesterKeyID,
+		&i.ApproverKeyID,
+		&i.AuthorizationDigest,
+		&i.RequesterSignatureDigest,
+		&i.ApproverSignatureDigest,
+		&i.ExpectedReceiptDigest,
+		&i.PreviousReplayDigest,
+		&i.ReplayDigest,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -3568,6 +3832,63 @@ func (q *Queries) ListRoleSourceAdoptionTargetsForUpdate(ctx context.Context, ar
 	return items, nil
 }
 
+const listRoleSourceApplyAuditEventsForOutboxReplay = `-- name: ListRoleSourceApplyAuditEventsForOutboxReplay :many
+SELECT id, source_id, workspace_id, sequence, event_type, actor_type, actor_id, previous_event_digest, event_digest, payload, created_at FROM role_source_audit_event
+WHERE workspace_id = $1
+  AND source_id = $2
+  AND event_type = $3
+  AND payload ->> 'operation_id' = $4::text
+  AND payload ->> 'receipt_digest' = $5::text
+ORDER BY sequence DESC
+LIMIT 2
+`
+
+type ListRoleSourceApplyAuditEventsForOutboxReplayParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	SourceID      pgtype.UUID `json:"source_id"`
+	EventType     string      `json:"event_type"`
+	ApplyID       string      `json:"apply_id"`
+	ReceiptDigest string      `json:"receipt_digest"`
+}
+
+func (q *Queries) ListRoleSourceApplyAuditEventsForOutboxReplay(ctx context.Context, arg ListRoleSourceApplyAuditEventsForOutboxReplayParams) ([]RoleSourceAuditEvent, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceApplyAuditEventsForOutboxReplay,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.EventType,
+		arg.ApplyID,
+		arg.ReceiptDigest,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceAuditEvent{}
+	for rows.Next() {
+		var i RoleSourceAuditEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.Sequence,
+			&i.EventType,
+			&i.ActorType,
+			&i.ActorID,
+			&i.PreviousEventDigest,
+			&i.EventDigest,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoleSourceApplyFailures = `-- name: ListRoleSourceApplyFailures :many
 SELECT id, workspace_id, source_id, plan_digest, approval_id, actor_user_id, request_key_digest, mode, failure_stage, failure_code, occurred_at FROM role_source_apply_failure
 WHERE workspace_id = $1 AND source_id = $2
@@ -3744,6 +4065,59 @@ func (q *Queries) ListRoleSourceArtifactsForSnapshotByDigests(ctx context.Contex
 			&i.UploadedByRuntimeID,
 			&i.FirstSourceID,
 			&i.FirstScanRequestID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourceAuditChainForOutboxReplay = `-- name: ListRoleSourceAuditChainForOutboxReplay :many
+SELECT id, source_id, workspace_id, sequence, event_type, actor_type, actor_id, previous_event_digest, event_digest, payload, created_at FROM role_source_audit_event
+WHERE workspace_id = $1
+  AND source_id = $2
+  AND sequence <= $3
+ORDER BY sequence
+LIMIT $4
+`
+
+type ListRoleSourceAuditChainForOutboxReplayParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	SourceID        pgtype.UUID `json:"source_id"`
+	ThroughSequence int64       `json:"through_sequence"`
+	ResultLimit     int32       `json:"result_limit"`
+}
+
+func (q *Queries) ListRoleSourceAuditChainForOutboxReplay(ctx context.Context, arg ListRoleSourceAuditChainForOutboxReplayParams) ([]RoleSourceAuditEvent, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceAuditChainForOutboxReplay,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.ThroughSequence,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceAuditEvent{}
+	for rows.Next() {
+		var i RoleSourceAuditEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.Sequence,
+			&i.EventType,
+			&i.ActorType,
+			&i.ActorID,
+			&i.PreviousEventDigest,
+			&i.EventDigest,
+			&i.Payload,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -4856,7 +5230,7 @@ UPDATE role_source_outbox
 SET status = 'published', lease_token = NULL, lease_expires_at = NULL,
     published_at = now(), last_error_code = NULL
 WHERE id = $1 AND status = 'publishing' AND lease_token = $2
-RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at
+RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at, replay_count, last_replayed_at
 `
 
 type MarkRoleSourceOutboxPublishedParams struct {
@@ -4887,6 +5261,8 @@ func (q *Queries) MarkRoleSourceOutboxPublished(ctx context.Context, arg MarkRol
 		&i.LastErrorCode,
 		&i.PublishedAt,
 		&i.CreatedAt,
+		&i.ReplayCount,
+		&i.LastReplayedAt,
 	)
 	return i, err
 }
@@ -5409,7 +5785,7 @@ SET status = CASE WHEN attempt >= 20 THEN 'dead' ELSE 'pending' END,
     next_attempt_at = now() + $1::interval,
     last_error_code = $2
 WHERE id = $3 AND status = 'publishing' AND lease_token = $4
-RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at
+RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at, replay_count, last_replayed_at
 `
 
 type ReleaseRoleSourceOutboxEventParams struct {
@@ -5447,6 +5823,8 @@ func (q *Queries) ReleaseRoleSourceOutboxEvent(ctx context.Context, arg ReleaseR
 		&i.LastErrorCode,
 		&i.PublishedAt,
 		&i.CreatedAt,
+		&i.ReplayCount,
+		&i.LastReplayedAt,
 	)
 	return i, err
 }
@@ -5527,6 +5905,54 @@ func (q *Queries) RenewRoleSourceScanLease(ctx context.Context, arg RenewRoleSou
 		&i.ClaimedAt,
 		&i.CompletedAt,
 		&i.RequestKeyDigest,
+	)
+	return i, err
+}
+
+const requeueDeadRoleSourceOutboxEvent = `-- name: RequeueDeadRoleSourceOutboxEvent :one
+UPDATE role_source_outbox
+SET status = 'pending', attempt = 0, lease_token = NULL,
+    lease_expires_at = NULL, next_attempt_at = now(), last_error_code = NULL,
+    published_at = NULL, replay_count = replay_count + 1,
+    last_replayed_at = $1
+WHERE id = $2
+  AND status = 'dead'
+  AND replay_count = $3
+  AND replay_count < 3
+RETURNING id, workspace_id, source_id, event_type, actor_type, actor_id, apply_id, mode, snapshot_digest, plan_digest, receipt_digest, status, attempt, lease_token, lease_expires_at, next_attempt_at, last_error_code, published_at, created_at, replay_count, last_replayed_at
+`
+
+type RequeueDeadRoleSourceOutboxEventParams struct {
+	ReplayedAt          pgtype.Timestamptz `json:"replayed_at"`
+	ID                  pgtype.UUID        `json:"id"`
+	ExpectedReplayCount int16              `json:"expected_replay_count"`
+}
+
+func (q *Queries) RequeueDeadRoleSourceOutboxEvent(ctx context.Context, arg RequeueDeadRoleSourceOutboxEventParams) (RoleSourceOutbox, error) {
+	row := q.db.QueryRow(ctx, requeueDeadRoleSourceOutboxEvent, arg.ReplayedAt, arg.ID, arg.ExpectedReplayCount)
+	var i RoleSourceOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.EventType,
+		&i.ActorType,
+		&i.ActorID,
+		&i.ApplyID,
+		&i.Mode,
+		&i.SnapshotDigest,
+		&i.PlanDigest,
+		&i.ReceiptDigest,
+		&i.Status,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.LastErrorCode,
+		&i.PublishedAt,
+		&i.CreatedAt,
+		&i.ReplayCount,
+		&i.LastReplayedAt,
 	)
 	return i, err
 }

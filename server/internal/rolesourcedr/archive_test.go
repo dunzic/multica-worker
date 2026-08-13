@@ -100,6 +100,7 @@ func TestRelationalVerifierProtectsRestorableAndAllowsIntentionalHistoryPrune(t 
 		"approval_plan_missing", "apply_failure_approval_missing", "mapping_autopilot_target_missing",
 		"active_secret_approval_missing", "runtime_attestation_observation_runtime_missing",
 		"artifact_integrity_missing", "artifact_integrity_ledger_missing",
+		"outbox_apply_commitment_mismatch", "outbox_audit_mismatch", "outbox_replay_count_mismatch",
 	} {
 		if !strings.Contains(relationalInvariantQuery, required) {
 			t.Errorf("relational verifier omits %s", required)

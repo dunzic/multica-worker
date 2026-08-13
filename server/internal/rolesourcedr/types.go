@@ -13,6 +13,8 @@ var tableNames = [...]string{
 	"role_source_apply",
 	"role_source_apply_failure",
 	"role_source_audit_event",
+	"role_source_outbox",
+	"role_source_outbox_replay",
 	"role_source_artifact",
 	"role_source_artifact_integrity",
 	"role_source_snapshot_artifact",
@@ -92,11 +94,12 @@ type Report struct {
 }
 
 type DatabaseVerification struct {
-	TablesChecked        int   `json:"tables_checked"`
-	SnapshotsValidated   int64 `json:"snapshots_validated"`
-	PlansValidated       int64 `json:"plans_validated"`
-	ReceiptsValidated    int64 `json:"receipts_validated"`
-	AuditEventsValidated int64 `json:"audit_events_validated"`
+	TablesChecked           int   `json:"tables_checked"`
+	SnapshotsValidated      int64 `json:"snapshots_validated"`
+	PlansValidated          int64 `json:"plans_validated"`
+	ReceiptsValidated       int64 `json:"receipts_validated"`
+	AuditEventsValidated    int64 `json:"audit_events_validated"`
+	ReplayReceiptsValidated int64 `json:"replay_receipts_validated"`
 }
 
 type ObjectVerification struct {

@@ -264,10 +264,79 @@ func TestRoleSourceOutboxIsBoundedLeasedAndTransactionallyInserted(t *testing.T)
 	if insertAt < 0 || commitAt < 0 {
 		t.Fatal("successful apply must insert its durable event before committing")
 	}
+	for _, required := range []string{
+		"DeletePublishedRoleSourceOutboxEvents", "DeleteDeadRoleSourceOutboxEvents", "NOT EXISTS (", "FROM role_source_outbox_replay replay",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("settled cleanup must preserve replay evidence: missing %q", required)
+		}
+	}
 	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
 		cleanup, readErr := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
 		if readErr != nil || !strings.Contains(string(cleanup), "DELETE FROM role_source_outbox") {
 			t.Fatalf("%s must explicitly delete role-source outbox rows: %v", name, readErr)
+		}
+	}
+	legacyWorkspace, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "workspace.sql"))
+	if err != nil || !strings.Contains(string(legacyWorkspace), "DELETE FROM role_source_outbox_replay\n    WHERE role_source_outbox_replay.workspace_id = $1\n      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)") {
+		t.Fatal("legacy workspace delete must execute teardown mode before replay receipt deletion")
+	}
+}
+
+func TestRoleSourceOutboxReplayIsDualControlledImmutableAndExplicitlyDeleted(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	schemaBody, err := os.ReadFile(filepath.Join(root, "369_role_source_outbox_replay.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(schemaBody))
+	for _, forbidden := range []string{"payload", "manifest", "artifact_body", "incident_reference text", "operator_name", "email", "signature bytea"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("replay receipt retains forbidden content %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"authorization_id uuid", "generation smallint", "generation between 1 and 3", "requester_key_id", "approver_key_id",
+		"requester_key_id <> approver_key_id", "authorization_digest", "requester_signature_digest", "approver_signature_digest",
+		"incident_reference_digest", "previous_replay_digest", "replay_digest", "replay_count between 0 and 3",
+		"role_source_outbox_replay_count_check", "not valid",
+		"role_source_outbox_dead_attempt_check", "status <> 'dead' or attempt = 20",
+	} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("replay schema is missing %q", required)
+		}
+	}
+	for name, fragment := range map[string]string{
+		"370_role_source_outbox_replay_id_unique.up.sql":            "CREATE UNIQUE INDEX CONCURRENTLY",
+		"371_role_source_outbox_replay_generation_unique.up.sql":    "outbox_id, generation",
+		"372_role_source_outbox_replay_listing_index.up.sql":        "workspace_id, created_at DESC, id DESC",
+		"373_role_source_outbox_replay_mutation_guard.up.sql":       "workspace_teardown",
+		"374_role_source_outbox_replay_authorization_unique.up.sql": "authorization_id",
+		"375_role_source_outbox_dead_attempt_validate.up.sql":       "VALIDATE CONSTRAINT role_source_outbox_replay_count_check",
+	} {
+		body, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil || !strings.Contains(string(body), fragment) {
+			t.Fatalf("%s must contain %q: %v", name, fragment, readErr)
+		}
+	}
+	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queryBody)
+	for _, required := range []string{
+		"GetRoleSourceOutboxForReplay", "FOR UPDATE", "GetRoleSourceApplyForOutboxReplay", "ListRoleSourceAuditChainForOutboxReplay",
+		"InsertRoleSourceOutboxReplay", "RequeueDeadRoleSourceOutboxEvent", "status = 'dead'", "replay_count = @expected_replay_count", "replay_count < 3",
+		"NOT EXISTS (", "role_source_outbox_replay replay",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("replay query contract is missing %q", required)
+		}
+	}
+	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
+		body, readErr := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if readErr != nil || !strings.Contains(string(body), "DELETE FROM role_source_outbox_replay") {
+			t.Fatalf("%s must explicitly delete replay receipts: %v", name, readErr)
 		}
 	}
 }

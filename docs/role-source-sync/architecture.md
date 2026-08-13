@@ -222,6 +222,30 @@ The plan engine compares normalized object IDs and digests. It emits create, upd
 
 An apply rechecks membership, adapter compatibility, snapshot state, plan digest, approval policy, source lock, object conflicts, and secret-transfer freshness before entering the transaction. Domain writes and the apply receipt commit together. Events are published only after commit and carry redacted summaries.
 
+The post-commit `role_source:applied` signal uses a typed transactional outbox.
+Its database UUID is the stable delivery identity across leases, Redis
+publish/ack ambiguity and client deduplication. Attempt 20 moves an event to a
+terminal dead state; delivery failure never authorizes a second apply.
+
+A dead event can be requeued only by the offline platform replay command. The
+command has no HTTP/UI/workspace-authorization surface and accepts no event
+payload. Before any state change it revalidates the successful apply receipt,
+the exactly matching apply/rollback success event and the entire audit chain
+from sequence one. A canonical 15-minute authorization binds the event UUID,
+next generation, expected receipt digest, closed reason code and digest of an
+external incident reference. Two different configured Ed25519 public keys must
+verify signatures over those exact bytes. One serializable transaction writes
+an immutable, content-free, hash-chained replay receipt and returns the same
+outbox row to `pending`; a consumed authorization is idempotently reconcilable
+after expiry. Three generations are the hard maximum.
+
+The database stores key IDs plus SHA-256 commitments of the authorization,
+signatures and incident reference. Canonical authorization bytes, signatures,
+KMS/HSM approvals and historical public-key evidence stay in the controlled
+incident system. Replayed outbox rows are exempt from settled cleanup until
+guarded workspace teardown, and both outbox and replay tables participate in
+DR semantic verification.
+
 ### Last-known-good and rollback
 
 An applied snapshot is never mutated. New snapshots and plans may fail without changing runtime state. Rollback creates a new forward apply referencing a prior snapshot; it does not rewrite history or merely toggle an old row. Secret rollback is explicit: values are versioned through encrypted references or reported as non-restorable when policy forbids retention.

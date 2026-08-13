@@ -58,7 +58,8 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 		CREATE TABLE agent_task_queue (
 			id UUID NOT NULL, agent_id UUID NOT NULL, parent_task_id UUID,
 			status TEXT NOT NULL DEFAULT 'queued', completed_at TIMESTAMPTZ,
-			error TEXT, failure_reason TEXT, prepare_lease_expires_at TIMESTAMPTZ
+			error TEXT, failure_reason TEXT, prepare_lease_expires_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
 		CREATE TABLE skill (
 			id UUID NOT NULL, workspace_id UUID NOT NULL, name TEXT,
@@ -75,8 +76,9 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Strings(upFiles)
-	expectedTables, expectedIndexes := 0, 0
-	indexPattern := regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b`)
+	expectedTables := 0
+	expectedIndexes := map[string]struct{}{}
+	indexPattern := regexp.MustCompile(`(?i)\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+([a-z0-9_]+)\b`)
 	for _, name := range upFiles {
 		body, err := os.ReadFile(name)
 		if err != nil {
@@ -86,8 +88,8 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 			t.Fatalf("apply %s: %v", filepath.Base(name), err)
 		}
 		expectedTables += strings.Count(strings.ToUpper(string(body)), "CREATE TABLE ")
-		if indexPattern.Match(body) {
-			expectedIndexes++
+		if match := indexPattern.FindSubmatch(body); len(match) == 2 {
+			expectedIndexes[string(match[1])] = struct{}{}
 		}
 	}
 
@@ -106,8 +108,8 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 	if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE 'role_source%'`, schema).Scan(&indexCount); err != nil {
 		t.Fatal(err)
 	}
-	if indexCount != expectedIndexes {
-		t.Fatalf("role-source index count = %d, want %d", indexCount, expectedIndexes)
+	if indexCount != len(expectedIndexes) {
+		t.Fatalf("role-source index count = %d, want %d unique final names", indexCount, len(expectedIndexes))
 	}
 
 	verifyRoleSourceTaskPinTriggers(t, ctx, conn)
@@ -156,30 +158,46 @@ func verifyRoleSourceTaskPinTriggers(t *testing.T, ctx context.Context, conn *pg
 	manifest := `{"contract_version":"1.0","roles":[{"id":"writer","display_name":"Writer","instructions":{"path":"roles/writer.md","digest":"` + digestC + `","size_bytes":1,"media_type":"text/markdown"},"skills":[],"capability_bindings":[],"environment":[],"mcp":[],"automations":[]}],"capabilities":[]}`
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO agent (id, workspace_id, name, description, runtime_mode, runtime_id, instructions, custom_env, mcp_config)
-		VALUES ($1, $2, 'Writer', '', 'local', $3, 'write', '{}'::jsonb, NULL);
+		VALUES ($1, $2, 'Writer', '', 'local', $3, 'write', '{}'::jsonb, NULL)
+	`, agentID, workspaceID, runtimeID); err != nil {
+		t.Fatalf("seed task-pin agent: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
 		INSERT INTO role_source (
 			id, workspace_id, runtime_id, name, kind, adapter_version,
 			daemon_config_id, config_redacted, created_by, updated_by
-		) VALUES ($4, $2, $3, 'Roles', 'agentwaker_directory', '1.0.0', 'cfg', '{}'::jsonb, $5, $5);
+		) VALUES ($1, $2, $3, 'Roles', 'agentwaker_directory', '1.0.0', 'cfg', '{}'::jsonb, $4, $4)
+	`, sourceID, workspaceID, runtimeID, userID); err != nil {
+		t.Fatalf("seed task-pin source: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
 		INSERT INTO role_source_snapshot (
 			source_id, workspace_id, snapshot_digest, manifest_digest, kind,
 			adapter_version, contract_version, manifest, diagnostics,
 			source_evidence, reported_by_runtime_id
-		) VALUES ($4, $2, $6, $7, 'agentwaker_directory', '1.0.0', '1.0', $8::jsonb, '[]'::jsonb, $9::jsonb, $3);
+		) VALUES ($1, $2, $3, $4, 'agentwaker_directory', '1.0.0', '1.0', $5::jsonb, '[]'::jsonb, $6::jsonb, $7)
+	`, sourceID, workspaceID, digestA, digestB, manifest, `{"tree_digest":"`+digestD+`"}`, runtimeID); err != nil {
+		t.Fatalf("seed task-pin snapshot: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
 		INSERT INTO role_source_object_mapping (
 			source_id, workspace_id, source_kind, source_parent_id,
 			source_object_id, target_kind, target_id, ownership_mask,
 			last_applied_digest, last_snapshot_digest
-		) VALUES ($4, $2, 'role', '', 'writer', 'agent', $1,
-			'["instructions"]'::jsonb, $10, $6);
-	`, agentID, workspaceID, runtimeID, sourceID, userID, digestA, digestB, manifest, `{"tree_digest":"`+digestD+`"}`, digestC); err != nil {
-		t.Fatalf("seed role-source task pin fixture: %v", err)
+		) VALUES ($1, $2, 'role', '', 'writer', 'agent', $3,
+			'["instructions"]'::jsonb, $4, $5)
+	`, sourceID, workspaceID, agentID, digestC, digestA); err != nil {
+		t.Fatalf("seed task-pin mapping: %v", err)
 	}
 	if _, err := conn.Exec(ctx, `
-		INSERT INTO agent_task_queue (id, agent_id) VALUES ($1, $2);
-		INSERT INTO agent_task_queue (id, agent_id, parent_task_id) VALUES ($3, $2, $1);
-	`, taskID, agentID, retryID); err != nil {
-		t.Fatalf("capture task pins: %v", err)
+		INSERT INTO agent_task_queue (id, agent_id) VALUES ($1, $2)
+	`, taskID, agentID); err != nil {
+		t.Fatalf("capture root task pin: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO agent_task_queue (id, agent_id, parent_task_id) VALUES ($1, $2, $3)
+	`, retryID, agentID, taskID); err != nil {
+		t.Fatalf("capture inherited task pin: %v", err)
 	}
 	var rootSnapshot, retrySnapshot, inheritedFrom string
 	if err := conn.QueryRow(ctx, `

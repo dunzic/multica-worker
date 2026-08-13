@@ -4,6 +4,10 @@ Date: 2026-08-13
 
 Gate: design and implementation evidence
 
+Follow-up: the controlled replay objection below is implemented and reviewed in
+[`RS-03-controlled-outbox-replay-2026-08-14.md`](RS-03-controlled-outbox-replay-2026-08-14.md).
+Hardware-backed two-operator rehearsal remains a production gate.
+
 Decision: **GO to merge behind the default-off `role_source_apply` flag; NO-GO
 for production apply until two-replica Redis outage/failover, failure-at-every-
 step apply injection and operator replay rehearsal pass.**
