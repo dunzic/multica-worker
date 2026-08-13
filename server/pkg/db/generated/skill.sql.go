@@ -146,9 +146,9 @@ type EnsureRoleSourceAgentSkillsRow struct {
 }
 
 // A large source apply can bind thousands of newly materialized skills. Keep
-// the association write set-based and tenant-validate both endpoints before
-// insertion. Existing disabled associations remain disabled, matching the
-// single-row AddAgentSkill ownership behavior.
+// each caller-bounded association batch set-based and tenant-validate both
+// endpoints before insertion. Existing disabled associations remain disabled,
+// matching the single-row AddAgentSkill ownership behavior.
 func (q *Queries) EnsureRoleSourceAgentSkills(ctx context.Context, arg EnsureRoleSourceAgentSkillsParams) ([]EnsureRoleSourceAgentSkillsRow, error) {
 	rows, err := q.db.Query(ctx, ensureRoleSourceAgentSkills, arg.Bindings, arg.WorkspaceID)
 	if err != nil {

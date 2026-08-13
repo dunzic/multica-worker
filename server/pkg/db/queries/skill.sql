@@ -219,9 +219,9 @@ ON CONFLICT DO NOTHING;
 
 -- name: EnsureRoleSourceAgentSkills :many
 -- A large source apply can bind thousands of newly materialized skills. Keep
--- the association write set-based and tenant-validate both endpoints before
--- insertion. Existing disabled associations remain disabled, matching the
--- single-row AddAgentSkill ownership behavior.
+-- each caller-bounded association batch set-based and tenant-validate both
+-- endpoints before insertion. Existing disabled associations remain disabled,
+-- matching the single-row AddAgentSkill ownership behavior.
 WITH requested AS (
     SELECT
         (binding ->> 'agent_id')::UUID AS requested_agent_id,

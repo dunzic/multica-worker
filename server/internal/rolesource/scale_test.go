@@ -113,7 +113,7 @@ func TestMaterializationPreflightCoversThousandRolesAndTenThousandSkills(t *test
 	}
 }
 
-func TestTenThousandAgentSkillBindingsFitOneDeterministicBatch(t *testing.T) {
+func TestTenThousandAgentSkillBindingsFitBoundedDeterministicBatches(t *testing.T) {
 	state := materializationState{}
 	agentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceOID, []byte("scale-agent")), Valid: true}
 	for index := 0; index < productionApplyRoleCount*productionApplySkillsPerRole; index++ {
@@ -130,6 +130,31 @@ func TestTenThousandAgentSkillBindingsFitOneDeterministicBatch(t *testing.T) {
 		if bindings[index-1].AgentID+"/"+bindings[index-1].SkillID >= bindings[index].AgentID+"/"+bindings[index].SkillID {
 			t.Fatal("10,000 binding batch is not deterministic")
 		}
+	}
+	batches, err := materializedAgentSkillBatches(bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBatches := (len(bindings) + materializedAgentSkillBatchSize - 1) / materializedAgentSkillBatchSize
+	if len(batches) != wantBatches {
+		t.Fatalf("agent-skill batches=%d, want=%d", len(batches), wantBatches)
+	}
+	actual := 0
+	for _, batch := range batches {
+		if len(batch) == 0 || len(batch) > materializedAgentSkillBatchSize {
+			t.Fatalf("invalid agent-skill batch size=%d", len(batch))
+		}
+		body, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > materializedAgentSkillBatchBytes {
+			t.Fatalf("agent-skill batch bytes=%d exceed limit=%d", len(body), materializedAgentSkillBatchBytes)
+		}
+		actual += len(batch)
+	}
+	if actual != len(bindings) {
+		t.Fatalf("agent-skill batch count=%d", actual)
 	}
 }
 
@@ -281,6 +306,50 @@ func TestTenThousandSkillFileMutationsFitBoundedBatches(t *testing.T) {
 	}
 	if actual != count {
 		t.Fatalf("skill-file batch count=%d", actual)
+	}
+}
+
+func TestLargeMaterializationMappingsFitBoundedBatches(t *testing.T) {
+	count := productionApplyRoleCount * (productionApplySkillsPerRole + 1)
+	mappings := make([]pendingRoleSourceMapping, count)
+	for index := range mappings {
+		kind := "skill"
+		parentID := fmt.Sprintf("role-%04d", index/productionApplySkillsPerRole)
+		if index < productionApplyRoleCount {
+			kind = "role"
+			parentID = ""
+		}
+		mappings[index] = pendingRoleSourceMapping{
+			SourceKind: kind, SourceParentID: parentID, SourceObjectID: fmt.Sprintf("object-%05d", index),
+			TargetKind: kind, TargetID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("mapping-target-%05d", index))).String(),
+			OwnershipMask: []string{"name", "description", "content"}, LastAppliedDigest: testSHA256(fmt.Sprintf("mapping-%05d", index)),
+			LastSnapshotDigest: testSHA256("mapping-snapshot"),
+		}
+	}
+	batches, err := materializedMappingBatches(mappings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBatches := (count + materializedMappingBatchSize - 1) / materializedMappingBatchSize
+	if len(batches) != wantBatches {
+		t.Fatalf("mapping batches=%d, want=%d", len(batches), wantBatches)
+	}
+	actual := 0
+	for _, batch := range batches {
+		if len(batch) == 0 || len(batch) > materializedMappingBatchSize {
+			t.Fatalf("invalid mapping batch size=%d", len(batch))
+		}
+		body, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > materializedMappingBatchBytes {
+			t.Fatalf("mapping batch bytes=%d exceed limit=%d", len(body), materializedMappingBatchBytes)
+		}
+		actual += len(batch)
+	}
+	if actual != count {
+		t.Fatalf("mapping batch count=%d", actual)
 	}
 }
 

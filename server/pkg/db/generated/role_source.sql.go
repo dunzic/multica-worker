@@ -5198,9 +5198,10 @@ type UpsertRoleSourceObjectMappingsParams struct {
 	Mappings    []byte      `json:"mappings"`
 }
 
-// One apply can materialize thousands of objects. Send mapping mutations as a
-// single typed JSON recordset so the transaction does not pay one network
-// round trip per object. Row triggers still execute for every affected mapping.
+// One apply can materialize thousands of objects. Send each caller-bounded
+// mapping batch as a typed JSON recordset so the transaction does not pay one
+// network round trip per object. Row triggers still execute for every affected
+// mapping, and the caller verifies the exact returned source-object set.
 func (q *Queries) UpsertRoleSourceObjectMappings(ctx context.Context, arg UpsertRoleSourceObjectMappingsParams) ([]RoleSourceObjectMapping, error) {
 	rows, err := q.db.Query(ctx, upsertRoleSourceObjectMappings, arg.SourceID, arg.WorkspaceID, arg.Mappings)
 	if err != nil {

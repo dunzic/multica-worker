@@ -42,6 +42,10 @@ const (
 	materializedSkillFileTargetBytes = 16 << 20
 	materializedAutomationBatchSize  = 250
 	materializedAutomationBatchBytes = 64 << 20
+	materializedMappingBatchSize     = 500
+	materializedMappingBatchBytes    = 8 << 20
+	materializedAgentSkillBatchSize  = 1_000
+	materializedAgentSkillBatchBytes = 2 << 20
 	materializationNameMaxBytes      = 16 << 20
 )
 
@@ -2481,18 +2485,24 @@ func (s *materializationState) flushAgentSkillBindings(ctx context.Context) erro
 		return nil
 	}
 	bindings := s.orderedAgentSkillBindings()
-	body, err := json.Marshal(bindings)
+	batches, err := materializedAgentSkillBatches(bindings)
 	if err != nil {
 		return err
 	}
-	rows, err := s.q.EnsureRoleSourceAgentSkills(ctx, db.EnsureRoleSourceAgentSkillsParams{
-		WorkspaceID: s.workspaceID, Bindings: body,
-	})
-	if err != nil {
-		return err
-	}
-	if len(rows) != len(bindings) {
-		return fmt.Errorf("%w: persisted %d of %d role-source agent-skill bindings", ErrApplyConflict, len(rows), len(bindings))
+	for _, batch := range batches {
+		body, err := json.Marshal(batch)
+		if err != nil {
+			return err
+		}
+		rows, err := s.q.EnsureRoleSourceAgentSkills(ctx, db.EnsureRoleSourceAgentSkillsParams{
+			WorkspaceID: s.workspaceID, Bindings: body,
+		})
+		if err != nil {
+			return err
+		}
+		if err := exactMaterializedAgentSkills(batch, rows); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -2508,6 +2518,60 @@ func (s *materializationState) orderedAgentSkillBindings() []pendingRoleSourceAg
 		bindings = append(bindings, s.pendingAgentSkills[key])
 	}
 	return bindings
+}
+
+func materializedAgentSkillBatches(bindings []pendingRoleSourceAgentSkill) ([][]pendingRoleSourceAgentSkill, error) {
+	if len(bindings) == 0 {
+		return nil, nil
+	}
+	batches := make([][]pendingRoleSourceAgentSkill, 0, (len(bindings)+materializedAgentSkillBatchSize-1)/materializedAgentSkillBatchSize)
+	start, encodedBytes := 0, 2
+	for index, binding := range bindings {
+		body, err := json.Marshal(binding)
+		if err != nil {
+			return nil, err
+		}
+		if len(body)+2 > materializedAgentSkillBatchBytes {
+			return nil, fmt.Errorf("%w: agent-skill binding exceeds batch byte limit", ErrMaterializationBlocked)
+		}
+		separator := 0
+		if index > start {
+			separator = 1
+		}
+		if index > start && (index-start >= materializedAgentSkillBatchSize || encodedBytes+separator+len(body) > materializedAgentSkillBatchBytes) {
+			batches = append(batches, bindings[start:index])
+			start, encodedBytes, separator = index, 2, 0
+		}
+		encodedBytes += separator + len(body)
+	}
+	batches = append(batches, bindings[start:])
+	return batches, nil
+}
+
+func exactMaterializedAgentSkills(requested []pendingRoleSourceAgentSkill, rows []db.EnsureRoleSourceAgentSkillsRow) error {
+	expected := make(map[string]bool, len(requested))
+	for _, item := range requested {
+		key := item.AgentID + "/" + item.SkillID
+		if expected[key] {
+			return fmt.Errorf("%w: agent-skill batch requests duplicate %s", ErrApplyConflict, key)
+		}
+		expected[key] = true
+	}
+	returned := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		key := util.UUIDToString(row.AgentID) + "/" + util.UUIDToString(row.SkillID)
+		if !expected[key] {
+			return fmt.Errorf("%w: agent-skill batch returned unexpected %s", ErrApplyConflict, key)
+		}
+		if returned[key] {
+			return fmt.Errorf("%w: agent-skill batch returned duplicate %s", ErrApplyConflict, key)
+		}
+		returned[key] = true
+	}
+	if len(returned) != len(expected) {
+		return fmt.Errorf("%w: persisted %d of %d role-source agent-skill bindings", ErrApplyConflict, len(returned), len(expected))
+	}
+	return nil
 }
 
 func (s *materializationState) upsertMapping(_ context.Context, ref ObjectRef, targetKind string, targetID pgtype.UUID, digest string, mask []string, archivedAt pgtype.Timestamptz) error {
@@ -2555,22 +2619,82 @@ func (s *materializationState) flushMappings(ctx context.Context) error {
 	for _, key := range keys {
 		mutations = append(mutations, s.pendingMappings[key])
 	}
-	body, err := json.Marshal(mutations)
+	batches, err := materializedMappingBatches(mutations)
 	if err != nil {
 		return err
 	}
-	rows, err := s.q.UpsertRoleSourceObjectMappings(ctx, db.UpsertRoleSourceObjectMappingsParams{
-		Mappings: body, SourceID: s.source.ID, WorkspaceID: s.workspaceID,
-	})
-	if err != nil {
-		return err
+	for _, batch := range batches {
+		body, err := json.Marshal(batch)
+		if err != nil {
+			return err
+		}
+		rows, err := s.q.UpsertRoleSourceObjectMappings(ctx, db.UpsertRoleSourceObjectMappingsParams{
+			Mappings: body, SourceID: s.source.ID, WorkspaceID: s.workspaceID,
+		})
+		if err != nil {
+			return err
+		}
+		if err := exactMaterializedMappings(batch, rows); err != nil {
+			return err
+		}
+		for _, row := range rows {
+			ref := ObjectRef{Kind: row.SourceKind, ParentID: row.SourceParentID, ID: row.SourceObjectID}
+			s.mappings[objectKey(ref)] = row
+		}
 	}
-	if len(rows) != len(mutations) {
-		return fmt.Errorf("%w: persisted %d of %d mapping mutations", ErrApplyConflict, len(rows), len(mutations))
+	return nil
+}
+
+func materializedMappingBatches(mappings []pendingRoleSourceMapping) ([][]pendingRoleSourceMapping, error) {
+	if len(mappings) == 0 {
+		return nil, nil
 	}
+	batches := make([][]pendingRoleSourceMapping, 0, (len(mappings)+materializedMappingBatchSize-1)/materializedMappingBatchSize)
+	start, encodedBytes := 0, 2
+	for index, mapping := range mappings {
+		body, err := json.Marshal(mapping)
+		if err != nil {
+			return nil, err
+		}
+		if len(body)+2 > materializedMappingBatchBytes {
+			return nil, fmt.Errorf("%w: mapping %q exceeds batch byte limit", ErrMaterializationBlocked, mapping.SourceObjectID)
+		}
+		separator := 0
+		if index > start {
+			separator = 1
+		}
+		if index > start && (index-start >= materializedMappingBatchSize || encodedBytes+separator+len(body) > materializedMappingBatchBytes) {
+			batches = append(batches, mappings[start:index])
+			start, encodedBytes, separator = index, 2, 0
+		}
+		encodedBytes += separator + len(body)
+	}
+	batches = append(batches, mappings[start:])
+	return batches, nil
+}
+
+func exactMaterializedMappings(requested []pendingRoleSourceMapping, rows []db.RoleSourceObjectMapping) error {
+	expected := make(map[string]bool, len(requested))
+	for _, item := range requested {
+		key := objectKey(ObjectRef{Kind: item.SourceKind, ParentID: item.SourceParentID, ID: item.SourceObjectID})
+		if expected[key] {
+			return fmt.Errorf("%w: mapping batch requests duplicate %s", ErrApplyConflict, key)
+		}
+		expected[key] = true
+	}
+	returned := make(map[string]bool, len(rows))
 	for _, row := range rows {
-		ref := ObjectRef{Kind: row.SourceKind, ParentID: row.SourceParentID, ID: row.SourceObjectID}
-		s.mappings[objectKey(ref)] = row
+		key := objectKey(ObjectRef{Kind: row.SourceKind, ParentID: row.SourceParentID, ID: row.SourceObjectID})
+		if !expected[key] {
+			return fmt.Errorf("%w: mapping batch returned unexpected %s", ErrApplyConflict, key)
+		}
+		if returned[key] {
+			return fmt.Errorf("%w: mapping batch returned duplicate %s", ErrApplyConflict, key)
+		}
+		returned[key] = true
+	}
+	if len(returned) != len(expected) {
+		return fmt.Errorf("%w: persisted %d of %d mapping mutations", ErrApplyConflict, len(returned), len(expected))
 	}
 	return nil
 }

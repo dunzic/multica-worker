@@ -1056,9 +1056,10 @@ SELECT id FROM inserted
 ORDER BY id;
 
 -- name: UpsertRoleSourceObjectMappings :many
--- One apply can materialize thousands of objects. Send mapping mutations as a
--- single typed JSON recordset so the transaction does not pay one network
--- round trip per object. Row triggers still execute for every affected mapping.
+-- One apply can materialize thousands of objects. Send each caller-bounded
+-- mapping batch as a typed JSON recordset so the transaction does not pay one
+-- network round trip per object. Row triggers still execute for every affected
+-- mapping, and the caller verifies the exact returned source-object set.
 WITH input AS (
     SELECT *
     FROM jsonb_to_recordset(@mappings::jsonb) AS item(

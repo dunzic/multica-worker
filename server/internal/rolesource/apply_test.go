@@ -697,6 +697,42 @@ func TestRoleSourceAgentSkillBatchIsTenantValidatedAndDoesNotEnableRows(t *testi
 	}
 }
 
+func TestMaterializedAgentSkillBatchRequiresExactReturnedBindings(t *testing.T) {
+	first := pendingRoleSourceAgentSkill{AgentID: uuid.NewString(), SkillID: uuid.NewString()}
+	second := pendingRoleSourceAgentSkill{AgentID: uuid.NewString(), SkillID: uuid.NewString()}
+	row := func(item pendingRoleSourceAgentSkill) db.EnsureRoleSourceAgentSkillsRow {
+		return db.EnsureRoleSourceAgentSkillsRow{AgentID: util.MustParseUUID(item.AgentID), SkillID: util.MustParseUUID(item.SkillID)}
+	}
+	if err := exactMaterializedAgentSkills([]pendingRoleSourceAgentSkill{first, second}, []db.EnsureRoleSourceAgentSkillsRow{row(first), row(second)}); err != nil {
+		t.Fatalf("exact set error=%v", err)
+	}
+	for name, rows := range map[string][]db.EnsureRoleSourceAgentSkillsRow{
+		"duplicate":  {row(first), row(first)},
+		"missing":    {row(first)},
+		"unexpected": {row(first), {AgentID: util.MustParseUUID(uuid.NewString()), SkillID: util.MustParseUUID(uuid.NewString())}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := exactMaterializedAgentSkills([]pendingRoleSourceAgentSkill{first, second}, rows); !errors.Is(err, ErrApplyConflict) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestMaterializedAgentSkillBatchesRespectCountLimit(t *testing.T) {
+	bindings := make([]pendingRoleSourceAgentSkill, materializedAgentSkillBatchSize+1)
+	for index := range bindings {
+		bindings[index] = pendingRoleSourceAgentSkill{AgentID: uuid.NewString(), SkillID: uuid.NewString()}
+	}
+	batches, err := materializedAgentSkillBatches(bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != materializedAgentSkillBatchSize || len(batches[1]) != 1 {
+		t.Fatalf("agent-skill batches=%v", []int{len(batches[0]), len(batches[1])})
+	}
+}
+
 func TestMaterializationNamesAreCollectedOnceWithExactAllowedTargets(t *testing.T) {
 	roleRef := ObjectRef{Kind: "role", ID: "writer"}
 	skillRef := ObjectRef{Kind: "skill", ParentID: "writer", ID: "research"}
@@ -1053,6 +1089,53 @@ func TestMaterializedAutomationBatchRequiresExactReturnedIDs(t *testing.T) {
 	}
 }
 
+func TestMaterializedMappingBatchRequiresExactReturnedObjects(t *testing.T) {
+	first := pendingRoleSourceMapping{SourceKind: "role", SourceObjectID: "writer"}
+	second := pendingRoleSourceMapping{SourceKind: "skill", SourceParentID: "writer", SourceObjectID: "research"}
+	row := func(item pendingRoleSourceMapping) db.RoleSourceObjectMapping {
+		return db.RoleSourceObjectMapping{SourceKind: item.SourceKind, SourceParentID: item.SourceParentID, SourceObjectID: item.SourceObjectID}
+	}
+
+	if err := exactMaterializedMappings([]pendingRoleSourceMapping{first, second}, []db.RoleSourceObjectMapping{row(first), row(second)}); err != nil {
+		t.Fatalf("exact set error=%v", err)
+	}
+	for name, rows := range map[string][]db.RoleSourceObjectMapping{
+		"duplicate":  {row(first), row(first)},
+		"missing":    {row(first)},
+		"unexpected": {row(first), {SourceKind: "role", SourceObjectID: "unexpected"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := exactMaterializedMappings([]pendingRoleSourceMapping{first, second}, rows); !errors.Is(err, ErrApplyConflict) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestMaterializedMappingBatchesRejectOversizedEntry(t *testing.T) {
+	mappings := make([]pendingRoleSourceMapping, materializedMappingBatchSize+1)
+	for index := range mappings {
+		mappings[index] = pendingRoleSourceMapping{
+			SourceKind: "skill", SourceParentID: "writer", SourceObjectID: fmt.Sprintf("skill-%03d", index),
+			TargetKind: "skill", TargetID: uuid.NewString(), OwnershipMask: []string{"name"},
+		}
+	}
+	batches, err := materializedMappingBatches(mappings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != materializedMappingBatchSize || len(batches[1]) != 1 {
+		t.Fatalf("mapping batches=%v", []int{len(batches[0]), len(batches[1])})
+	}
+	oversized := []pendingRoleSourceMapping{{
+		SourceKind: "skill", SourceParentID: "writer", SourceObjectID: "oversized", TargetKind: "skill",
+		TargetID: uuid.NewString(), OwnershipMask: []string{strings.Repeat("x", materializedMappingBatchBytes)},
+	}}
+	if _, err := materializedMappingBatches(oversized); !errors.Is(err, ErrMaterializationBlocked) {
+		t.Fatalf("oversized mapping error=%v", err)
+	}
+}
+
 func TestApplyPreflightsObjectStorageBeforeMutationLocks(t *testing.T) {
 	body, err := os.ReadFile("apply.go")
 	if err != nil {
@@ -1081,7 +1164,7 @@ func TestApplyPreflightsObjectStorageBeforeMutationLocks(t *testing.T) {
 		t.Fatal("apply must recheck and share-lock the preflight artifact ledger in one batch")
 	}
 	if !strings.Contains(queryText, "UpsertRoleSourceObjectMappings") || !strings.Contains(queryText, "jsonb_to_recordset(@mappings::jsonb)") {
-		t.Fatal("large applies must flush mapping mutations through one typed recordset")
+		t.Fatal("large applies must flush mapping mutations through bounded typed recordsets")
 	}
 }
 
