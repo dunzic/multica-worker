@@ -16,6 +16,8 @@ real control plane materialized 1,000 private Agents, 10,000 Skills, 10,000
 Agent-to-Skill bindings and 11,000 provenance mappings from 11,000 distinct
 verified 8 KiB artifacts. The same request through a newly constructed control
 plane returned the exact committed receipt without a second materialization.
+A second snapshot then renamed and version-updated every mapped Agent and Skill
+while retaining sampled user-managed state.
 
 ## Architecture review — 2/3
 
@@ -35,6 +37,11 @@ plane returned the exact committed receipt without a second materialization.
   heap. Per-node concurrency now defaults to two, is explicitly configurable
   from one to eight, fails startup/chart rendering outside that range and
   retains immediate HTTP 429 overload behavior instead of unbounded queuing.
+- Two full update runs changed all 11,000 mapped objects in 12.65–12.76 seconds,
+  generated about 22.5 MB WAL and peaked at 280–281 MB Go heap. The v2 Agent
+  and Skill names plus Agent version description changed, while an operator-set
+  permission mode, concurrency, model, environment, MCP configuration, Skill
+  config and disabled association remained intact. Retry took 64.6–66.7 ms.
 
 Open objections: this is one API process, one local container and cached local
 artifact reconstruction. It does not measure S3 latency, CPU, statement timing,
@@ -57,7 +64,8 @@ behavior still need candidate-environment validation.
 
 Passing evidence:
 
-- all four full runs passed with exact business and evidence-row counts;
+- all four create runs and both all-object update runs passed with exact
+  business and evidence-row counts;
 - each run cleaned workspace, source, actor, artifacts and deletion intents;
 - an independent database query after the suite confirmed zero residue;
 - ordinary role-source tests, server configuration tests, Helm lint, default
@@ -66,9 +74,9 @@ Passing evidence:
   stages, a real Agent-plus-mapping rollback, ambiguous commit, cancellation
   and process-restart retry.
 
-Open objections: the scale fixture is create-only. It does not yet combine
-1,000/10,000 scale with mixed updates, explicit adoption, disabled-association
-preservation, immutable-version mismatch, same-title races, user edits,
+Open objections: the update fixture changes every mapped role and skill, but it
+does not yet combine 1,000/10,000 scale with explicit adoption,
+immutable-version mismatch, same-title races, concurrent user edits,
 rollback-duration measurement or a hard-killed process.
 
 ## CEO review — 2/3
@@ -99,6 +107,11 @@ Observed apply durations: `12.064040459s`, `11.993792291s`, `4.118714209s`,
 `259944536` bytes. Observed WAL: `29173848`, `24549872`, `25043128`,
 `22746480` bytes. PostgreSQL reported version 17.10;
 post-suite workspace/source/actor/artifact/delete-intent residue was zero.
+
+Observed all-object update durations: `12.764764s`, `12.646844292s`; peak heap:
+`280129864`, `281395984` bytes; WAL: `22492168`, `22536784` bytes; retry:
+`64.561709ms`, `66.686166ms`. Both runs reported `source_fields_updated=true`,
+`protected_agent=true`, `protected_skill=true` and `disabled_binding=true`.
 
 The next gate must run the candidate image with real object storage and two API
 replicas, collect p50/p95/p99 and queue wait, exercise mixed update/adoption and

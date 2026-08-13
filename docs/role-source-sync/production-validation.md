@@ -407,13 +407,17 @@ go -C server test -count=3 \
   -run '^TestRoleSourceProductionScaleApplyPostgres$' -v ./internal/rolesource
 ```
 
-Every run must persist exactly 1,000 Agents, 10,000 Skills, 10,000 bindings,
-11,000 mappings, one apply, one success audit and one outbox event; a new
-control plane must return the same receipt on retry, and fixture cleanup must
+Every run must first persist exactly 1,000 Agents, 10,000 Skills, 10,000
+bindings and 11,000 mappings, then apply an all-object v2 rename/version update
+without changing those cardinalities. The update must preserve sampled
+user-owned Agent permission/model/environment/MCP, Skill config and a disabled
+Agent-to-Skill association. Each phase adds exactly one apply, success audit
+and outbox event; a new control plane must return the same receipt on retry,
+and fixture cleanup must
 leave zero workspace/source/user/artifact residue. Preserve every
-`scale_evidence` line, including verified artifact bytes, fixture/apply/retry
-duration, database growth, WAL, current and peak heap, total allocation and
-receipt bytes. This local baseline intentionally does not claim the Gate E
+`scale_evidence` and `scale_update_evidence` line, including verified artifact
+bytes, fixture/apply/retry duration, database growth, WAL, current and peak
+heap, total allocation, receipt bytes and preservation booleans. This local baseline intentionally does not claim the Gate E
 two-replica, object-storage, contention, failover, CPU or lock-wait SLO.
 
 Required initial SLOs for the engineering cohort:

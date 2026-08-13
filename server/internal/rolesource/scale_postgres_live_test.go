@@ -75,6 +75,21 @@ func TestRoleSourceProductionScaleApplyPostgres(t *testing.T) {
 	if err != nil || retryRow.ID != row.ID || retryReceipt.ReceiptDigest != receipt.ReceiptDigest {
 		t.Fatalf("production-scale retry row=%+v receipt=%+v err=%v", retryRow, retryReceipt, err)
 	}
+	var databaseBytesAfter, walBytes int64
+	if err := pool.QueryRow(ctx, `SELECT pg_database_size(current_database()), pg_wal_lsn_diff(pg_current_wal_lsn(), $1::pg_lsn)::bigint`, walBefore).Scan(&databaseBytesAfter, &walBytes); err != nil {
+		t.Fatal(err)
+	}
+	var memoryAfter runtime.MemStats
+	runtime.ReadMemStats(&memoryAfter)
+	t.Logf("scale_evidence roles=%d skills=%d artifacts=%d artifact_bytes=%d fixture=%s apply=%s idempotent_retry=%s db_growth_bytes=%d wal_bytes=%d heap_alloc_bytes=%d peak_heap_alloc_bytes=%d peak_heap_delta_bytes=%d total_alloc_delta_bytes=%d receipt_bytes=%d",
+		productionApplyRoleCount, productionApplyRoleCount*productionApplySkillsPerRole,
+		productionApplyRoleCount*(productionApplySkillsPerRole+1),
+		productionApplyRoleCount*(productionApplySkillsPerRole+1)*int(productionApplyArtifactBytes),
+		fixtureDuration, applyDuration, retryDuration, databaseBytesAfter-databaseBytesBefore, walBytes,
+		memoryAfter.Alloc, peakHeapAlloc, peakHeapAlloc-memoryBefore.HeapAlloc,
+		memoryAfter.TotalAlloc-memoryBefore.TotalAlloc, len(row.Receipt),
+	)
+	updateEvidence := applyProductionScaleUpdate(t, ctx, pool, fixture)
 	counts := productionScaleCounts{}
 	if err := pool.QueryRow(ctx, `
 SELECT
@@ -94,24 +109,16 @@ SELECT
 	if counts != (productionScaleCounts{
 		agents: productionApplyRoleCount, skills: productionApplyRoleCount * productionApplySkillsPerRole,
 		bindings: productionApplyRoleCount * productionApplySkillsPerRole,
-		mappings: productionApplyRoleCount * (productionApplySkillsPerRole + 1), applies: 1, audits: 1, outbox: 1,
+		mappings: productionApplyRoleCount * (productionApplySkillsPerRole + 1), applies: 2, audits: 2, outbox: 2,
 	}) {
 		t.Fatalf("production-scale persisted counts=%+v", counts)
 	}
 
-	var databaseBytesAfter, walBytes int64
-	if err := pool.QueryRow(ctx, `SELECT pg_database_size(current_database()), pg_wal_lsn_diff(pg_current_wal_lsn(), $1::pg_lsn)::bigint`, walBefore).Scan(&databaseBytesAfter, &walBytes); err != nil {
-		t.Fatal(err)
-	}
-	var memoryAfter runtime.MemStats
-	runtime.ReadMemStats(&memoryAfter)
-	t.Logf("scale_evidence roles=%d skills=%d artifacts=%d artifact_bytes=%d fixture=%s apply=%s idempotent_retry=%s db_growth_bytes=%d wal_bytes=%d heap_alloc_bytes=%d peak_heap_alloc_bytes=%d peak_heap_delta_bytes=%d total_alloc_delta_bytes=%d receipt_bytes=%d",
-		productionApplyRoleCount, productionApplyRoleCount*productionApplySkillsPerRole,
-		productionApplyRoleCount*(productionApplySkillsPerRole+1),
-		productionApplyRoleCount*(productionApplySkillsPerRole+1)*int(productionApplyArtifactBytes),
-		fixtureDuration, applyDuration, retryDuration, databaseBytesAfter-databaseBytesBefore, walBytes,
-		memoryAfter.Alloc, peakHeapAlloc, peakHeapAlloc-memoryBefore.HeapAlloc,
-		memoryAfter.TotalAlloc-memoryBefore.TotalAlloc, len(row.Receipt),
+	t.Logf("scale_update_evidence updated=%d apply=%s idempotent_retry=%s wal_bytes=%d peak_heap_alloc_bytes=%d peak_heap_delta_bytes=%d receipt_bytes=%d source_fields_updated=%t protected_agent=%t protected_skill=%t disabled_binding=%t",
+		updateEvidence.updated, updateEvidence.applyDuration, updateEvidence.retryDuration,
+		updateEvidence.walBytes, updateEvidence.peakHeapAlloc, updateEvidence.peakHeapDelta,
+		updateEvidence.receiptBytes, updateEvidence.sourceFieldsUpdated, updateEvidence.protectedAgent, updateEvidence.protectedSkill,
+		updateEvidence.disabledBinding,
 	)
 }
 
@@ -156,7 +163,9 @@ type productionScaleFixture struct {
 	workspaceID    uuid.UUID
 	sourceID       uuid.UUID
 	actorID        uuid.UUID
+	runtimeID      uuid.UUID
 	artifactPrefix string
+	activeSnapshot Snapshot
 	input          ApplyPlanInput
 }
 
@@ -167,8 +176,10 @@ func createProductionScaleFixture(t *testing.T, ctx context.Context, pool *pgxpo
 		artifactPrefix: liveScaleArtifactPrefix + uuid.NewString() + "/",
 	}
 	runtimeID, approvalID := uuid.New(), uuid.New()
+	fixture.runtimeID = runtimeID
 	from := emptyApplySnapshot(t, "scale-from-"+uuid.NewString())
 	to := applyFailureSnapshot(t, productionApplyManifest(), "scale-to-"+uuid.NewString())
+	fixture.activeSnapshot = to
 	plan, err := BuildPlan(fixture.sourceID.String(), &from, to)
 	if err != nil || !plan.Applyable || plan.Summary.Create != productionApplyRoleCount*(productionApplySkillsPerRole+1) {
 		t.Fatalf("build production-scale plan summary=%+v err=%v", plan.Summary, err)
@@ -240,6 +251,161 @@ func createProductionScaleFixture(t *testing.T, ctx context.Context, pool *pgxpo
 		ActorUserID: fixture.actorID.String(), SecretTransferIDs: map[string]string{},
 	}
 	return fixture
+}
+
+type productionScaleUpdateEvidence struct {
+	updated             int
+	applyDuration       time.Duration
+	retryDuration       time.Duration
+	walBytes            int64
+	peakHeapAlloc       uint64
+	peakHeapDelta       uint64
+	receiptBytes        int
+	sourceFieldsUpdated bool
+	protectedAgent      bool
+	protectedSkill      bool
+	disabledBinding     bool
+}
+
+func applyProductionScaleUpdate(t *testing.T, ctx context.Context, pool *pgxpool.Pool, fixture productionScaleFixture) productionScaleUpdateEvidence {
+	t.Helper()
+	manifest := productionApplyManifest()
+	for roleIndex := range manifest.Roles {
+		manifest.Roles[roleIndex].Version = "2.0.0"
+		manifest.Roles[roleIndex].DisplayName += " v2"
+		for skillIndex := range manifest.Roles[roleIndex].Skills {
+			manifest.Roles[roleIndex].Skills[skillIndex].Version = "2.0.0"
+			manifest.Roles[roleIndex].Skills[skillIndex].Name += " v2"
+		}
+	}
+	target := applyFailureSnapshot(t, manifest, "scale-update-"+uuid.NewString())
+	plan, err := BuildPlan(fixture.sourceID.String(), &fixture.activeSnapshot, target)
+	wantUpdated := productionApplyRoleCount * (productionApplySkillsPerRole + 1)
+	if err != nil || !plan.Applyable || plan.Summary.Update != wantUpdated {
+		t.Fatalf("build production-scale update plan summary=%+v err=%v", plan.Summary, err)
+	}
+	decisions := ApprovalDecisions{ContractVersion: PlanContractVersion, Archives: []ArchiveActionDecision{}, Adoptions: []AdoptionActionDecision{}}
+	if err := ValidateApprovalDecisions(plan, "approved", &decisions); err != nil {
+		t.Fatal(err)
+	}
+	manifestBody, _ := json.Marshal(target.Manifest)
+	diagnosticsBody, _ := json.Marshal(target.Diagnostics)
+	evidenceBody, _ := json.Marshal(target.SourceEvidence)
+	planBody, _ := json.Marshal(plan)
+	decisionsBody, _ := json.Marshal(decisions)
+	approvalID := uuid.New()
+	q := db.New(pool)
+	if _, err := q.InsertRoleSourceSnapshot(ctx, db.InsertRoleSourceSnapshotParams{
+		SourceID: pgUUID(fixture.sourceID), WorkspaceID: pgUUID(fixture.workspaceID), SnapshotDigest: target.SnapshotDigest,
+		ManifestDigest: target.ManifestDigest, Kind: string(target.Kind), AdapterVersion: target.AdapterVersion,
+		ContractVersion: target.ContractVersion, Manifest: manifestBody, Diagnostics: diagnosticsBody,
+		SourceEvidence: evidenceBody, ReportedByRuntimeID: pgUUID(fixture.runtimeID),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.InsertRoleSourcePlan(ctx, db.InsertRoleSourcePlanParams{
+		SourceID: pgUUID(fixture.sourceID), WorkspaceID: pgUUID(fixture.workspaceID), PlanDigest: plan.PlanDigest,
+		FromSnapshotDigest: pgtype.Text{String: fixture.activeSnapshot.SnapshotDigest, Valid: true},
+		ToSnapshotDigest:   target.SnapshotDigest, Plan: planBody, CreatedBy: pgUUID(fixture.actorID),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.InsertRoleSourcePlanApproval(ctx, db.InsertRoleSourcePlanApprovalParams{
+		ID: pgUUID(approvalID), SourceID: pgUUID(fixture.sourceID), WorkspaceID: pgUUID(fixture.workspaceID),
+		PlanDigest: plan.PlanDigest, RequestKey: "approve-scale-update-" + uuid.NewString(), Decision: "approved",
+		Decisions: decisionsBody, ActorUserID: pgUUID(fixture.actorID),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var agentID, skillID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+SELECT role_mapping.target_id, skill_mapping.target_id
+FROM role_source_object_mapping role_mapping
+JOIN role_source_object_mapping skill_mapping
+  ON skill_mapping.source_id=role_mapping.source_id
+ AND skill_mapping.workspace_id=role_mapping.workspace_id
+WHERE role_mapping.source_id=$1
+  AND role_mapping.source_kind='role' AND role_mapping.source_object_id='role-0000'
+  AND skill_mapping.source_kind='skill' AND skill_mapping.source_parent_id='role-0000'
+  AND skill_mapping.source_object_id='skill-00'
+`, fixture.sourceID).Scan(&agentID, &skillID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE agent
+SET permission_mode='public_to', max_concurrent_tasks=7, model='user-model',
+    custom_env='{"USER_OWNED":"preserve"}'::jsonb,
+    mcp_config='{"mcpServers":{"user-owned":{"url":"https://example.invalid"}}}'::jsonb
+WHERE id=$1 AND workspace_id=$2
+`, agentID, fixture.workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE skill SET config='{"user_owned":"preserve"}'::jsonb WHERE id=$1 AND workspace_id=$2`, skillID, fixture.workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE agent_skill SET enabled=false WHERE agent_id=$1 AND skill_id=$2`, agentID, skillID); err != nil {
+		t.Fatal(err)
+	}
+
+	input := ApplyPlanInput{
+		WorkspaceID: fixture.workspaceID.String(), SourceID: fixture.sourceID.String(), PlanDigest: plan.PlanDigest,
+		ApprovalID: approvalID.String(), RequestKey: "apply-scale-update-" + uuid.NewString(),
+		ActorUserID: fixture.actorID.String(), SecretTransferIDs: map[string]string{},
+	}
+	var walBefore string
+	if err := pool.QueryRow(ctx, `SELECT pg_current_wal_lsn()::text`).Scan(&walBefore); err != nil {
+		t.Fatal(err)
+	}
+	var memoryBefore runtime.MemStats
+	runtime.ReadMemStats(&memoryBefore)
+	stopMemorySampler := samplePeakHeapAlloc(memoryBefore.HeapAlloc)
+	started := time.Now()
+	row, receipt, err := newApplyFailureControl(t, pool, scaleArtifactReader{prefix: fixture.artifactPrefix}).ApplyPlan(ctx, input)
+	applyDuration := time.Since(started)
+	peakHeapAlloc := stopMemorySampler()
+	if err != nil || row.Status != "succeeded" || receipt.Counts.Updated != wantUpdated || receipt.Counts.Created != 0 || len(receipt.Mappings) != wantUpdated {
+		t.Fatalf("production-scale update row=%+v counts=%+v mappings=%d err=%v", row, receipt.Counts, len(receipt.Mappings), err)
+	}
+	retryStarted := time.Now()
+	retryRow, retryReceipt, err := newApplyFailureControl(t, pool, scaleArtifactReader{prefix: fixture.artifactPrefix}).ApplyPlan(ctx, input)
+	retryDuration := time.Since(retryStarted)
+	if err != nil || retryRow.ID != row.ID || retryReceipt.ReceiptDigest != receipt.ReceiptDigest {
+		t.Fatalf("production-scale update retry row=%+v receipt=%+v err=%v", retryRow, retryReceipt, err)
+	}
+
+	var agentName, agentDescription, skillName, permissionMode, model string
+	var maxConcurrent int
+	var customEnv, mcpConfig, skillConfig []byte
+	var bindingEnabled bool
+	if err := pool.QueryRow(ctx, `
+SELECT agent.name, agent.description, skill.name,
+       agent.permission_mode, agent.max_concurrent_tasks, agent.model,
+       agent.custom_env, agent.mcp_config, skill.config, association.enabled
+FROM agent
+JOIN agent_skill association ON association.agent_id=agent.id
+JOIN skill ON skill.id=association.skill_id
+WHERE agent.id=$1 AND skill.id=$2
+`, agentID, skillID).Scan(&agentName, &agentDescription, &skillName, &permissionMode, &maxConcurrent, &model, &customEnv, &mcpConfig, &skillConfig, &bindingEnabled); err != nil {
+		t.Fatal(err)
+	}
+	sourceFieldsUpdated := agentName == "Role 0000 v2" && strings.Contains(agentDescription, "version 2.0.0") && skillName == "Role 0000 Skill 00 v2"
+	protectedAgent := permissionMode == "public_to" && maxConcurrent == 7 && model == "user-model" &&
+		strings.Contains(string(customEnv), "USER_OWNED") && strings.Contains(string(mcpConfig), "user-owned")
+	protectedSkill := strings.Contains(string(skillConfig), "user_owned")
+	if !sourceFieldsUpdated || !protectedAgent || !protectedSkill || bindingEnabled {
+		t.Fatalf("state after update source_fields_updated=%t protected_agent=%t protected_skill=%t binding_enabled=%t", sourceFieldsUpdated, protectedAgent, protectedSkill, bindingEnabled)
+	}
+	var walBytes int64
+	if err := pool.QueryRow(ctx, `SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), $1::pg_lsn)::bigint`, walBefore).Scan(&walBytes); err != nil {
+		t.Fatal(err)
+	}
+	return productionScaleUpdateEvidence{
+		updated: wantUpdated, applyDuration: applyDuration, retryDuration: retryDuration,
+		walBytes: walBytes, peakHeapAlloc: peakHeapAlloc, peakHeapDelta: peakHeapAlloc - memoryBefore.HeapAlloc,
+		receiptBytes: len(row.Receipt), protectedAgent: protectedAgent, protectedSkill: protectedSkill,
+		sourceFieldsUpdated: sourceFieldsUpdated, disabledBinding: !bindingEnabled,
+	}
 }
 
 type scaleArtifactReader struct {
