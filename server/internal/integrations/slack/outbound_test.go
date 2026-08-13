@@ -175,6 +175,55 @@ func TestOutbound_UsesSharedDeliveryContract(t *testing.T) {
 	}
 }
 
+func TestOutbound_UsesIndependentAuditedFailureNotice(t *testing.T) {
+	q := &fakeOutboundQueries{
+		task: db.AgentTaskQueue{ChatInputTaskID: uid(2)}, taskChannelIngested: true,
+		binding: db.ChannelChatSessionBinding{InstallationID: uid(1), ChannelChatID: "C123", Config: []byte(`{"channel_id":"C123"}`)},
+		inst:    db.ChannelInstallation{ID: uid(1), WorkspaceID: uid(9), Status: "active", Config: slackInstallConfigJSON()},
+	}
+	fs := &fakeSender{}
+	recorder := &fakeDeliveryRecorder{}
+	event := events.Event{
+		Type: protocol.EventTaskFailed,
+		Payload: map[string]any{
+			"task_id":         "00000000-0000-0000-0000-000000000002",
+			"chat_session_id": "00000000-0000-0000-0000-000000000001",
+			"error":           "task timed out", "retry_pending": false,
+		},
+	}
+	newTestOutbound(q, fs).WithDeliveryRecorder(recorder).handleEvent(event)
+
+	if fs.called != 1 || recorder.claimed != 1 || recorder.delivered != 1 {
+		t.Fatalf("send/claim/deliver = %d/%d/%d, want 1/1/1", fs.called, recorder.claimed, recorder.delivered)
+	}
+	if recorder.input.OperationKind != delivery.OperationFailureNotice || recorder.input.Payload != "⚠️ task timed out" || fs.got.Text != "⚠️ task timed out" {
+		t.Fatalf("failure delivery input=%+v outbound=%+v", recorder.input, fs.got)
+	}
+}
+
+func TestOutbound_SuppressesFailureNoticeWhileRetryIsPending(t *testing.T) {
+	q := &fakeOutboundQueries{
+		task: db.AgentTaskQueue{ChatInputTaskID: uid(2)}, taskChannelIngested: true,
+		binding: db.ChannelChatSessionBinding{InstallationID: uid(1), ChannelChatID: "C123", Config: []byte(`{"channel_id":"C123"}`)},
+		inst:    db.ChannelInstallation{ID: uid(1), WorkspaceID: uid(9), Status: "active", Config: slackInstallConfigJSON()},
+	}
+	fs := &fakeSender{}
+	recorder := &fakeDeliveryRecorder{}
+	event := events.Event{
+		Type: protocol.EventTaskFailed,
+		Payload: map[string]any{
+			"task_id":         "00000000-0000-0000-0000-000000000002",
+			"chat_session_id": "00000000-0000-0000-0000-000000000001",
+			"error":           "task timed out", "retry_pending": true,
+		},
+	}
+	newTestOutbound(q, fs).WithDeliveryRecorder(recorder).handleEvent(event)
+
+	if fs.called != 0 || recorder.claimed != 0 {
+		t.Fatalf("retry-pending failure sent/claimed = %d/%d", fs.called, recorder.claimed)
+	}
+}
+
 func TestOutbound_PostsReplyToBoundSlackChannel(t *testing.T) {
 	q := &fakeOutboundQueries{
 		// Composite isolation key; real channel + reply thread come from config /

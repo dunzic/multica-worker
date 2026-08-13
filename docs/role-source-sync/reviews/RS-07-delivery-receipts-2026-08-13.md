@@ -8,7 +8,7 @@ Decision: CONDITIONAL — the shared backend contract is suitable for a Slack/Di
 
 ## Delivered customer outcome
 
-Agent replies sent to Slack or DingTalk no longer disappear into transport logs. Before a connector sends, Multica creates or reclaims a task-scoped delivery claim. A duplicate completion event for an already delivered/read-back task returns the existing provider message ID without calling the provider again. A provider failure becomes a visible standard error code and may earn a fresh attempt while retaining the same correlation ID. A process crash leaves a 30-second pending lease; the independent reconciler converts abandoned claims to retryable timeout failures rather than leaving permanent “sending” state.
+Agent replies sent to Slack or DingTalk no longer disappear into transport logs. Before a connector sends, Multica creates or reclaims a task-scoped delivery claim. A duplicate completion event for an already delivered/read-back task returns the existing provider message ID without calling the provider again. A provider failure becomes a visible standard error code and may earn a fresh attempt while retaining the same correlation ID. A process crash leaves a 30-second pending lease; the independent reconciler converts abandoned claims to retryable timeout failures rather than leaving permanent “sending” state. Both connectors also send a separate `failure_notice` for a terminal task failure only when no automatic retry is pending. It has its own ledger identity, so it cannot collide with a normal chat reply; a failure to send that notice is recorded but never recursively emits another notice.
 
 The ledger stores no message body. It records the SHA-256 payload digest, tenant/task/session/connector routing identities, provider message ID, attempt count, status and a canonical evidence document whose digest is verified again whenever history is listed. A conflicting replay that reuses the same task identity with different content fails closed.
 
@@ -44,7 +44,7 @@ Score: 2/3
 
 Open product work:
 
-- no failure notification or one-click controlled retry;
+- terminal task failures now notify the originating Slack or DingTalk conversation after retries are exhausted; there is still no in-app escalation or one-click controlled retry for transport failures;
 - the settings UI explicitly describes `readback` as an inbound message that replied to the delivered provider message, not passive “read” telemetry;
 - no attachment-level delivery detail;
 - operators still need task/API knowledge to act on a failed row.
@@ -55,6 +55,7 @@ Score: 2/3
 
 - tests cover duplicate completion suppression, payload conflicts, provider failure and retry, correlation stability, empty provider IDs, duplicate/out-of-order readback and evidence tampering;
 - Slack and DingTalk outbound tests prove both adapters supply the exact workspace/installation/task/session/operation/payload identity to the same recorder and persist the returned provider ID;
+- connector tests prove terminal failure notices use the independent operation identity and retry-pending failures stay silent;
 - router tests pin the rule that only an explicit reply with both provider and inbound message IDs creates readback;
 - handler tests reject unverifiable terminal rows and pin the content-free response surface;
 - installed-client schema validation fails closed on malformed digests and terminal evidence that disagrees with row task/correlation/status/payload/attempt identity; component tests prove filtering, explicit-reply copy, routing-ID suppression and absence of a resend control;

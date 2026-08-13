@@ -16,7 +16,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	"github.com/multica-ai/multica/server/internal/integrations/delivery"
-	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -73,9 +72,12 @@ func (o *Outbound) WithDeliveryRecorder(recorder delivery.Recorder) *Outbound {
 	return o
 }
 
-// Register subscribes to the chat-done event on the bus.
+// Register subscribes to terminal chat events on the bus. A failure notice has
+// an independent ledger identity from the normal reply and is omitted while an
+// automatic retry is pending.
 func (o *Outbound) Register(bus *events.Bus) {
 	bus.Subscribe(protocol.EventChatDone, o.handleEvent)
+	bus.Subscribe(protocol.EventTaskFailed, o.handleEvent)
 }
 
 func (o *Outbound) handleEvent(e events.Event) {
@@ -90,8 +92,8 @@ func (o *Outbound) handleEvent(e events.Event) {
 }
 
 func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
-	sessionID, err := util.ParseUUID(e.ChatSessionID)
-	if err != nil || !sessionID.Valid {
+	taskID, sessionID, ok := taskAndSessionFromEvent(e)
+	if !ok || !sessionID.Valid {
 		// Issue / autopilot tasks carry no chat_session.
 		return nil
 	}
@@ -105,7 +107,7 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		}
 		return fmt.Errorf("lookup slack chat binding: %w", err)
 	}
-	content := chatDoneContent(e.Payload)
+	content := eventContent(e)
 	if content == "" {
 		return nil // nothing to say (empty completion)
 	}
@@ -117,10 +119,6 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 	// tasks, so the discriminator is the immutable channel_ingested provenance
 	// of that batch, not chat_input_task_id presence (which #5645 originally
 	// used).
-	taskID, ok := chatDoneTaskID(e)
-	if !ok {
-		return nil
-	}
 	task, err := o.q.GetAgentTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("load agent task: %w", err)
@@ -147,9 +145,13 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		return fmt.Errorf("decode slack credentials: %w", err)
 	}
 	channelID, threadTS := outboundTarget(binding)
+	operation := delivery.OperationChatReply
+	if e.Type == protocol.EventTaskFailed {
+		operation = delivery.OperationFailureNotice
+	}
 	_, err = delivery.Send(ctx, o.delivery, delivery.ClaimInput{
 		WorkspaceID: inst.WorkspaceID, InstallationID: inst.ID, TaskID: taskID, ChatSessionID: sessionID,
-		ChannelType: TypeSlack, ChannelChatID: channelID, OperationKind: delivery.OperationChatReply, Payload: content,
+		ChannelType: TypeSlack, ChannelChatID: channelID, OperationKind: operation, Payload: content,
 	}, func(sendCtx context.Context) (channel.SendResult, error) {
 		return o.newSender(creds).Send(sendCtx, channel.OutboundMessage{
 			ChatID: channelID, Text: content, ThreadID: threadTS,
@@ -161,21 +163,37 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 	return nil
 }
 
-// chatDoneTaskID extracts the task id from the event envelope or the typed/map
-// payload emitted by TaskService. Outbound delivery fails closed when the task
-// origin cannot be established.
-func chatDoneTaskID(e events.Event) (pgtype.UUID, bool) {
-	raw := e.TaskID
-	if raw == "" {
-		switch p := e.Payload.(type) {
-		case protocol.ChatDonePayload:
-			raw = p.TaskID
-		case map[string]any:
-			raw, _ = p["task_id"].(string)
+// taskAndSessionFromEvent accepts the typed chat completion and the map payload
+// used by task-failed broadcasts. Outbound delivery fails closed unless both
+// the task origin and chat session are established.
+func taskAndSessionFromEvent(e events.Event) (taskID, sessionID pgtype.UUID, ok bool) {
+	if e.TaskID != "" {
+		_ = taskID.Scan(e.TaskID)
+	}
+	if e.ChatSessionID != "" {
+		_ = sessionID.Scan(e.ChatSessionID)
+	}
+	switch p := e.Payload.(type) {
+	case protocol.ChatDonePayload:
+		if !taskID.Valid {
+			_ = taskID.Scan(p.TaskID)
+		}
+		if !sessionID.Valid {
+			_ = sessionID.Scan(p.ChatSessionID)
+		}
+	case map[string]any:
+		if !taskID.Valid {
+			if raw, _ := p["task_id"].(string); raw != "" {
+				_ = taskID.Scan(raw)
+			}
+		}
+		if !sessionID.Valid {
+			if raw, _ := p["chat_session_id"].(string); raw != "" {
+				_ = sessionID.Scan(raw)
+			}
 		}
 	}
-	id, err := util.ParseUUID(raw)
-	return id, err == nil && id.Valid
+	return taskID, sessionID, taskID.Valid
 }
 
 // outboundTarget recovers the real send target from the chat binding. The
@@ -196,13 +214,23 @@ func outboundTarget(b db.ChannelChatSessionBinding) (channelID, threadTS string)
 	return channelID, threadTS
 }
 
-// chatDoneContent extracts the reply text from an EventChatDone payload (the
-// typed payload, or its map form after a serialization round trip).
-func chatDoneContent(payload any) string {
-	switch p := payload.(type) {
+// eventContent extracts a completed reply or the redacted terminal task error.
+// Retry-pending failures remain silent because the retry will report its own
+// terminal outcome.
+func eventContent(e events.Event) string {
+	switch p := e.Payload.(type) {
 	case protocol.ChatDonePayload:
 		return p.Content
 	case map[string]any:
+		if e.Type == protocol.EventTaskFailed {
+			if retryPending, _ := p["retry_pending"].(bool); retryPending {
+				return ""
+			}
+			if value, _ := p["error"].(string); value != "" {
+				return "⚠️ " + value
+			}
+			return ""
+		}
 		if s, ok := p["content"].(string); ok {
 			return s
 		}
