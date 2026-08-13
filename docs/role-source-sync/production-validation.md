@@ -222,6 +222,32 @@ Pass criteria: no lost accepted state, no acknowledgement before durability, no 
 
 Use a production-shaped dataset and two server replicas. Measure, do not infer:
 
+First run the strictly read-only evidence probe against the largest staged
+workspace and a runtime with the cohort model's worst-case attestation history.
+It pins every session to read-only mode, applies a five-second statement
+timeout, runs concurrent source-list plus 100-entry history reads, summarizes
+`EXPLAIN ANALYZE` without exporting tenant filters, and writes a new private
+report. It never seeds or changes data:
+
+```bash
+/app/role_source_capacity \
+  --workspace-id VALIDATION_WORKSPACE_UUID \
+  --runtime-id VALIDATION_RUNTIME_UUID \
+  --samples 500 --concurrency 32 \
+  --minimum-users 10000 \
+  --minimum-workspace-members APPROVED_LARGEST_WORKSPACE_MEMBERS \
+  --minimum-workspace-runtimes APPROVED_LARGEST_WORKSPACE_RUNTIMES \
+  --minimum-workspace-sources APPROVED_LARGEST_WORKSPACE_SOURCES \
+  --minimum-attestation-history APPROVED_RUNTIME_HISTORY_ROWS \
+  --report /private/evidence/role-source-capacity-read.json
+```
+
+The approved minima must come from the signed cohort model; use 100 history
+rows when that model requires a 100-entry runtime history worst case.
+`read_path_passed` proves only the database read slice and required index use.
+It does not satisfy Gate E without the two-replica API, attestation-write burst,
+S3, metrics and failover evidence below.
+
 - 10,000 users' expected runtime/source cardinality and process restart burst;
 - p50/p95/p99 attestation transaction latency during normal load and primary failover;
 - database CPU, WAL bytes, lock wait time, deadlocks and connection-pool saturation;
