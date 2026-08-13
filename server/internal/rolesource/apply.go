@@ -124,6 +124,8 @@ type materializationState struct {
 	receipt            *ApplyReceipt
 	pendingMappings    map[string]pendingRoleSourceMapping
 	pendingAgentSkills map[string]pendingRoleSourceAgentSkill
+	skillFilesReady    bool
+	skillFiles         map[string]map[string]bool
 }
 
 type pendingRoleSourceMapping struct {
@@ -1634,6 +1636,9 @@ func (s *materializationState) materializeSkills(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := s.prepareSkillFileState(ctx, pending); err != nil {
+		return err
+	}
 	for _, batch := range batches {
 		body, err := json.Marshal(batch)
 		if err != nil {
@@ -1648,6 +1653,8 @@ func (s *materializationState) materializeSkills(ctx context.Context) error {
 		if _, err := exactMaterializedSkillIDs(batch, rows); err != nil {
 			return err
 		}
+	}
+	for _, batch := range batches {
 		for _, item := range batch {
 			targetID, err := util.ParseUUID(item.ID)
 			if err != nil {
@@ -1672,6 +1679,96 @@ func (s *materializationState) materializeSkills(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *materializationState) prepareSkillFileState(ctx context.Context, pending []pendingRoleSourceSkill) error {
+	existingTargets := make(map[string]pgtype.UUID)
+	for _, mapping := range s.mappings {
+		if mapping.TargetKind == "skill" && !mapping.ArchivedAt.Valid {
+			existingTargets[util.UUIDToString(mapping.TargetID)] = mapping.TargetID
+		}
+	}
+	allTargets := make(map[string]pgtype.UUID, len(existingTargets)+len(pending))
+	for id, targetID := range existingTargets {
+		allTargets[id] = targetID
+	}
+	for _, item := range pending {
+		targetID, err := util.ParseUUID(item.ID)
+		if err != nil {
+			return err
+		}
+		allTargets[item.ID] = targetID
+	}
+	ids := make([]string, 0, len(allTargets))
+	for id := range allTargets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	s.skillFiles = make(map[string]map[string]bool, len(ids))
+	for _, id := range ids {
+		s.skillFiles[id] = map[string]bool{}
+	}
+	lockIDs := make([]string, 0, len(existingTargets))
+	for id := range existingTargets {
+		lockIDs = append(lockIDs, id)
+	}
+	sort.Strings(lockIDs)
+	if len(lockIDs) == 0 {
+		s.skillFilesReady = true
+		return nil
+	}
+	pgIDs := make([]pgtype.UUID, 0, len(lockIDs))
+	for _, id := range lockIDs {
+		pgIDs = append(pgIDs, existingTargets[id])
+	}
+	locked, err := s.q.LockRoleSourceSkillsForFileSync(ctx, db.LockRoleSourceSkillsForFileSyncParams{
+		SkillIds: pgIDs, WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := exactPGUUIDs("skill-file targets", lockIDs, locked); err != nil {
+		return err
+	}
+	rows, err := s.q.ListRoleSourceSkillFilesForUpdateBySkillIDs(ctx, db.ListRoleSourceSkillFilesForUpdateBySkillIDsParams{
+		SkillIds: pgIDs, WorkspaceID: s.workspaceID,
+	})
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		targetID := util.UUIDToString(row.SkillID)
+		files, ok := s.skillFiles[targetID]
+		if !ok {
+			return fmt.Errorf("%w: unexpected skill-file target %s", ErrApplyConflict, targetID)
+		}
+		if files[row.Path] {
+			return fmt.Errorf("%w: duplicate skill-file path %s for target %s", ErrApplyConflict, row.Path, targetID)
+		}
+		files[row.Path] = true
+	}
+	s.skillFilesReady = true
+	return nil
+}
+
+func exactPGUUIDs(label string, requested []string, rows []pgtype.UUID) (map[string]bool, error) {
+	returned := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		id := util.UUIDToString(row)
+		if returned[id] {
+			return nil, fmt.Errorf("%w: %s returned duplicate %s", ErrApplyConflict, label, id)
+		}
+		returned[id] = true
+	}
+	if len(returned) != len(requested) {
+		return nil, fmt.Errorf("%w: locked %d of %d %s", ErrApplyConflict, len(returned), len(requested), label)
+	}
+	for _, id := range requested {
+		if !returned[id] {
+			return nil, fmt.Errorf("%w: %s %s was not locked", ErrApplyConflict, label, id)
+		}
+	}
+	return returned, nil
 }
 
 func exactMaterializedSkillIDs(requested []pendingRoleSourceSkill, rows []pgtype.UUID) (map[string]bool, error) {
@@ -1816,23 +1913,14 @@ func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref Obje
 		if len(desired) == 0 {
 			return []string{}, nil
 		}
-	} else if _, err := s.q.GetRoleSourceSkillForUpdate(ctx, db.GetRoleSourceSkillForUpdateParams{ID: targetID, WorkspaceID: s.workspaceID}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("%w: mapped skill target is missing", ErrApplyConflict)
-		}
-		return nil, err
 	}
-	rows := []db.SkillFile{}
-	if !newlyCreated {
-		var err error
-		rows, err = s.q.ListRoleSourceSkillFilesForUpdate(ctx, db.ListRoleSourceSkillFilesForUpdateParams{SkillID: targetID, WorkspaceID: s.workspaceID})
-		if err != nil {
-			return nil, err
-		}
+	if !s.skillFilesReady {
+		return nil, fmt.Errorf("%w: skill-file state was not prepared", ErrApplyConflict)
 	}
-	existing := make(map[string]bool, len(rows))
-	for _, row := range rows {
-		existing[row.Path] = true
+	targetKey := util.UUIDToString(targetID)
+	existing, ok := s.skillFiles[targetKey]
+	if !ok {
+		return nil, fmt.Errorf("%w: skill-file target %s was not locked", ErrApplyConflict, targetKey)
 	}
 	owned := map[string]bool{}
 	if mapping, ok := s.mappings[objectKey(ref)]; ok {
@@ -1864,6 +1952,9 @@ func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref Obje
 		if _, err := s.q.DeleteRoleSourceSkillFiles(ctx, db.DeleteRoleSourceSkillFilesParams{SkillID: targetID, Paths: remove}); err != nil {
 			return nil, err
 		}
+		for _, filePath := range remove {
+			delete(existing, filePath)
+		}
 	}
 	if len(paths) > 0 {
 		files := make([]pendingRoleSourceSkillFile, 0, len(paths))
@@ -1874,12 +1965,20 @@ func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref Obje
 		if err != nil {
 			return nil, err
 		}
-		upserted, err := s.q.UpsertRoleSourceSkillFiles(ctx, db.UpsertRoleSourceSkillFilesParams{SkillID: targetID, Files: body})
+		ownedPaths := make([]string, 0, len(owned))
+		for filePath := range owned {
+			ownedPaths = append(ownedPaths, filePath)
+		}
+		sort.Strings(ownedPaths)
+		upserted, err := s.q.UpsertRoleSourceSkillFiles(ctx, db.UpsertRoleSourceSkillFilesParams{SkillID: targetID, Files: body, OwnedPaths: ownedPaths})
 		if err != nil {
 			return nil, err
 		}
-		if len(upserted) != len(files) {
-			return nil, fmt.Errorf("%w: persisted %d of %d source-owned skill files", ErrApplyConflict, len(upserted), len(files))
+		if err := exactSkillFilePaths(targetID, paths, upserted); err != nil {
+			return nil, err
+		}
+		for _, filePath := range paths {
+			existing[filePath] = true
 		}
 	}
 	mask := make([]string, 0, len(paths))
@@ -1887,6 +1986,33 @@ func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref Obje
 		mask = append(mask, "skill_file:"+filePath)
 	}
 	return mask, nil
+}
+
+func exactSkillFilePaths(targetID pgtype.UUID, requested []string, rows []db.SkillFile) error {
+	expected := make(map[string]bool, len(requested))
+	for _, filePath := range requested {
+		if expected[filePath] {
+			return fmt.Errorf("%w: source-owned skill file request contains duplicate path %s", ErrApplyConflict, filePath)
+		}
+		expected[filePath] = true
+	}
+	returned := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.SkillID != targetID {
+			return fmt.Errorf("%w: source-owned skill file returned another target", ErrApplyConflict)
+		}
+		if !expected[row.Path] {
+			return fmt.Errorf("%w: source-owned skill files returned unexpected path %s", ErrApplyConflict, row.Path)
+		}
+		if returned[row.Path] {
+			return fmt.Errorf("%w: source-owned skill files returned duplicate path %s", ErrApplyConflict, row.Path)
+		}
+		returned[row.Path] = true
+	}
+	if len(returned) != len(expected) {
+		return fmt.Errorf("%w: persisted %d of %d source-owned skill files", ErrApplyConflict, len(returned), len(expected))
+	}
+	return nil
 }
 
 func (s *materializationState) materializeAutomations(ctx context.Context) error {

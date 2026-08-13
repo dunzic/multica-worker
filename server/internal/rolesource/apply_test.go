@@ -458,6 +458,111 @@ func TestNewSkillWithoutSupportingFilesAvoidsEmptyLockQueries(t *testing.T) {
 	}
 }
 
+func TestSkillFileSyncRequiresPreparedLockedState(t *testing.T) {
+	targetID := util.MustParseUUID("00000000-0000-4000-8000-000000000042")
+	state := materializationState{mappings: map[string]db.RoleSourceObjectMapping{}}
+	if _, err := state.syncOwnedSkillFiles(
+		context.Background(), ObjectRef{Kind: "skill", ParentID: "role", ID: "existing"},
+		targetID, map[string]string{}, false,
+	); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("unprepared skill-file state error=%v", err)
+	}
+	state.skillFilesReady = true
+	state.skillFiles = map[string]map[string]bool{}
+	if _, err := state.syncOwnedSkillFiles(
+		context.Background(), ObjectRef{Kind: "skill", ParentID: "role", ID: "existing"},
+		targetID, map[string]string{}, false,
+	); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("unlocked skill-file target error=%v", err)
+	}
+}
+
+func TestSkillFileSyncRejectsCachedUserOwnedCollisionBeforeWrite(t *testing.T) {
+	targetID := util.MustParseUUID("00000000-0000-4000-8000-000000000043")
+	state := materializationState{
+		mappings:        map[string]db.RoleSourceObjectMapping{},
+		skillFilesReady: true,
+		skillFiles: map[string]map[string]bool{
+			util.UUIDToString(targetID): {"notes.md": true},
+		},
+	}
+	if _, err := state.syncOwnedSkillFiles(
+		context.Background(), ObjectRef{Kind: "skill", ParentID: "role", ID: "existing"},
+		targetID, map[string]string{"notes.md": "managed"}, false,
+	); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("cached user-owned collision error=%v", err)
+	}
+}
+
+func TestExactPGUUIDsRejectsIncompleteOrAmbiguousLocks(t *testing.T) {
+	first := uuid.New()
+	second := uuid.New()
+	unexpected := uuid.New()
+	requested := []string{first.String(), second.String()}
+	pgID := func(value uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: value, Valid: true} }
+	if _, err := exactPGUUIDs("skill-file targets", requested, []pgtype.UUID{pgID(first), pgID(second)}); err != nil {
+		t.Fatalf("exact lock set error=%v", err)
+	}
+	for name, rows := range map[string][]pgtype.UUID{
+		"duplicate":  {pgID(first), pgID(first)},
+		"missing":    {pgID(first)},
+		"unexpected": {pgID(first), pgID(unexpected)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := exactPGUUIDs("skill-file targets", requested, rows); !errors.Is(err, ErrApplyConflict) {
+				t.Fatalf("lock set error=%v", err)
+			}
+		})
+	}
+}
+
+func TestExactSkillFilePathsRejectsIncompleteOrAmbiguousWrites(t *testing.T) {
+	targetID := util.MustParseUUID("00000000-0000-4000-8000-000000000044")
+	otherID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
+	row := func(skillID pgtype.UUID, path string) db.SkillFile { return db.SkillFile{SkillID: skillID, Path: path} }
+	requested := []string{"a.md", "b.md"}
+	if err := exactSkillFilePaths(targetID, requested, []db.SkillFile{row(targetID, "a.md"), row(targetID, "b.md")}); err != nil {
+		t.Fatalf("exact skill-file set error=%v", err)
+	}
+	for name, test := range map[string]struct {
+		requested []string
+		rows      []db.SkillFile
+	}{
+		"duplicate request": {requested: []string{"a.md", "a.md"}},
+		"duplicate return":  {requested: requested, rows: []db.SkillFile{row(targetID, "a.md"), row(targetID, "a.md")}},
+		"missing":           {requested: requested, rows: []db.SkillFile{row(targetID, "a.md")}},
+		"unexpected":        {requested: requested, rows: []db.SkillFile{row(targetID, "a.md"), row(targetID, "c.md")}},
+		"wrong target":      {requested: requested, rows: []db.SkillFile{row(targetID, "a.md"), row(otherID, "b.md")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := exactSkillFilePaths(targetID, test.requested, test.rows); !errors.Is(err, ErrApplyConflict) {
+				t.Fatalf("skill-file set error=%v", err)
+			}
+		})
+	}
+}
+
+func TestRoleSourceSkillFileQueriesLockAndFailClosedOnPathRace(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "skill.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(body)
+	for _, required := range []string{
+		"LockRoleSourceSkillsForFileSync", "id = ANY(@skill_ids::uuid[])", "workspace_id = @workspace_id",
+		"ORDER BY id\nFOR UPDATE", "ListRoleSourceSkillFilesForUpdateBySkillIDs",
+		"ORDER BY file.skill_id, file.path\nFOR UPDATE OF file", "UpsertRoleSourceSkillFiles",
+		"WHERE skill_file.path = ANY(@owned_paths::text[])",
+	} {
+		if !strings.Contains(query, required) {
+			t.Errorf("skill-file query contract missing %q", required)
+		}
+	}
+	if strings.Contains(query, "GetRoleSourceSkillForUpdate") || strings.Contains(query, "ListRoleSourceSkillFilesForUpdate :many") {
+		t.Fatal("per-skill file lock queries must not remain")
+	}
+}
+
 func TestRoleSourceAgentSkillBatchIsTenantValidatedAndDoesNotEnableRows(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "skill.sql"))
 	if err != nil {

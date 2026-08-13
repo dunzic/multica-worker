@@ -36,11 +36,6 @@ INSERT INTO skill (workspace_id, name, description, content, config, created_by)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
--- name: GetRoleSourceSkillForUpdate :one
-SELECT * FROM skill
-WHERE id = @id AND workspace_id = @workspace_id
-FOR UPDATE;
-
 -- name: MaterializeRoleSourceSkills :many
 -- Create or update one bounded source-owned Skill batch. New identities are
 -- allocated by the caller. Updates preserve config, creator and all fields not
@@ -117,12 +112,21 @@ DELETE FROM skill_file WHERE id = $1;
 -- name: DeleteSkillFilesBySkill :exec
 DELETE FROM skill_file WHERE skill_id = $1;
 
--- name: ListRoleSourceSkillFilesForUpdate :many
+-- name: LockRoleSourceSkillsForFileSync :many
+-- Lock every target Skill in canonical order before any supporting-file work.
+-- The caller verifies the exact returned ID set before using the file cache.
+SELECT id
+FROM skill
+WHERE id = ANY(@skill_ids::uuid[]) AND workspace_id = @workspace_id
+ORDER BY id
+FOR UPDATE;
+
+-- name: ListRoleSourceSkillFilesForUpdateBySkillIDs :many
 SELECT file.*
 FROM skill_file file
 JOIN skill ON skill.id = file.skill_id
-WHERE file.skill_id = @skill_id AND skill.workspace_id = @workspace_id
-ORDER BY file.path
+WHERE file.skill_id = ANY(@skill_ids::uuid[]) AND skill.workspace_id = @workspace_id
+ORDER BY file.skill_id, file.path
 FOR UPDATE OF file;
 
 -- name: UpsertRoleSourceSkillFiles :many
@@ -135,6 +139,7 @@ SELECT @skill_id, path, content FROM input
 ON CONFLICT (skill_id, path) DO UPDATE SET
     content = EXCLUDED.content,
     updated_at = now()
+WHERE skill_file.path = ANY(@owned_paths::text[])
 RETURNING skill_file.*;
 
 -- name: DeleteRoleSourceSkillFiles :execrows
