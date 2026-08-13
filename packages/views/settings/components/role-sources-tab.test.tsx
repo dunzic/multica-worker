@@ -16,6 +16,8 @@ const queryFixtures = vi.hoisted(() => ({
   latestScan: undefined as Record<string, unknown> | undefined,
   scans: [] as Array<Record<string, unknown>>,
   lifecycleEvents: [] as Array<Record<string, unknown>>,
+  snapshotSummaries: [] as Array<Record<string, unknown>>,
+  snapshotComparison: undefined as Record<string, unknown> | undefined,
   approvals: [] as Array<Record<string, unknown>>,
   applies: [] as Array<Record<string, unknown>>,
   secretTransfers: [] as Array<Record<string, unknown>>,
@@ -82,6 +84,10 @@ vi.mock("@tanstack/react-query", async () => {
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
       data: options.queryKey.includes("runtimes")
         ? queryFixtures.runtimes
+        : options.queryKey.includes("snapshot-comparison")
+          ? queryFixtures.snapshotComparison
+        : options.queryKey.includes("snapshot-summaries")
+          ? queryFixtures.snapshotSummaries
         : options.queryKey.includes("latest-scan")
         ? queryFixtures.latestScan
         : options.queryKey.includes("lifecycle-events")
@@ -210,6 +216,43 @@ beforeEach(() => {
       occurred_at: "2026-08-13T05:00:00Z",
     },
   ];
+  queryFixtures.snapshotSummaries = [
+    {
+      snapshot_digest: `sha256:${"b".repeat(64)}`,
+      manifest_digest: `sha256:${"c".repeat(64)}`,
+      kind: "agentwaker",
+      adapter_version: "1.0.0",
+      revision: "commit-new",
+      tree_digest: `sha256:${"d".repeat(64)}`,
+      role_count: 2,
+      capability_count: 1,
+      diagnostic_count: 0,
+      created_at: "2026-08-13T06:00:00Z",
+    },
+    {
+      snapshot_digest: `sha256:${"a".repeat(64)}`,
+      manifest_digest: `sha256:${"e".repeat(64)}`,
+      kind: "agentwaker",
+      adapter_version: "1.0.0",
+      revision: "commit-old",
+      tree_digest: `sha256:${"f".repeat(64)}`,
+      role_count: 1,
+      capability_count: 1,
+      diagnostic_count: 0,
+      created_at: "2026-08-12T06:00:00Z",
+    },
+  ];
+  queryFixtures.snapshotComparison = {
+    from_snapshot_digest: `sha256:${"a".repeat(64)}`,
+    to_snapshot_digest: `sha256:${"b".repeat(64)}`,
+    total_changes: 2,
+    offset: 0,
+    limit: 100,
+    changes: [
+      { object_kind: "role", object_id: "reviewer", display_name: "Reviewer", operation: "added" },
+      { object_kind: "skill", object_id: "draft", parent_id: "writer", display_name: "Draft", operation: "changed" },
+    ],
+  };
   queryFixtures.plans = [
     {
       source_id: "source-1",
@@ -729,6 +772,20 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText("remote_trust_invalid")).toBeInTheDocument();
     expect(screen.getAllByText(/sha256:dddddd/)).toHaveLength(1);
     expect(screen.getByText(/Verify the publisher identity, active signing key and revision policy/)).toBeInTheDocument();
+  });
+
+  it("compares immutable snapshot versions without rendering manifest content", async () => {
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(await screen.findByText("Snapshot version comparison")).toBeInTheDocument();
+    expect(screen.getByText("2 object changes")).toBeInTheDocument();
+    expect(screen.getByText("Reviewer")).toBeInTheDocument();
+    expect(screen.getByText("Added")).toBeInTheDocument();
+    expect(screen.getByText("Draft")).toBeInTheDocument();
+    expect(screen.getByText(/Manifest bodies, artifact paths, environment keys, and MCP configuration stay on the server/)).toBeInTheDocument();
+    expect(screen.queryByText(/instructions|SECRET_NAME|private\/|mcp_servers/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   });
 
   it("disables scan requests while a scan is active", () => {

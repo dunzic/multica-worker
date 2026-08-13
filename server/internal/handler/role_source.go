@@ -54,6 +54,7 @@ type RoleSourceControlPlane interface {
 	ListApplyHistory(context.Context, string, string, int32) ([]rolesource.ApplyHistoryItem, error)
 	ListApplyFailures(context.Context, string, string, int32) ([]db.RoleSourceApplyFailure, error)
 	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
+	CompareSnapshots(context.Context, string, string, string, string, int, int) (rolesource.SnapshotComparison, error)
 	ListPlanApprovals(context.Context, string, string, string, int32) ([]db.RoleSourcePlanApproval, error)
 	CreateLegalHold(context.Context, rolesource.CreateLegalHoldInput) (rolesource.LegalHold, error)
 	ReleaseLegalHold(context.Context, rolesource.ReleaseLegalHoldInput) (rolesource.LegalHold, error)
@@ -956,6 +957,65 @@ func (h *Handler) ListRoleSourceSnapshots(w http.ResponseWriter, r *http.Request
 		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"snapshots": items})
+}
+
+func (h *Handler) ListRoleSourceSnapshotSummaries(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	rows, err := h.RoleSources.ListSnapshots(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), 50)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list snapshot summaries")
+		return
+	}
+	items := make([]rolesource.SnapshotSummary, 0, len(rows))
+	for _, row := range rows {
+		item, err := rolesource.SnapshotSummaryFromRow(row)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate snapshot summaries")
+			return
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": items})
+}
+
+func (h *Handler) CompareRoleSourceSnapshots(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	offset, err := strconv.Atoi(defaultQueryValue(r, "offset", "0"))
+	if err != nil || offset < 0 {
+		writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+		return
+	}
+	limit, err := strconv.Atoi(defaultQueryValue(r, "limit", "100"))
+	if err != nil || limit < 1 || limit > 100 {
+		writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+		return
+	}
+	comparison, err := h.RoleSources.CompareSnapshots(
+		r.Context(), workspaceID, chi.URLParam(r, "sourceId"),
+		r.URL.Query().Get("from"), r.URL.Query().Get("to"), offset, limit,
+	)
+	if err != nil {
+		if errors.Is(err, rolesource.ErrInvalidSnapshotComparison) {
+			writeError(w, http.StatusBadRequest, "invalid snapshot comparison")
+			return
+		}
+		writeRoleSourceReadError(w, err, "failed to compare snapshots")
+		return
+	}
+	writeJSON(w, http.StatusOK, comparison)
+}
+
+func defaultQueryValue(r *http.Request, name, fallback string) string {
+	if value := r.URL.Query().Get(name); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func (h *Handler) ListRoleSourcePlans(w http.ResponseWriter, r *http.Request) {

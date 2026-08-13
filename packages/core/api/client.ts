@@ -53,6 +53,8 @@ import type {
   RoleSourceRuntimeAttestation,
   RoleSourceScan,
   RoleSourceLifecycleEvent,
+  RoleSourceSnapshotSummary,
+  RoleSourceSnapshotComparison,
   ChannelDelivery,
   UpdateRoleSourceLifecycleRequest,
   RoleSourceLegalHold,
@@ -322,6 +324,8 @@ import {
   RoleSourceScanSchema,
   RoleSourceScanListSchema,
   RoleSourceLifecycleEventListSchema,
+  RoleSourceSnapshotSummaryListSchema,
+  RoleSourceSnapshotComparisonSchema,
   ChannelDeliveryListSchema,
   RoleSourcePlanRecordSchema,
   RoleSourcePlanRecordListSchema,
@@ -1747,6 +1751,47 @@ export class ApiClient {
     return parseWithFallback(raw, RoleSourceLifecycleEventListSchema, { events: [] }, {
       endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/lifecycle-events",
     }).events;
+  }
+
+  async listRoleSourceSnapshotSummaries(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceSnapshotSummary[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/snapshot-summaries`,
+    );
+    return parseWithFallback(raw, RoleSourceSnapshotSummaryListSchema, { snapshots: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/snapshot-summaries",
+    }).snapshots;
+  }
+
+  async compareRoleSourceSnapshots(
+    workspaceId: string,
+    sourceId: string,
+    fromSnapshotDigest: string,
+    toSnapshotDigest: string,
+    offset: number,
+    limit = 100,
+  ): Promise<RoleSourceSnapshotComparison | null> {
+    const params = new URLSearchParams({
+      from: fromSnapshotDigest,
+      to: toSnapshotDigest,
+      offset: String(offset),
+      limit: String(limit),
+    });
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/snapshot-comparison?${params}`,
+    );
+    const comparison = parseWithFallback<RoleSourceSnapshotComparison | null>(
+      raw,
+      RoleSourceSnapshotComparisonSchema,
+      null,
+      { endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/snapshot-comparison" },
+    );
+    if (!comparison || comparison.from_snapshot_digest !== fromSnapshotDigest || comparison.to_snapshot_digest !== toSnapshotDigest || comparison.offset !== offset || comparison.limit !== limit) {
+      return null;
+    }
+    return comparison;
   }
 
   async listChannelDeliveries(workspaceId: string): Promise<ChannelDelivery[]> {

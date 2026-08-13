@@ -29,6 +29,10 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "scans", sourceId] as const,
   lifecycleEvents: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "lifecycle-events", sourceId] as const,
+  snapshots: (workspaceId: string, sourceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "snapshot-summaries", sourceId] as const,
+  snapshotComparison: (workspaceId: string, sourceId: string, fromDigest: string, toDigest: string, offset: number) =>
+    [...roleSourceKeys.all(workspaceId), "snapshot-comparison", sourceId, fromDigest, toDigest, offset] as const,
 };
 
 export function roleSourceListOptions(workspaceId: string) {
@@ -106,6 +110,31 @@ export function roleSourceLifecycleEventListOptions(
     queryKey: roleSourceKeys.lifecycleEvents(workspaceId, sourceId),
     queryFn: () => api.listRoleSourceLifecycleEvents(workspaceId, sourceId),
     enabled: Boolean(sourceId),
+  });
+}
+
+export function roleSourceSnapshotSummaryListOptions(
+  workspaceId: string,
+  sourceId: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.snapshots(workspaceId, sourceId),
+    queryFn: () => api.listRoleSourceSnapshotSummaries(workspaceId, sourceId),
+    enabled: Boolean(sourceId),
+  });
+}
+
+export function roleSourceSnapshotComparisonOptions(
+  workspaceId: string,
+  sourceId: string,
+  fromDigest: string,
+  toDigest: string,
+  offset: number,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.snapshotComparison(workspaceId, sourceId, fromDigest, toDigest, offset),
+    queryFn: () => api.compareRoleSourceSnapshots(workspaceId, sourceId, fromDigest, toDigest, offset),
+    enabled: Boolean(sourceId && fromDigest && toDigest && fromDigest !== toDigest),
   });
 }
 

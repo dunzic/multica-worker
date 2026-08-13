@@ -46,6 +46,8 @@ import {
   roleSourcePlanListOptions,
   roleSourceRuntimeAttestationListOptions,
   roleSourceScanListOptions,
+  roleSourceSnapshotComparisonOptions,
+  roleSourceSnapshotSummaryListOptions,
   roleSourceSecretTransferListOptions,
   roleSourceRetentionPreviewOptions,
   roleSourceKeys,
@@ -145,6 +147,20 @@ function lifecycleEventTranslationKey(eventType: string) {
   }
 }
 
+function snapshotOperationVariant(operation: string) {
+  if (operation === "removed") return "destructive" as const;
+  if (operation === "added") return "secondary" as const;
+  return "outline" as const;
+}
+
+function snapshotOperationTranslationKey(operation: string) {
+  switch (operation) {
+    case "added": return "snapshot_operation_added" as const;
+    case "removed": return "snapshot_operation_removed" as const;
+    default: return "snapshot_operation_changed" as const;
+  }
+}
+
 function scanRecoveryTranslationKey(code: string) {
   switch (code) {
     case "remote_unavailable":
@@ -240,6 +256,9 @@ export function RoleSourcesTab() {
   const [savingLifecycle, setSavingLifecycle] = React.useState(false);
   const [scanStatusFilter, setScanStatusFilter] = React.useState("all");
   const [scanCodeFilter, setScanCodeFilter] = React.useState("");
+  const [snapshotFrom, setSnapshotFrom] = React.useState("");
+  const [snapshotTo, setSnapshotTo] = React.useState("");
+  const [snapshotOffset, setSnapshotOffset] = React.useState(0);
   const [createHoldOpen, setCreateHoldOpen] = React.useState(false);
   const [createHoldRequestKey, setCreateHoldRequestKey] = React.useState("");
   const [holdScope, setHoldScope] = React.useState<RoleSourceLegalHoldScope>("source");
@@ -305,6 +324,14 @@ export function RoleSourcesTab() {
   const lifecycleHistory = useQuery({
     ...roleSourceLifecycleEventListOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId),
+  });
+  const snapshotSummaries = useQuery({
+    ...roleSourceSnapshotSummaryListOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId),
+  });
+  const snapshotComparison = useQuery({
+    ...roleSourceSnapshotComparisonOptions(workspaceId, selectedId, snapshotFrom, snapshotTo, snapshotOffset),
+    enabled: Boolean(workspaceId && selectedId && snapshotFrom && snapshotTo && snapshotFrom !== snapshotTo),
   });
   const filteredScanHistory = React.useMemo(() => {
     const code = scanCodeFilter.trim().toLowerCase();
@@ -381,6 +408,18 @@ export function RoleSourcesTab() {
     applyRequestKeyRef.current = "";
     secretTransferRequestKeysRef.current = {};
   }, [latest?.plan.plan_digest, selectedId]);
+
+  React.useEffect(() => {
+    const snapshots = snapshotSummaries.data ?? [];
+    const available = new Set(snapshots.map((snapshot) => snapshot.snapshot_digest));
+    const nextTo = available.has(snapshotTo) ? snapshotTo : snapshots[0]?.snapshot_digest ?? "";
+    const nextFrom = available.has(snapshotFrom) && snapshotFrom !== nextTo
+      ? snapshotFrom
+      : snapshots.find((snapshot) => snapshot.snapshot_digest !== nextTo)?.snapshot_digest ?? "";
+    if (nextTo !== snapshotTo) setSnapshotTo(nextTo);
+    if (nextFrom !== snapshotFrom) setSnapshotFrom(nextFrom);
+    setSnapshotOffset(0);
+  }, [selectedId, snapshotSummaries.data, snapshotFrom, snapshotTo]);
 
   React.useEffect(() => {
     if (!retention.data?.policy) return;
@@ -1461,6 +1500,112 @@ export function RoleSourcesTab() {
               </SettingsCard>
             </SettingsSection>
           </div>
+
+          <SettingsSection
+            title={t(($) => $.role_sources.snapshot_history_title)}
+            description={t(($) => $.role_sources.snapshot_history_description)}
+          >
+            <SettingsCard>
+              {snapshotSummaries.isLoading ? (
+                <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t(($) => $.role_sources.loading)}
+                </div>
+              ) : snapshotSummaries.isError ? (
+                <div className="p-4 text-caption text-destructive">{t(($) => $.role_sources.snapshot_history_load_failed)}</div>
+              ) : (snapshotSummaries.data?.length ?? 0) < 2 ? (
+                <div className="p-4 text-caption text-muted-foreground">{t(($) => $.role_sources.snapshot_history_minimum)}</div>
+              ) : (
+                <>
+                  <div className="grid gap-3 border-b border-surface-border p-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="role-source-snapshot-from">{t(($) => $.role_sources.snapshot_from)}</Label>
+                      <Select
+                        items={(snapshotSummaries.data ?? []).filter((snapshot) => snapshot.snapshot_digest !== snapshotTo).map((snapshot) => ({
+                          value: snapshot.snapshot_digest,
+                          label: `${shortDigest(snapshot.snapshot_digest)} · ${snapshot.created_at}`,
+                        }))}
+                        value={snapshotFrom}
+                        onValueChange={(value) => { setSnapshotFrom(value ?? ""); setSnapshotOffset(0); }}
+                      >
+                        <SelectTrigger id="role-source-snapshot-from" className="w-full"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {snapshotSummaries.data?.filter((snapshot) => snapshot.snapshot_digest !== snapshotTo).map((snapshot) => (
+                            <SelectItem key={snapshot.snapshot_digest} value={snapshot.snapshot_digest}>
+                              {shortDigest(snapshot.snapshot_digest)} · {snapshot.created_at}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="role-source-snapshot-to">{t(($) => $.role_sources.snapshot_to)}</Label>
+                      <Select
+                        items={(snapshotSummaries.data ?? []).filter((snapshot) => snapshot.snapshot_digest !== snapshotFrom).map((snapshot) => ({
+                          value: snapshot.snapshot_digest,
+                          label: `${shortDigest(snapshot.snapshot_digest)} · ${snapshot.created_at}`,
+                        }))}
+                        value={snapshotTo}
+                        onValueChange={(value) => { setSnapshotTo(value ?? ""); setSnapshotOffset(0); }}
+                      >
+                        <SelectTrigger id="role-source-snapshot-to" className="w-full"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {snapshotSummaries.data?.filter((snapshot) => snapshot.snapshot_digest !== snapshotFrom).map((snapshot) => (
+                            <SelectItem key={snapshot.snapshot_digest} value={snapshot.snapshot_digest}>
+                              {shortDigest(snapshot.snapshot_digest)} · {snapshot.created_at}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="border-b border-surface-border px-4 py-3 text-caption text-muted-foreground">
+                    {t(($) => $.role_sources.snapshot_content_boundary)}
+                  </div>
+                  {snapshotComparison.isLoading ? (
+                    <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t(($) => $.role_sources.loading)}
+                    </div>
+                  ) : snapshotComparison.isError || !snapshotComparison.data ? (
+                    <div className="p-4 text-caption text-destructive">{t(($) => $.role_sources.snapshot_comparison_load_failed)}</div>
+                  ) : !snapshotComparison.data.total_changes ? (
+                    <div className="p-4 text-caption text-muted-foreground">{t(($) => $.role_sources.snapshot_no_changes)}</div>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between gap-3 border-b border-surface-border px-4 py-3 text-caption text-muted-foreground">
+                        <span>{t(($) => $.role_sources.snapshot_change_count, { count: snapshotComparison.data.total_changes })}</span>
+                        <span>{snapshotOffset + 1}–{Math.min(snapshotOffset + snapshotComparison.data.limit, snapshotComparison.data.total_changes)}</span>
+                      </div>
+                      <div className="max-h-80 divide-y divide-surface-border overflow-y-auto">
+                        {snapshotComparison.data.changes.map((change) => (
+                          <div key={`${change.object_kind}:${change.parent_id ?? ""}:${change.object_id}`} className="flex items-start justify-between gap-3 px-4 py-3">
+                            <div className="min-w-0">
+                              <div className="truncate text-body font-medium">{change.display_name || change.object_id}</div>
+                              <div className="mt-0.5 font-mono text-caption text-muted-foreground">
+                                {change.object_kind} · {change.parent_id ? `${change.parent_id} / ` : ""}{change.object_id}
+                              </div>
+                            </div>
+                            <Badge variant={snapshotOperationVariant(change.operation)}>
+                              {t(($) => $.role_sources[snapshotOperationTranslationKey(change.operation)])}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex justify-end gap-2 border-t border-surface-border p-3">
+                        <Button variant="outline" size="sm" disabled={snapshotOffset === 0} onClick={() => setSnapshotOffset(Math.max(0, snapshotOffset - 100))}>
+                          {t(($) => $.role_sources.snapshot_previous)}
+                        </Button>
+                        <Button variant="outline" size="sm" disabled={snapshotOffset + 100 >= snapshotComparison.data.total_changes} onClick={() => setSnapshotOffset(snapshotOffset + 100)}>
+                          {t(($) => $.role_sources.snapshot_next)}
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </SettingsCard>
+          </SettingsSection>
 
           <SettingsSection
             title={t(($) => $.role_sources.scan_history_title)}

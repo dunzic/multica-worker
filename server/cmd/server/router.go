@@ -1239,6 +1239,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/role-sources/{sourceId}/lifecycle-events", h.ListRoleSourceLifecycleEvents)
 					r.Get("/role-sources/{sourceId}/scans/{scanId}", h.GetRoleSourceScan)
 					r.Get("/role-sources/{sourceId}/snapshots", h.ListRoleSourceSnapshots)
+					r.Get("/role-sources/{sourceId}/snapshot-summaries", h.ListRoleSourceSnapshotSummaries)
+					r.Get("/role-sources/{sourceId}/snapshot-comparison", h.CompareRoleSourceSnapshots)
 					r.Get("/role-sources/{sourceId}/plans", h.ListRoleSourcePlans)
 					r.Get("/role-sources/{sourceId}/plans/{planDigest}", h.GetRoleSourcePlan)
 					r.Get("/role-sources/{sourceId}/plans/{planDigest}/impact", h.GetRoleSourcePlanImpact)

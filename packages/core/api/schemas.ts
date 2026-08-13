@@ -57,6 +57,8 @@ import type {
   RuntimeModelListRequest,
   RoleSourceScan,
   RoleSourceLifecycleEvent,
+  RoleSourceSnapshotSummary,
+  RoleSourceSnapshotComparison,
   ChannelDelivery,
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
@@ -107,6 +109,40 @@ export const RoleSourceLifecycleEventSchema: z.ZodType<RoleSourceLifecycleEvent>
 export const RoleSourceLifecycleEventListSchema = z.object({
   events: z.array(RoleSourceLifecycleEventSchema),
 }).loose();
+
+const Sha256DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+export const RoleSourceSnapshotSummarySchema: z.ZodType<RoleSourceSnapshotSummary> = z.object({
+  snapshot_digest: Sha256DigestSchema,
+  manifest_digest: Sha256DigestSchema,
+  kind: z.string().min(1),
+  adapter_version: z.string().min(1),
+  revision: z.string().optional(),
+  tree_digest: Sha256DigestSchema,
+  role_count: z.number().int().nonnegative(),
+  capability_count: z.number().int().nonnegative(),
+  diagnostic_count: z.number().int().nonnegative(),
+  created_at: z.string().min(1),
+}).strict();
+
+export const RoleSourceSnapshotSummaryListSchema = z.object({
+  snapshots: z.array(RoleSourceSnapshotSummarySchema).max(50),
+}).strict();
+
+export const RoleSourceSnapshotComparisonSchema: z.ZodType<RoleSourceSnapshotComparison> = z.object({
+  from_snapshot_digest: Sha256DigestSchema,
+  to_snapshot_digest: Sha256DigestSchema,
+  total_changes: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(100),
+  changes: z.array(z.object({
+    object_kind: z.string().min(1),
+    object_id: z.string().min(1),
+    parent_id: z.string().optional(),
+    display_name: z.string(),
+    operation: z.enum(["added", "changed", "removed"]),
+  }).strict()).max(100),
+}).strict();
 
 const ChannelDeliveryEvidenceSchema = z.object({
   contract_version: z.string(),

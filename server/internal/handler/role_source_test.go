@@ -95,6 +95,9 @@ type fakeRoleSourceControlPlane struct {
 	applyFailuresErr          error
 	snapshotRows              []db.RoleSourceSnapshot
 	snapshotListErr           error
+	snapshotComparison        rolesource.SnapshotComparison
+	snapshotComparisonErr     error
+	snapshotComparisonArgs    []any
 	approvalRows              []db.RoleSourcePlanApproval
 	approvalListErr           error
 	createLegalHoldInput      *rolesource.CreateLegalHoldInput
@@ -270,6 +273,12 @@ func (f *fakeRoleSourceControlPlane) ListPlans(context.Context, string, string, 
 func (f *fakeRoleSourceControlPlane) ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error) {
 	f.calls++
 	return f.snapshotRows, f.snapshotListErr
+}
+
+func (f *fakeRoleSourceControlPlane) CompareSnapshots(_ context.Context, workspaceID, sourceID, fromDigest, toDigest string, offset, limit int) (rolesource.SnapshotComparison, error) {
+	f.calls++
+	f.snapshotComparisonArgs = []any{workspaceID, sourceID, fromDigest, toDigest, offset, limit}
+	return f.snapshotComparison, f.snapshotComparisonErr
 }
 
 func (f *fakeRoleSourceControlPlane) ListPlanApprovals(context.Context, string, string, string, int32) ([]db.RoleSourcePlanApproval, error) {
@@ -907,6 +916,65 @@ func TestRequestRoleSourceScan_WakesOwningRuntime(t *testing.T) {
 	}
 	if recorder.calls != 1 || recorder.runtimeID != roleSourceTestRuntimeID || recorder.kind != protocol.PendingWorkKindRoleSourceScan {
 		t.Fatalf("runtime wakeup = %+v", recorder)
+	}
+}
+
+func TestListRoleSourceSnapshotSummariesReturnsContentFreeRows(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.ListRoleSourceSnapshotSummaries(w, req)
+
+	if w.Code != http.StatusOK || w.Body.String() != "{\"snapshots\":[]}\n" {
+		t.Fatalf("snapshot summaries status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCompareRoleSourceSnapshotsReturnsOnlyObjectSummary(t *testing.T) {
+	fromDigest := "sha256:" + strings.Repeat("a", 64)
+	toDigest := "sha256:" + strings.Repeat("b", 64)
+	fake := &fakeRoleSourceControlPlane{snapshotComparison: rolesource.SnapshotComparison{
+		FromSnapshotDigest: fromDigest, ToSnapshotDigest: toDigest, TotalChanges: 1,
+		Offset: 100, Limit: 25, Changes: []rolesource.SnapshotChange{{
+			ObjectKind: "skill", ObjectID: "draft", ParentID: "writer", DisplayName: "Draft", Operation: "changed",
+		}},
+	}}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet,
+		"/ignored?from="+fromDigest+"&to="+toDigest+"&offset=100&limit=25", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.CompareRoleSourceSnapshots(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"object_kind":"skill"`) {
+		t.Fatalf("snapshot comparison status=%d body=%s", w.Code, w.Body.String())
+	}
+	wantArgs := []any{testWorkspaceID, roleSourceTestSourceID, fromDigest, toDigest, 100, 25}
+	if fmt.Sprint(fake.snapshotComparisonArgs) != fmt.Sprint(wantArgs) {
+		t.Fatalf("comparison args = %v, want %v", fake.snapshotComparisonArgs, wantArgs)
+	}
+	for _, forbidden := range []string{"instructions", "environment", "mcp", "artifact", "path", "manifest"} {
+		if strings.Contains(w.Body.String(), `"`+forbidden+`"`) {
+			t.Fatalf("comparison exposed %q: %s", forbidden, w.Body.String())
+		}
+	}
+}
+
+func TestCompareRoleSourceSnapshotsRejectsInvalidPage(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored?offset=-1&limit=101", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.CompareRoleSourceSnapshots(w, req)
+
+	if w.Code != http.StatusBadRequest || fake.calls != 0 {
+		t.Fatalf("invalid page status=%d calls=%d body=%s", w.Code, fake.calls, w.Body.String())
 	}
 }
 

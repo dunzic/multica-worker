@@ -182,6 +182,38 @@ export interface RoleSourceLifecycleEvent {
   occurred_at: string;
 }
 
+export interface RoleSourceSnapshotSummary {
+  snapshot_digest: string;
+  manifest_digest: string;
+  kind: string;
+  adapter_version: string;
+  revision?: string;
+  tree_digest: string;
+  role_count: number;
+  capability_count: number;
+  diagnostic_count: number;
+  created_at: string;
+}
+
+export type RoleSourceSnapshotOperation = "added" | "changed" | "removed";
+
+export interface RoleSourceSnapshotChange {
+  object_kind: string;
+  object_id: string;
+  parent_id?: string;
+  display_name: string;
+  operation: RoleSourceSnapshotOperation;
+}
+
+export interface RoleSourceSnapshotComparison {
+  from_snapshot_digest: string;
+  to_snapshot_digest: string;
+  total_changes: number;
+  offset: number;
+  limit: number;
+  changes: RoleSourceSnapshotChange[];
+}
+
 export type RoleSourcePlanOperation =
   | "create"
   | "update"

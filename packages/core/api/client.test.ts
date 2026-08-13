@@ -134,6 +134,47 @@ describe("ApiClient role-source runtime evidence", () => {
     );
   });
 
+  it("lists bounded snapshot summaries and verifies snapshot comparison identity", async () => {
+    const fromDigest = `sha256:${"a".repeat(64)}`;
+    const toDigest = `sha256:${"b".repeat(64)}`;
+    const summary = {
+      snapshot_digest: fromDigest,
+      manifest_digest: `sha256:${"c".repeat(64)}`,
+      kind: "agentwaker",
+      adapter_version: "1.0.0",
+      revision: "commit-123",
+      tree_digest: `sha256:${"d".repeat(64)}`,
+      role_count: 2,
+      capability_count: 1,
+      diagnostic_count: 0,
+      created_at: "2026-08-13T06:00:00Z",
+    };
+    const comparison = {
+      from_snapshot_digest: fromDigest,
+      to_snapshot_digest: toDigest,
+      total_changes: 1,
+      offset: 0,
+      limit: 100,
+      changes: [{ object_kind: "role", object_id: "writer", display_name: "Writer", operation: "changed" }],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshots: [summary] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(comparison), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...comparison, to_snapshot_digest: fromDigest }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshots: [{ ...summary, instructions: "leak" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listRoleSourceSnapshotSummaries("workspace-1", "source-1")).resolves.toEqual([summary]);
+    await expect(client.compareRoleSourceSnapshots("workspace-1", "source-1", fromDigest, toDigest, 0)).resolves.toEqual(comparison);
+    await expect(client.compareRoleSourceSnapshots("workspace-1", "source-1", fromDigest, toDigest, 0)).resolves.toBeNull();
+    await expect(client.listRoleSourceSnapshotSummaries("workspace-1", "source-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/snapshot-comparison?from=${encodeURIComponent(fromDigest)}&to=${encodeURIComponent(toDigest)}&offset=0&limit=100`,
+    );
+  });
+
   it("lists verified channel delivery evidence and fails closed on mismatched terminal rows", async () => {
     const delivery = {
       id: "delivery-1",

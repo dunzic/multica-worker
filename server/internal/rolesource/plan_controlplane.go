@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -16,10 +18,43 @@ import (
 )
 
 var (
-	ErrIdempotencyConflict    = errors.New("role source request key was already used for different input")
-	ErrInvalidPlanRequest     = errors.New("invalid role source plan request")
-	ErrInvalidApprovalRequest = errors.New("invalid role source approval request")
+	ErrIdempotencyConflict       = errors.New("role source request key was already used for different input")
+	ErrInvalidPlanRequest        = errors.New("invalid role source plan request")
+	ErrInvalidApprovalRequest    = errors.New("invalid role source approval request")
+	ErrInvalidSnapshotComparison = errors.New("invalid role source snapshot comparison")
 )
+
+const snapshotComparisonPageSize = 100
+
+type SnapshotSummary struct {
+	SnapshotDigest  string `json:"snapshot_digest"`
+	ManifestDigest  string `json:"manifest_digest"`
+	Kind            Kind   `json:"kind"`
+	AdapterVersion  string `json:"adapter_version"`
+	Revision        string `json:"revision,omitempty"`
+	TreeDigest      string `json:"tree_digest"`
+	RoleCount       int    `json:"role_count"`
+	CapabilityCount int    `json:"capability_count"`
+	DiagnosticCount int    `json:"diagnostic_count"`
+	CreatedAt       string `json:"created_at"`
+}
+
+type SnapshotChange struct {
+	ObjectKind  string `json:"object_kind"`
+	ObjectID    string `json:"object_id"`
+	ParentID    string `json:"parent_id,omitempty"`
+	DisplayName string `json:"display_name"`
+	Operation   string `json:"operation"`
+}
+
+type SnapshotComparison struct {
+	FromSnapshotDigest string           `json:"from_snapshot_digest"`
+	ToSnapshotDigest   string           `json:"to_snapshot_digest"`
+	TotalChanges       int              `json:"total_changes"`
+	Offset             int              `json:"offset"`
+	Limit              int              `json:"limit"`
+	Changes            []SnapshotChange `json:"changes"`
+}
 
 type CreatePlanInput struct {
 	WorkspaceID          string
@@ -365,6 +400,127 @@ func (c *ControlPlane) ListSnapshots(ctx context.Context, workspaceIDText, sourc
 		return nil, errors.New("snapshot list limit must be between 1 and 100")
 	}
 	return c.queries().ListRoleSourceSnapshots(ctx, db.ListRoleSourceSnapshotsParams{SourceID: sourceID, WorkspaceID: workspaceID, ResultLimit: limit})
+}
+
+func SnapshotSummaryFromRow(row db.RoleSourceSnapshot) (SnapshotSummary, error) {
+	if !row.CreatedAt.Valid {
+		return SnapshotSummary{}, errors.New("snapshot creation time is missing")
+	}
+	snapshot, err := DecodePersistedSnapshot(row)
+	if err != nil {
+		return SnapshotSummary{}, err
+	}
+	return SnapshotSummary{
+		SnapshotDigest: snapshot.SnapshotDigest, ManifestDigest: snapshot.ManifestDigest,
+		Kind: snapshot.Kind, AdapterVersion: snapshot.AdapterVersion,
+		Revision: snapshot.SourceEvidence.Revision, TreeDigest: snapshot.SourceEvidence.TreeDigest,
+		RoleCount: len(snapshot.Manifest.Roles), CapabilityCount: len(snapshot.Manifest.Capabilities),
+		DiagnosticCount: len(snapshot.Diagnostics), CreatedAt: row.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+func (c *ControlPlane) CompareSnapshots(ctx context.Context, workspaceIDText, sourceIDText, fromDigest, toDigest string, offset, limit int) (SnapshotComparison, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil || !sha256Pattern.MatchString(fromDigest) || !sha256Pattern.MatchString(toDigest) || fromDigest == toDigest {
+		return SnapshotComparison{}, ErrInvalidSnapshotComparison
+	}
+	if offset < 0 || offset > maxNormalizedObjects*3 || limit < 1 || limit > snapshotComparisonPageSize {
+		return SnapshotComparison{}, ErrInvalidSnapshotComparison
+	}
+	fromRow, err := c.queries().GetRoleSourceSnapshot(ctx, db.GetRoleSourceSnapshotParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: fromDigest,
+	})
+	if err != nil {
+		return SnapshotComparison{}, err
+	}
+	toRow, err := c.queries().GetRoleSourceSnapshot(ctx, db.GetRoleSourceSnapshotParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, SnapshotDigest: toDigest,
+	})
+	if err != nil {
+		return SnapshotComparison{}, err
+	}
+	from, err := DecodePersistedSnapshot(fromRow)
+	if err != nil {
+		return SnapshotComparison{}, fmt.Errorf("validate from snapshot: %w", err)
+	}
+	to, err := DecodePersistedSnapshot(toRow)
+	if err != nil {
+		return SnapshotComparison{}, fmt.Errorf("validate to snapshot: %w", err)
+	}
+	changes := compareSnapshotObjects(from.Manifest, to.Manifest)
+	end := offset + limit
+	if end > len(changes) {
+		end = len(changes)
+	}
+	page := []SnapshotChange{}
+	if offset < len(changes) {
+		page = changes[offset:end]
+	}
+	return SnapshotComparison{
+		FromSnapshotDigest: fromDigest, ToSnapshotDigest: toDigest, TotalChanges: len(changes),
+		Offset: offset, Limit: limit, Changes: page,
+	}, nil
+}
+
+type comparableObject struct {
+	kind, id, parentID, displayName string
+	value                           any
+}
+
+func compareSnapshotObjects(from, to Manifest) []SnapshotChange {
+	left := comparableSnapshotObjects(from)
+	right := comparableSnapshotObjects(to)
+	keys := make(map[string]struct{}, len(left)+len(right))
+	for key := range left {
+		keys[key] = struct{}{}
+	}
+	for key := range right {
+		keys[key] = struct{}{}
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	changes := make([]SnapshotChange, 0)
+	for _, key := range ordered {
+		before, beforeOK := left[key]
+		after, afterOK := right[key]
+		operation := "changed"
+		object := after
+		switch {
+		case !beforeOK:
+			operation = "added"
+		case !afterOK:
+			operation, object = "removed", before
+		case reflect.DeepEqual(before.value, after.value):
+			continue
+		}
+		changes = append(changes, SnapshotChange{
+			ObjectKind: object.kind, ObjectID: object.id, ParentID: object.parentID,
+			DisplayName: object.displayName, Operation: operation,
+		})
+	}
+	return changes
+}
+
+func comparableSnapshotObjects(manifest Manifest) map[string]comparableObject {
+	objects := make(map[string]comparableObject, len(manifest.Roles)+len(manifest.Capabilities))
+	for _, role := range manifest.Roles {
+		roleWithoutSkills := role
+		roleWithoutSkills.Skills = nil
+		key := "role\x00" + role.ID
+		objects[key] = comparableObject{kind: "role", id: role.ID, displayName: role.DisplayName, value: roleWithoutSkills}
+		for _, skill := range role.Skills {
+			key := "skill\x00" + role.ID + "\x00" + skill.ID
+			objects[key] = comparableObject{kind: "skill", id: skill.ID, parentID: role.ID, displayName: skill.Name, value: skill}
+		}
+	}
+	for _, capability := range manifest.Capabilities {
+		key := "capability\x00" + capability.ID
+		objects[key] = comparableObject{kind: "capability", id: capability.ID, displayName: capability.Name, value: capability}
+	}
+	return objects
 }
 
 func (c *ControlPlane) ListPlanApprovals(ctx context.Context, workspaceIDText, sourceIDText, planDigest string, limit int32) ([]db.RoleSourcePlanApproval, error) {
