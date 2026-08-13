@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,22 @@ import (
 	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+type codedScanFailureAdapter struct{}
+
+func (codedScanFailureAdapter) Descriptor() rolesource.Descriptor {
+	return rolesource.Descriptor{
+		Kind: "coded_scan_failure", DisplayName: "Coded scan failure", AdapterVersion: "1.0.0",
+		ContractVersion: rolesource.ContractVersion,
+	}
+}
+func (codedScanFailureAdapter) ValidateConfig(json.RawMessage) error { return nil }
+func (codedScanFailureAdapter) RedactConfig(json.RawMessage) (rolesource.ConfigSummary, error) {
+	return rolesource.ConfigSummary{Configured: true}, nil
+}
+func (codedScanFailureAdapter) Scan(context.Context, rolesource.ScanRequest) (rolesource.ScanOutput, error) {
+	return rolesource.ScanOutput{}, rolesource.NewScanFailure(rolesource.ScanFailureRemoteTrustInvalid, io.ErrUnexpectedEOF)
+}
 
 type roleSourceRoundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -196,6 +213,27 @@ func TestRoleSourceScannerFailsClosedBeforeAdapterScan(t *testing.T) {
 	pending.Kind = "unknown"
 	if _, code := scanner.scan(t.Context(), pending); code != "adapter_not_supported" {
 		t.Fatalf("adapter mismatch code = %q", code)
+	}
+}
+
+func TestRoleSourceScannerReturnsClosedAdapterFailureCode(t *testing.T) {
+	adapter := codedScanFailureAdapter{}
+	registry, err := rolesource.NewRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanner := &roleSourceScanner{
+		registry: registry,
+		configs: map[string]roleSourceLocalConfig{
+			"remote-main": {Kind: adapter.Descriptor().Kind, Config: json.RawMessage(`{}`)},
+		},
+	}
+	pending := protocol.DaemonHeartbeatPendingRoleSourceScan{
+		WorkspaceID: "workspace-1", SourceID: "source-1", DaemonConfigID: "remote-main",
+		Kind: string(adapter.Descriptor().Kind), AdapterVersion: adapter.Descriptor().AdapterVersion,
+	}
+	if _, code := scanner.scan(t.Context(), pending); code != rolesource.ScanFailureRemoteTrustInvalid {
+		t.Fatalf("coded adapter failure=%q", code)
 	}
 }
 

@@ -346,6 +346,24 @@ func TestRegistryScanRejectsUnsafeSourceEvidence(t *testing.T) {
 	}
 }
 
+func TestRegistryScanRejectsUnsafeSourceEvidenceText(t *testing.T) {
+	for _, mutate := range []func(*SourceEvidence){
+		func(evidence *SourceEvidence) { evidence.Revision = "release\nforged" },
+		func(evidence *SourceEvidence) { evidence.Issuer = "/private/source" },
+		func(evidence *SourceEvidence) { evidence.KeyID = `key\path` },
+	} {
+		adapter := validFakeAdapter("fake_source")
+		mutate(&adapter.evidence)
+		registry, err := NewRegistry(adapter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := registry.Scan(t.Context(), adapter.Descriptor().Kind, ScanRequest{WorkspaceID: "workspace", SourceID: "source"}); err == nil {
+			t.Fatal("unsafe source evidence text was accepted")
+		}
+	}
+}
+
 func TestRegistryScanRejectsInvalidConfigBeforeAdapterScan(t *testing.T) {
 	adapter := validFakeAdapter("fake_source")
 	adapter.configErr = errors.New("bad config")

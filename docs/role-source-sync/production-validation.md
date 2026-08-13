@@ -20,6 +20,39 @@ export S3_USE_PATH_STYLE='true'
 
 Do not paste environment values into an evidence report. Record only the database engine/version, deployment topology, storage provider, region, test timestamp, commit and redacted run identifier.
 
+## Gate R — signed remote origin and key lifecycle
+
+Use a disposable public DNS name and the production TLS/CDN/object-storage path;
+do not weaken the adapter to point at localhost. Publish one valid bundle and
+artifact set using a staging hardware-backed or production-equivalent Ed25519
+signer. Configure current and next public keys through managed daemon-config
+CAS, wait for loaded evidence, and execute scan-only traffic from every target
+daemon platform.
+
+Inject: NXDOMAIN, DNS timeout, public-to-private DNS rebinding, IP literal,
+redirect to another origin, proxy environment variables, invalid/expired TLS,
+HTTP 4xx/5xx, slow headers/body, compression bomb, declared/streamed oversize,
+manifest/tree tamper, wrong/unknown/retired key, changed artifact, origin outage,
+old valid release replay and current-to-next key rotation.
+
+Pass criteria:
+
+- only direct, same-origin, default-port HTTPS to a public resolved address is
+  dialled; proxy, redirect and private-address paths receive no request;
+- deadlines and 8 MiB bounds release connections and scan capacity without
+  leaking URL, key, signature, body or local configuration in logs/API/audit;
+- one-byte manifest, commitment, signature or artifact changes fail closed and
+  leave the last applied snapshot active;
+- current+next trust overlap permits a no-downtime signer transition; removing
+  current makes a replay signed only by that key fail;
+- issuer, signing key ID, revision, tree digest and signature commitment survive
+  snapshot backup/restore, while raw signatures/private keys do not enter the
+  control plane;
+- the release ledger/transparency policy detects an old but cryptographically
+  valid revision; Multica does not claim built-in freshness or anti-replay;
+- scan p95/p99, DNS/TLS latency, origin error rate and artifact throughput are
+  recorded at the 100-concurrent-scan target before cohort approval.
+
 ## Gate A — real migration round trip
 
 This applies every real role-source migration in a private schema, verifies the resulting table/index inventory and runs all down migrations back to zero:

@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
 	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
+	"github.com/multica-ai/multica/server/internal/rolesource/signedremote"
 )
 
 func managedRoleSourceBody(t *testing.T, allowedRoot string, sources map[string]RoleSourceManagedSource) []byte {
@@ -367,5 +370,56 @@ func TestLoadConfigDiscoversManagedRoleSourceConfigForProfile(t *testing.T) {
 	}
 	if cfg.roleSourceScanner == nil {
 		t.Fatal("profile-managed role source config was not discovered")
+	}
+}
+
+func TestManagedSignedRemoteSourceNeedsNoFilesystemRootAndRedactsTrustConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "role-sources.json")
+	remoteConfig, err := json.Marshal(map[string]any{
+		"bundle_url":        "https://publisher.example/bundle.json",
+		"artifact_base_url": "https://publisher.example/artifacts/",
+		"issuer":            "publisher.example",
+		"public_keys": map[string]string{
+			"primary": base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired, err := json.Marshal(RoleSourceManagedDocument{
+		Version: 1, AllowedRoots: []string{},
+		Sources: map[string]RoleSourceManagedSource{
+			"remote-main": {Kind: signedremote.Kind, Config: remoteConfig},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := ApplyRoleSourceManagedConfig(configPath, RoleSourceConfigAbsentRevision, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.AllowedRootNames) != 0 || summary.DigestKeyActive || len(summary.Sources) != 1 ||
+		summary.Sources[0].Kind != signedremote.Kind || len(summary.Sources[0].Attributes) != 3 {
+		t.Fatalf("signed remote summary=%+v", summary)
+	}
+	encoded, _ := json.Marshal(summary)
+	if strings.Contains(string(encoded), "bundle.json") || strings.Contains(string(encoded), "artifacts/") || strings.Contains(string(encoded), base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))) {
+		t.Fatalf("summary exposed signed remote trust config: %s", encoded)
+	}
+	scanner, err := loadRoleSourceScanner(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor, ok := scanner.registry.Descriptor(signedremote.Kind); !ok || descriptor.AdapterVersion != signedremote.Descriptor().AdapterVersion {
+		t.Fatalf("signed remote descriptor=%+v available=%t", descriptor, ok)
+	}
+	attestation, err := scanner.attestationForRuntime("runtime-remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attestation.Sources) != 1 || attestation.Sources[0].Kind != string(signedremote.Kind) ||
+		attestation.Sources[0].AdapterVersion != signedremote.Descriptor().AdapterVersion {
+		t.Fatalf("signed remote attestation=%+v", attestation)
 	}
 }

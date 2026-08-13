@@ -241,8 +241,11 @@ func validateSourceEvidence(evidence SourceEvidence) error {
 	if evidence.SignatureDigest != "" && !sha256Pattern.MatchString(evidence.SignatureDigest) {
 		return fmt.Errorf("invalid signature digest %q", evidence.SignatureDigest)
 	}
-	if len(evidence.Revision) > 512 || len(evidence.Issuer) > 512 {
-		return errors.New("source evidence text exceeds limit")
+	if len(evidence.Revision) > 512 || len(evidence.Issuer) > 512 || len(evidence.KeyID) > 200 ||
+		strings.ContainsAny(evidence.Revision, "\r\n\x00") || strings.ContainsAny(evidence.Issuer, "\r\n\x00") || strings.ContainsAny(evidence.KeyID, "\r\n\x00") ||
+		strings.HasPrefix(evidence.Revision, "/") || strings.HasPrefix(evidence.Issuer, "/") || strings.HasPrefix(evidence.KeyID, "/") ||
+		strings.Contains(evidence.Revision, "\\") || strings.Contains(evidence.Issuer, "\\") || strings.Contains(evidence.KeyID, "\\") {
+		return errors.New("source evidence text is unsafe or exceeds limit")
 	}
 	return nil
 }
@@ -629,6 +632,28 @@ func digestManifest(manifest Manifest) (string, error) {
 	}
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// CanonicalManifest returns a validated deep copy in the exact ordering used
+// by snapshot hashing. Signed adapters use it to verify publisher commitments
+// before handing the same normalized value back to Registry.Scan.
+func CanonicalManifest(manifest Manifest) (Manifest, string, error) {
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	var canonical Manifest
+	if err := json.Unmarshal(body, &canonical); err != nil {
+		return Manifest{}, "", err
+	}
+	if err := validateManifest(&canonical); err != nil {
+		return Manifest{}, "", err
+	}
+	digest, err := digestManifest(canonical)
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	return canonical, digest, nil
 }
 
 func digestSnapshot(snapshot Snapshot) (string, error) {

@@ -137,6 +137,27 @@ When a desired-state correction is approved, obtain the current revision from
 fail rather than overwrite a concurrent operator's change. Key rotation is a
 separate explicit operation and must not be used as a generic repair step.
 
+## Signed-remote source operations
+
+Treat the configured Ed25519 keys as publisher identities, not transport
+credentials. Private keys must remain in the approved external signer; Multica
+accepts only one to three named public keys. The source summary should show the
+expected host, issuer and key-set digest without URLs or key bodies.
+
+For routine rotation, add the next key first, publish and scan one bundle using
+its new key ID, review source evidence, then remove the retired key only after
+the rollback window. Never replace key material under an existing key ID. A
+stale managed-config revision must fail and be re-reviewed rather than forced.
+
+On `unknown key`, `signature verification`, `digest commitment`, TLS, redirect,
+private-address, size-limit or changed-artifact failure, leave the source paused
+or last-known-good active and preserve the publisher release record. Do not add
+an unreviewed key, enable a proxy, permit a redirect, relax DNS/address checks or
+manually edit snapshot evidence. Compare the intended release to the external
+append-only release ledger; a cryptographically valid old bundle is not proof
+of freshness. Follow [`signed-remote-bundle.md`](signed-remote-bundle.md) and
+complete Gate R before enabling a production cohort.
+
 ## Escalation evidence
 
 Attach the alert start/end time, deployment version, redacted source status,

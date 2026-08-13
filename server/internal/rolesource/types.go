@@ -120,6 +120,7 @@ type SourceEvidence struct {
 	TreeDigest      string `json:"tree_digest"`
 	SignatureDigest string `json:"signature_digest,omitempty"`
 	Issuer          string `json:"issuer,omitempty"`
+	KeyID           string `json:"key_id,omitempty"`
 }
 
 type Diagnostic struct {

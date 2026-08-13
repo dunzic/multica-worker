@@ -40,6 +40,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
 	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
+	"github.com/multica-ai/multica/server/internal/rolesource/signedremote"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -248,7 +249,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.Metrics = opts.BusinessMetrics
 	h.RoleSourceMetrics = opts.RoleSourceMetrics
 	h.FeatureFlags = opts.FeatureFlags
-	roleSourceCatalog, err := rolesource.NewCatalog(agentwaker.Descriptor(), manifestdir.Descriptor())
+	roleSourceCatalog, err := newRoleSourceAdapterCatalog()
 	if err != nil {
 		panic("build role source adapter catalog: " + err.Error())
 	}
@@ -1855,6 +1856,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	return r, h
+}
+
+func newRoleSourceAdapterCatalog() (*rolesource.Catalog, error) {
+	return rolesource.NewCatalog(agentwaker.Descriptor(), manifestdir.Descriptor(), signedremote.Descriptor())
 }
 
 // buildLarkConnector wires the real WS long-conn connector that talks

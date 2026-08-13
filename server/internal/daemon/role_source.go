@@ -18,6 +18,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
 	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
+	"github.com/multica-ai/multica/server/internal/rolesource/signedremote"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -191,10 +192,16 @@ func buildRoleSourceScanner(document roleSourceConfigDocument) (*roleSourceScann
 		return nil, fmt.Errorf("role source config count must be between 1 and %d", maxRoleSourceConfigs)
 	}
 	requiresAgentWaker := false
+	requiresManifestDirectory := false
+	requiresSignedRemote := false
 	for _, config := range document.Sources {
-		if config.Kind == agentwaker.Kind {
+		switch config.Kind {
+		case agentwaker.Kind:
 			requiresAgentWaker = true
-			break
+		case manifestdir.Kind:
+			requiresManifestDirectory = true
+		case signedremote.Kind:
+			requiresSignedRemote = true
 		}
 	}
 	key := append([]byte(nil), document.DigestKey...)
@@ -202,22 +209,32 @@ func buildRoleSourceScanner(document roleSourceConfigDocument) (*roleSourceScann
 	if (requiresAgentWaker || len(key) != 0) && len(key) != 32 {
 		return nil, errors.New("role source digest_key must be exactly 32 base64-encoded bytes when AgentWaker is configured")
 	}
-	allowedRoots, err := validateRoleSourceAllowedRoots(document.AllowedRoots)
+	allowedRoots, err := validateRoleSourceAllowedRoots(document.AllowedRoots, requiresAgentWaker || requiresManifestDirectory)
 	if err != nil {
 		return nil, err
 	}
 	rootValidator := roleSourceRootValidator(allowedRoots)
-	manifestDirectoryAdapter, err := manifestdir.New(rootValidator)
-	if err != nil {
-		return nil, err
+	adapters := make([]rolesource.Adapter, 0, 3)
+	if requiresManifestDirectory {
+		manifestDirectoryAdapter, err := manifestdir.New(rootValidator)
+		if err != nil {
+			return nil, err
+		}
+		adapters = append(adapters, manifestDirectoryAdapter)
 	}
-	adapters := []rolesource.Adapter{manifestDirectoryAdapter}
 	if requiresAgentWaker {
 		agentWakerAdapter, err := agentwaker.New(key, rootValidator)
 		if err != nil {
 			return nil, err
 		}
 		adapters = append(adapters, agentWakerAdapter)
+	}
+	if requiresSignedRemote {
+		remoteAdapter, err := signedremote.New()
+		if err != nil {
+			return nil, err
+		}
+		adapters = append(adapters, remoteAdapter)
 	}
 	registry, err := rolesource.NewRegistry(adapters...)
 	if err != nil {
@@ -270,9 +287,12 @@ func (s *roleSourceScanner) release() {
 	<-s.semaphore
 }
 
-func validateRoleSourceAllowedRoots(raw []string) ([]string, error) {
+func validateRoleSourceAllowedRoots(raw []string, required bool) ([]string, error) {
+	if len(raw) == 0 && !required {
+		return []string{}, nil
+	}
 	if len(raw) == 0 || len(raw) > maxRoleSourceRoots {
-		return nil, fmt.Errorf("role source allowed_roots count must be between 1 and %d", maxRoleSourceRoots)
+		return nil, fmt.Errorf("role source allowed_roots count must be between 1 and %d for filesystem adapters", maxRoleSourceRoots)
 	}
 	result := make([]string, 0, len(raw))
 	seen := make(map[string]bool, len(raw))
@@ -352,6 +372,9 @@ func (s *roleSourceScanner) scan(ctx context.Context, pending protocol.DaemonHea
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
 			return rolesource.Snapshot{}, "scan_timeout"
+		}
+		if code, ok := rolesource.ScanFailureCode(err); ok {
+			return rolesource.Snapshot{}, code
 		}
 		return rolesource.Snapshot{}, "source_invalid"
 	}
@@ -632,6 +655,9 @@ func (d *Daemon) uploadRoleSourceArtifacts(ctx context.Context, runtimeID string
 			if err := d.uploadRoleSourceArtifactWithRetry(ctx, runtimeID, pending, scanner, ref); err != nil {
 				if errors.Is(err, rolesource.ErrChangedDuringRead) {
 					return "source_changed"
+				}
+				if code, ok := rolesource.ScanFailureCode(err); ok {
+					return code
 				}
 				return "artifact_upload_failed"
 			}

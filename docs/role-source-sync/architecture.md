@@ -4,7 +4,7 @@ Status: accepted for implementation
 
 Feature flag: `role_source_sync` (server-side until the first end-to-end slice is ready)
 
-Initial adapters: `agentwaker_directory`, followed by the source-neutral `multica_manifest_directory` conformance adapter
+Initial adapters: `agentwaker_directory`, the source-neutral `multica_manifest_directory` conformance adapter, and the Ed25519-pinned `multica_signed_remote` HTTPS adapter
 Target: production use by organisations with an aggregate user population of at least 10,000
 
 ## Product outcome
@@ -63,6 +63,14 @@ The first release uses compile-time registered Go adapters. It does not load arb
 - a deterministic scan implementation that returns the normalized manifest.
 
 The second compile-time adapter consumes the normalized Multica manifest contract directly from a bounded directory. It proves the registry, daemon work protocol, snapshots and artifact transport are not coupled to AgentWaker parsing. An out-of-process adapter protocol can be added later, but only with process isolation, signed packages, resource quotas, and an authenticated protocol. Dynamic code loading is not required to call the first release “pluggable.”
+
+The signed-remote adapter consumes the same manifest and artifact contract over
+credential-free same-origin HTTPS. It pins one to three named Ed25519 public
+keys for staged rotation, verifies a domain-separated commitment to issuer, key
+ID, revision, canonical manifest and artifact tree, and records those fields as
+typed source evidence. Its transport rejects redirects, proxies, IP literals,
+non-public DNS results and unbounded responses. This proves remote provenance
+without granting remote code execution or bypassing plan/approval policy.
 
 ### Normalized manifest
 

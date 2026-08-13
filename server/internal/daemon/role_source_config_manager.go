@@ -18,6 +18,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
 	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
+	"github.com/multica-ai/multica/server/internal/rolesource/signedremote"
 )
 
 func DefaultRoleSourceConfigPath(profile string) (string, error) {
@@ -277,7 +278,11 @@ func newRoleSourceSummaryRegistry() (*rolesource.Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return rolesource.NewRegistry(manifestAdapter, agentWakerAdapter)
+	remoteAdapter, err := signedremote.New()
+	if err != nil {
+		return nil, err
+	}
+	return rolesource.NewRegistry(manifestAdapter, agentWakerAdapter, remoteAdapter)
 }
 
 func classifyRoleSourceConfigValidationError(err error) string {
