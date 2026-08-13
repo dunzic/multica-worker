@@ -228,6 +228,78 @@ export interface RoleSourcePlanRecord {
   created_at: string;
 }
 
+export type RoleSourceArchiveDecision = "archive" | "retain";
+
+export interface RoleSourceArchiveActionDecision {
+  ref: RoleSourceObjectRef;
+  decision: RoleSourceArchiveDecision;
+}
+
+export interface RoleSourceApprovalDecisions {
+  contract_version: string;
+  archives: RoleSourceArchiveActionDecision[];
+}
+
+export interface CreateRoleSourcePlanRequest {
+  target_snapshot_digest: string;
+}
+
+export interface CreateRoleSourceApprovalRequest {
+  request_key: string;
+  decision: "approved" | "rejected";
+  decisions?: RoleSourceApprovalDecisions;
+}
+
+export interface RoleSourcePlanApproval {
+  id: string;
+  source_id: string;
+  workspace_id: string;
+  plan_digest: string;
+  decision: "approved" | "rejected" | string;
+  decisions?: RoleSourceApprovalDecisions;
+  actor_user_id: string;
+  created_at: string;
+}
+
+export interface ApplyRoleSourcePlanRequest {
+  request_key: string;
+  approval_id: string;
+  secret_transfer_ids?: Record<string, string>;
+}
+
+export interface RoleSourceApplyCounts {
+  created: number;
+  updated: number;
+  unchanged: number;
+  archived: number;
+  retained: number;
+}
+
+export interface RoleSourceApplyReceipt {
+  contract_version: string;
+  mode?: string;
+  apply_id: string;
+  source_id: string;
+  workspace_id: string;
+  snapshot_digest: string;
+  from_snapshot_digest?: string;
+  plan_digest: string;
+  approval_id: string;
+  counts: RoleSourceApplyCounts;
+  receipt_digest: string;
+}
+
+export interface RoleSourceApplyResult {
+  id: string;
+  source_id: string;
+  workspace_id: string;
+  status: string;
+  mode: string;
+  actor_user_id: string;
+  receipt: RoleSourceApplyReceipt;
+  completed_at: string | null;
+}
+
 export interface RoleSourcePlanImpactSummary {
   new_roles: number;
   mandatory_refresh_roles: number;

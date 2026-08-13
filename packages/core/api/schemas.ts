@@ -56,6 +56,9 @@ import type {
   ResourceLabelsResponse,
   RuntimeModelListRequest,
   RoleSourceScan,
+  RoleSourcePlanRecord,
+  RoleSourcePlanApproval,
+  RoleSourceApplyResult,
   SearchIssuesResponse,
   SearchProjectsResponse,
   Squad,
@@ -91,6 +94,122 @@ export const EMPTY_ROLE_SOURCE_SCAN: RoleSourceScan = {
   claimed_at: null,
   completed_at: null,
 };
+
+const RoleSourceObjectRefSchema = z.object({
+  kind: z.string(),
+  parent_id: z.string().optional(),
+  id: z.string(),
+}).loose();
+
+const RoleSourcePlanActionSchema = z.object({
+  ref: RoleSourceObjectRefSchema,
+  display_name: z.string(),
+  operation: z.string(),
+  proposed_operation: z.string().optional(),
+  risk: z.string(),
+  before_digest: z.string().optional(),
+  after_digest: z.string().optional(),
+  reason: z.string(),
+  blocking_diagnostics: z.array(z.string()).optional(),
+}).loose();
+
+const RoleSourcePlanSchema = z.object({
+  contract_version: z.string(),
+  mode: z.string().optional(),
+  source_id: z.string(),
+  from_snapshot_digest: z.string().optional(),
+  to_snapshot_digest: z.string(),
+  plan_digest: z.string(),
+  applyable: z.boolean(),
+  summary: z.object({
+    create: z.number(),
+    update: z.number(),
+    unchanged: z.number(),
+    archive_candidate: z.number(),
+    blocked: z.number(),
+  }).loose(),
+  actions: z.array(RoleSourcePlanActionSchema),
+  blockers: z.array(z.object({
+    code: z.string(),
+    message: z.string(),
+    global: z.boolean(),
+    object: RoleSourceObjectRefSchema.optional(),
+  }).loose()),
+}).loose();
+
+export const RoleSourcePlanRecordSchema = z.object({
+  source_id: z.string(),
+  workspace_id: z.string(),
+  plan: RoleSourcePlanSchema,
+  created_by: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const RoleSourcePlanRecordListSchema = z.object({
+  plans: z.array(RoleSourcePlanRecordSchema).default([]),
+}).loose();
+
+const RoleSourceApprovalDecisionsSchema = z.object({
+  contract_version: z.string(),
+  archives: z.array(z.object({
+    ref: RoleSourceObjectRefSchema,
+    decision: z.string(),
+  }).loose()),
+}).loose();
+
+export const RoleSourcePlanApprovalSchema = z.object({
+  id: z.string(),
+  source_id: z.string(),
+  workspace_id: z.string(),
+  plan_digest: z.string(),
+  decision: z.string(),
+  decisions: RoleSourceApprovalDecisionsSchema.optional(),
+  actor_user_id: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const RoleSourcePlanApprovalListSchema = z.object({
+  approvals: z.array(RoleSourcePlanApprovalSchema).default([]),
+}).loose();
+
+const RoleSourceApplyReceiptSchema = z.object({
+  contract_version: z.string(),
+  mode: z.string().optional(),
+  apply_id: z.string(),
+  source_id: z.string(),
+  workspace_id: z.string(),
+  snapshot_digest: z.string(),
+  from_snapshot_digest: z.string().optional(),
+  plan_digest: z.string(),
+  approval_id: z.string(),
+  counts: z.object({
+    created: z.number(),
+    updated: z.number(),
+    unchanged: z.number(),
+    archived: z.number(),
+    retained: z.number(),
+  }).loose(),
+  receipt_digest: z.string(),
+}).loose();
+
+export const RoleSourceApplyResultSchema = z.object({
+  id: z.string(),
+  source_id: z.string(),
+  workspace_id: z.string(),
+  status: z.string(),
+  mode: z.string(),
+  actor_user_id: z.string(),
+  receipt: RoleSourceApplyReceiptSchema,
+  completed_at: z.string().nullable(),
+}).loose();
+
+export const RoleSourceApplyResultListSchema = z.object({
+  applies: z.array(RoleSourceApplyResultSchema).default([]),
+}).loose();
+
+export const EMPTY_ROLE_SOURCE_PLANS: { plans: RoleSourcePlanRecord[] } = { plans: [] };
+export const EMPTY_ROLE_SOURCE_APPROVALS: { approvals: RoleSourcePlanApproval[] } = { approvals: [] };
+export const EMPTY_ROLE_SOURCE_APPLIES: { applies: RoleSourceApplyResult[] } = { applies: [] };
 
 export const GitHubInstallationSchema = z.object({
   id: z.string(),

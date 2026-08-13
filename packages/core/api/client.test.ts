@@ -158,6 +158,106 @@ describe("ApiClient role-source runtime evidence", () => {
     );
     expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "PATCH" }));
   });
+
+  it("creates, approves, applies, and lists verified role-source operations", async () => {
+    const plan = {
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      plan: {
+        contract_version: "role-source-plan/v1",
+        source_id: "source-1",
+        to_snapshot_digest: `sha256:${"a".repeat(64)}`,
+        plan_digest: `sha256:${"b".repeat(64)}`,
+        applyable: true,
+        summary: { create: 1, update: 0, unchanged: 0, archive_candidate: 0, blocked: 0 },
+        actions: [],
+        blockers: [],
+      },
+      created_by: "user-1",
+      created_at: "2026-08-13T00:00:00Z",
+    };
+    const approval = {
+      id: "approval-1",
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      plan_digest: plan.plan.plan_digest,
+      decision: "approved",
+      decisions: { contract_version: "role-source-plan/v1", archives: [] },
+      actor_user_id: "user-1",
+      created_at: "2026-08-13T00:01:00Z",
+    };
+    const apply = {
+      id: "apply-1",
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      status: "succeeded",
+      mode: "apply",
+      actor_user_id: "user-1",
+      receipt: {
+        contract_version: "role-source-apply-receipt/v1",
+        apply_id: "apply-1",
+        source_id: "source-1",
+        workspace_id: "workspace-1",
+        snapshot_digest: plan.plan.to_snapshot_digest,
+        plan_digest: plan.plan.plan_digest,
+        approval_id: "approval-1",
+        counts: { created: 1, updated: 0, unchanged: 0, archived: 0, retained: 0 },
+        receipt_digest: `sha256:${"c".repeat(64)}`,
+      },
+      completed_at: "2026-08-13T00:02:00Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(plan), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approval), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(apply), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ applies: [apply] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.createRoleSourcePlan("workspace-1", "source-1", {
+      target_snapshot_digest: plan.plan.to_snapshot_digest,
+    })).resolves.toEqual(plan);
+    await expect(client.createRoleSourcePlanApproval("workspace-1", "source-1", plan.plan.plan_digest, {
+      request_key: "approval-request-1",
+      decision: "approved",
+      decisions: { contract_version: "role-source-plan/v1", archives: [] },
+    })).resolves.toEqual(approval);
+    await expect(client.applyRoleSourcePlan("workspace-1", "source-1", plan.plan.plan_digest, {
+      request_key: "apply-request-1",
+      approval_id: approval.id,
+    })).resolves.toEqual(apply);
+    await expect(client.listRoleSourceApplyHistory("workspace-1", "source-1")).resolves.toEqual([apply]);
+
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: expect.stringContaining('"decision":"approved"'),
+    }));
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ request_key: "apply-request-1", approval_id: "approval-1" }),
+    }));
+  });
+
+  it("fails closed when role-source operation responses are malformed", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ plan: { applyable: true } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, decision: "approved" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "succeeded" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ applies: [{ status: "succeeded" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.createRoleSourcePlan("workspace-1", "source-1", { target_snapshot_digest: "bad" })).resolves.toBeNull();
+    await expect(client.createRoleSourcePlanApproval("workspace-1", "source-1", "plan", {
+      request_key: "approval-request-1", decision: "approved",
+    })).resolves.toBeNull();
+    await expect(client.applyRoleSourcePlan("workspace-1", "source-1", "plan", {
+      request_key: "apply-request-1", approval_id: "approval-1",
+    })).resolves.toBeNull();
+    await expect(client.listRoleSourceApplyHistory("workspace-1", "source-1")).resolves.toEqual([]);
+  });
 });
 
 describe("ApiClient pull-request response schema", () => {

@@ -11,6 +11,10 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "impact", sourceId, planDigest] as const,
   applyFailures: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "apply-failures", sourceId] as const,
+  approvals: (workspaceId: string, sourceId: string, planDigest: string) =>
+    [...roleSourceKeys.all(workspaceId), "approvals", sourceId, planDigest] as const,
+  applies: (workspaceId: string, sourceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "applies", sourceId] as const,
   runtimeAttestations: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "runtime-attestations", sourceId] as const,
   legalHolds: (workspaceId: string, sourceId: string) =>
@@ -107,6 +111,29 @@ export function roleSourceApplyFailureListOptions(
   return queryOptions({
     queryKey: roleSourceKeys.applyFailures(workspaceId, sourceId),
     queryFn: () => api.listRoleSourceApplyFailures(workspaceId, sourceId),
+    enabled: Boolean(sourceId),
+  });
+}
+
+export function roleSourcePlanApprovalListOptions(
+  workspaceId: string,
+  sourceId: string,
+  planDigest: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.approvals(workspaceId, sourceId, planDigest),
+    queryFn: () => api.listRoleSourcePlanApprovals(workspaceId, sourceId, planDigest),
+    enabled: Boolean(sourceId && planDigest),
+  });
+}
+
+export function roleSourceApplyHistoryListOptions(
+  workspaceId: string,
+  sourceId: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.applies(workspaceId, sourceId),
+    queryFn: () => api.listRoleSourceApplyHistory(workspaceId, sourceId),
     enabled: Boolean(sourceId),
   });
 }

@@ -41,6 +41,11 @@ import type {
   WorkspaceWorkingAgentType,
   RoleSource,
   RoleSourcePlanRecord,
+  RoleSourcePlanApproval,
+  RoleSourceApplyResult,
+  CreateRoleSourcePlanRequest,
+  CreateRoleSourceApprovalRequest,
+  ApplyRoleSourcePlanRequest,
   RoleSourcePlanImpact,
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
@@ -311,6 +316,15 @@ import {
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
   RoleSourceScanSchema,
+  RoleSourcePlanRecordSchema,
+  RoleSourcePlanRecordListSchema,
+  RoleSourcePlanApprovalSchema,
+  RoleSourcePlanApprovalListSchema,
+  RoleSourceApplyResultSchema,
+  RoleSourceApplyResultListSchema,
+  EMPTY_ROLE_SOURCE_PLANS,
+  EMPTY_ROLE_SOURCE_APPROVALS,
+  EMPTY_ROLE_SOURCE_APPLIES,
   EMPTY_BILLING_BALANCE,
   EMPTY_BILLING_TRANSACTIONS_PAGE,
   EMPTY_BILLING_BATCHES_PAGE,
@@ -1783,10 +1797,81 @@ export class ApiClient {
     workspaceId: string,
     sourceId: string,
   ): Promise<RoleSourcePlanRecord[]> {
-    const response = await this.fetch<{ plans?: RoleSourcePlanRecord[] }>(
+    const raw: unknown = await this.fetch(
       `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans`,
     );
-    return response.plans ?? [];
+    return parseWithFallback(raw, RoleSourcePlanRecordListSchema, EMPTY_ROLE_SOURCE_PLANS, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/plans",
+    }).plans;
+  }
+
+  async createRoleSourcePlan(
+    workspaceId: string,
+    sourceId: string,
+    request: CreateRoleSourcePlanRequest,
+  ): Promise<RoleSourcePlanRecord | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourcePlanRecord | null>(raw, RoleSourcePlanRecordSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/plans",
+    });
+  }
+
+  async listRoleSourcePlanApprovals(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+  ): Promise<RoleSourcePlanApproval[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/approvals`,
+    );
+    return parseWithFallback(raw, RoleSourcePlanApprovalListSchema, EMPTY_ROLE_SOURCE_APPROVALS, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/approvals",
+    }).approvals;
+  }
+
+  async createRoleSourcePlanApproval(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+    request: CreateRoleSourceApprovalRequest,
+  ): Promise<RoleSourcePlanApproval | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/approvals`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourcePlanApproval | null>(raw, RoleSourcePlanApprovalSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/approvals",
+    });
+  }
+
+  async applyRoleSourcePlan(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+    request: ApplyRoleSourcePlanRequest,
+  ): Promise<RoleSourceApplyResult | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/apply`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourceApplyResult | null>(raw, RoleSourceApplyResultSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/apply",
+    });
+  }
+
+  async listRoleSourceApplyHistory(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceApplyResult[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/applies`,
+    );
+    return parseWithFallback(raw, RoleSourceApplyResultListSchema, EMPTY_ROLE_SOURCE_APPLIES, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/applies",
+    }).applies;
   }
 
   async getRoleSourcePlanImpact(
