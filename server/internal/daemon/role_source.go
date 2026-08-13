@@ -67,26 +67,39 @@ type roleSourceScanner struct {
 }
 
 func loadRoleSourceScanner(configPath string) (*roleSourceScanner, error) {
+	scanner, _, err := loadChangedRoleSourceScanner(configPath, "")
+	return scanner, err
+}
+
+// loadChangedRoleSourceScanner securely reads and fingerprints the managed
+// file before doing the more expensive strict decode, root validation, and
+// adapter construction. A matching known revision is already validated, so
+// steady-state hot-reload polls can stop after the bounded read and hash.
+func loadChangedRoleSourceScanner(configPath, knownRevision string) (*roleSourceScanner, bool, error) {
 	configPath = strings.TrimSpace(configPath)
 	if configPath == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	body, err := readRoleSourceConfigFile(configPath)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer clear(body)
+	revision := roleSourceConfigRevision(body)
+	if knownRevision != "" && revision == knownRevision {
+		return nil, false, nil
+	}
 	document, err := decodeRoleSourceConfigDocument(body)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer clear(document.DigestKey)
 	scanner, err := buildRoleSourceScanner(document)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	scanner.configRevision = roleSourceConfigRevision(body)
-	return scanner, nil
+	scanner.configRevision = revision
+	return scanner, true, nil
 }
 
 func (s *roleSourceScanner) attestationForRuntime(runtimeID string) (protocol.RoleSourceConfigAttestation, error) {
@@ -409,11 +422,13 @@ func (s *roleSourceScanner) sealSecretTransfer(ctx context.Context, pending prot
 }
 
 func (d *Daemon) roleSourceHeartbeatOptions(runtimeID string, forcePoll bool) HeartbeatOptions {
+	scanner := d.currentRoleSourceScanner()
 	option := HeartbeatOptions{
 		SupportsRoleSourceConfigAttestation: true,
-		RoleSourceConfigAttestation:         d.pendingRoleSourceConfigAttestation(runtimeID),
+		RoleSourceConfigAttestation:         d.pendingRoleSourceConfigAttestationForScanner(runtimeID, scanner),
+		roleSourceScanner:                   scanner,
 	}
-	if d.roleSources == nil {
+	if scanner == nil {
 		return option
 	}
 	option.SupportsRoleSourceScan = true
@@ -421,7 +436,7 @@ func (d *Daemon) roleSourceHeartbeatOptions(runtimeID string, forcePoll bool) He
 	now := time.Now()
 	d.roleSourcePollMu.Lock()
 	last := d.roleSourceLastPoll[runtimeID]
-	if (forcePoll || last.IsZero() || now.Sub(last) >= roleSourceRecoveryPollInterval) && d.roleSources.tryAcquire() {
+	if (forcePoll || last.IsZero() || now.Sub(last) >= roleSourceRecoveryPollInterval) && scanner.tryAcquire() {
 		d.roleSourceLastPoll[runtimeID] = now
 		option.PollRoleSourceScan = true
 		option.PollRoleSourceSecretTransfer = true
@@ -431,7 +446,11 @@ func (d *Daemon) roleSourceHeartbeatOptions(runtimeID string, forcePoll bool) He
 }
 
 func (d *Daemon) pendingRoleSourceConfigAttestation(runtimeID string) *protocol.RoleSourceConfigAttestation {
-	attestation, err := d.roleSources.attestationForRuntime(runtimeID)
+	return d.pendingRoleSourceConfigAttestationForScanner(runtimeID, d.currentRoleSourceScanner())
+}
+
+func (d *Daemon) pendingRoleSourceConfigAttestationForScanner(runtimeID string, scanner *roleSourceScanner) *protocol.RoleSourceConfigAttestation {
+	attestation, err := scanner.attestationForRuntime(runtimeID)
 	if err != nil {
 		d.logger.Warn("build role source config attestation failed", "runtime_id", runtimeID, "error", err)
 		return nil
@@ -452,7 +471,7 @@ func (d *Daemon) acceptRoleSourceConfigAttestation(runtimeID, attestationID stri
 	if runtimeID == "" || attestationID == "" {
 		return
 	}
-	attestation, err := d.roleSources.attestationForRuntime(runtimeID)
+	attestation, err := d.currentRoleSourceScanner().attestationForRuntime(runtimeID)
 	if err != nil || attestationID != attestation.AttestationID {
 		return
 	}
@@ -465,20 +484,23 @@ func (d *Daemon) acceptRoleSourceConfigAttestation(runtimeID, attestationID stri
 }
 
 func (d *Daemon) releaseRoleSourcePollReservation(option HeartbeatOptions) {
-	if (option.PollRoleSourceScan || option.PollRoleSourceSecretTransfer) && d.roleSources != nil {
-		d.roleSources.release()
+	if (option.PollRoleSourceScan || option.PollRoleSourceSecretTransfer) && option.roleSourceScanner != nil {
+		option.roleSourceScanner.release()
 	}
 }
 
-func (d *Daemon) handleRoleSourceSecretTransfer(ctx context.Context, runtimeID string, pending PendingRoleSourceSecretTransfer, pollReserved bool) {
-	if d.roleSources == nil {
+func (d *Daemon) handleRoleSourceSecretTransfer(ctx context.Context, runtimeID string, pending PendingRoleSourceSecretTransfer, scanner *roleSourceScanner, pollReserved bool) {
+	if scanner == nil {
+		scanner = d.currentRoleSourceScanner()
+	}
+	if scanner == nil {
 		return
 	}
-	if !pollReserved && !d.roleSources.acquire(ctx) {
+	if !pollReserved && !scanner.acquire(ctx) {
 		return
 	}
 	defer func() {
-		d.roleSources.release()
+		scanner.release()
 		go d.handlePendingWorkHint(runtimeID, protocol.PendingWorkKindRoleSourceSecretTransfer)
 	}()
 	leaseExpiresAt, err := time.Parse(time.RFC3339Nano, pending.LeaseExpiresAt)
@@ -492,7 +514,7 @@ func (d *Daemon) handleRoleSourceSecretTransfer(ctx context.Context, runtimeID s
 		return
 	}
 	transferCtx, cancel := context.WithDeadline(ctx, leaseExpiresAt)
-	envelope, errorCode := d.roleSources.sealSecretTransfer(transferCtx, pending)
+	envelope, errorCode := scanner.sealSecretTransfer(transferCtx, pending)
 	cancel()
 	result := RoleSourceSecretTransferResult{LeaseToken: pending.LeaseToken}
 	if errorCode == "" {
@@ -513,7 +535,7 @@ func (d *Daemon) handleRoleSourceSecretTransfer(ctx context.Context, runtimeID s
 }
 
 func (d *Daemon) resetRoleSourceRecoveryPoll(runtimeID string) {
-	if d.roleSources == nil {
+	if d.currentRoleSourceScanner() == nil {
 		return
 	}
 	d.roleSourcePollMu.Lock()
@@ -521,15 +543,18 @@ func (d *Daemon) resetRoleSourceRecoveryPoll(runtimeID string) {
 	d.roleSourcePollMu.Unlock()
 }
 
-func (d *Daemon) handleRoleSourceScan(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, pollReserved bool) {
-	if d.roleSources == nil {
+func (d *Daemon) handleRoleSourceScan(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, scanner *roleSourceScanner, pollReserved bool) {
+	if scanner == nil {
+		scanner = d.currentRoleSourceScanner()
+	}
+	if scanner == nil {
 		return
 	}
-	if !pollReserved && !d.roleSources.acquire(ctx) {
+	if !pollReserved && !scanner.acquire(ctx) {
 		return
 	}
 	defer func() {
-		d.roleSources.release()
+		scanner.release()
 		// Drain another queued source promptly now that a bounded scan slot is
 		// available. The empty follow-up poll is cheap and does not recur.
 		go d.handlePendingWorkHint(runtimeID, protocol.PendingWorkKindRoleSourceScan)
@@ -552,9 +577,9 @@ func (d *Daemon) handleRoleSourceScan(ctx context.Context, runtimeID string, pen
 		defer close(renewDone)
 		d.renewRoleSourceScanLease(scanCtx, cancelScan, runtimeID, pending, lease, scanDone)
 	}()
-	snapshot, errorCode := d.roleSources.scan(scanCtx, pending)
+	snapshot, errorCode := scanner.scan(scanCtx, pending)
 	if errorCode == "" {
-		errorCode = d.uploadRoleSourceArtifacts(scanCtx, runtimeID, pending, snapshot)
+		errorCode = d.uploadRoleSourceArtifacts(scanCtx, runtimeID, pending, scanner, snapshot)
 	}
 	close(scanDone)
 	cancelScan()
@@ -581,7 +606,7 @@ func (d *Daemon) handleRoleSourceScan(ctx context.Context, runtimeID string, pen
 		"snapshot_digest", snapshot.SnapshotDigest, "error_code", result.ErrorCode)
 }
 
-func (d *Daemon) uploadRoleSourceArtifacts(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, snapshot rolesource.Snapshot) string {
+func (d *Daemon) uploadRoleSourceArtifacts(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, scanner *roleSourceScanner, snapshot rolesource.Snapshot) string {
 	refs, err := rolesource.CollectArtifactRefs(snapshot)
 	if err != nil {
 		return "artifact_manifest_invalid"
@@ -604,7 +629,7 @@ func (d *Daemon) uploadRoleSourceArtifacts(ctx context.Context, runtimeID string
 			if !ok || want != ref {
 				return "artifact_preflight_invalid"
 			}
-			if err := d.uploadRoleSourceArtifactWithRetry(ctx, runtimeID, pending, ref); err != nil {
+			if err := d.uploadRoleSourceArtifactWithRetry(ctx, runtimeID, pending, scanner, ref); err != nil {
 				if errors.Is(err, rolesource.ErrChangedDuringRead) {
 					return "source_changed"
 				}
@@ -615,7 +640,7 @@ func (d *Daemon) uploadRoleSourceArtifacts(ctx context.Context, runtimeID string
 	return ""
 }
 
-func (d *Daemon) uploadRoleSourceArtifactWithRetry(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, ref rolesource.ArtifactRef) error {
+func (d *Daemon) uploadRoleSourceArtifactWithRetry(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, scanner *roleSourceScanner, ref rolesource.ArtifactRef) error {
 	var lastErr error
 	for attempt, delay := range []time.Duration{0, time.Second, 2 * time.Second} {
 		if delay > 0 {
@@ -623,7 +648,7 @@ func (d *Daemon) uploadRoleSourceArtifactWithRetry(ctx context.Context, runtimeI
 				return lastErr
 			}
 		}
-		body, err := d.roleSources.openArtifact(ctx, pending, ref)
+		body, err := scanner.openArtifact(ctx, pending, ref)
 		if err != nil {
 			return err
 		}

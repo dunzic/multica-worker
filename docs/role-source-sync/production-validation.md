@@ -73,18 +73,28 @@ Run against the actual staging topology, not a single local process:
 1. Start two server replicas and one configured daemon on the candidate commit.
 2. Restart the daemon twice without changing config. Verify one current attestation, one history state and the observation count increasing once per process start.
 3. Stop the daemon and wait past the configured Redis TTL/database stale threshold. Verify current source status becomes runtime unavailable while the last attestation status remains loaded; restart and verify it returns online without rewriting history incorrectly.
-4. Change one adapter version/config entry and restart. Verify a new state, visible drift classification and no raw config ID/path in API or logs.
-5. Force PostgreSQL primary failover while the daemon is retrying an unacknowledged attestation. Verify the daemon continues retrying, one durable state wins and the server acknowledges only after commit.
-6. Hold runtime deletion open, start a first-attestation heartbeat, then commit deletion. Verify the heartbeat fails and no orphan evidence remains.
-7. Queue and claim a scan plus secret transfer, then pause the source while
+4. Apply a changed config entry without restarting. Within two reload intervals,
+   verify a new active local revision, repeated attestation until durable
+   acknowledgement, one new history state, correct drift classification and no
+   raw config ID/path in health, API or logs. An in-flight scan must complete on
+   its captured old generation while the next scan uses the new generation.
+5. Publish malformed JSON, change the file to public permissions, and remove
+   it in separate exercises. Each must expose a bounded local `degraded` code,
+   retain the last-known-good scanner and keep its revision. Restore the exact
+   valid bytes and verify health recovers without a restart or duplicate
+   history. Starting with no implicit default file must remain safely
+   `unloaded`; creating it must enable the scanner live.
+6. Force PostgreSQL primary failover while the daemon is retrying an unacknowledged attestation. Verify the daemon continues retrying, one durable state wins and the server acknowledges only after commit.
+7. Hold runtime deletion open, start a first-attestation heartbeat, then commit deletion. Verify the heartbeat fails and no orphan evidence remains.
+8. Queue and claim a scan plus secret transfer, then pause the source while
    daemon result reports race. Verify one lock order, no deadlock, terminal
    cancelled/failed work, cleared envelope/private-key ciphertext and one
    hash-chained `source_paused` event in the same commit.
-8. Verify direct active-to-detached and detached-to-resumed transitions fail;
+9. Verify direct active-to-detached and detached-to-resumed transitions fail;
    pause then detach releases the old runtime for cleanup without deleting
    source history. Rebind to another workspace-owned runtime must remain paused
    and resume must fail until fresh matching destination attestation exists.
-7. Restore the old primary only after fencing it from writes. Verify no duplicate history or split-brain current state appears.
+10. Restore the old primary only after fencing it from writes. Verify no duplicate history or split-brain current state appears.
 
 Pass criteria: no lost accepted state, no acknowledgement before durability, no orphan rows, no cross-workspace identifiers, no unbounded retries and no duplicate current row.
 

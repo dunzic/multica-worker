@@ -132,10 +132,13 @@ type Config struct {
 	// command_name on PATH. nil/empty means "always resolve via PATH".
 	ProfileCommandOverrides map[string]string
 
-	// roleSourceScanner is populated only when MULTICA_ROLE_SOURCE_CONFIG_FILE
-	// points at a validated local 0600 configuration. A nil scanner means the
-	// daemon must not advertise or poll the role-source scan protocol.
-	roleSourceScanner *roleSourceScanner
+	// roleSourceScanner is populated when the profile default or an explicit
+	// MULTICA_ROLE_SOURCE_CONFIG_FILE points at a validated local 0600
+	// configuration. roleSourceConfigPath remains set for the implicit default
+	// even while absent so the daemon can enable it through hot reload. A nil
+	// scanner means the daemon must not advertise or poll the scan protocol.
+	roleSourceScanner    *roleSourceScanner
+	roleSourceConfigPath string
 }
 
 // Overrides allows CLI flags to override environment variables and defaults.
@@ -470,20 +473,30 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	}
 
 	roleSourceConfigPath := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_CONFIG_FILE"))
-	if roleSourceConfigPath == "" {
+	roleSourceConfigExplicit := roleSourceConfigPath != ""
+	roleSourceConfigExists := roleSourceConfigExplicit
+	if !roleSourceConfigExplicit {
 		defaultPath, pathErr := DefaultRoleSourceConfigPath(profile)
 		if pathErr != nil {
 			return Config{}, fmt.Errorf("resolve default role source config path: %w", pathErr)
 		}
+		// Keep watching the canonical path even when it does not exist yet. This
+		// lets `multica daemon role-source apply` enable the feature without a
+		// daemon restart. Absence is only tolerated for this implicit default;
+		// an explicitly configured missing path remains a startup error.
+		roleSourceConfigPath = defaultPath
 		if _, statErr := os.Lstat(defaultPath); statErr == nil {
-			roleSourceConfigPath = defaultPath
+			roleSourceConfigExists = true
 		} else if !os.IsNotExist(statErr) {
 			return Config{}, fmt.Errorf("inspect default role source config: %w", statErr)
 		}
 	}
-	roleSourceScanner, err := loadRoleSourceScanner(roleSourceConfigPath)
-	if err != nil {
-		return Config{}, fmt.Errorf("load role source scanner: %w", err)
+	var roleSourceScanner *roleSourceScanner
+	if roleSourceConfigExists {
+		roleSourceScanner, err = loadRoleSourceScanner(roleSourceConfigPath)
+		if err != nil {
+			return Config{}, fmt.Errorf("load role source scanner: %w", err)
+		}
 	}
 
 	return Config{
@@ -525,6 +538,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		QwenpawArgs:                    qwenpawArgs,
 		ProfileCommandOverrides:        profileCommandOverrides,
 		roleSourceScanner:              roleSourceScanner,
+		roleSourceConfigPath:           roleSourceConfigPath,
 	}, nil
 }
 

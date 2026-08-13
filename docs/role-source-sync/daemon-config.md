@@ -48,6 +48,34 @@ multica daemon role-source apply \
 
 `show` exposes only the revision, validation status/code, final file/root names, source IDs/kinds and adapter-redacted attributes. It does not expose the full path, raw adapter config or digest key. It still returns a usable revision for a malformed or currently invalid file so an administrator can recover it with `apply`.
 
+## Live reload and recovery
+
+The running daemon watches the resolved managed path every five seconds. A
+successful `apply` or `rotate-key` is securely reread, fingerprinted, strictly
+validated and built as a complete new scanner before one atomic generation
+swap. New heartbeats and work use the new generation; a scan or secret transfer
+already in flight retains the exact generation it started with and releases
+that generation's own concurrency reservation. The daemon clears its local
+attestation acknowledgements and recovery-poll throttles after a real revision
+change, so every hosted runtime reports the new runtime-scoped evidence until
+the server durably acknowledges it. A daemon restart is not required.
+
+An invalid, missing, public, symlinked or unreadable replacement never unloads
+an already working scanner. The daemon keeps the last-known-good generation,
+logs one bounded transition warning and exposes a local-only health state:
+
+- `loaded`: the shown revision is active;
+- `unloaded`: the implicit default file has never existed, which is a valid
+  disabled state;
+- `degraded`: reload was rejected; `error_code` identifies only a bounded class
+  such as `config_invalid`, `file_missing` or `file_security_rejected`.
+
+`/health.role_source_config` includes status, revision and attempt/success
+timestamps. It never includes the managed path, config IDs, roots, adapter
+payloads or digest key. Restoring the exact last-known-good bytes clears the
+degraded state without rebuilding the scanner. Creating the previously absent
+default file enables the scanner live.
+
 When the desired state first includes AgentWaker, the manager generates 32 random private bytes. Normal updates preserve that key. Removing the last AgentWaker source removes it. Rotation is a separate disruptive action:
 
 ```bash
@@ -97,4 +125,4 @@ Rules:
 
 The server source record refers to one of these opaque IDs through `daemon_config_id` and exposes only the selected adapter's safe summary (for example, final directory and manifest file names). On startup the daemon also reports a strict, bounded attestation containing a runtime-scoped commitment to the exact private-file revision plus sorted runtime-scoped config-ID digests, kinds and adapter versions. It never reports a raw file revision, config ID, path, root, raw adapter config or key. Runtime scoping prevents local labels and a common daemon fingerprint from being correlated across workspaces hosted by one daemon. The server durably acknowledges that evidence and the daemon suppresses repeats for each runtime until the loaded state changes; the read-only settings surface shows current drift and distinct historical states without returning the digest list.
 
-Managed local lifecycle is now available, including source addition/removal through complete desired-state apply and explicit key rotation. Broad customer rollout remains blocked on guided configuration/repair UI, hot reload, remote or hardware-backed source trust, live database and failure-injection evidence, and operational recovery exercises.
+Managed local lifecycle is now available, including source addition/removal through complete desired-state apply, explicit key rotation and last-known-good hot reload. Broad customer rollout remains blocked on guided configuration/repair UI, remote or hardware-backed source trust, live database/cross-platform filesystem failure-injection evidence, and operational recovery exercises.

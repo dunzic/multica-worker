@@ -313,11 +313,13 @@ type Daemon struct {
 	repoCache                     repoCacheBackend
 	skillCache                    *SkillBundleCache
 	logger                        *slog.Logger
-	roleSources                   *roleSourceScanner
+	roleSources                   atomic.Pointer[roleSourceScanner]
 	roleSourcePollMu              sync.Mutex
 	roleSourceLastPoll            map[string]time.Time
 	roleSourceAttestationMu       sync.Mutex
 	roleSourceAttestationAccepted map[string]string
+	roleSourceReloadMu            sync.RWMutex
+	roleSourceReload              roleSourceConfigReloadState
 
 	mu           sync.Mutex
 	workspaces   map[string]*workspaceState
@@ -570,7 +572,6 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		client:                        client,
 		repoCache:                     repocache.New(cacheRoot, logger),
 		skillCache:                    NewSkillBundleCache(skillCacheRoot),
-		roleSources:                   cfg.roleSourceScanner,
 		roleSourceLastPoll:            make(map[string]time.Time),
 		roleSourceAttestationAccepted: make(map[string]string),
 		logger:                        logger,
@@ -600,6 +601,16 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
+	if cfg.roleSourceScanner != nil {
+		loadedAt := time.Now()
+		d.roleSources.Store(cfg.roleSourceScanner)
+		d.roleSourceReload.Status = roleSourceConfigReloadStatusLoaded
+		d.roleSourceReload.Revision = cfg.roleSourceScanner.configRevision
+		d.roleSourceReload.LastAttemptAt = loadedAt
+		d.roleSourceReload.LastSuccessfulAt = loadedAt
+	} else {
+		d.roleSourceReload.Status = roleSourceConfigReloadStatusUnloaded
+	}
 	// Seed the copy-on-write availability set from the startup probe. Callers
 	// must go through d.agents() from here on; cfg.Agents is the initial value
 	// only and does not track later refreshes.
@@ -1752,6 +1763,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
+	go d.roleSourceConfigReloadLoop(ctx)
 
 	// Preflight succeeded and the background loops are up: the daemon has
 	// registered its runtimes and can now claim and run tasks. Flip /health
@@ -1759,7 +1771,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// readiness wait blocks on, so success is reported only after startup
 	// actually completed, not merely because the health port came up.
 	d.ready.Store(true)
-	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal); health now reporting ready")
+	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal, role-source-config-reload); health now reporting ready")
 	err = d.pollLoop(ctx, taskWakeups)
 	d.logger.Debug("daemon main loop returning", "error", err)
 	return err
@@ -3565,7 +3577,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		go d.handleRuntimeGone(rid)
 		return false
 	}
-	d.handleHeartbeatActions(ctx, rid, resp, roleSourceOptions.PollRoleSourceScan)
+	d.handleHeartbeatActions(ctx, rid, resp, roleSourceOptions)
 	return false
 }
 
@@ -3573,11 +3585,15 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 // transport (HTTP POST /api/daemon/heartbeat or WS daemon:heartbeat_ack).
 // Each action is dispatched in its own goroutine so a slow handler cannot
 // block subsequent heartbeats.
-func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse, roleSourcePollReserved ...bool) {
-	reserved := len(roleSourcePollReserved) > 0 && roleSourcePollReserved[0]
+func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse, roleSourceOptions ...HeartbeatOptions) {
+	var option HeartbeatOptions
+	if len(roleSourceOptions) > 0 {
+		option = roleSourceOptions[0]
+	}
+	reserved := option.PollRoleSourceScan || option.PollRoleSourceSecretTransfer
 	if resp == nil {
-		if reserved && d.roleSources != nil {
-			d.roleSources.release()
+		if reserved && option.roleSourceScanner != nil {
+			option.roleSourceScanner.release()
 		}
 		return
 	}
@@ -3594,15 +3610,15 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 		)
 	}
 	if resp.PendingRoleSourceScan != nil {
-		go d.handleRoleSourceScan(ctx, runtimeID, *resp.PendingRoleSourceScan, reserved)
+		go d.handleRoleSourceScan(ctx, runtimeID, *resp.PendingRoleSourceScan, option.roleSourceScanner, reserved)
 		reserved = false
 	}
 	if resp.PendingRoleSourceSecretTransfer != nil {
-		go d.handleRoleSourceSecretTransfer(ctx, runtimeID, *resp.PendingRoleSourceSecretTransfer, reserved)
+		go d.handleRoleSourceSecretTransfer(ctx, runtimeID, *resp.PendingRoleSourceSecretTransfer, option.roleSourceScanner, reserved)
 		reserved = false
 	}
-	if reserved && d.roleSources != nil {
-		d.roleSources.release()
+	if reserved && option.roleSourceScanner != nil {
+		option.roleSourceScanner.release()
 	}
 	if resp.PendingUpdate != nil {
 		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate)
@@ -3728,7 +3744,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	d.logger.Debug("pending work hint served", "runtime_id", runtimeID, "kind", kind)
-	d.handleHeartbeatActions(ctx, runtimeID, resp, roleSourceOptions.PollRoleSourceScan)
+	d.handleHeartbeatActions(ctx, runtimeID, resp, roleSourceOptions)
 }
 
 // handleModelList resolves the provider's supported models (via static

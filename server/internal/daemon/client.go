@@ -478,6 +478,9 @@ type HeartbeatOptions struct {
 	PollRoleSourceSecretTransfer        bool
 	SupportsRoleSourceConfigAttestation bool
 	RoleSourceConfigAttestation         *protocol.RoleSourceConfigAttestation
+	// roleSourceScanner pins the exact local configuration generation used to
+	// negotiate this heartbeat. It is never serialized.
+	roleSourceScanner *roleSourceScanner
 }
 
 func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, options ...HeartbeatOptions) (*HeartbeatResponse, error) {

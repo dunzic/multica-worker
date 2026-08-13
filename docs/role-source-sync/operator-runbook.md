@@ -35,16 +35,20 @@ runtime identifiers.
    Confirm that the expected config entry exists and that its adapter kind and
    version match the server source. Do not read or copy the private managed file
    directly.
-5. If the configuration is correct, restart the daemon through that
-   installation's service manager. Within three minutes the runtime should be
-   online; on a fresh process start it must also resend loaded-configuration
-   evidence until the server durably acknowledges it.
+5. Inspect the daemon's local `/health` response. Its
+   `role_source_config.status` must be `loaded`. After an approved CAS `apply`,
+   allow at least one five-second reload interval and verify that the revision
+   and `last_successful_at` advance. If status is `degraded`, use only the
+   bounded `error_code` and redacted `show` output to repair the file; the
+   daemon is intentionally retaining its last-known-good generation. Restart
+   only if the reload loop itself is not advancing or the process/runtime is
+   unavailable.
 6. Verify all of the following before resolving the incident:
 
    - the source's effective runtime-config status is `loaded`;
    - its preserved attestation status is `loaded`;
    - its runtime status is `online`;
-   - the last observation advances after the restart;
+   - the last observation advances after hot reload or recovery;
    - `multica_role_source_runtime_availability{status="runtime_unavailable"}`
      falls by the expected count and the alert clears after its hold period;
    - a read-only scan completes before any apply operation is considered.
@@ -64,11 +68,11 @@ runtime can be unavailable while its last valid evidence remains `loaded`.
 
 | Last evidence status | Meaning | Safe action |
 | --- | --- | --- |
-| `unattested` | No compatible evidence has been committed | Confirm the daemon includes the attestation protocol, then restart it; do not enable scans on assumption |
-| `not_loaded` | The daemon explicitly reported no loaded role-source config | Use the redacted local summary to confirm the managed file exists and is accepted, then restart |
+| `unattested` | No compatible evidence has been committed | Confirm the daemon includes the attestation protocol and local reload health is advancing; restart only if the process cannot renegotiate; do not enable scans on assumption |
+| `not_loaded` | The daemon explicitly reported no loaded role-source config | Use the redacted summary and local reload health to confirm the managed file exists and is accepted; wait for hot reload before considering restart |
 | `config_missing` | The server source's opaque config reference is absent from the daemon's loaded set | Compare the intended desired-state document to the redacted summary; use the CAS apply flow only after human review |
 | `kind_mismatch` | The same reference resolves to another adapter kind | Stop scans and correct the desired-state document; never coerce the server record |
-| `adapter_version_mismatch` | The daemon loaded a different adapter contract version | Align reviewed daemon and source versions, restart and rescan before apply |
+| `adapter_version_mismatch` | The daemon loaded a different adapter contract version | Align the reviewed daemon/adapter and desired state, verify hot reload evidence, then rescan before apply |
 | `invalid_attestation` | Stored or incoming evidence failed strict validation | Treat as a security/integrity incident; preserve logs, stop rollout and investigate before restarting repeatedly |
 | `loaded` | The last evidence matched | Still require current runtime availability; historical success is not live health |
 

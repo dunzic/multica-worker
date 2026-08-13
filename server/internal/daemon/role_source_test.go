@@ -140,6 +140,18 @@ func TestLoadConfigEnablesRoleSourceScannerOnlyFromValidatedFile(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsExplicitMissingRoleSourceConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture is unavailable on Windows")
+	}
+	stageFakeAgent(t)
+	missing := filepath.Join(t.TempDir(), "missing-role-sources.json")
+	t.Setenv("MULTICA_ROLE_SOURCE_CONFIG_FILE", missing)
+	if _, err := LoadConfig(Overrides{ServerURL: "http://localhost:0", WorkspacesRoot: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("explicit missing config error = %v", err)
+	}
+}
+
 func TestLoadRoleSourceScannerRejectsSymlinkConfigAndRoot(t *testing.T) {
 	root := t.TempDir()
 	configPath := writeRoleSourceConfigForTest(t, root, root, 0o600)
@@ -345,7 +357,8 @@ func TestRoleSourceHeartbeatPollingIsThrottledAndCapacityAware(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	daemon := &Daemon{roleSources: scanner, roleSourceLastPoll: make(map[string]time.Time)}
+	daemon := &Daemon{roleSourceLastPoll: make(map[string]time.Time)}
+	daemon.roleSources.Store(scanner)
 	attestation, err := scanner.attestationForRuntime("runtime-1")
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +383,7 @@ func TestRoleSourceHeartbeatPollingIsThrottledAndCapacityAware(t *testing.T) {
 	if option := daemon.roleSourceHeartbeatOptions("runtime-2", true); !option.SupportsRoleSourceScan || !option.SupportsRoleSourceSecretTransfer || option.PollRoleSourceScan || option.PollRoleSourceSecretTransfer {
 		t.Fatalf("capacity-full option = %+v", option)
 	}
-	daemon.handleHeartbeatActions(t.Context(), "runtime-1", &HeartbeatResponse{}, first.PollRoleSourceScan)
+	daemon.handleHeartbeatActions(t.Context(), "runtime-1", &HeartbeatResponse{}, first)
 	daemon.releaseRoleSourcePollReservation(forced)
 	if len(scanner.semaphore) != 0 {
 		t.Fatalf("poll reservations leaked: %d", len(scanner.semaphore))
