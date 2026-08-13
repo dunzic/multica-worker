@@ -442,3 +442,11 @@ func validatedStoredSecretTransfer(row db.RoleSourceSecretTransfer) (SecretEnvel
 	}
 	return claims, nil
 }
+
+// ValidatePersistedSecretTransferIdentity is used by offline restore
+// verification before testing the encrypted private key. It validates the
+// claims-to-row binding without exposing claims or secret material.
+func ValidatePersistedSecretTransferIdentity(row db.RoleSourceSecretTransfer) error {
+	_, err := validatedStoredSecretTransfer(row)
+	return err
+}

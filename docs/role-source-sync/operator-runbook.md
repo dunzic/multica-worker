@@ -166,3 +166,9 @@ result. Exclude paths, raw config IDs, digests, keys, environment values, MCP
 payloads and artifact bodies. If PostgreSQL failover or object storage was
 involved, retain the corresponding evidence required by
 [`production-validation.md`](production-validation.md).
+
+For a regional/database loss or suspected backup inconsistency, stop ordinary
+repair and follow [`disaster-recovery.md`](disaster-recovery.md). A successful
+`pg_restore` is not sufficient evidence; do not resume traffic until the
+content-free role-source verifier passes against restored object storage and
+the approved current/previous secret-key escrow.

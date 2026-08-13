@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/drlock"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -376,6 +377,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			h.RoleSourceArtifactReconciler = &service.RoleSourceArtifactReconciler{
 				Queries: queries,
 				Storage: store,
+				DRGuard: drlock.NewGuard(pool),
 				Logger:  slog.Default(),
 			}
 			if retentionEnabled := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_RETENTION_ENABLED")); retentionEnabled == "true" || retentionEnabled == "1" {

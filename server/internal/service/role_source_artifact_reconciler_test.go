@@ -26,6 +26,13 @@ func (s *roleSourcePurgeRecordingStorage) PurgeObject(context.Context, string) e
 
 type roleSourceDeleteOnlyStorage struct{ deletes int }
 
+type roleSourceGuardProbe struct{ calls int }
+
+func (g *roleSourceGuardProbe) WithDestructive(ctx context.Context, fn func(context.Context) error) error {
+	g.calls++
+	return fn(ctx)
+}
+
 func (s *roleSourceDeleteOnlyStorage) DeleteObject(context.Context, string) error {
 	s.deletes++
 	return nil
@@ -100,5 +107,8 @@ func TestRoleSourceArtifactGCDeletionSafetyContract(t *testing.T) {
 	}
 	if !strings.Contains(string(router), `MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED`) {
 		t.Fatal("artifact deletion worker must remain behind an independent default-off operator gate")
+	}
+	if !strings.Contains(string(router), `DRGuard: drlock.NewGuard(pool)`) {
+		t.Fatal("permanent artifact deletion must be serialized against role-source DR backup")
 	}
 }

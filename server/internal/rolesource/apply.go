@@ -1867,3 +1867,10 @@ func decodeApplyReceipt(row db.RoleSourceApply) (ApplyReceipt, error) {
 	}
 	return receipt, nil
 }
+
+// DecodePersistedApplyReceipt exposes the same strict receipt validation to
+// offline disaster-recovery verification. It never returns raw secret data;
+// receipts contain only immutable identifiers, counts and digests.
+func DecodePersistedApplyReceipt(row db.RoleSourceApply) (ApplyReceipt, error) {
+	return decodeApplyReceipt(row)
+}

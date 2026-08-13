@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/drlock"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -212,6 +213,9 @@ func (c *ControlPlane) PruneRetentionCandidate(ctx context.Context, candidateID,
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	qtx := db.New(tx)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock_shared($1)", drlock.AdvisoryLockKey); err != nil {
+		return "", err
+	}
 	candidateIdentity, err := qtx.GetRoleSourceRetentionCandidate(ctx, db.GetRoleSourceRetentionCandidateParams{
 		ID: candidateID, LeaseToken: leaseToken,
 	})

@@ -31,10 +31,15 @@ var roleSourceArtifactGCTombstoneSchedule = []time.Duration{15 * time.Minute, ti
 type RoleSourceArtifactReconciler struct {
 	Queries *db.Queries
 	Storage MediaObjectDeleter
+	DRGuard RoleSourceDestructiveGuard
 	Logger  *slog.Logger
 	Metrics *metrics.RoleSourceArtifactGCMetrics
 
 	deleteTimeout time.Duration
+}
+
+type RoleSourceDestructiveGuard interface {
+	WithDestructive(context.Context, func(context.Context) error) error
 }
 
 type roleSourceArtifactObjectPurger interface {
@@ -105,6 +110,21 @@ func (r *RoleSourceArtifactReconciler) RunOnce(ctx context.Context) {
 }
 
 func (r *RoleSourceArtifactReconciler) delete(ctx context.Context, intent db.RoleSourceArtifactDeleteIntent, token pgtype.UUID) {
+	if r.DRGuard == nil {
+		r.releaseDeleteIntent(ctx, intent, token, errors.New("role-source DR guard is not configured"))
+		return
+	}
+	err := r.DRGuard.WithDestructive(ctx, func(guarded context.Context) error {
+		return r.purge(guarded, intent)
+	})
+	if err != nil {
+		r.releaseDeleteIntent(ctx, intent, token, err)
+		return
+	}
+	r.advanceDeleteIntent(ctx, intent, token)
+}
+
+func (r *RoleSourceArtifactReconciler) purge(ctx context.Context, intent db.RoleSourceArtifactDeleteIntent) error {
 	timeout := r.deleteTimeout
 	if timeout <= 0 {
 		timeout = roleSourceArtifactGCDelete
@@ -112,21 +132,28 @@ func (r *RoleSourceArtifactReconciler) delete(ctx context.Context, intent db.Rol
 	deleteCtx, cancel := context.WithTimeout(ctx, timeout)
 	err := purgeRoleSourceArtifactObject(deleteCtx, r.Storage, intent.StorageKey)
 	cancel()
-	if err != nil {
-		if r.Metrics != nil {
-			r.Metrics.DeleteFailures.Inc()
-		}
-		delay := time.Minute << min(int(intent.Attempt-1), 6)
-		writeCtx, writeCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer writeCancel()
-		released, releaseErr := r.Queries.ReleaseRoleSourceArtifactDeleteIntent(writeCtx, db.ReleaseRoleSourceArtifactDeleteIntentParams{
-			RetryDelay: pgInterval(delay), StorageKey: intent.StorageKey, LeaseToken: token,
-		})
-		if (releaseErr != nil || released != 1) && ctx.Err() == nil {
-			r.logger().Warn("role source artifact GC release failed", "storage_key", intent.StorageKey, "error", releaseErr)
-		}
-		return
+	return err
+}
+
+func (r *RoleSourceArtifactReconciler) releaseDeleteIntent(ctx context.Context, intent db.RoleSourceArtifactDeleteIntent, token pgtype.UUID, cause error) {
+	if r.Metrics != nil {
+		r.Metrics.DeleteFailures.Inc()
 	}
+	delay := time.Minute << min(int(intent.Attempt-1), 6)
+	writeCtx, writeCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer writeCancel()
+	released, releaseErr := r.Queries.ReleaseRoleSourceArtifactDeleteIntent(writeCtx, db.ReleaseRoleSourceArtifactDeleteIntentParams{
+		RetryDelay: pgInterval(delay), StorageKey: intent.StorageKey, LeaseToken: token,
+	})
+	if (releaseErr != nil || released != 1) && ctx.Err() == nil {
+		r.logger().Warn("role source artifact GC release failed", "storage_key", intent.StorageKey, "error", releaseErr)
+	}
+	if ctx.Err() == nil {
+		r.logger().Warn("role source artifact GC purge failed", "error", cause)
+	}
+}
+
+func (r *RoleSourceArtifactReconciler) advanceDeleteIntent(ctx context.Context, intent db.RoleSourceArtifactDeleteIntent, token pgtype.UUID) {
 	if r.Metrics != nil {
 		r.Metrics.ObjectsDeleted.Inc()
 	}

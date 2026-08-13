@@ -1,0 +1,93 @@
+package main
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/multica-ai/multica/server/internal/rolesourcedr"
+)
+
+func TestRunRequiresExplicitCommandAndDatabase(t *testing.T) {
+	if err := run(context.Background(), nil); err == nil {
+		t.Fatal("missing command accepted")
+	}
+	t.Setenv("DATABASE_URL", "")
+	err := run(context.Background(), []string{"backup", "--output-dir", t.TempDir() + "/new"})
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is required") {
+		t.Fatalf("backup error = %v", err)
+	}
+}
+
+func TestBoundedOutput(t *testing.T) {
+	if got := boundedOutput([]byte(strings.Repeat("x", 5000))); len(got) != 2048 {
+		t.Fatalf("bounded output length = %d", len(got))
+	}
+}
+
+func TestUnsignedManifestIsDevelopmentOptIn(t *testing.T) {
+	manifest := emptyValidManifest(time.Now())
+	if err := signBackupManifest(&manifest, false); err == nil {
+		t.Fatal("unsigned production backup accepted")
+	}
+	if err := signBackupManifest(&manifest, true); err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.UnsignedDevelopment {
+		t.Fatal("development-only manifest was not durably marked unsafe")
+	}
+}
+
+func emptyValidManifest(now time.Time) rolesourcedr.Manifest {
+	const emptyDigest = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	tables := make([]rolesourcedr.TableSummary, 0, len(rolesourcedr.TableNames()))
+	for _, name := range rolesourcedr.TableNames() {
+		tables = append(tables, rolesourcedr.TableSummary{Name: name, Commitment: emptyDigest})
+	}
+	return rolesourcedr.Manifest{
+		ContractVersion: rolesourcedr.ContractVersion, BackupID: "00000000-0000-4000-8000-000000000001", CreatedAt: now.UTC(),
+		DatabaseMajorVersion: 17, MigrationCount: 1, MigrationRoot: emptyDigest, Tables: tables,
+		Artifacts: rolesourcedr.ArtifactSummary{Commitment: emptyDigest}, DatabaseDumpDigest: emptyDigest, ArtifactArchiveDigest: emptyDigest,
+	}
+}
+
+func TestRecoveryKeyringFailsClosed(t *testing.T) {
+	t.Setenv("MULTICA_ROLE_SOURCE_SECRET_KEY", "")
+	t.Setenv("MULTICA_ROLE_SOURCE_SECRET_KEY_ID", "unexpected")
+	if _, err := loadKeyringStrict(); err == nil {
+		t.Fatal("secret key id without key material accepted")
+	}
+	t.Setenv("MULTICA_ROLE_SOURCE_SECRET_KEY_ID", "")
+	t.Setenv("MULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS", `{"v1":"not-base64"}`)
+	if _, err := loadKeyringStrict(); err == nil {
+		t.Fatal("malformed previous recovery key accepted")
+	}
+}
+
+func TestGenerateSigningKeyUsesExclusiveFiles(t *testing.T) {
+	privatePath := t.TempDir() + "/private.key"
+	publicPath := t.TempDir() + "/public.key"
+	args := []string{"--key-id", "backup-v1", "--private-key-file", privatePath, "--public-key-file", publicPath}
+	if err := runGenerateSigningKey(args); err != nil {
+		t.Fatal(err)
+	}
+	privateInfo, err := os.Stat(privatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if privateInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("private key mode = %o", privateInfo.Mode().Perm())
+	}
+	if err := runGenerateSigningKey(args); err == nil {
+		t.Fatal("key generator overwrote existing key files")
+	}
+}
+
+func TestTrustedManifestKeyMapFailsClosed(t *testing.T) {
+	t.Setenv("MULTICA_ROLE_SOURCE_DR_TRUSTED_PUBLIC_KEYS", `{"backup-v1":"not-base64"}`)
+	if _, err := loadManifestTrustStrict(); err == nil {
+		t.Fatal("malformed trusted key map accepted")
+	}
+}

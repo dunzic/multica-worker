@@ -161,6 +161,31 @@ MULTICA_LIVE_ROLE_SOURCE_STORAGE_TEST=1 \
 
 Pass criteria: fixed-length streaming upload, byte-exact readback, zero retained versions/delete markers and verified current absence. Any transport/authentication error after purge is a failure, not proof of absence.
 
+## Gate F — database/object-store disaster recovery
+
+Follow [`disaster-recovery.md`](disaster-recovery.md) on a production-shaped
+PostgreSQL 17 primary plus the candidate versioned S3-compatible store. Start a
+backup while two replicas are scanning/applying and separately race retention,
+workspace deletion and permanent purge. Kill the backup during object copy and
+`pg_dump`, fail over the database primary, interrupt one artifact restore, omit
+one object, change one byte, remove one current/previous secret key, break an
+audit link and restore to a point immediately before/after a legal hold.
+
+Pass criteria:
+
+- the exclusive/shared lock places every destructive operation wholly before
+  or after the exported snapshot without deadlock or lost purge obligation;
+- incomplete output directories cannot be mistaken for successful backups and
+  restore is byte-verified/idempotent;
+- every injected omission/tamper/key/edge/chain fault returns non-zero with a
+  bounded content-free finding; a valid restore passes every row and object;
+- current snapshots, active holds, append-only policies, task pins, mappings,
+  apply receipts, audit sequence and runtime attestations reproduce exactly;
+- fresh daemon attestation, read-only scan and controlled no-op apply pass
+  before traffic, retention or GC resumes;
+- measured RPO/RTO, dump/archive sizes, lock wait p99, WAL/load, restore
+  throughput and operator actions fit the approved 10,000-user cohort budget.
+
 ## Gate D — failover and restart exercise
 
 Run against the actual staging topology, not a single local process:
