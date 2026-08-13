@@ -64,6 +64,7 @@
     "./runtimes/mutations": "./runtimes/mutations.ts",
     "./runtimes/custom-pricing-store": "./runtimes/custom-pricing-store.ts",
     "./role-sources": "./role-sources/index.ts",
+    "./channel-deliveries": "./channel-deliveries/index.ts",
     "./dashboard": "./dashboard/index.ts",
     "./dashboard/queries": "./dashboard/queries.ts",
     "./agents": "./agents/index.ts",

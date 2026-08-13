@@ -317,3 +317,8 @@ export type {
   BillingCheckoutSessionStatus,
   CreateBillingPortalSessionResponse,
 } from "./billing";
+export type {
+  ChannelDelivery,
+  ChannelDeliveryEvidence,
+  ChannelDeliveryStatus,
+} from "./channel-delivery";

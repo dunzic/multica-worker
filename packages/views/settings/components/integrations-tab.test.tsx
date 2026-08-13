@@ -56,6 +56,10 @@ vi.mock("./wecom-tab", () => ({
   WecomTab: () => <div data-testid="wecom-tab" />,
 }));
 
+vi.mock("./channel-delivery-audit", () => ({
+  ChannelDeliveryAudit: () => <div data-testid="channel-delivery-audit" />,
+}));
+
 import { IntegrationsTab } from "./integrations-tab";
 
 afterEach(cleanup);
@@ -92,6 +96,7 @@ describe("Settings IntegrationsTab", () => {
     renderTab();
 
     expect(screen.getByTestId("composio-tab")).toBeInTheDocument();
+    expect(screen.getByTestId("channel-delivery-audit")).toBeInTheDocument();
     expect(queryCallsRef.current[0]?.enabled).toBe(true);
   });
 

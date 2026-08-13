@@ -53,6 +53,7 @@ import type {
   RoleSourceRuntimeAttestation,
   RoleSourceScan,
   RoleSourceLifecycleEvent,
+  ChannelDelivery,
   UpdateRoleSourceLifecycleRequest,
   RoleSourceLegalHold,
   CreateRoleSourceLegalHoldRequest,
@@ -321,6 +322,7 @@ import {
   RoleSourceScanSchema,
   RoleSourceScanListSchema,
   RoleSourceLifecycleEventListSchema,
+  ChannelDeliveryListSchema,
   RoleSourcePlanRecordSchema,
   RoleSourcePlanRecordListSchema,
   RoleSourcePlanApprovalSchema,
@@ -1745,6 +1747,15 @@ export class ApiClient {
     return parseWithFallback(raw, RoleSourceLifecycleEventListSchema, { events: [] }, {
       endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/lifecycle-events",
     }).events;
+  }
+
+  async listChannelDeliveries(workspaceId: string): Promise<ChannelDelivery[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/channel-deliveries?limit=100`,
+    );
+    return parseWithFallback(raw, ChannelDeliveryListSchema, { deliveries: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/channel-deliveries",
+    }).deliveries;
   }
 
   async requestRoleSourceScan(

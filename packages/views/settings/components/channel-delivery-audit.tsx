@@ -1,0 +1,132 @@
+"use client";
+
+import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
+import { CheckCircle2, CircleAlert, Loader2, MessageSquareReply } from "lucide-react";
+import { Badge } from "@multica/ui/components/ui/badge";
+import { Label } from "@multica/ui/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
+import { channelDeliveryListOptions } from "@multica/core/channel-deliveries";
+import { useCurrentWorkspace } from "@multica/core/paths";
+import { useT } from "../../i18n";
+import { SettingsCard } from "./settings-layout";
+
+function shortIdentifier(value: string | null | undefined) {
+  if (!value) return "—";
+  if (value.length <= 24) return value;
+  return `${value.slice(0, 12)}…${value.slice(-8)}`;
+}
+
+function deliveryStatusKey(status: string) {
+  switch (status) {
+    case "pending": return "status_pending" as const;
+    case "delivered": return "status_delivered" as const;
+    case "readback": return "status_readback" as const;
+    case "failed": return "status_failed" as const;
+    default: return "status_unknown" as const;
+  }
+}
+
+export function ChannelDeliveryAudit() {
+  const { t } = useT("settings");
+  const workspaceId = useCurrentWorkspace()?.id ?? "";
+  const deliveries = useQuery({
+    ...channelDeliveryListOptions(workspaceId),
+    enabled: Boolean(workspaceId),
+  });
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const visible = (deliveries.data ?? []).filter((delivery) =>
+    statusFilter === "all" || delivery.status === statusFilter,
+  );
+
+  return (
+    <SettingsCard>
+      <div className="border-b border-surface-border p-4">
+        <div className="max-w-xs space-y-2">
+          <Label htmlFor="channel-delivery-status-filter">{t(($) => $.channel_delivery.filter_status)}</Label>
+          <Select
+            items={[
+              { value: "all", label: t(($) => $.channel_delivery.filter_all) },
+              { value: "pending", label: t(($) => $.channel_delivery.status_pending) },
+              { value: "delivered", label: t(($) => $.channel_delivery.status_delivered) },
+              { value: "readback", label: t(($) => $.channel_delivery.status_readback) },
+              { value: "failed", label: t(($) => $.channel_delivery.status_failed) },
+            ]}
+            value={statusFilter}
+            onValueChange={(value) => setStatusFilter(value ?? "all")}
+          >
+            <SelectTrigger id="channel-delivery-status-filter" className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t(($) => $.channel_delivery.filter_all)}</SelectItem>
+              <SelectItem value="pending">{t(($) => $.channel_delivery.status_pending)}</SelectItem>
+              <SelectItem value="delivered">{t(($) => $.channel_delivery.status_delivered)}</SelectItem>
+              <SelectItem value="readback">{t(($) => $.channel_delivery.status_readback)}</SelectItem>
+              <SelectItem value="failed">{t(($) => $.channel_delivery.status_failed)}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      {deliveries.isLoading ? (
+        <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {t(($) => $.channel_delivery.loading)}
+        </div>
+      ) : deliveries.isError ? (
+        <div className="p-4 text-caption text-destructive">{t(($) => $.channel_delivery.load_failed)}</div>
+      ) : !deliveries.data?.length ? (
+        <div className="p-4 text-caption text-muted-foreground">{t(($) => $.channel_delivery.empty)}</div>
+      ) : !visible.length ? (
+        <div className="p-4 text-caption text-muted-foreground">{t(($) => $.channel_delivery.no_matches)}</div>
+      ) : (
+        <div className="max-h-96 divide-y divide-surface-border overflow-y-auto">
+          {visible.map((delivery) => (
+            <div key={delivery.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-2 text-body font-medium">
+                  {delivery.status === "readback" ? <MessageSquareReply className="h-4 w-4" />
+                    : delivery.status === "failed" ? <CircleAlert className="h-4 w-4 text-destructive" />
+                      : delivery.status === "pending" ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <CheckCircle2 className="h-4 w-4" />}
+                  {t(($) => $.channel_delivery[deliveryStatusKey(delivery.status)])}
+                  <Badge variant="outline">{delivery.channel_type}</Badge>
+                </div>
+                <div className="font-mono text-caption text-muted-foreground">
+                  {t(($) => $.channel_delivery.task)}: {shortIdentifier(delivery.task_id)} · {t(($) => $.channel_delivery.correlation)}: {shortIdentifier(delivery.correlation_id)}
+                </div>
+                <div className="text-caption text-muted-foreground">
+                  {t(($) => $.channel_delivery.metadata, {
+                    operation: delivery.operation_kind,
+                    attempts: delivery.attempt_count,
+                    time: delivery.evidence?.readback_at ?? delivery.evidence?.delivered_at ?? delivery.updated_at,
+                  })}
+                </div>
+                {delivery.status === "readback" ? (
+                  <div className="text-caption text-muted-foreground">{t(($) => $.channel_delivery.readback_explanation)}</div>
+                ) : null}
+                {delivery.last_error_code ? (
+                  <div className="font-mono text-caption text-destructive">
+                    {t(($) => $.channel_delivery.error_code)}: {delivery.last_error_code}
+                  </div>
+                ) : null}
+                {delivery.evidence_digest ? (
+                  <div className="font-mono text-caption text-muted-foreground">
+                    {t(($) => $.channel_delivery.evidence)}: {shortIdentifier(delivery.evidence_digest)}
+                  </div>
+                ) : null}
+              </div>
+              <Badge variant={delivery.status === "failed" ? "destructive" : delivery.status === "readback" ? "secondary" : "outline"}>
+                {delivery.attempt_count}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      )}
+    </SettingsCard>
+  );
+}

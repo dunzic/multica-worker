@@ -1,0 +1,41 @@
+export type ChannelDeliveryStatus = "pending" | "delivered" | "readback" | "failed" | string;
+
+export interface ChannelDeliveryEvidence {
+  contract_version: string;
+  delivery_id: string;
+  correlation_id: string;
+  workspace_id: string;
+  task_id: string;
+  chat_session_id: string;
+  channel_type: string;
+  channel_chat_id: string;
+  operation_kind: string;
+  payload_digest: string;
+  status: string;
+  attempt_count: number;
+  external_message_id: string;
+  delivered_at: string;
+  readback_message_id?: string;
+  readback_at?: string;
+}
+
+export interface ChannelDelivery {
+  id: string;
+  workspace_id: string;
+  installation_id?: string;
+  task_id: string;
+  chat_session_id: string;
+  channel_type: string;
+  channel_chat_id: string;
+  operation_kind: string;
+  correlation_id: string;
+  payload_digest: string;
+  status: ChannelDeliveryStatus;
+  attempt_count: number;
+  external_message_id?: string;
+  evidence_digest?: string;
+  evidence?: ChannelDeliveryEvidence;
+  last_error_code?: string;
+  created_at: string;
+  updated_at: string;
+}

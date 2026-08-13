@@ -7,6 +7,7 @@ import { SlackTab } from "./slack-tab";
 import { DingTalkTab } from "./dingtalk-tab";
 import { VCSTab } from "./vcs-tab";
 import { WecomTab } from "./wecom-tab";
+import { ChannelDeliveryAudit } from "./channel-delivery-audit";
 import { ApiError } from "@multica/core/api";
 import { composioToolkitsOptions } from "@multica/core/composio";
 import { useConfigStore, useFeatureEnabled } from "@multica/core/config";
@@ -60,6 +61,12 @@ export function IntegrationsTab() {
       )}
       <SettingsSection title={t(($) => $.wecom.section_title)}>
         <WecomTab />
+      </SettingsSection>
+      <SettingsSection
+        title={t(($) => $.channel_delivery.section_title)}
+        description={t(($) => $.channel_delivery.section_description)}
+      >
+        <ChannelDeliveryAudit />
       </SettingsSection>
     </SettingsTab>
   );

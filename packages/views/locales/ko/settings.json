@@ -184,6 +184,27 @@
       "role_sources": "역할 소스"
     }
   },
+  "channel_delivery": {
+    "section_title": "전송 증거",
+    "section_description": "커넥터 전송과 명시적 답장의 콘텐츠 없는 증거입니다. 메시지 본문이나 자격 증명은 보관하지 않습니다.",
+    "filter_status": "상태",
+    "filter_all": "모든 상태",
+    "status_pending": "전송 중 또는 조정 대기",
+    "status_delivered": "공급자 전송 완료",
+    "status_readback": "명시적 답장 수신",
+    "status_failed": "전송 실패",
+    "status_unknown": "알 수 없는 전송 상태",
+    "loading": "전송 증거를 불러오는 중…",
+    "load_failed": "전송 증거를 검증하지 못했습니다.",
+    "empty": "이 워크스페이스에는 커넥터 전송 증거가 없습니다.",
+    "no_matches": "필터와 일치하는 최근 전송이 없습니다.",
+    "task": "task",
+    "correlation": "상관 ID",
+    "metadata": "{{operation}} · 시도: {{attempts}} · {{time}}",
+    "readback_explanation": "전송된 공급자 메시지에 대한 명시적 답장을 받았다는 증거이며 수동 읽음 확인이 아닙니다.",
+    "error_code": "오류 코드",
+    "evidence": "증거"
+  },
   "role_sources": {
     "title": "역할 소스",
     "description": "외부에서 관리되는 에이전트 역할, 변경 불가 버전, 제안된 워크스페이스 변경을 감사합니다.",

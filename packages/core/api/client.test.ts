@@ -134,6 +134,78 @@ describe("ApiClient role-source runtime evidence", () => {
     );
   });
 
+  it("lists verified channel delivery evidence and fails closed on mismatched terminal rows", async () => {
+    const delivery = {
+      id: "delivery-1",
+      workspace_id: "workspace-1",
+      task_id: "task-1",
+      chat_session_id: "chat-1",
+      channel_type: "slack",
+      channel_chat_id: "channel-1",
+      operation_kind: "chat_reply",
+      correlation_id: "correlation-1",
+      payload_digest: `sha256:${"a".repeat(64)}`,
+      status: "readback",
+      attempt_count: 1,
+      external_message_id: "provider-message-1",
+      evidence_digest: `sha256:${"b".repeat(64)}`,
+      evidence: {
+        contract_version: "1.0",
+        delivery_id: "delivery-1",
+        correlation_id: "correlation-1",
+        workspace_id: "workspace-1",
+        task_id: "task-1",
+        chat_session_id: "chat-1",
+        channel_type: "slack",
+        channel_chat_id: "channel-1",
+        operation_kind: "chat_reply",
+        payload_digest: `sha256:${"a".repeat(64)}`,
+        status: "readback",
+        attempt_count: 1,
+        external_message_id: "provider-message-1",
+        delivered_at: "2026-08-13T06:00:00Z",
+        readback_message_id: "reply-1",
+        readback_at: "2026-08-13T06:01:00Z",
+      },
+      created_at: "2026-08-13T06:00:00Z",
+      updated_at: "2026-08-13T06:01:00Z",
+    };
+    const failed = {
+      ...delivery,
+      id: "delivery-2",
+      status: "failed",
+      installation_id: null,
+      external_message_id: null,
+      evidence_digest: null,
+      evidence: null,
+      last_error_code: "rate_limited",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [delivery, failed] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
+        ...delivery,
+        evidence: { ...delivery.evidence, task_id: "other-task" },
+      }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([
+      delivery,
+      {
+        ...failed,
+        installation_id: undefined,
+        external_message_id: undefined,
+        evidence_digest: undefined,
+        evidence: undefined,
+      },
+    ]);
+    await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/channel-deliveries?limit=100",
+    );
+  });
+
   it("treats empty scan history as null and malformed scan responses as unavailable", async () => {
     const fetchMock = vi
       .fn()

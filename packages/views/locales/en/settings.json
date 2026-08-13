@@ -184,6 +184,27 @@
       "role_sources": "Role Sources"
     }
   },
+  "channel_delivery": {
+    "section_title": "Delivery evidence",
+    "section_description": "Content-free proof of connector sends and explicit replies. No message body or credential is retained here.",
+    "filter_status": "Status",
+    "filter_all": "All statuses",
+    "status_pending": "Sending or awaiting reconciliation",
+    "status_delivered": "Delivered by provider",
+    "status_readback": "Explicit reply received",
+    "status_failed": "Delivery failed",
+    "status_unknown": "Unknown delivery state",
+    "loading": "Loading delivery evidence…",
+    "load_failed": "Couldn't validate delivery evidence.",
+    "empty": "No connector delivery evidence is available for this workspace.",
+    "no_matches": "No recent deliveries match this filter.",
+    "task": "Task",
+    "correlation": "Correlation",
+    "metadata": "{{operation}} · attempts: {{attempts}} · {{time}}",
+    "readback_explanation": "This proves that an inbound message explicitly replied to the delivered provider message; it is not a passive read receipt.",
+    "error_code": "Error code",
+    "evidence": "Evidence"
+  },
   "role_sources": {
     "title": "Role Sources",
     "description": "Audit externally managed agent roles, immutable versions, and proposed workspace changes.",

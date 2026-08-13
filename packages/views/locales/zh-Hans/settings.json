@@ -184,6 +184,27 @@
       "role_sources": "角色源"
     }
   },
+  "channel_delivery": {
+    "section_title": "投递证据",
+    "section_description": "连接器发送与显式回复的无内容证明；这里不保留消息正文或凭据。",
+    "filter_status": "状态",
+    "filter_all": "全部状态",
+    "status_pending": "发送中或等待对账",
+    "status_delivered": "平台已投递",
+    "status_readback": "已收到显式回复",
+    "status_failed": "投递失败",
+    "status_unknown": "未知投递状态",
+    "loading": "正在加载投递证据…",
+    "load_failed": "无法验证投递证据。",
+    "empty": "当前工作区尚无连接器投递证据。",
+    "no_matches": "近期投递中没有符合筛选条件的记录。",
+    "task": "task",
+    "correlation": "关联号",
+    "metadata": "{{operation}} · 尝试次数：{{attempts}} · {{time}}",
+    "readback_explanation": "这仅证明收到一条明确回复原平台消息的入站消息，不代表平台提供了被动已读回执。",
+    "error_code": "错误码",
+    "evidence": "证据摘要"
+  },
   "role_sources": {
     "title": "角色源",
     "description": "审计由外部统一管理的数字员工角色、不可变版本和拟议的工作区变更。",

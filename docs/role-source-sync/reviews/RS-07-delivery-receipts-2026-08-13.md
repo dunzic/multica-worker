@@ -14,7 +14,7 @@ The ledger stores no message body. It records the SHA-256 payload digest, tenant
 
 When a later inbound message explicitly replies to the delivered provider message ID, the shared channel router advances `delivered` to `readback` once and records the inbound message ID in new digest-bound evidence. This is evidence of an explicit reply, not a claim that the platform exposed a passive read receipt.
 
-Workspace members can list the audit history. The response exposes payload and evidence digests but no message body, idempotency key, credential, token or provider error text.
+Workspace members can list the audit history. The response exposes payload and evidence digests but no message body, idempotency key, credential, token or provider error text. The shared Integrations settings page now renders the newest 100 verified rows with status filtering, connector type, task/correlation identity, attempts, safe error code, evidence commitment and time. It deliberately does not display channel-chat or provider-message routing IDs and has no resend action.
 
 ## Architecture expert review
 
@@ -44,8 +44,8 @@ Score: 2/3
 
 Open product work:
 
-- no settings/history UI, failure notification or one-click controlled retry;
-- no user-facing distinction yet between passive “read” and the stricter explicit-reply evidence now implemented;
+- no failure notification or one-click controlled retry;
+- the settings UI explicitly describes `readback` as an inbound message that replied to the delivered provider message, not passive “read” telemetry;
 - no attachment-level delivery detail;
 - operators still need task/API knowledge to act on a failed row.
 
@@ -57,6 +57,7 @@ Score: 2/3
 - Slack and DingTalk outbound tests prove both adapters supply the exact workspace/installation/task/session/operation/payload identity to the same recorder and persist the returned provider ID;
 - router tests pin the rule that only an explicit reply with both provider and inbound message IDs creates readback;
 - handler tests reject unverifiable terminal rows and pin the content-free response surface;
+- installed-client schema validation fails closed on malformed digests and terminal evidence that disagrees with row task/correlation/status/payload/attempt identity; component tests prove filtering, explicit-reply copy, routing-ID suppression and absence of a resend control;
 - migration policy and generated-query compilation cover concurrent index conventions and deletion ownership.
 
 Missing evidence:

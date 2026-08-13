@@ -57,6 +57,7 @@ import type {
   RuntimeModelListRequest,
   RoleSourceScan,
   RoleSourceLifecycleEvent,
+  ChannelDelivery,
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
   RoleSourceApplyResult,
@@ -105,6 +106,65 @@ export const RoleSourceLifecycleEventSchema: z.ZodType<RoleSourceLifecycleEvent>
 
 export const RoleSourceLifecycleEventListSchema = z.object({
   events: z.array(RoleSourceLifecycleEventSchema),
+}).loose();
+
+const ChannelDeliveryEvidenceSchema = z.object({
+  contract_version: z.string(),
+  delivery_id: z.string(),
+  correlation_id: z.string(),
+  workspace_id: z.string(),
+  task_id: z.string(),
+  chat_session_id: z.string(),
+  channel_type: z.string(),
+  channel_chat_id: z.string(),
+  operation_kind: z.string(),
+  payload_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  status: z.string(),
+  attempt_count: z.number().int().positive(),
+  external_message_id: z.string(),
+  delivered_at: z.string(),
+  readback_message_id: z.string().optional(),
+  readback_at: z.string().optional(),
+}).loose();
+
+const ChannelDeliverySchema: z.ZodType<ChannelDelivery> = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  installation_id: z.string().nullish().transform((value) => value ?? undefined),
+  task_id: z.string(),
+  chat_session_id: z.string(),
+  channel_type: z.string(),
+  channel_chat_id: z.string(),
+  operation_kind: z.string(),
+  correlation_id: z.string(),
+  payload_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  status: z.string(),
+  attempt_count: z.number().int().positive(),
+  external_message_id: z.string().nullish().transform((value) => value ?? undefined),
+  evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullish().transform((value) => value ?? undefined),
+  evidence: ChannelDeliveryEvidenceSchema.nullish().transform((value) => value ?? undefined),
+  last_error_code: z.string().nullish().transform((value) => value ?? undefined),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose().superRefine((delivery, ctx) => {
+  if (delivery.status !== "delivered" && delivery.status !== "readback") return;
+  if (!delivery.evidence_digest || !delivery.evidence ||
+      delivery.evidence.delivery_id !== delivery.id ||
+      delivery.evidence.correlation_id !== delivery.correlation_id ||
+      delivery.evidence.task_id !== delivery.task_id ||
+      delivery.evidence.status !== delivery.status ||
+      delivery.evidence.payload_digest !== delivery.payload_digest ||
+      delivery.evidence.attempt_count !== delivery.attempt_count) {
+    ctx.addIssue({ code: "custom", message: "terminal delivery evidence does not match its row" });
+  }
+  if (delivery.status === "readback" &&
+      (!delivery.evidence?.readback_at || !delivery.evidence.readback_message_id)) {
+    ctx.addIssue({ code: "custom", message: "readback delivery requires explicit reply evidence" });
+  }
+});
+
+export const ChannelDeliveryListSchema = z.object({
+  deliveries: z.array(ChannelDeliverySchema),
 }).loose();
 
 export const EMPTY_ROLE_SOURCE_SCAN: RoleSourceScan = {
