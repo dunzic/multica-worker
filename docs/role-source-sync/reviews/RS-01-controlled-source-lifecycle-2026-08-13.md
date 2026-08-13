@@ -44,11 +44,16 @@ real cluster exercise.
   evidence for the destination binding.
 - Members retain the read-only audit view; only workspace owners/admins see
   lifecycle controls, matching server authorization.
+- The same settings card now renders the newest 100 lifecycle events with the
+  transition, actor type/identifier, time, sequence, event commitment,
+  cancellation counts and rebind runtime change. It does not return or render
+  the generic audit payload, adapter metadata, plan/receipt data or secrets.
+- Unknown future lifecycle event types use a neutral fallback label instead of
+  inventing semantics or breaking an older installed client.
 
-Open objections: runtime selection is an exact-ID entry rather than a guided
-eligible-runtime picker, and lifecycle audit events are not yet rendered in the
-settings history. These are usability gaps, not reasons to weaken the server
-transition contract.
+Open objection: runtime selection is an exact-ID entry rather than a guided
+eligible-runtime picker. This is a usability gap, not a reason to weaken the
+server transition contract.
 
 ## Test expert
 
@@ -60,6 +65,18 @@ transition contract.
   ciphertext clearing, detached-only rebind and claim state filtering.
 - Core typecheck, API client PATCH test, settings lifecycle state tests, focused
   Go tests, race tests and vet form the local gate.
+- The history endpoint is tenant/source scoped and bounded by 100. Before any
+  event reaches the closed response DTO, the server decodes the closed audit
+  payload and recomputes that event's commitment. This validates each returned
+  event, but the filtered lifecycle-only list is not presented as proof of
+  contiguous full-chain history when other event families may occur between
+  rows.
+- A lifecycle-only partial listing index preserves newest-first bounded query
+  cost without inflating the general audit index with another full copy.
+- Handler tests prove the safe projection excludes the generic payload and
+  plan/receipt fields; the client rejects malformed event commitments; the
+  settings test covers actor, transition, runtime change and cancellation
+  display.
 - An opt-in live PostgreSQL test performs pause, evidence-gated resume, pause,
   detach, runtime-release verification, rebind and rejection of resume without
   destination evidence.

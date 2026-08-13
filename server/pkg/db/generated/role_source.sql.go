@@ -3567,6 +3567,55 @@ func (q *Queries) ListRoleSourceLegalHolds(ctx context.Context, arg ListRoleSour
 	return items, nil
 }
 
+const listRoleSourceLifecycleAuditEvents = `-- name: ListRoleSourceLifecycleAuditEvents :many
+SELECT id, source_id, workspace_id, sequence, event_type, actor_type, actor_id, previous_event_digest, event_digest, payload, created_at FROM role_source_audit_event
+WHERE source_id = $1
+  AND workspace_id = $2
+  AND event_type IN ('source_paused', 'source_resumed', 'source_detached', 'source_rebound')
+ORDER BY sequence DESC
+LIMIT $3
+`
+
+type ListRoleSourceLifecycleAuditEventsParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+// Safe bounded projection source for lifecycle history. The handler validates
+// each hash-chained event and returns only lifecycle fields.
+func (q *Queries) ListRoleSourceLifecycleAuditEvents(ctx context.Context, arg ListRoleSourceLifecycleAuditEventsParams) ([]RoleSourceAuditEvent, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceLifecycleAuditEvents, arg.SourceID, arg.WorkspaceID, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceAuditEvent{}
+	for rows.Next() {
+		var i RoleSourceAuditEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceID,
+			&i.WorkspaceID,
+			&i.Sequence,
+			&i.EventType,
+			&i.ActorType,
+			&i.ActorID,
+			&i.PreviousEventDigest,
+			&i.EventDigest,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoleSourceObjectMappingsForUpdate = `-- name: ListRoleSourceObjectMappingsForUpdate :many
 SELECT source_id, workspace_id, source_kind, source_parent_id, source_object_id, target_kind, target_id, ownership_mask, last_applied_digest, last_snapshot_digest, archived_at, created_at, updated_at FROM role_source_object_mapping
 WHERE source_id = $1 AND workspace_id = $2

@@ -350,6 +350,56 @@ func (c *ControlPlane) ListScans(ctx context.Context, workspaceIDText, sourceIDT
 	})
 }
 
+func (c *ControlPlane) ListLifecycleEvents(ctx context.Context, workspaceIDText, sourceIDText string, limit int32) ([]AuditEvent, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	rows, err := c.queries().ListRoleSourceLifecycleAuditEvents(ctx, db.ListRoleSourceLifecycleAuditEventsParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, ResultLimit: limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	events := make([]AuditEvent, 0, len(rows))
+	for _, row := range rows {
+		var payload AuditPayload
+		if err := json.Unmarshal(row.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("decode lifecycle audit payload: %w", err)
+		}
+		event := AuditEvent{
+			ContractVersion: AuditContractVersion,
+			SourceID:        util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
+			Sequence: row.Sequence, EventType: row.EventType,
+			Actor:               AuditActor{Type: row.ActorType, ID: uuidText(row.ActorID)},
+			PreviousEventDigest: lifecycleTextValue(row.PreviousEventDigest), Payload: payload,
+			OccurredAt: row.CreatedAt.Time, EventDigest: row.EventDigest,
+		}
+		if err := ValidateAuditEvent(event); err != nil {
+			return nil, fmt.Errorf("validate lifecycle audit event: %w", err)
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func uuidText(value pgtype.UUID) string {
+	if !value.Valid {
+		return ""
+	}
+	return util.UUIDToString(value)
+}
+
+func lifecycleTextValue(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
 func (c *ControlPlane) RenewScanLease(ctx context.Context, workspaceIDText, sourceIDText, requestIDText, runtimeIDText, leaseTokenText string, leaseDuration time.Duration) (db.RoleSourceScanRequest, error) {
 	if leaseDuration < 15*time.Second || leaseDuration > 15*time.Minute {
 		return db.RoleSourceScanRequest{}, errors.New("scan lease duration must be between 15 seconds and 15 minutes")

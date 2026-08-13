@@ -14,6 +14,7 @@ const queryFixtures = vi.hoisted(() => ({
   retention: undefined as Record<string, unknown> | undefined,
   latestScan: undefined as Record<string, unknown> | undefined,
   scans: [] as Array<Record<string, unknown>>,
+  lifecycleEvents: [] as Array<Record<string, unknown>>,
   approvals: [] as Array<Record<string, unknown>>,
   applies: [] as Array<Record<string, unknown>>,
   secretTransfers: [] as Array<Record<string, unknown>>,
@@ -80,6 +81,8 @@ vi.mock("@tanstack/react-query", async () => {
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
       data: options.queryKey.includes("latest-scan")
         ? queryFixtures.latestScan
+        : options.queryKey.includes("lifecycle-events")
+          ? queryFixtures.lifecycleEvents
         : options.queryKey.includes("scans")
           ? queryFixtures.scans
         : options.queryKey.includes("impact")
@@ -166,6 +169,22 @@ beforeEach(() => {
       requested_at: "2026-08-12T00:10:00Z",
       claimed_at: "2026-08-12T00:10:01Z",
       completed_at: "2026-08-12T00:10:02Z",
+    },
+  ];
+  queryFixtures.lifecycleEvents = [
+    {
+      sequence: 7,
+      event_type: "source_rebound",
+      actor_type: "user",
+      actor_id: "00000000-0000-4000-8000-000000000099",
+      previous_state: "detached",
+      state: "paused",
+      previous_runtime_id: "00000000-0000-4000-8000-000000000010",
+      runtime_id: "00000000-0000-4000-8000-000000000011",
+      cancelled_scan_count: 2,
+      cancelled_transfer_count: 1,
+      event_digest: `sha256:${"e".repeat(64)}`,
+      occurred_at: "2026-08-13T05:00:00Z",
     },
   ];
   queryFixtures.plans = [
@@ -713,6 +732,16 @@ describe("RoleSourcesTab", () => {
 
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Detach" })).not.toBeInTheDocument();
+  });
+
+  it("shows a bounded safe lifecycle audit projection", () => {
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByText("Source rebound")).toBeInTheDocument();
+    expect(screen.getByText(/detached → paused · user: 00000000-000…00000099/)).toBeInTheDocument();
+    expect(screen.getByText(/Runtime: 00000000-000…00000010 → 00000000-000…00000011/)).toBeInTheDocument();
+    expect(screen.getByText("Cancelled scans: 2 · transfers: 1")).toBeInTheDocument();
+    expect(screen.queryByText(/adapter_kind|plan_digest|receipt_digest|payload/)).not.toBeInTheDocument();
   });
 
   it("requires paused state before detach and exposes resume separately", () => {

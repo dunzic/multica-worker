@@ -35,6 +35,7 @@ type RoleSourceControlPlane interface {
 	GetScan(context.Context, string, string, string) (db.RoleSourceScanRequest, error)
 	GetLatestScan(context.Context, string, string) (db.RoleSourceScanRequest, error)
 	ListScans(context.Context, string, string, int32) ([]db.RoleSourceScanRequest, error)
+	ListLifecycleEvents(context.Context, string, string, int32) ([]rolesource.AuditEvent, error)
 	ClaimNextScan(context.Context, string, time.Duration) (rolesource.ClaimedScan, error)
 	RenewScanLease(context.Context, string, string, string, string, string, time.Duration) (db.RoleSourceScanRequest, error)
 	ReportScanSuccess(context.Context, rolesource.ReportScanSuccessInput) (db.RoleSourceSnapshot, error)
@@ -173,6 +174,21 @@ type roleSourceApplyFailureResponse struct {
 	FailureStage string `json:"failure_stage"`
 	FailureCode  string `json:"failure_code"`
 	OccurredAt   string `json:"occurred_at"`
+}
+
+type roleSourceLifecycleEventResponse struct {
+	Sequence               int64  `json:"sequence"`
+	EventType              string `json:"event_type"`
+	ActorType              string `json:"actor_type"`
+	ActorID                string `json:"actor_id,omitempty"`
+	PreviousState          string `json:"previous_state"`
+	State                  string `json:"state"`
+	PreviousRuntimeID      string `json:"previous_runtime_id,omitempty"`
+	RuntimeID              string `json:"runtime_id,omitempty"`
+	CancelledScanCount     int    `json:"cancelled_scan_count"`
+	CancelledTransferCount int    `json:"cancelled_transfer_count"`
+	EventDigest            string `json:"event_digest"`
+	OccurredAt             string `json:"occurred_at"`
 }
 
 type roleSourceSecretTransferResponse struct {
@@ -894,6 +910,29 @@ func (h *Handler) ListRoleSourceScans(w http.ResponseWriter, r *http.Request) {
 		items = append(items, roleSourceScanToResponse(row))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"scans": items})
+}
+
+func (h *Handler) ListRoleSourceLifecycleEvents(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	events, err := h.RoleSources.ListLifecycleEvents(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), 100)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list role source lifecycle history")
+		return
+	}
+	items := make([]roleSourceLifecycleEventResponse, 0, len(events))
+	for _, event := range events {
+		items = append(items, roleSourceLifecycleEventResponse{
+			Sequence: event.Sequence, EventType: event.EventType, ActorType: event.Actor.Type, ActorID: event.Actor.ID,
+			PreviousState: event.Payload.PreviousState, State: event.Payload.State,
+			PreviousRuntimeID: event.Payload.PreviousRuntimeID, RuntimeID: event.Payload.RuntimeID,
+			CancelledScanCount: event.Payload.CancelledScanCount, CancelledTransferCount: event.Payload.CancelledTransferCount,
+			EventDigest: event.EventDigest, OccurredAt: event.OccurredAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": items})
 }
 
 func (h *Handler) ListRoleSourceSnapshots(w http.ResponseWriter, r *http.Request) {

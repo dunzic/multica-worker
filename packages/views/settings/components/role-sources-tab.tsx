@@ -38,6 +38,7 @@ import {
   roleSourceApplyFailureListOptions,
   roleSourceApplyHistoryListOptions,
   roleSourceLegalHoldListOptions,
+  roleSourceLifecycleEventListOptions,
   roleSourceLatestScanOptions,
   roleSourceListOptions,
   roleSourcePlanImpactOptions,
@@ -72,6 +73,12 @@ import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
 function shortDigest(value: string | null | undefined) {
   if (!value) return "—";
   return `${value.slice(0, 14)}…${value.slice(-8)}`;
+}
+
+function shortIdentifier(value: string | null | undefined) {
+  if (!value) return "—";
+  if (value.length <= 24) return value;
+  return `${value.slice(0, 12)}…${value.slice(-8)}`;
 }
 
 function operationVariant(operation: RoleSourcePlanAction["operation"]) {
@@ -119,6 +126,21 @@ function scanStatusTranslationKey(status: string) {
       return "scan_status_cancelled" as const;
     default:
       return "scan_status_unknown" as const;
+  }
+}
+
+function lifecycleEventTranslationKey(eventType: string) {
+  switch (eventType) {
+    case "source_paused":
+      return "lifecycle_event_source_paused" as const;
+    case "source_resumed":
+      return "lifecycle_event_source_resumed" as const;
+    case "source_detached":
+      return "lifecycle_event_source_detached" as const;
+    case "source_rebound":
+      return "lifecycle_event_source_rebound" as const;
+    default:
+      return "lifecycle_event_unknown" as const;
   }
 }
 
@@ -234,6 +256,10 @@ export function RoleSourcesTab() {
   });
   const scanHistory = useQuery({
     ...roleSourceScanListOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId),
+  });
+  const lifecycleHistory = useQuery({
+    ...roleSourceLifecycleEventListOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId),
   });
   const latestScanData = latestScan.data;
@@ -404,6 +430,7 @@ export function RoleSourcesTab() {
         { action, expected_version: selected.version, ...extra },
       );
       await queryClient.invalidateQueries({ queryKey: roleSourceKeys.all(workspaceId) });
+      await queryClient.invalidateQueries({ queryKey: roleSourceKeys.lifecycleEvents(workspaceId, selected.id) });
       toast.success(t(($) => $.role_sources.lifecycle_success));
       setPendingAction(null);
       setRebindOpen(false);
@@ -735,6 +762,52 @@ export function RoleSourcesTab() {
                   </div>
                 ) : (
                   <div className="text-caption text-muted-foreground">{t(($) => $.role_sources.lifecycle_admin_only)}</div>
+                )}
+              </div>
+              <div className="border-t border-surface-border">
+                {lifecycleHistory.isLoading ? (
+                  <div className="flex min-h-16 items-center justify-center gap-2 text-caption text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t(($) => $.role_sources.loading)}
+                  </div>
+                ) : lifecycleHistory.isError ? (
+                  <div className="p-4 text-caption text-destructive">{t(($) => $.role_sources.lifecycle_history_load_failed)}</div>
+                ) : !lifecycleHistory.data?.length ? (
+                  <div className="p-4 text-caption text-muted-foreground">{t(($) => $.role_sources.lifecycle_history_empty)}</div>
+                ) : (
+                  <div className="max-h-64 divide-y divide-surface-border overflow-y-auto">
+                    {lifecycleHistory.data.map((event) => (
+                      <div key={event.event_digest} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+                        <div className="min-w-0">
+                          <div className="text-body font-medium">
+                            {t(($) => $.role_sources[lifecycleEventTranslationKey(event.event_type)])}
+                          </div>
+                          <div className="mt-1 text-caption text-muted-foreground">
+                            {event.previous_state} → {event.state} · {t(($) => $.role_sources.lifecycle_actor, {
+                              type: event.actor_type,
+                              id: shortIdentifier(event.actor_id),
+                            })} · {event.occurred_at}
+                          </div>
+                          {event.previous_runtime_id || event.runtime_id ? (
+                            <div className="mt-0.5 font-mono text-caption text-muted-foreground">
+                              {t(($) => $.role_sources.lifecycle_runtime_change, {
+                                from: shortIdentifier(event.previous_runtime_id),
+                                to: shortIdentifier(event.runtime_id),
+                              })}
+                            </div>
+                          ) : null}
+                          <div className="mt-0.5 font-mono text-caption text-muted-foreground">
+                            #{event.sequence} · {shortDigest(event.event_digest)}
+                          </div>
+                        </div>
+                        {event.cancelled_scan_count || event.cancelled_transfer_count ? (
+                          <Badge variant="outline">
+                            {t(($) => $.role_sources.lifecycle_cancelled_counts, { scans: event.cancelled_scan_count, transfers: event.cancelled_transfer_count })}
+                          </Badge>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </SettingsCard>

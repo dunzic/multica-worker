@@ -27,6 +27,8 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "latest-scan", sourceId] as const,
   scans: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "scans", sourceId] as const,
+  lifecycleEvents: (workspaceId: string, sourceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "lifecycle-events", sourceId] as const,
 };
 
 export function roleSourceListOptions(workspaceId: string) {
@@ -92,6 +94,17 @@ export function roleSourceScanListOptions(
   return queryOptions({
     queryKey: roleSourceKeys.scans(workspaceId, sourceId),
     queryFn: () => api.listRoleSourceScans(workspaceId, sourceId),
+    enabled: Boolean(sourceId),
+  });
+}
+
+export function roleSourceLifecycleEventListOptions(
+  workspaceId: string,
+  sourceId: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.lifecycleEvents(workspaceId, sourceId),
+    queryFn: () => api.listRoleSourceLifecycleEvents(workspaceId, sourceId),
     enabled: Boolean(sourceId),
   });
 }

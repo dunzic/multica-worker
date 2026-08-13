@@ -52,6 +52,7 @@ import type {
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
   RoleSourceScan,
+  RoleSourceLifecycleEvent,
   UpdateRoleSourceLifecycleRequest,
   RoleSourceLegalHold,
   CreateRoleSourceLegalHoldRequest,
@@ -319,6 +320,7 @@ import {
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
   RoleSourceScanSchema,
   RoleSourceScanListSchema,
+  RoleSourceLifecycleEventListSchema,
   RoleSourcePlanRecordSchema,
   RoleSourcePlanRecordListSchema,
   RoleSourcePlanApprovalSchema,
@@ -1731,6 +1733,18 @@ export class ApiClient {
     return parseWithFallback(raw, RoleSourceScanListSchema, { scans: [] }, {
       endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/scans",
     }).scans;
+  }
+
+  async listRoleSourceLifecycleEvents(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceLifecycleEvent[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/lifecycle-events`,
+    );
+    return parseWithFallback(raw, RoleSourceLifecycleEventListSchema, { events: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/lifecycle-events",
+    }).events;
   }
 
   async requestRoleSourceScan(

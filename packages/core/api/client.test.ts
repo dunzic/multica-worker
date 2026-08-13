@@ -105,6 +105,35 @@ describe("ApiClient role-source runtime evidence", () => {
     );
   });
 
+  it("lists safe lifecycle history and fails closed on a malformed event digest", async () => {
+    const event = {
+      sequence: 7,
+      event_type: "source_rebound",
+      actor_type: "user",
+      actor_id: "user-1",
+      previous_state: "detached",
+      state: "paused",
+      previous_runtime_id: "runtime-1",
+      runtime_id: "runtime-2",
+      cancelled_scan_count: 0,
+      cancelled_transfer_count: 0,
+      event_digest: `sha256:${"e".repeat(64)}`,
+      occurred_at: "2026-08-13T05:00:00Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ events: [event] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ events: [{ ...event, event_digest: "raw" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listRoleSourceLifecycleEvents("workspace-1", "source-1")).resolves.toEqual([event]);
+    await expect(client.listRoleSourceLifecycleEvents("workspace-1", "source-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/lifecycle-events",
+    );
+  });
+
   it("treats empty scan history as null and malformed scan responses as unavailable", async () => {
     const fetchMock = vi
       .fn()

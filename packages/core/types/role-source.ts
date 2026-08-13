@@ -167,6 +167,21 @@ export interface RoleSourceScan {
   completed_at: string | null;
 }
 
+export interface RoleSourceLifecycleEvent {
+  sequence: number;
+  event_type: "source_paused" | "source_resumed" | "source_detached" | "source_rebound" | string;
+  actor_type: "user" | "runtime" | "system" | string;
+  actor_id?: string;
+  previous_state: string;
+  state: string;
+  previous_runtime_id?: string;
+  runtime_id?: string;
+  cancelled_scan_count: number;
+  cancelled_transfer_count: number;
+  event_digest: string;
+  occurred_at: string;
+}
+
 export type RoleSourcePlanOperation =
   | "create"
   | "update"

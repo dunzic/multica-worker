@@ -113,6 +113,7 @@ export type {
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
   RoleSourceScan,
+  RoleSourceLifecycleEvent,
   RoleSourceScanStatus,
   RoleSourceLifecycleAction,
   UpdateRoleSourceLifecycleRequest,

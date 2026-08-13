@@ -1566,3 +1566,13 @@ WHERE source_id = @source_id
   AND sequence < @before_sequence
 ORDER BY sequence DESC
 LIMIT @result_limit;
+
+-- name: ListRoleSourceLifecycleAuditEvents :many
+-- Safe bounded projection source for lifecycle history. The handler validates
+-- each hash-chained event and returns only lifecycle fields.
+SELECT * FROM role_source_audit_event
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND event_type IN ('source_paused', 'source_resumed', 'source_detached', 'source_rebound')
+ORDER BY sequence DESC
+LIMIT @result_limit;

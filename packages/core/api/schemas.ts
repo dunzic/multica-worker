@@ -56,6 +56,7 @@ import type {
   ResourceLabelsResponse,
   RuntimeModelListRequest,
   RoleSourceScan,
+  RoleSourceLifecycleEvent,
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
   RoleSourceApplyResult,
@@ -85,6 +86,25 @@ export const RoleSourceScanSchema = z.object({
 
 export const RoleSourceScanListSchema = z.object({
   scans: z.array(RoleSourceScanSchema),
+}).loose();
+
+export const RoleSourceLifecycleEventSchema: z.ZodType<RoleSourceLifecycleEvent> = z.object({
+  sequence: z.number().int().positive(),
+  event_type: z.string(),
+  actor_type: z.string(),
+  actor_id: z.string().optional(),
+  previous_state: z.string(),
+  state: z.string(),
+  previous_runtime_id: z.string().optional(),
+  runtime_id: z.string().optional(),
+  cancelled_scan_count: z.number().int().nonnegative(),
+  cancelled_transfer_count: z.number().int().nonnegative(),
+  event_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  occurred_at: z.string(),
+}).loose();
+
+export const RoleSourceLifecycleEventListSchema = z.object({
+  events: z.array(RoleSourceLifecycleEventSchema),
 }).loose();
 
 export const EMPTY_ROLE_SOURCE_SCAN: RoleSourceScan = {

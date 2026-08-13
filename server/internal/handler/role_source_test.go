@@ -47,6 +47,9 @@ type fakeRoleSourceControlPlane struct {
 	getLatestScanErr          error
 	listScanRows              []db.RoleSourceScanRequest
 	listScanErr               error
+	lifecycleEvents           []rolesource.AuditEvent
+	lifecycleEventsErr        error
+	lifecycleEventsLimit      int32
 	listRows                  []db.RoleSource
 	listErr                   error
 	getSourceRow              db.RoleSource
@@ -212,6 +215,12 @@ func (f *fakeRoleSourceControlPlane) GetLatestScan(context.Context, string, stri
 func (f *fakeRoleSourceControlPlane) ListScans(context.Context, string, string, int32) ([]db.RoleSourceScanRequest, error) {
 	f.calls++
 	return f.listScanRows, f.listScanErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListLifecycleEvents(_ context.Context, _, _ string, limit int32) ([]rolesource.AuditEvent, error) {
+	f.calls++
+	f.lifecycleEventsLimit = limit
+	return f.lifecycleEvents, f.lifecycleEventsErr
 }
 
 func (f *fakeRoleSourceControlPlane) ClaimNextScan(context.Context, string, time.Duration) (rolesource.ClaimedScan, error) {
@@ -840,6 +849,45 @@ func TestListRoleSourceScansIsBoundedAndRedacted(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"scans"`) || !strings.Contains(w.Body.String(), `"status":"succeeded"`) {
 		t.Fatalf("scan history missing safe status: %s", w.Body.String())
+	}
+}
+
+func TestListRoleSourceLifecycleEventsUsesClosedSafeProjection(t *testing.T) {
+	event, err := rolesource.BuildAuditEvent(
+		roleSourceTestSourceID, testWorkspaceID, 7, "source_rebound",
+		rolesource.AuditActor{Type: "user", ID: testUserID}, "",
+		rolesource.AuditPayload{
+			PreviousRuntimeID: "00000000-0000-4000-8000-000000000010",
+			RuntimeID:         "00000000-0000-4000-8000-000000000011",
+			PreviousState:     "detached", State: "paused", Result: "succeeded",
+		}, time.Date(2026, 8, 13, 5, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRoleSourceControlPlane{lifecycleEvents: []rolesource.AuditEvent{event}}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.ListRoleSourceLifecycleEvents(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("list lifecycle events: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if fake.lifecycleEventsLimit != 100 {
+		t.Fatalf("lifecycle history limit = %d, want 100", fake.lifecycleEventsLimit)
+	}
+	for _, required := range []string{`"event_type":"source_rebound"`, `"actor_type":"user"`, `"previous_state":"detached"`, `"state":"paused"`, `"event_digest":"sha256:`} {
+		if !strings.Contains(w.Body.String(), required) {
+			t.Errorf("lifecycle history missing %q: %s", required, w.Body.String())
+		}
+	}
+	for _, forbidden := range []string{"payload", "adapter_kind", "result", "plan_digest", "receipt_digest"} {
+		if strings.Contains(w.Body.String(), forbidden) {
+			t.Errorf("lifecycle history exposed %q: %s", forbidden, w.Body.String())
+		}
 	}
 }
 
