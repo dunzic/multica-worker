@@ -36,15 +36,21 @@ import {
 import { cn } from "@multica/ui/lib/utils";
 import {
   roleSourceApplyFailureListOptions,
+  roleSourceApplyHistoryListOptions,
   roleSourceLegalHoldListOptions,
   roleSourceLatestScanOptions,
   roleSourceListOptions,
   roleSourcePlanImpactOptions,
+  roleSourcePlanApprovalListOptions,
   roleSourcePlanListOptions,
   roleSourceRuntimeAttestationListOptions,
   roleSourceRetentionPreviewOptions,
   roleSourceKeys,
+  useApplyRoleSourcePlan,
+  useCreateRoleSourcePlan,
+  useCreateRoleSourcePlanApproval,
   useRequestRoleSourceScan,
+  type RoleSourceArchiveDecision,
   type RoleSourceLifecycleAction,
   type RoleSourceLegalHold,
   type RoleSourceLegalHoldReason,
@@ -53,6 +59,7 @@ import {
   type RoleSourcePlanAction,
 } from "@multica/core/role-sources";
 import { api, errorCode } from "@multica/core/api";
+import { useFlag } from "@multica/core/feature-flags";
 import { useCurrentMember } from "@multica/core/permissions";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useT } from "../../i18n";
@@ -67,6 +74,10 @@ function operationVariant(operation: RoleSourcePlanAction["operation"]) {
   if (operation === "blocked" || operation === "archive_candidate") return "destructive" as const;
   if (operation === "unchanged") return "outline" as const;
   return "secondary" as const;
+}
+
+function objectRefKey(ref: RoleSourcePlanAction["ref"]) {
+  return `${ref.kind}\u0000${ref.parent_id ?? ""}\u0000${ref.id}`;
 }
 
 function runtimeConfigTranslationKey(status: string) {
@@ -140,6 +151,7 @@ export function RoleSourcesTab() {
   const { role } = useCurrentMember(workspaceId);
   const isOwner = role === "owner";
   const canManage = role === "owner" || role === "admin";
+  const roleSourceApplyEnabled = useFlag("role_source_apply", false);
   const sources = useQuery({
     ...roleSourceListOptions(workspaceId),
     enabled: Boolean(workspaceId),
@@ -167,7 +179,11 @@ export function RoleSourcesTab() {
   const [retentionMinimumDays, setRetentionMinimumDays] = React.useState("90");
   const [retentionKeepSuccessful, setRetentionKeepSuccessful] = React.useState("10");
   const [savingRetention, setSavingRetention] = React.useState(false);
+  const [archiveDecisions, setArchiveDecisions] = React.useState<Record<string, RoleSourceArchiveDecision>>({});
+  const [applyDialogOpen, setApplyDialogOpen] = React.useState(false);
   const scanRequestKeyRef = React.useRef("");
+  const approvalRequestKeyRef = React.useRef("");
+  const applyRequestKeyRef = React.useRef("");
 
   React.useEffect(() => {
     if (!sources.data?.length) {
@@ -191,6 +207,29 @@ export function RoleSourcesTab() {
   const latestScanData = latestScan.data;
   const requestScan = useRequestRoleSourceScan(workspaceId, selectedId);
   const latest = plans.data?.[0];
+  const createPlan = useCreateRoleSourcePlan(workspaceId, selectedId);
+  const createApproval = useCreateRoleSourcePlanApproval(
+    workspaceId,
+    selectedId,
+    latest?.plan.plan_digest ?? "",
+  );
+  const applyPlan = useApplyRoleSourcePlan(
+    workspaceId,
+    selectedId,
+    latest?.plan.plan_digest ?? "",
+  );
+  const approvals = useQuery({
+    ...roleSourcePlanApprovalListOptions(
+      workspaceId,
+      selectedId,
+      latest?.plan.plan_digest ?? "",
+    ),
+    enabled: Boolean(workspaceId && selectedId && latest?.plan.plan_digest),
+  });
+  const applyHistory = useQuery({
+    ...roleSourceApplyHistoryListOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId),
+  });
   const impact = useQuery({
     ...roleSourcePlanImpactOptions(
       workspaceId,
@@ -221,6 +260,13 @@ export function RoleSourcesTab() {
     void queryClient.invalidateQueries({ queryKey: roleSourceKeys.list(workspaceId) });
     void queryClient.invalidateQueries({ queryKey: roleSourceKeys.plans(workspaceId, selectedId) });
   }, [latestScan.data?.id, latestScan.data?.status, queryClient, selectedId, workspaceId]);
+
+  React.useEffect(() => {
+    setArchiveDecisions({});
+    setApplyDialogOpen(false);
+    approvalRequestKeyRef.current = "";
+    applyRequestKeyRef.current = "";
+  }, [latest?.plan.plan_digest, selectedId]);
 
   React.useEffect(() => {
     if (!retention.data?.policy) return;
@@ -352,6 +398,92 @@ export function RoleSourcesTab() {
     }
   }
 
+  const archiveCandidates = React.useMemo(
+    () => (latest?.plan.actions ?? [])
+      .filter((action) => action.operation === "archive_candidate")
+      .sort((left, right) => {
+        const leftKey = objectRefKey(left.ref);
+        const rightKey = objectRefKey(right.ref);
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      }),
+    [latest?.plan.actions],
+  );
+  const allArchiveCandidatesDecided = archiveCandidates.every(
+    (action) => Boolean(archiveDecisions[objectRefKey(action.ref)]),
+  );
+  const approvedApproval = createApproval.data?.decision === "approved"
+    ? createApproval.data
+    : approvals.data?.find((approval) => approval.decision === "approved");
+
+  async function generatePlan() {
+    const snapshotDigest = latestScanData?.status === "succeeded"
+      ? latestScanData.snapshot_digest
+      : null;
+    if (!snapshotDigest || createPlan.isPending) return;
+    try {
+      const plan = await createPlan.mutateAsync(snapshotDigest);
+      if (!plan) {
+        toast.error(t(($) => $.role_sources.plan_invalid_response));
+        return;
+      }
+      toast.success(t(($) => $.role_sources.plan_created));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.plan_create_failed));
+    }
+  }
+
+  async function approveLatestPlan() {
+    if (!latest?.plan.applyable || !allArchiveCandidatesDecided || createApproval.isPending) return;
+    if (!approvalRequestKeyRef.current) {
+      approvalRequestKeyRef.current = `role-source-approval-${globalThis.crypto.randomUUID()}`;
+    }
+    try {
+      const approval = await createApproval.mutateAsync({
+        request_key: approvalRequestKeyRef.current,
+        decision: "approved",
+        decisions: {
+          contract_version: latest.plan.contract_version,
+          archives: archiveCandidates.map((action) => ({
+            ref: action.ref,
+            decision: archiveDecisions[objectRefKey(action.ref)]!,
+          })),
+        },
+      });
+      if (!approval) {
+        toast.error(t(($) => $.role_sources.approval_invalid_response));
+        return;
+      }
+      approvalRequestKeyRef.current = "";
+      toast.success(t(($) => $.role_sources.approval_created));
+    } catch (error) {
+      if (errorCode(error)) approvalRequestKeyRef.current = "";
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.approval_failed));
+    }
+  }
+
+  async function applyLatestPlan() {
+    if (!approvedApproval || applyPlan.isPending) return;
+    if (!applyRequestKeyRef.current) {
+      applyRequestKeyRef.current = `role-source-apply-${globalThis.crypto.randomUUID()}`;
+    }
+    try {
+      const result = await applyPlan.mutateAsync({
+        request_key: applyRequestKeyRef.current,
+        approval_id: approvedApproval.id,
+      });
+      if (!result) {
+        toast.error(t(($) => $.role_sources.apply_invalid_response));
+        return;
+      }
+      applyRequestKeyRef.current = "";
+      setApplyDialogOpen(false);
+      toast.success(t(($) => $.role_sources.apply_succeeded));
+    } catch (error) {
+      if (errorCode(error)) applyRequestKeyRef.current = "";
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.apply_failed));
+    }
+  }
+
   return (
     <SettingsTab
       title={t(($) => $.role_sources.title)}
@@ -360,7 +492,9 @@ export function RoleSourcesTab() {
       <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-caption leading-5 text-muted-foreground">
         <div className="flex gap-2 text-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-          <span>{t(($) => $.role_sources.read_only_notice)}</span>
+          <span>{t(($) => roleSourceApplyEnabled
+            ? $.role_sources.controlled_apply_notice
+            : $.role_sources.read_only_notice)}</span>
         </div>
       </div>
 
@@ -732,6 +866,24 @@ export function RoleSourcesTab() {
             description={t(($) => $.role_sources.latest_plan_description, { name: selected.name })}
           >
             <SettingsCard>
+            {roleSourceApplyEnabled && canManage ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-border p-4">
+                <div className="text-caption text-muted-foreground">
+                  {latestScanData?.status === "succeeded" && latestScanData.snapshot_digest
+                    ? t(($) => $.role_sources.plan_target_snapshot, { digest: shortDigest(latestScanData.snapshot_digest) })
+                    : t(($) => $.role_sources.plan_requires_scan)}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={createPlan.isPending || latestScanData?.status !== "succeeded" || !latestScanData.snapshot_digest}
+                  onClick={() => void generatePlan()}
+                >
+                  {createPlan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {t(($) => $.role_sources.plan_generate)}
+                </Button>
+              </div>
+            ) : null}
             {plans.isLoading ? (
               <div className="flex min-h-24 items-center justify-center gap-2 text-caption text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -769,6 +921,84 @@ export function RoleSourcesTab() {
                         <span className="ml-2 text-muted-foreground">{blocker.message}</span>
                       </div>
                     ))}
+                  </div>
+                ) : null}
+
+                {roleSourceApplyEnabled && canManage && latest.plan.applyable ? (
+                  <div className="space-y-4 p-4">
+                    <div>
+                      <div className="text-body font-medium">{t(($) => $.role_sources.approval_title)}</div>
+                      <p className="mt-1 text-caption text-muted-foreground">
+                        {t(($) => $.role_sources.approval_description)}
+                      </p>
+                    </div>
+                    {archiveCandidates.length ? (
+                      <div className="space-y-3">
+                        {archiveCandidates.map((action) => {
+                          const key = objectRefKey(action.ref);
+                          const inputId = `archive-decision-${action.ref.kind}-${action.ref.parent_id ?? "root"}-${action.ref.id}`;
+                          return (
+                            <div key={key} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-surface-border p-3">
+                              <div className="min-w-0">
+                                <Label htmlFor={inputId}>{action.display_name || action.ref.id}</Label>
+                                <div className="mt-1 text-caption text-muted-foreground">
+                                  {action.ref.kind} · {action.reason}
+                                </div>
+                              </div>
+                              <Select
+                                items={[
+                                  { value: "retain", label: t(($) => $.role_sources.archive_retain) },
+                                  { value: "archive", label: t(($) => $.role_sources.archive_archive) },
+                                ]}
+                                value={archiveDecisions[key] ?? null}
+                                onValueChange={(value) => value && setArchiveDecisions((current) => ({
+                                  ...current,
+                                  [key]: value as RoleSourceArchiveDecision,
+                                }))}
+                              >
+                                <SelectTrigger id={inputId} className="w-44">
+                                  <SelectValue placeholder={t(($) => $.role_sources.archive_choose)} />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="retain">{t(($) => $.role_sources.archive_retain)}</SelectItem>
+                                  <SelectItem value="archive">{t(($) => $.role_sources.archive_archive)}</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-caption text-muted-foreground">
+                        {t(($) => $.role_sources.archive_none)}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-caption text-muted-foreground">
+                        {approvedApproval
+                          ? t(($) => $.role_sources.approval_recorded, { time: approvedApproval.created_at })
+                          : t(($) => $.role_sources.approval_not_recorded)}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={createApproval.isPending || !allArchiveCandidatesDecided || Boolean(approvedApproval)}
+                          onClick={() => void approveLatestPlan()}
+                        >
+                          {createApproval.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                          {t(($) => $.role_sources.approve_plan)}
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={!approvedApproval || applyPlan.isPending}
+                          onClick={() => setApplyDialogOpen(true)}
+                        >
+                          {applyPlan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                          {t(($) => $.role_sources.apply_plan)}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 ) : null}
 
@@ -884,6 +1114,47 @@ export function RoleSourcesTab() {
           </SettingsSection>
 
           <SettingsSection
+            title={t(($) => $.role_sources.receipts_title)}
+            description={t(($) => $.role_sources.receipts_description)}
+          >
+            <SettingsCard>
+              {applyHistory.isLoading ? (
+                <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t(($) => $.role_sources.loading)}
+                </div>
+              ) : applyHistory.isError ? (
+                <div className="p-4 text-caption text-destructive">{t(($) => $.role_sources.receipts_load_failed)}</div>
+              ) : !applyHistory.data?.length ? (
+                <div className="p-4 text-caption text-muted-foreground">{t(($) => $.role_sources.receipts_empty)}</div>
+              ) : (
+                <div className="max-h-80 divide-y divide-surface-border overflow-y-auto">
+                  {applyHistory.data.map((apply) => (
+                    <div key={apply.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+                      <div className="min-w-0">
+                        <div className="font-mono text-caption text-foreground">{shortDigest(apply.receipt.receipt_digest)}</div>
+                        <div className="mt-1 text-caption text-muted-foreground">
+                          {t(($) => $.role_sources.receipt_counts, {
+                            created: apply.receipt.counts.created,
+                            updated: apply.receipt.counts.updated,
+                            unchanged: apply.receipt.counts.unchanged,
+                            archived: apply.receipt.counts.archived,
+                            retained: apply.receipt.counts.retained,
+                          })}
+                        </div>
+                        <div className="mt-0.5 font-mono text-caption text-muted-foreground">
+                          {shortDigest(apply.receipt.snapshot_digest)} · {apply.completed_at ?? "—"}
+                        </div>
+                      </div>
+                      <Badge variant={apply.status === "succeeded" ? "secondary" : "outline"}>{apply.status}</Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SettingsCard>
+          </SettingsSection>
+
+          <SettingsSection
             title={t(($) => $.role_sources.failed_applies_title)}
             description={t(($) => $.role_sources.failed_applies_description)}
           >
@@ -953,6 +1224,35 @@ export function RoleSourcesTab() {
             >
               {savingLifecycle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t(($) => $.role_sources.confirm)}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={applyDialogOpen} onOpenChange={(open) => !open && !applyPlan.isPending && setApplyDialogOpen(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(($) => $.role_sources.apply_confirm_title)}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(($) => $.role_sources.apply_confirm_description, {
+                digest: shortDigest(latest?.plan.plan_digest),
+                create: latest?.plan.summary.create ?? 0,
+                update: latest?.plan.summary.update ?? 0,
+                archive: archiveCandidates.filter((action) => archiveDecisions[objectRefKey(action.ref)] === "archive").length,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={applyPlan.isPending}>{t(($) => $.role_sources.cancel)}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={applyPlan.isPending || !approvedApproval}
+              onClick={(event) => {
+                event.preventDefault();
+                void applyLatestPlan();
+              }}
+            >
+              {applyPlan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t(($) => $.role_sources.apply_confirm_action)}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

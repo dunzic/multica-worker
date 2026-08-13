@@ -13,9 +13,12 @@ const queryFixtures = vi.hoisted(() => ({
   legalHolds: [] as Array<Record<string, unknown>>,
   retention: undefined as Record<string, unknown> | undefined,
   latestScan: undefined as Record<string, unknown> | undefined,
+  approvals: [] as Array<Record<string, unknown>>,
+  applies: [] as Array<Record<string, unknown>>,
 }));
 
 const memberFixture = vi.hoisted(() => ({ role: "owner" }));
+const featureFlags = vi.hoisted(() => ({ roleSourceApply: false }));
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 const apiMocks = vi.hoisted(() => ({
   requestRoleSourceScan: vi.fn(),
@@ -23,6 +26,11 @@ const apiMocks = vi.hoisted(() => ({
   createRoleSourceLegalHold: vi.fn(),
   releaseRoleSourceLegalHold: vi.fn(),
   updateRoleSourceRetentionPolicy: vi.fn(),
+  createRoleSourcePlan: vi.fn(),
+  listRoleSourcePlanApprovals: vi.fn(),
+  createRoleSourcePlanApproval: vi.fn(),
+  applyRoleSourcePlan: vi.fn(),
+  listRoleSourceApplyHistory: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({ toast: toastMocks }));
@@ -46,6 +54,12 @@ vi.mock("@multica/core/permissions", () => ({
   useCurrentMember: () => ({ role: memberFixture.role, userId: "user-1", member: null, isLoading: false }),
 }));
 
+vi.mock("@multica/core/feature-flags", () => ({
+  useFlag: (name: string, fallback: boolean) => name === "role_source_apply"
+    ? featureFlags.roleSourceApply
+    : fallback,
+}));
+
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>(
     "@tanstack/react-query",
@@ -62,6 +76,10 @@ vi.mock("@tanstack/react-query", async () => {
         ? queryFixtures.latestScan
         : options.queryKey.includes("impact")
         ? queryFixtures.impact
+        : options.queryKey.includes("approvals")
+          ? queryFixtures.approvals
+          : options.queryKey.includes("applies")
+            ? queryFixtures.applies
         : options.queryKey.includes("apply-failures")
           ? queryFixtures.failures
           : options.queryKey.includes("legal-holds")
@@ -84,6 +102,9 @@ import { RoleSourcesTab } from "./role-sources-tab";
 beforeEach(() => {
   vi.clearAllMocks();
   memberFixture.role = "owner";
+  featureFlags.roleSourceApply = false;
+  queryFixtures.approvals = [];
+  queryFixtures.applies = [];
   queryFixtures.sources = [
     {
       id: "source-1",
@@ -308,6 +329,115 @@ describe("RoleSourcesTab", () => {
       expect.stringMatching(/^role-source-scan-/),
     );
     expect(screen.queryByRole("button", { name: /approve|apply|retry|recover/i })).not.toBeInTheDocument();
+  });
+
+  it("generates a plan from the latest successful snapshot only when controlled apply is enabled", async () => {
+    featureFlags.roleSourceApply = true;
+    apiMocks.createRoleSourcePlan.mockResolvedValue(queryFixtures.plans[0]);
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Generate plan from latest scan" }));
+
+    expect(apiMocks.createRoleSourcePlan).toHaveBeenCalledWith(
+      "workspace-1",
+      "source-1",
+      { target_snapshot_digest: `sha256:${"d".repeat(64)}` },
+    );
+  });
+
+  it("requires an explicit decision for every archive candidate and submits them in canonical order", async () => {
+    featureFlags.roleSourceApply = true;
+    queryFixtures.plans[0]!.plan = {
+      ...(queryFixtures.plans[0]!.plan as Record<string, unknown>),
+      applyable: true,
+      summary: { create: 0, update: 0, unchanged: 0, archive_candidate: 2, blocked: 0 },
+      blockers: [],
+      actions: [
+        {
+          ref: { kind: "role", id: "zeta" },
+          display_name: "Zeta",
+          operation: "archive_candidate",
+          risk: "high",
+          reason: "Removed from source.",
+        },
+        {
+          ref: { kind: "role", id: "alpha" },
+          display_name: "Alpha",
+          operation: "archive_candidate",
+          risk: "high",
+          reason: "Removed from source.",
+        },
+      ],
+    };
+    apiMocks.createRoleSourcePlanApproval.mockResolvedValue({
+      id: "approval-new",
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      plan_digest: "sha256:plan1234567890abcdef",
+      decision: "approved",
+      actor_user_id: "user-1",
+      created_at: "2026-08-13T04:00:00Z",
+    });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    const approve = screen.getByRole("button", { name: "Approve exact plan" });
+    expect(approve).toBeDisabled();
+    const choices = screen.getAllByRole("combobox");
+    await user.click(choices[0]!);
+    await user.click(screen.getByRole("option", { name: "Retain existing object" }));
+    expect(approve).toBeDisabled();
+    await user.click(choices[1]!);
+    await user.click(screen.getByRole("option", { name: "Archive existing object" }));
+    await user.click(approve);
+
+    expect(apiMocks.createRoleSourcePlanApproval).toHaveBeenCalledWith(
+      "workspace-1",
+      "source-1",
+      "sha256:plan1234567890abcdef",
+      expect.objectContaining({
+        decision: "approved",
+        decisions: {
+          contract_version: "role-source-plan/v1",
+          archives: [
+            { ref: { kind: "role", id: "alpha" }, decision: "retain" },
+            { ref: { kind: "role", id: "zeta" }, decision: "archive" },
+          ],
+        },
+      }),
+    );
+  });
+
+  it("requires a second confirmation and reuses the apply idempotency key after an ambiguous failure", async () => {
+    featureFlags.roleSourceApply = true;
+    queryFixtures.plans[0]!.plan = {
+      ...(queryFixtures.plans[0]!.plan as Record<string, unknown>),
+      applyable: true,
+      summary: { create: 1, update: 0, unchanged: 0, archive_candidate: 0, blocked: 0 },
+      blockers: [],
+      actions: [],
+    };
+    queryFixtures.approvals = [{
+      id: "approval-1",
+      decision: "approved",
+      created_at: "2026-08-13T04:00:00Z",
+    }];
+    apiMocks.applyRoleSourcePlan
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({ id: "apply-1", status: "succeeded" });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Apply approved plan" }));
+    expect(screen.getByRole("heading", { name: "Apply this approved role-source plan?" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm and apply" }));
+    await user.click(screen.getByRole("button", { name: "Confirm and apply" }));
+
+    const firstRequest = apiMocks.applyRoleSourcePlan.mock.calls[0]?.[3];
+    const secondRequest = apiMocks.applyRoleSourcePlan.mock.calls[1]?.[3];
+    expect(firstRequest.approval_id).toBe("approval-1");
+    expect(firstRequest.request_key).toBe(secondRequest.request_key);
   });
 
   it("reuses the scan idempotency key after an ambiguous response failure", async () => {
