@@ -164,11 +164,32 @@ Creation and release serialize on the workspace/source lock order and write
 hash-chained audit events. Release is a separate immutable row, so it cannot
 rewrite the authority that established the hold. Database triggers reject
 updates to holds/releases and reject direct deletion of an active hold. An
-active hold blocks workspace teardown before any tenant mutation. The future
-historical-retention worker must query this authority inside its candidate
-selection transaction: a source hold protects current and future snapshots; a
-snapshot hold protects that exact digest. This establishes the hard fence and
-owner surface only—it does not yet delete historical snapshots.
+active hold blocks workspace teardown before any tenant mutation. A source hold
+protects current and future snapshots; a snapshot hold protects that exact
+digest.
+
+Retention policies are database-guarded append-only owner-approved revisions. Candidate discovery
+uses one bounded batch query per sweep instead of rescanning global history per row. The minimum age is
+30–3,650 days and the rollback reserve is 2–100 distinct successfully applied
+snapshots; defaults are a disabled 90-day/10-version preview. Selection also
+excludes the current snapshot, active legal holds, every immutable task pin,
+current materialization mappings, active secret transfers/applies, recently
+created plans and approved unapplied plans. A bounded global selector writes a
+content-free candidate, and a separate worker claims it with a lease. The
+destructive transaction locks workspace, source, candidate and snapshot in one
+order, re-evaluates the latest policy and every blocker, removes reachability
+edges and snapshot content, then writes candidate completion plus a hash-chain
+audit event atomically. Capability definitions are removed only when no other
+retained snapshot contains the exact version. Artifact bodies become eligible
+for the independent permanent-purge state machine only after their last edge
+disappears.
+
+The worker is default-off behind both
+`MULTICA_ROLE_SOURCE_RETENTION_ENABLED` and
+`MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED`. Database guards reject unapproved
+snapshot mutation and make task-pin insertion take a shared snapshot lock, so a
+new task pin and a retention delete cannot cross. The UI exposes preview and
+policy revision only—there is no bypassing “prune now” action.
 
 Every role-source mutation first takes a shared lock on the workspace row. Workspace teardown takes an exclusive lock on the same row, then deletes audit events, approvals, applies, plans, snapshots, scan requests and sources explicitly before runtimes and the workspace. This lock order prevents a concurrent scan report from inserting an orphan after the no-foreign-key cleanup sweep.
 

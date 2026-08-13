@@ -363,6 +363,105 @@ func TestRoleSourceLegalHoldIsAppendOnlyContentFreeAndFencesWorkspaceDeletion(t 
 	}
 }
 
+func TestRoleSourceRetentionIsPolicyBoundHoldAwareAndRaceFenced(t *testing.T) {
+	schemaBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "345_role_source_retention.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(schemaBody))
+	for _, forbidden := range []string{"request_key text", "case_number", "description", "notes", "manifest jsonb", "artifact_body", "credential", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("retention schema contains content/free-text field %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"create table role_source_retention_policy", "request_key_digest", "minimum_age_days",
+		"keep_successful_snapshots", "create table role_source_retention_candidate", "lease_token",
+		"estimated_bytes", "next_attempt_at", "result_code",
+	} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("retention schema is missing %q", required)
+		}
+	}
+
+	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queryBody)
+	for _, required := range []string{
+		"QueueEligibleRoleSourceRetentionCandidates", "@candidate_limit", "gen_random_uuid()", "ClaimNextRoleSourceRetentionCandidate",
+		"FOR UPDATE SKIP LOCKED", "GetRoleSourceSnapshotForUpdate", "GetRoleSourceRetentionBlocker",
+		"policy_age", "current_snapshot", "legal_hold", "task_pin", "object_mapping", "active_transfer", "active_apply",
+		"recent_plan", "rollback_reserve", "DeleteRoleSourceSnapshotArtifacts",
+		"DeleteRoleSourceSnapshotForRetention", "DeleteUnreachableRoleSourceCapabilityVersions",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("retention query contract is missing %q", required)
+		}
+	}
+
+	guardBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "352_role_source_snapshot_retention_guard.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := strings.ToLower(string(guardBody))
+	for _, required := range []string{
+		"before insert on role_source_task_pin", "for key share of snapshot",
+		"before update or delete on role_source_snapshot", "multica.role_source_retention_prune",
+		"multica.workspace_teardown", "role_source_legal_hold_release",
+	} {
+		if !strings.Contains(guard, required) {
+			t.Fatalf("snapshot retention guard is missing %q", required)
+		}
+	}
+	policyGuardBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "353_role_source_retention_policy_mutation_guard.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyGuard := strings.ToLower(string(policyGuardBody))
+	for _, required := range []string{
+		"before update or delete on role_source_retention_policy",
+		"multica.workspace_teardown", "append-only",
+	} {
+		if !strings.Contains(policyGuard, required) {
+			t.Fatalf("retention policy mutation guard is missing %q", required)
+		}
+	}
+
+	routerBody, err := os.ReadFile(filepath.Join("..", "..", "cmd", "server", "router.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := string(routerBody)
+	gcAt := strings.Index(router, "MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED")
+	retentionAt := strings.Index(router, "MULTICA_ROLE_SOURCE_RETENTION_ENABLED")
+	if gcAt < 0 || retentionAt < 0 || retentionAt < gcAt {
+		t.Fatal("historical retention must be independently default-off and nested behind permanent artifact GC")
+	}
+	controlBody, err := os.ReadFile("retention.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := string(controlBody)
+	pruneStart := strings.Index(control, "func (c *ControlPlane) PruneRetentionCandidate(")
+	if pruneStart < 0 {
+		t.Fatal("retention prune control-plane method is missing")
+	}
+	control = control[pruneStart:]
+	if next := strings.Index(control[1:], "\nfunc "); next >= 0 {
+		control = control[:next+1]
+	}
+	workspaceLockAt := strings.Index(control, "qtx.LockWorkspaceForRoleSourceMutation")
+	sourceLockAt := strings.Index(control, "qtx.GetRoleSourceForUpdate")
+	candidateLockAt := strings.Index(control, "qtx.GetRoleSourceRetentionCandidateForUpdate")
+	snapshotLockAt := strings.Index(control, "qtx.GetRoleSourceSnapshotForUpdate")
+	if workspaceLockAt < 0 || sourceLockAt < 0 || candidateLockAt < 0 || snapshotLockAt < 0 ||
+		!(workspaceLockAt < sourceLockAt && sourceLockAt < candidateLockAt && candidateLockAt < snapshotLockAt) {
+		t.Fatal("retention prune must lock workspace, source, candidate and snapshot in one order")
+	}
+}
+
 func TestRoleSourceLifecycleUsesOneLockOrderAndClearsPendingSecrets(t *testing.T) {
 	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
 	if err != nil {

@@ -72,6 +72,22 @@ spec:
           annotations:
             summary: "Role-source artifact garbage collection cannot permanently purge objects"
             description: "More than 20 role-source artifact purges failed in 15 minutes and the failure rate stayed elevated. The durable intents are retained for retry; inspect object-storage availability, version-list/version-delete permissions, Object Lock/legal hold and backend purge support before backlog growth exhausts capacity."
+        - alert: MulticaRoleSourceRetentionFailures
+          expr: increase(multica_role_source_retention_failures_total[15m]) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source historical retention cannot safely reconcile candidates"
+            description: "At least one historical snapshot candidate failed before a transactional prune or bounded policy deferral committed. The candidate lease is retained for retry; inspect PostgreSQL availability, migration state and retention backlog before enabling more policies."
+        - alert: MulticaRoleSourceRetentionBacklogOld
+          expr: multica_role_source_retention_oldest_active_seconds > 172800
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source historical retention backlog is older than two days"
+            description: "A pending or claimed retention candidate has remained active for more than two days. Review bounded outcome metrics, legal holds, rollback reserves and worker health; do not bypass the snapshot mutation guard."
         - alert: MulticaRoleSourceRuntimeAttestationPersistenceFailed
           expr: increase(multica_role_source_runtime_config_attestations_total{outcome="persist_failed"}[5m]) > 0
           for: {{ .Values.monitoring.prometheusRule.roleSourceAuditWriteFailureFor | quote }}

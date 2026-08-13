@@ -44,6 +44,10 @@ type AuditPayload struct {
 	DiagnosticCount        int    `json:"diagnostic_count,omitempty"`
 	CancelledScanCount     int    `json:"cancelled_scan_count,omitempty"`
 	CancelledTransferCount int    `json:"cancelled_transfer_count,omitempty"`
+	RetentionPolicyVersion int64  `json:"retention_policy_version,omitempty"`
+	RetentionMinimumDays   int    `json:"retention_minimum_days,omitempty"`
+	RetentionKeepSucceeded int    `json:"retention_keep_succeeded,omitempty"`
+	EstimatedBytes         int64  `json:"estimated_bytes,omitempty"`
 }
 
 // AuditEvent is the application-generated, hash-chained representation stored
@@ -176,6 +180,12 @@ func validateAuditPayload(payload AuditPayload) error {
 		if count < 0 || count > maxNormalizedObjects {
 			return errors.New("audit payload count is outside the allowed range")
 		}
+	}
+	if payload.RetentionPolicyVersion < 0 || payload.RetentionPolicyVersion > 1_000_000_000 ||
+		payload.RetentionMinimumDays < 0 || payload.RetentionMinimumDays > 3650 ||
+		payload.RetentionKeepSucceeded < 0 || payload.RetentionKeepSucceeded > 100 ||
+		payload.EstimatedBytes < 0 {
+		return errors.New("audit retention value is outside the allowed range")
 	}
 	return nil
 }

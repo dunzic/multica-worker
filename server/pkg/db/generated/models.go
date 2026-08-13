@@ -1110,6 +1110,38 @@ type RoleSourcePlanApproval struct {
 	RequestKey  string             `json:"request_key"`
 }
 
+type RoleSourceRetentionCandidate struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	SourceID          pgtype.UUID        `json:"source_id"`
+	SnapshotDigest    string             `json:"snapshot_digest"`
+	PolicyVersion     int64              `json:"policy_version"`
+	SnapshotCreatedAt pgtype.Timestamptz `json:"snapshot_created_at"`
+	EstimatedBytes    int64              `json:"estimated_bytes"`
+	State             string             `json:"state"`
+	Attempt           int32              `json:"attempt"`
+	LeaseToken        pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt    pgtype.Timestamptz `json:"lease_expires_at"`
+	NextAttemptAt     pgtype.Timestamptz `json:"next_attempt_at"`
+	ResultCode        pgtype.Text        `json:"result_code"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+}
+
+type RoleSourceRetentionPolicy struct {
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	SourceID                pgtype.UUID        `json:"source_id"`
+	Version                 int64              `json:"version"`
+	RequestKeyDigest        string             `json:"request_key_digest"`
+	Enabled                 bool               `json:"enabled"`
+	MinimumAgeDays          int32              `json:"minimum_age_days"`
+	KeepSuccessfulSnapshots int32              `json:"keep_successful_snapshots"`
+	CreatedBy               pgtype.UUID        `json:"created_by"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+}
+
 type RoleSourceRuntimeAttestation struct {
 	RuntimeID       pgtype.UUID        `json:"runtime_id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`

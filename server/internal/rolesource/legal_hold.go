@@ -100,7 +100,7 @@ func (c *ControlPlane) CreateLegalHold(ctx context.Context, input CreateLegalHol
 	}
 	snapshotDigest := nullableLegalHoldDigest(input.SnapshotDigest)
 	referenceDigest := nullableLegalHoldDigest(input.ReferenceDigest)
-	requestKeyDigest := legalHoldRequestKeyDigest(input.RequestKey)
+	requestKeyDigest := roleSourceRequestKeyDigest(input.RequestKey)
 
 	tx, err := c.database.Begin(ctx)
 	if err != nil {
@@ -201,7 +201,7 @@ func (c *ControlPlane) ReleaseLegalHold(ctx context.Context, input ReleaseLegalH
 	}
 	release, err := qtx.CreateRoleSourceLegalHoldRelease(ctx, db.CreateRoleSourceLegalHoldReleaseParams{
 		HoldID: holdID, WorkspaceID: workspaceID, SourceID: sourceID,
-		RequestKeyDigest: legalHoldRequestKeyDigest(input.RequestKey), ReasonCode: string(input.ReasonCode),
+		RequestKeyDigest: roleSourceRequestKeyDigest(input.RequestKey), ReasonCode: string(input.ReasonCode),
 		ReferenceDigest: nullableLegalHoldDigest(input.ReferenceDigest), ReleasedBy: actorID,
 	})
 	if err != nil {
@@ -279,7 +279,7 @@ func validLegalHoldRequestKey(value string) bool {
 	return value != "" && len(value) <= 200 && !strings.ContainsAny(value, "\r\n\x00")
 }
 
-func legalHoldRequestKeyDigest(value string) string {
+func roleSourceRequestKeyDigest(value string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
@@ -321,7 +321,7 @@ func sameLegalHoldRequest(row db.RoleSourceLegalHold, input CreateLegalHoldInput
 }
 
 func sameLegalHoldReleaseRequest(row db.RoleSourceLegalHoldRelease, input ReleaseLegalHoldInput, actorID pgtype.UUID) bool {
-	return row.RequestKeyDigest == legalHoldRequestKeyDigest(input.RequestKey) && row.ReasonCode == string(input.ReasonCode) &&
+	return row.RequestKeyDigest == roleSourceRequestKeyDigest(input.RequestKey) && row.ReasonCode == string(input.ReasonCode) &&
 		textValue(row.ReferenceDigest) == input.ReferenceDigest && row.ReleasedBy == actorID
 }
 

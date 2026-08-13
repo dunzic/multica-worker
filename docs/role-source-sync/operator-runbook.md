@@ -88,6 +88,35 @@ the database. For an unexpected database mutation-guard error after all holds
 show released, preserve the transaction error code, commit, workspace ID and
 redacted hold IDs; escalate to engineering without disabling triggers.
 
+## Historical-retention operations
+
+The owner-only retention panel defaults to disabled. A policy revision must keep
+snapshots for at least 30 days and reserve at least two distinct successfully
+applied versions; the recommended initial cohort setting is 90 days and 10
+versions. The preview counts referenced bytes, not uniquely reclaimable storage,
+so do not use it as a savings invoice.
+
+Before enabling, verify both server gates are intentionally configured:
+`MULTICA_ROLE_SOURCE_RETENTION_ENABLED=true` and
+`MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED=true`. The first removes eligible
+snapshot content; the second permanently purges bodies after their final
+reachability edge disappears. Enabling only the policy while the server gate is
+off is a safe preview-only state.
+
+Do not bypass a blocked candidate. `legal_hold`, `task_pin`, `object_mapping`,
+`active_transfer`, `active_apply`, `recent_plan`, `rollback_reserve`,
+`policy_age` and `policy_disabled` are expected safe deferrals. Investigate
+`snapshot_missing`, `state_conflict` or `internal_failure`; preserve metrics,
+bounded logs and audit events, then stop the worker gate if failures repeat.
+Never set `multica.role_source_retention_prune` manually or disable the snapshot
+and task-pin guards.
+
+For rollback, confirm the target still appears in snapshot history before
+approving a plan. Versions outside the configured reserve may have only their
+digest/receipt/audit evidence left and are intentionally no longer runnable.
+Before broad rollout, complete the PostgreSQL race, object-storage purge and
+backup/restore gates in `production-validation.md`.
+
 ## Attestation status recovery
 
 The effective status and last evidence status answer different questions. A

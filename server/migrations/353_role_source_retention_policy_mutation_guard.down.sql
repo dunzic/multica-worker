@@ -1,0 +1,2 @@
+DROP TRIGGER IF EXISTS trg_guard_role_source_retention_policy_mutation ON role_source_retention_policy;
+DROP FUNCTION IF EXISTS guard_role_source_retention_policy_mutation();

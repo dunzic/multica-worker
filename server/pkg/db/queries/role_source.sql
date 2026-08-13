@@ -153,6 +153,290 @@ WHERE hold.workspace_id = @workspace_id
       WHERE release.hold_id = hold.id
   );
 
+-- name: InsertRoleSourceRetentionPolicy :one
+INSERT INTO role_source_retention_policy (
+    id, workspace_id, source_id, version, request_key_digest, enabled,
+    minimum_age_days, keep_successful_snapshots, created_by
+) VALUES (
+    @id, @workspace_id, @source_id, @version, @request_key_digest, @enabled,
+    @minimum_age_days, @keep_successful_snapshots, @created_by
+)
+ON CONFLICT (source_id, request_key_digest) DO NOTHING
+RETURNING *;
+
+-- name: GetLatestRoleSourceRetentionPolicy :one
+SELECT * FROM role_source_retention_policy
+WHERE workspace_id = @workspace_id AND source_id = @source_id
+ORDER BY version DESC
+LIMIT 1;
+
+-- name: GetRoleSourceRetentionPolicyByRequest :one
+SELECT * FROM role_source_retention_policy
+WHERE workspace_id = @workspace_id AND source_id = @source_id
+  AND request_key_digest = @request_key_digest;
+
+-- name: ListEligibleRoleSourceRetentionSnapshots :many
+WITH successful AS MATERIALIZED (
+    SELECT apply.snapshot_digest, max(apply.completed_at) AS applied_at
+    FROM role_source_apply apply
+    WHERE apply.workspace_id = @workspace_id AND apply.source_id = @source_id
+      AND apply.status = 'succeeded'
+    GROUP BY apply.snapshot_digest
+), successful_rank AS MATERIALIZED (
+    SELECT snapshot_digest, row_number() OVER (ORDER BY applied_at DESC, snapshot_digest DESC) AS reserve_rank
+    FROM successful
+), eligible AS MATERIALIZED (
+SELECT snapshot.snapshot_digest, snapshot.created_at,
+       COALESCE((SELECT sum(edge.size_bytes) FROM role_source_snapshot_artifact edge
+                 WHERE edge.workspace_id = snapshot.workspace_id AND edge.source_id = snapshot.source_id
+                   AND edge.snapshot_digest = snapshot.snapshot_digest), 0)::bigint AS estimated_bytes
+FROM role_source_snapshot snapshot
+WHERE snapshot.workspace_id = @workspace_id
+  AND snapshot.source_id = @source_id
+  AND snapshot.created_at < now() - make_interval(days => @minimum_age_days::int)
+  AND snapshot.snapshot_digest IS DISTINCT FROM (
+      SELECT current_snapshot_digest FROM role_source
+      WHERE id = @source_id AND workspace_id = @workspace_id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM successful_rank reserve_row
+      WHERE reserve_row.snapshot_digest = snapshot.snapshot_digest
+        AND reserve_row.reserve_rank <= sqlc.arg('keep_successful_snapshots')::int
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_legal_hold hold
+      WHERE hold.workspace_id = snapshot.workspace_id
+        AND hold.source_id = snapshot.source_id
+        AND (hold.scope = 'source' OR hold.snapshot_digest = snapshot.snapshot_digest)
+        AND NOT EXISTS (SELECT 1 FROM role_source_legal_hold_release release WHERE release.hold_id = hold.id)
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_task_pin pin
+      WHERE pin.workspace_id = snapshot.workspace_id AND pin.source_id = snapshot.source_id
+        AND pin.snapshot_digest = snapshot.snapshot_digest
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_object_mapping mapping
+      WHERE mapping.workspace_id = snapshot.workspace_id AND mapping.source_id = snapshot.source_id
+        AND mapping.last_snapshot_digest = snapshot.snapshot_digest
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_secret_transfer transfer
+      WHERE transfer.workspace_id = snapshot.workspace_id AND transfer.source_id = snapshot.source_id
+        AND transfer.snapshot_digest = snapshot.snapshot_digest
+        AND transfer.status IN ('pending', 'claimed', 'submitted')
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_apply apply
+      WHERE apply.workspace_id = snapshot.workspace_id AND apply.source_id = snapshot.source_id
+        AND apply.snapshot_digest = snapshot.snapshot_digest
+        AND apply.status IN ('pending', 'running')
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_plan plan
+      WHERE plan.workspace_id = snapshot.workspace_id AND plan.source_id = snapshot.source_id
+        AND (plan.from_snapshot_digest = snapshot.snapshot_digest OR plan.to_snapshot_digest = snapshot.snapshot_digest)
+        AND (
+          plan.created_at >= now() - @plan_grace_period::interval
+          OR (
+            (SELECT approval.decision FROM role_source_plan_approval approval
+             WHERE approval.workspace_id = plan.workspace_id AND approval.source_id = plan.source_id
+               AND approval.plan_digest = plan.plan_digest
+             ORDER BY approval.created_at DESC, approval.id DESC LIMIT 1) = 'approved'
+            AND NOT EXISTS (
+                SELECT 1 FROM role_source_apply apply
+                WHERE apply.workspace_id = plan.workspace_id AND apply.source_id = plan.source_id
+                  AND apply.plan_digest = plan.plan_digest AND apply.status = 'succeeded'
+            )
+          )
+        )
+  )
+)
+SELECT snapshot_digest, created_at, estimated_bytes,
+       count(*) OVER ()::bigint AS eligible_count,
+       COALESCE(sum(estimated_bytes) OVER (), 0)::bigint AS total_estimated_bytes
+FROM eligible
+ORDER BY created_at, snapshot_digest
+LIMIT @result_limit;
+
+-- name: QueueEligibleRoleSourceRetentionCandidates :many
+WITH latest_policy AS MATERIALIZED (
+    SELECT DISTINCT ON (policy.source_id) policy.*
+    FROM role_source_retention_policy policy
+    ORDER BY policy.source_id, policy.version DESC
+), successful AS MATERIALIZED (
+    SELECT apply.source_id, apply.snapshot_digest, max(apply.completed_at) AS applied_at
+    FROM role_source_apply apply
+    WHERE apply.status = 'succeeded'
+    GROUP BY apply.source_id, apply.snapshot_digest
+), successful_rank AS MATERIALIZED (
+    SELECT source_id, snapshot_digest,
+           row_number() OVER (PARTITION BY source_id ORDER BY applied_at DESC, snapshot_digest DESC) AS reserve_rank
+    FROM successful
+), eligible AS MATERIALIZED (
+    SELECT snapshot.*, policy.version AS policy_version,
+           COALESCE((SELECT sum(edge.size_bytes) FROM role_source_snapshot_artifact edge
+                     WHERE edge.workspace_id = snapshot.workspace_id AND edge.source_id = snapshot.source_id
+                       AND edge.snapshot_digest = snapshot.snapshot_digest), 0)::bigint AS estimated_bytes
+    FROM role_source_snapshot snapshot
+    JOIN role_source source ON source.id = snapshot.source_id AND source.workspace_id = snapshot.workspace_id
+    JOIN latest_policy policy ON policy.source_id = snapshot.source_id AND policy.workspace_id = snapshot.workspace_id
+    WHERE policy.enabled
+      AND snapshot.created_at < now() - make_interval(days => policy.minimum_age_days)
+      AND snapshot.snapshot_digest IS DISTINCT FROM source.current_snapshot_digest
+      AND NOT EXISTS (
+          SELECT 1 FROM successful_rank reserved
+          WHERE reserved.source_id = snapshot.source_id AND reserved.snapshot_digest = snapshot.snapshot_digest
+            AND reserved.reserve_rank <= policy.keep_successful_snapshots
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_legal_hold hold
+          WHERE hold.workspace_id = snapshot.workspace_id AND hold.source_id = snapshot.source_id
+            AND (hold.scope = 'source' OR hold.snapshot_digest = snapshot.snapshot_digest)
+            AND NOT EXISTS (SELECT 1 FROM role_source_legal_hold_release release WHERE release.hold_id = hold.id)
+      )
+      AND NOT EXISTS (SELECT 1 FROM role_source_task_pin pin WHERE pin.source_id = snapshot.source_id AND pin.snapshot_digest = snapshot.snapshot_digest)
+      AND NOT EXISTS (SELECT 1 FROM role_source_object_mapping mapping WHERE mapping.source_id = snapshot.source_id AND mapping.last_snapshot_digest = snapshot.snapshot_digest)
+      AND NOT EXISTS (SELECT 1 FROM role_source_secret_transfer transfer WHERE transfer.source_id = snapshot.source_id AND transfer.snapshot_digest = snapshot.snapshot_digest AND transfer.status IN ('pending', 'claimed', 'submitted'))
+      AND NOT EXISTS (SELECT 1 FROM role_source_apply apply WHERE apply.source_id = snapshot.source_id AND apply.snapshot_digest = snapshot.snapshot_digest AND apply.status IN ('pending', 'running'))
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_plan plan
+          WHERE plan.source_id = snapshot.source_id
+            AND (plan.from_snapshot_digest = snapshot.snapshot_digest OR plan.to_snapshot_digest = snapshot.snapshot_digest)
+            AND (
+              plan.created_at >= now() - @plan_grace_period::interval
+              OR (
+                (SELECT approval.decision FROM role_source_plan_approval approval
+                 WHERE approval.source_id = plan.source_id AND approval.plan_digest = plan.plan_digest
+                 ORDER BY approval.created_at DESC, approval.id DESC LIMIT 1) = 'approved'
+                AND NOT EXISTS (SELECT 1 FROM role_source_apply apply WHERE apply.source_id = plan.source_id AND apply.plan_digest = plan.plan_digest AND apply.status = 'succeeded')
+              )
+            )
+      )
+      AND NOT EXISTS (SELECT 1 FROM role_source_retention_candidate candidate WHERE candidate.source_id = snapshot.source_id AND candidate.snapshot_digest = snapshot.snapshot_digest)
+    ORDER BY snapshot.created_at, snapshot.source_id, snapshot.snapshot_digest
+    LIMIT @candidate_limit
+)
+INSERT INTO role_source_retention_candidate (
+    id, workspace_id, source_id, snapshot_digest, policy_version,
+    snapshot_created_at, estimated_bytes
+)
+SELECT gen_random_uuid(), workspace_id, source_id, snapshot_digest, policy_version, created_at, estimated_bytes
+FROM eligible
+ON CONFLICT (source_id, snapshot_digest) DO NOTHING
+RETURNING *;
+
+-- name: ClaimNextRoleSourceRetentionCandidate :one
+WITH candidate AS MATERIALIZED (
+    SELECT id
+    FROM role_source_retention_candidate
+    WHERE (state = 'pending' OR (state = 'claimed' AND lease_expires_at <= now()))
+      AND next_attempt_at <= now()
+    ORDER BY next_attempt_at, created_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_retention_candidate retention
+SET state = 'claimed', attempt = attempt + 1, lease_token = @lease_token,
+    lease_expires_at = now() + @lease_duration::interval, result_code = NULL,
+    updated_at = now()
+FROM candidate
+WHERE retention.id = candidate.id
+RETURNING retention.*;
+
+-- name: GetRoleSourceRetentionCandidateForUpdate :one
+SELECT * FROM role_source_retention_candidate
+WHERE id = @id AND state = 'claimed' AND lease_token = @lease_token
+  AND lease_expires_at > now()
+FOR UPDATE;
+
+-- name: GetRoleSourceRetentionCandidate :one
+SELECT * FROM role_source_retention_candidate
+WHERE id = @id AND state = 'claimed' AND lease_token = @lease_token
+  AND lease_expires_at > now();
+
+-- name: GetRoleSourceSnapshotForUpdate :one
+SELECT * FROM role_source_snapshot
+WHERE workspace_id = @workspace_id AND source_id = @source_id
+  AND snapshot_digest = @snapshot_digest
+FOR UPDATE;
+
+-- name: GetRoleSourceRetentionBlocker :one
+WITH latest_policy AS MATERIALIZED (
+    SELECT policy.* FROM role_source_retention_policy policy
+    WHERE policy.workspace_id = @workspace_id AND policy.source_id = @source_id
+    ORDER BY policy.version DESC LIMIT 1
+), successful AS MATERIALIZED (
+    SELECT apply.snapshot_digest, max(apply.completed_at) AS applied_at
+    FROM role_source_apply apply
+    WHERE apply.workspace_id = @workspace_id AND apply.source_id = @source_id AND apply.status = 'succeeded'
+    GROUP BY apply.snapshot_digest
+), successful_rank AS MATERIALIZED (
+    SELECT snapshot_digest, row_number() OVER (ORDER BY applied_at DESC, snapshot_digest DESC) AS reserve_rank
+    FROM successful
+)
+SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM role_source_snapshot snapshot WHERE snapshot.workspace_id = @workspace_id AND snapshot.source_id = @source_id AND snapshot.snapshot_digest = @snapshot_digest) THEN 'snapshot_missing'
+    WHEN NOT EXISTS (SELECT 1 FROM latest_policy WHERE enabled) THEN 'policy_disabled'
+    WHEN EXISTS (SELECT 1 FROM role_source_snapshot snapshot, latest_policy policy WHERE snapshot.workspace_id = @workspace_id AND snapshot.source_id = @source_id AND snapshot.snapshot_digest = @snapshot_digest AND snapshot.created_at >= now() - make_interval(days => policy.minimum_age_days)) THEN 'policy_age'
+    WHEN EXISTS (SELECT 1 FROM role_source source WHERE source.id = @source_id AND source.workspace_id = @workspace_id AND source.current_snapshot_digest = @snapshot_digest) THEN 'current_snapshot'
+    WHEN EXISTS (SELECT 1 FROM role_source_legal_hold hold WHERE hold.workspace_id = @workspace_id AND hold.source_id = @source_id AND (hold.scope = 'source' OR hold.snapshot_digest = @snapshot_digest) AND NOT EXISTS (SELECT 1 FROM role_source_legal_hold_release release WHERE release.hold_id = hold.id)) THEN 'legal_hold'
+    WHEN EXISTS (SELECT 1 FROM role_source_task_pin pin WHERE pin.workspace_id = @workspace_id AND pin.source_id = @source_id AND pin.snapshot_digest = @snapshot_digest) THEN 'task_pin'
+    WHEN EXISTS (SELECT 1 FROM role_source_object_mapping mapping WHERE mapping.workspace_id = @workspace_id AND mapping.source_id = @source_id AND mapping.last_snapshot_digest = @snapshot_digest) THEN 'object_mapping'
+    WHEN EXISTS (SELECT 1 FROM role_source_secret_transfer transfer WHERE transfer.workspace_id = @workspace_id AND transfer.source_id = @source_id AND transfer.snapshot_digest = @snapshot_digest AND transfer.status IN ('pending', 'claimed', 'submitted')) THEN 'active_transfer'
+    WHEN EXISTS (SELECT 1 FROM role_source_apply apply WHERE apply.workspace_id = @workspace_id AND apply.source_id = @source_id AND apply.snapshot_digest = @snapshot_digest AND apply.status IN ('pending', 'running')) THEN 'active_apply'
+    WHEN EXISTS (
+        SELECT 1 FROM role_source_plan plan
+        WHERE plan.workspace_id = @workspace_id AND plan.source_id = @source_id
+          AND (plan.from_snapshot_digest = @snapshot_digest OR plan.to_snapshot_digest = @snapshot_digest)
+          AND (plan.created_at >= now() - @plan_grace_period::interval OR (
+              (SELECT approval.decision FROM role_source_plan_approval approval WHERE approval.workspace_id = plan.workspace_id AND approval.source_id = plan.source_id AND approval.plan_digest = plan.plan_digest ORDER BY approval.created_at DESC, approval.id DESC LIMIT 1) = 'approved'
+              AND NOT EXISTS (SELECT 1 FROM role_source_apply apply WHERE apply.workspace_id = plan.workspace_id AND apply.source_id = plan.source_id AND apply.plan_digest = plan.plan_digest AND apply.status = 'succeeded')
+          ))
+    ) THEN 'recent_plan'
+    WHEN EXISTS (SELECT 1 FROM successful_rank reserved, latest_policy policy WHERE reserved.snapshot_digest = @snapshot_digest AND reserved.reserve_rank <= policy.keep_successful_snapshots) THEN 'rollback_reserve'
+    ELSE ''
+END::text;
+
+-- name: ReleaseRoleSourceRetentionCandidate :execrows
+UPDATE role_source_retention_candidate
+SET state = 'pending', lease_token = NULL, lease_expires_at = NULL,
+    next_attempt_at = now() + @retry_delay::interval, result_code = @result_code,
+    updated_at = now()
+WHERE id = @id AND state = 'claimed' AND lease_token = @lease_token;
+
+-- name: CompleteRoleSourceRetentionCandidate :execrows
+UPDATE role_source_retention_candidate
+SET state = 'completed', lease_token = NULL, lease_expires_at = NULL,
+    result_code = 'pruned', completed_at = now(), updated_at = now()
+WHERE id = @id AND state = 'claimed' AND lease_token = @lease_token;
+
+-- name: CountRoleSourceRetentionCandidates :one
+SELECT
+    count(*) FILTER (WHERE state <> 'completed')::bigint AS active_count,
+    COALESCE(extract(epoch FROM (now() - min(created_at) FILTER (WHERE state <> 'completed'))), 0)::bigint AS oldest_active_seconds
+FROM role_source_retention_candidate;
+
+-- name: DeleteRoleSourceSnapshotForRetention :execrows
+DELETE FROM role_source_snapshot
+WHERE workspace_id = @workspace_id AND source_id = @source_id
+  AND snapshot_digest = @snapshot_digest;
+
+-- name: DeleteUnreachableRoleSourceCapabilityVersions :execrows
+DELETE FROM role_source_capability_version version
+WHERE version.workspace_id = @workspace_id AND version.source_id = @source_id
+  AND version.snapshot_digest = @snapshot_digest
+  AND NOT EXISTS (
+      SELECT 1
+      FROM role_source_snapshot snapshot,
+           jsonb_array_elements(snapshot.manifest->'capabilities') capability
+      WHERE snapshot.workspace_id = version.workspace_id
+        AND snapshot.source_id = version.source_id
+        AND capability->>'id' = version.capability_id
+        AND capability->>'version' = version.version
+        AND capability = version.definition
+  );
+
 -- name: CountRoleSourcesByRuntime :one
 -- Detached sources retain their last binding as audit context but no longer
 -- keep that runtime alive. Rebind locks the new runtime before activation.

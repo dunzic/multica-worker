@@ -458,6 +458,12 @@ deleted_secret_transfers AS (
 deleted_capability_versions AS (
     DELETE FROM role_source_capability_version WHERE role_source_capability_version.workspace_id = $1
 ),
+deleted_retention_candidates AS (
+    DELETE FROM role_source_retention_candidate WHERE role_source_retention_candidate.workspace_id = $1
+),
+deleted_retention_policies AS (
+    DELETE FROM role_source_retention_policy WHERE role_source_retention_policy.workspace_id = $1
+),
 deleted_object_mappings AS (
     DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
 ),

@@ -103,6 +103,39 @@ export interface ReleaseRoleSourceLegalHoldRequest {
   reference_digest?: string;
 }
 
+export interface RoleSourceRetentionPolicy {
+  workspace_id: string;
+  source_id: string;
+  version: number;
+  enabled: boolean;
+  minimum_age_days: number;
+  keep_successful_snapshots: number;
+  created_by?: string;
+  created_at?: string;
+}
+
+export interface RoleSourceRetentionCandidate {
+  snapshot_digest: string;
+  created_at: string;
+  estimated_bytes: number;
+}
+
+export interface RoleSourceRetentionPreview {
+  policy: RoleSourceRetentionPolicy;
+  eligible_count: number;
+  estimated_bytes: number;
+  truncated: boolean;
+  candidates: RoleSourceRetentionCandidate[];
+}
+
+export interface UpdateRoleSourceRetentionPolicyRequest {
+  request_key: string;
+  expected_version: number;
+  enabled: boolean;
+  minimum_age_days: number;
+  keep_successful_snapshots: number;
+}
+
 export interface RoleSourceRuntimeAttestation {
   status: RoleSourceAttestationStatus;
   contract_version: string;

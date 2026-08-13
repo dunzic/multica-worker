@@ -192,6 +192,54 @@ func (q *Queries) ClaimNextRoleSourceArtifactDeleteIntent(ctx context.Context, a
 	return i, err
 }
 
+const claimNextRoleSourceRetentionCandidate = `-- name: ClaimNextRoleSourceRetentionCandidate :one
+WITH candidate AS MATERIALIZED (
+    SELECT id
+    FROM role_source_retention_candidate
+    WHERE (state = 'pending' OR (state = 'claimed' AND lease_expires_at <= now()))
+      AND next_attempt_at <= now()
+    ORDER BY next_attempt_at, created_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE role_source_retention_candidate retention
+SET state = 'claimed', attempt = attempt + 1, lease_token = $1,
+    lease_expires_at = now() + $2::interval, result_code = NULL,
+    updated_at = now()
+FROM candidate
+WHERE retention.id = candidate.id
+RETURNING retention.id, retention.workspace_id, retention.source_id, retention.snapshot_digest, retention.policy_version, retention.snapshot_created_at, retention.estimated_bytes, retention.state, retention.attempt, retention.lease_token, retention.lease_expires_at, retention.next_attempt_at, retention.result_code, retention.created_at, retention.updated_at, retention.completed_at
+`
+
+type ClaimNextRoleSourceRetentionCandidateParams struct {
+	LeaseToken    pgtype.UUID     `json:"lease_token"`
+	LeaseDuration pgtype.Interval `json:"lease_duration"`
+}
+
+func (q *Queries) ClaimNextRoleSourceRetentionCandidate(ctx context.Context, arg ClaimNextRoleSourceRetentionCandidateParams) (RoleSourceRetentionCandidate, error) {
+	row := q.db.QueryRow(ctx, claimNextRoleSourceRetentionCandidate, arg.LeaseToken, arg.LeaseDuration)
+	var i RoleSourceRetentionCandidate
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.SnapshotDigest,
+		&i.PolicyVersion,
+		&i.SnapshotCreatedAt,
+		&i.EstimatedBytes,
+		&i.State,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.ResultCode,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const claimNextRoleSourceScan = `-- name: ClaimNextRoleSourceScan :one
 WITH source_candidate AS MATERIALIZED (
     SELECT source.id
@@ -407,6 +455,26 @@ type CompleteRoleSourceArtifactDeleteIntentParams struct {
 
 func (q *Queries) CompleteRoleSourceArtifactDeleteIntent(ctx context.Context, arg CompleteRoleSourceArtifactDeleteIntentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, completeRoleSourceArtifactDeleteIntent, arg.StorageKey, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const completeRoleSourceRetentionCandidate = `-- name: CompleteRoleSourceRetentionCandidate :execrows
+UPDATE role_source_retention_candidate
+SET state = 'completed', lease_token = NULL, lease_expires_at = NULL,
+    result_code = 'pruned', completed_at = now(), updated_at = now()
+WHERE id = $1 AND state = 'claimed' AND lease_token = $2
+`
+
+type CompleteRoleSourceRetentionCandidateParams struct {
+	ID         pgtype.UUID `json:"id"`
+	LeaseToken pgtype.UUID `json:"lease_token"`
+}
+
+func (q *Queries) CompleteRoleSourceRetentionCandidate(ctx context.Context, arg CompleteRoleSourceRetentionCandidateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeRoleSourceRetentionCandidate, arg.ID, arg.LeaseToken)
 	if err != nil {
 		return 0, err
 	}
@@ -638,6 +706,25 @@ func (q *Queries) CountRoleSourceArtifactDeleteIntents(ctx context.Context) (Cou
 	row := q.db.QueryRow(ctx, countRoleSourceArtifactDeleteIntents)
 	var i CountRoleSourceArtifactDeleteIntentsRow
 	err := row.Scan(&i.ActiveCount, &i.TombstoneCount)
+	return i, err
+}
+
+const countRoleSourceRetentionCandidates = `-- name: CountRoleSourceRetentionCandidates :one
+SELECT
+    count(*) FILTER (WHERE state <> 'completed')::bigint AS active_count,
+    COALESCE(extract(epoch FROM (now() - min(created_at) FILTER (WHERE state <> 'completed'))), 0)::bigint AS oldest_active_seconds
+FROM role_source_retention_candidate
+`
+
+type CountRoleSourceRetentionCandidatesRow struct {
+	ActiveCount         int64 `json:"active_count"`
+	OldestActiveSeconds int64 `json:"oldest_active_seconds"`
+}
+
+func (q *Queries) CountRoleSourceRetentionCandidates(ctx context.Context) (CountRoleSourceRetentionCandidatesRow, error) {
+	row := q.db.QueryRow(ctx, countRoleSourceRetentionCandidates)
+	var i CountRoleSourceRetentionCandidatesRow
+	err := row.Scan(&i.ActiveCount, &i.OldestActiveSeconds)
 	return i, err
 }
 
@@ -887,6 +974,56 @@ func (q *Queries) DeleteRoleSourceSnapshotArtifacts(ctx context.Context, arg Del
 	return err
 }
 
+const deleteRoleSourceSnapshotForRetention = `-- name: DeleteRoleSourceSnapshotForRetention :execrows
+DELETE FROM role_source_snapshot
+WHERE workspace_id = $1 AND source_id = $2
+  AND snapshot_digest = $3
+`
+
+type DeleteRoleSourceSnapshotForRetentionParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+func (q *Queries) DeleteRoleSourceSnapshotForRetention(ctx context.Context, arg DeleteRoleSourceSnapshotForRetentionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRoleSourceSnapshotForRetention, arg.WorkspaceID, arg.SourceID, arg.SnapshotDigest)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteUnreachableRoleSourceCapabilityVersions = `-- name: DeleteUnreachableRoleSourceCapabilityVersions :execrows
+DELETE FROM role_source_capability_version version
+WHERE version.workspace_id = $1 AND version.source_id = $2
+  AND version.snapshot_digest = $3
+  AND NOT EXISTS (
+      SELECT 1
+      FROM role_source_snapshot snapshot,
+           jsonb_array_elements(snapshot.manifest->'capabilities') capability
+      WHERE snapshot.workspace_id = version.workspace_id
+        AND snapshot.source_id = version.source_id
+        AND capability->>'id' = version.capability_id
+        AND capability->>'version' = version.version
+        AND capability = version.definition
+  )
+`
+
+type DeleteUnreachableRoleSourceCapabilityVersionsParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+func (q *Queries) DeleteUnreachableRoleSourceCapabilityVersions(ctx context.Context, arg DeleteUnreachableRoleSourceCapabilityVersionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUnreachableRoleSourceCapabilityVersions, arg.WorkspaceID, arg.SourceID, arg.SnapshotDigest)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const expireRoleSourceSecretTransfers = `-- name: ExpireRoleSourceSecretTransfers :many
 WITH expired AS MATERIALIZED (
     SELECT id
@@ -1103,6 +1240,36 @@ func (q *Queries) GetLatestRoleSourcePlanApproval(ctx context.Context, arg GetLa
 		&i.ActorUserID,
 		&i.CreatedAt,
 		&i.RequestKey,
+	)
+	return i, err
+}
+
+const getLatestRoleSourceRetentionPolicy = `-- name: GetLatestRoleSourceRetentionPolicy :one
+SELECT id, workspace_id, source_id, version, request_key_digest, enabled, minimum_age_days, keep_successful_snapshots, created_by, created_at FROM role_source_retention_policy
+WHERE workspace_id = $1 AND source_id = $2
+ORDER BY version DESC
+LIMIT 1
+`
+
+type GetLatestRoleSourceRetentionPolicyParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+}
+
+func (q *Queries) GetLatestRoleSourceRetentionPolicy(ctx context.Context, arg GetLatestRoleSourceRetentionPolicyParams) (RoleSourceRetentionPolicy, error) {
+	row := q.db.QueryRow(ctx, getLatestRoleSourceRetentionPolicy, arg.WorkspaceID, arg.SourceID)
+	var i RoleSourceRetentionPolicy
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.Version,
+		&i.RequestKeyDigest,
+		&i.Enabled,
+		&i.MinimumAgeDays,
+		&i.KeepSuccessfulSnapshots,
+		&i.CreatedBy,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -1522,6 +1689,164 @@ func (q *Queries) GetRoleSourcePlanApprovalByRequest(ctx context.Context, arg Ge
 	return i, err
 }
 
+const getRoleSourceRetentionBlocker = `-- name: GetRoleSourceRetentionBlocker :one
+WITH latest_policy AS MATERIALIZED (
+    SELECT policy.id, policy.workspace_id, policy.source_id, policy.version, policy.request_key_digest, policy.enabled, policy.minimum_age_days, policy.keep_successful_snapshots, policy.created_by, policy.created_at FROM role_source_retention_policy policy
+    WHERE policy.workspace_id = $1 AND policy.source_id = $2
+    ORDER BY policy.version DESC LIMIT 1
+), successful AS MATERIALIZED (
+    SELECT apply.snapshot_digest, max(apply.completed_at) AS applied_at
+    FROM role_source_apply apply
+    WHERE apply.workspace_id = $1 AND apply.source_id = $2 AND apply.status = 'succeeded'
+    GROUP BY apply.snapshot_digest
+), successful_rank AS MATERIALIZED (
+    SELECT snapshot_digest, row_number() OVER (ORDER BY applied_at DESC, snapshot_digest DESC) AS reserve_rank
+    FROM successful
+)
+SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM role_source_snapshot snapshot WHERE snapshot.workspace_id = $1 AND snapshot.source_id = $2 AND snapshot.snapshot_digest = $3) THEN 'snapshot_missing'
+    WHEN NOT EXISTS (SELECT 1 FROM latest_policy WHERE enabled) THEN 'policy_disabled'
+    WHEN EXISTS (SELECT 1 FROM role_source_snapshot snapshot, latest_policy policy WHERE snapshot.workspace_id = $1 AND snapshot.source_id = $2 AND snapshot.snapshot_digest = $3 AND snapshot.created_at >= now() - make_interval(days => policy.minimum_age_days)) THEN 'policy_age'
+    WHEN EXISTS (SELECT 1 FROM role_source source WHERE source.id = $2 AND source.workspace_id = $1 AND source.current_snapshot_digest = $3) THEN 'current_snapshot'
+    WHEN EXISTS (SELECT 1 FROM role_source_legal_hold hold WHERE hold.workspace_id = $1 AND hold.source_id = $2 AND (hold.scope = 'source' OR hold.snapshot_digest = $3) AND NOT EXISTS (SELECT 1 FROM role_source_legal_hold_release release WHERE release.hold_id = hold.id)) THEN 'legal_hold'
+    WHEN EXISTS (SELECT 1 FROM role_source_task_pin pin WHERE pin.workspace_id = $1 AND pin.source_id = $2 AND pin.snapshot_digest = $3) THEN 'task_pin'
+    WHEN EXISTS (SELECT 1 FROM role_source_object_mapping mapping WHERE mapping.workspace_id = $1 AND mapping.source_id = $2 AND mapping.last_snapshot_digest = $3) THEN 'object_mapping'
+    WHEN EXISTS (SELECT 1 FROM role_source_secret_transfer transfer WHERE transfer.workspace_id = $1 AND transfer.source_id = $2 AND transfer.snapshot_digest = $3 AND transfer.status IN ('pending', 'claimed', 'submitted')) THEN 'active_transfer'
+    WHEN EXISTS (SELECT 1 FROM role_source_apply apply WHERE apply.workspace_id = $1 AND apply.source_id = $2 AND apply.snapshot_digest = $3 AND apply.status IN ('pending', 'running')) THEN 'active_apply'
+    WHEN EXISTS (
+        SELECT 1 FROM role_source_plan plan
+        WHERE plan.workspace_id = $1 AND plan.source_id = $2
+          AND (plan.from_snapshot_digest = $3 OR plan.to_snapshot_digest = $3)
+          AND (plan.created_at >= now() - $4::interval OR (
+              (SELECT approval.decision FROM role_source_plan_approval approval WHERE approval.workspace_id = plan.workspace_id AND approval.source_id = plan.source_id AND approval.plan_digest = plan.plan_digest ORDER BY approval.created_at DESC, approval.id DESC LIMIT 1) = 'approved'
+              AND NOT EXISTS (SELECT 1 FROM role_source_apply apply WHERE apply.workspace_id = plan.workspace_id AND apply.source_id = plan.source_id AND apply.plan_digest = plan.plan_digest AND apply.status = 'succeeded')
+          ))
+    ) THEN 'recent_plan'
+    WHEN EXISTS (SELECT 1 FROM successful_rank reserved, latest_policy policy WHERE reserved.snapshot_digest = $3 AND reserved.reserve_rank <= policy.keep_successful_snapshots) THEN 'rollback_reserve'
+    ELSE ''
+END::text
+`
+
+type GetRoleSourceRetentionBlockerParams struct {
+	WorkspaceID     pgtype.UUID     `json:"workspace_id"`
+	SourceID        pgtype.UUID     `json:"source_id"`
+	SnapshotDigest  string          `json:"snapshot_digest"`
+	PlanGracePeriod pgtype.Interval `json:"plan_grace_period"`
+}
+
+func (q *Queries) GetRoleSourceRetentionBlocker(ctx context.Context, arg GetRoleSourceRetentionBlockerParams) (string, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceRetentionBlocker,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.SnapshotDigest,
+		arg.PlanGracePeriod,
+	)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const getRoleSourceRetentionCandidate = `-- name: GetRoleSourceRetentionCandidate :one
+SELECT id, workspace_id, source_id, snapshot_digest, policy_version, snapshot_created_at, estimated_bytes, state, attempt, lease_token, lease_expires_at, next_attempt_at, result_code, created_at, updated_at, completed_at FROM role_source_retention_candidate
+WHERE id = $1 AND state = 'claimed' AND lease_token = $2
+  AND lease_expires_at > now()
+`
+
+type GetRoleSourceRetentionCandidateParams struct {
+	ID         pgtype.UUID `json:"id"`
+	LeaseToken pgtype.UUID `json:"lease_token"`
+}
+
+func (q *Queries) GetRoleSourceRetentionCandidate(ctx context.Context, arg GetRoleSourceRetentionCandidateParams) (RoleSourceRetentionCandidate, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceRetentionCandidate, arg.ID, arg.LeaseToken)
+	var i RoleSourceRetentionCandidate
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.SnapshotDigest,
+		&i.PolicyVersion,
+		&i.SnapshotCreatedAt,
+		&i.EstimatedBytes,
+		&i.State,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.ResultCode,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceRetentionCandidateForUpdate = `-- name: GetRoleSourceRetentionCandidateForUpdate :one
+SELECT id, workspace_id, source_id, snapshot_digest, policy_version, snapshot_created_at, estimated_bytes, state, attempt, lease_token, lease_expires_at, next_attempt_at, result_code, created_at, updated_at, completed_at FROM role_source_retention_candidate
+WHERE id = $1 AND state = 'claimed' AND lease_token = $2
+  AND lease_expires_at > now()
+FOR UPDATE
+`
+
+type GetRoleSourceRetentionCandidateForUpdateParams struct {
+	ID         pgtype.UUID `json:"id"`
+	LeaseToken pgtype.UUID `json:"lease_token"`
+}
+
+func (q *Queries) GetRoleSourceRetentionCandidateForUpdate(ctx context.Context, arg GetRoleSourceRetentionCandidateForUpdateParams) (RoleSourceRetentionCandidate, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceRetentionCandidateForUpdate, arg.ID, arg.LeaseToken)
+	var i RoleSourceRetentionCandidate
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.SnapshotDigest,
+		&i.PolicyVersion,
+		&i.SnapshotCreatedAt,
+		&i.EstimatedBytes,
+		&i.State,
+		&i.Attempt,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.NextAttemptAt,
+		&i.ResultCode,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceRetentionPolicyByRequest = `-- name: GetRoleSourceRetentionPolicyByRequest :one
+SELECT id, workspace_id, source_id, version, request_key_digest, enabled, minimum_age_days, keep_successful_snapshots, created_by, created_at FROM role_source_retention_policy
+WHERE workspace_id = $1 AND source_id = $2
+  AND request_key_digest = $3
+`
+
+type GetRoleSourceRetentionPolicyByRequestParams struct {
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	SourceID         pgtype.UUID `json:"source_id"`
+	RequestKeyDigest string      `json:"request_key_digest"`
+}
+
+func (q *Queries) GetRoleSourceRetentionPolicyByRequest(ctx context.Context, arg GetRoleSourceRetentionPolicyByRequestParams) (RoleSourceRetentionPolicy, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceRetentionPolicyByRequest, arg.WorkspaceID, arg.SourceID, arg.RequestKeyDigest)
+	var i RoleSourceRetentionPolicy
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.Version,
+		&i.RequestKeyDigest,
+		&i.Enabled,
+		&i.MinimumAgeDays,
+		&i.KeepSuccessfulSnapshots,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getRoleSourceRuntimeAttestationForShare = `-- name: GetRoleSourceRuntimeAttestationForShare :one
 SELECT runtime_id, workspace_id, contract_version, loaded, attestation_id, config_revision, sources, observed_at, changed_at FROM role_source_runtime_attestation
 WHERE runtime_id = $1 AND workspace_id = $2
@@ -1834,6 +2159,39 @@ type GetRoleSourceSnapshotParams struct {
 
 func (q *Queries) GetRoleSourceSnapshot(ctx context.Context, arg GetRoleSourceSnapshotParams) (RoleSourceSnapshot, error) {
 	row := q.db.QueryRow(ctx, getRoleSourceSnapshot, arg.SourceID, arg.WorkspaceID, arg.SnapshotDigest)
+	var i RoleSourceSnapshot
+	err := row.Scan(
+		&i.SourceID,
+		&i.WorkspaceID,
+		&i.SnapshotDigest,
+		&i.ManifestDigest,
+		&i.Kind,
+		&i.AdapterVersion,
+		&i.ContractVersion,
+		&i.Manifest,
+		&i.Diagnostics,
+		&i.SourceEvidence,
+		&i.ReportedByRuntimeID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceSnapshotForUpdate = `-- name: GetRoleSourceSnapshotForUpdate :one
+SELECT source_id, workspace_id, snapshot_digest, manifest_digest, kind, adapter_version, contract_version, manifest, diagnostics, source_evidence, reported_by_runtime_id, created_at FROM role_source_snapshot
+WHERE workspace_id = $1 AND source_id = $2
+  AND snapshot_digest = $3
+FOR UPDATE
+`
+
+type GetRoleSourceSnapshotForUpdateParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	SnapshotDigest string      `json:"snapshot_digest"`
+}
+
+func (q *Queries) GetRoleSourceSnapshotForUpdate(ctx context.Context, arg GetRoleSourceSnapshotForUpdateParams) (RoleSourceSnapshot, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceSnapshotForUpdate, arg.WorkspaceID, arg.SourceID, arg.SnapshotDigest)
 	var i RoleSourceSnapshot
 	err := row.Scan(
 		&i.SourceID,
@@ -2229,6 +2587,58 @@ func (q *Queries) InsertRoleSourcePlanApproval(ctx context.Context, arg InsertRo
 	return i, err
 }
 
+const insertRoleSourceRetentionPolicy = `-- name: InsertRoleSourceRetentionPolicy :one
+INSERT INTO role_source_retention_policy (
+    id, workspace_id, source_id, version, request_key_digest, enabled,
+    minimum_age_days, keep_successful_snapshots, created_by
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9
+)
+ON CONFLICT (source_id, request_key_digest) DO NOTHING
+RETURNING id, workspace_id, source_id, version, request_key_digest, enabled, minimum_age_days, keep_successful_snapshots, created_by, created_at
+`
+
+type InsertRoleSourceRetentionPolicyParams struct {
+	ID                      pgtype.UUID `json:"id"`
+	WorkspaceID             pgtype.UUID `json:"workspace_id"`
+	SourceID                pgtype.UUID `json:"source_id"`
+	Version                 int64       `json:"version"`
+	RequestKeyDigest        string      `json:"request_key_digest"`
+	Enabled                 bool        `json:"enabled"`
+	MinimumAgeDays          int32       `json:"minimum_age_days"`
+	KeepSuccessfulSnapshots int32       `json:"keep_successful_snapshots"`
+	CreatedBy               pgtype.UUID `json:"created_by"`
+}
+
+func (q *Queries) InsertRoleSourceRetentionPolicy(ctx context.Context, arg InsertRoleSourceRetentionPolicyParams) (RoleSourceRetentionPolicy, error) {
+	row := q.db.QueryRow(ctx, insertRoleSourceRetentionPolicy,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.Version,
+		arg.RequestKeyDigest,
+		arg.Enabled,
+		arg.MinimumAgeDays,
+		arg.KeepSuccessfulSnapshots,
+		arg.CreatedBy,
+	)
+	var i RoleSourceRetentionPolicy
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.Version,
+		&i.RequestKeyDigest,
+		&i.Enabled,
+		&i.MinimumAgeDays,
+		&i.KeepSuccessfulSnapshots,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertRoleSourceSecretTransfer = `-- name: InsertRoleSourceSecretTransfer :one
 INSERT INTO role_source_secret_transfer (
     id, workspace_id, source_id, runtime_id, plan_digest, approval_id,
@@ -2454,6 +2864,141 @@ func (q *Queries) IsRoleSourceTaskPinCurrent(ctx context.Context, taskID pgtype.
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listEligibleRoleSourceRetentionSnapshots = `-- name: ListEligibleRoleSourceRetentionSnapshots :many
+WITH successful AS MATERIALIZED (
+    SELECT apply.snapshot_digest, max(apply.completed_at) AS applied_at
+    FROM role_source_apply apply
+    WHERE apply.workspace_id = $2 AND apply.source_id = $3
+      AND apply.status = 'succeeded'
+    GROUP BY apply.snapshot_digest
+), successful_rank AS MATERIALIZED (
+    SELECT snapshot_digest, row_number() OVER (ORDER BY applied_at DESC, snapshot_digest DESC) AS reserve_rank
+    FROM successful
+), eligible AS MATERIALIZED (
+SELECT snapshot.snapshot_digest, snapshot.created_at,
+       COALESCE((SELECT sum(edge.size_bytes) FROM role_source_snapshot_artifact edge
+                 WHERE edge.workspace_id = snapshot.workspace_id AND edge.source_id = snapshot.source_id
+                   AND edge.snapshot_digest = snapshot.snapshot_digest), 0)::bigint AS estimated_bytes
+FROM role_source_snapshot snapshot
+WHERE snapshot.workspace_id = $2
+  AND snapshot.source_id = $3
+  AND snapshot.created_at < now() - make_interval(days => $4::int)
+  AND snapshot.snapshot_digest IS DISTINCT FROM (
+      SELECT current_snapshot_digest FROM role_source
+      WHERE id = $3 AND workspace_id = $2
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM successful_rank reserve_row
+      WHERE reserve_row.snapshot_digest = snapshot.snapshot_digest
+        AND reserve_row.reserve_rank <= $5::int
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_legal_hold hold
+      WHERE hold.workspace_id = snapshot.workspace_id
+        AND hold.source_id = snapshot.source_id
+        AND (hold.scope = 'source' OR hold.snapshot_digest = snapshot.snapshot_digest)
+        AND NOT EXISTS (SELECT 1 FROM role_source_legal_hold_release release WHERE release.hold_id = hold.id)
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_task_pin pin
+      WHERE pin.workspace_id = snapshot.workspace_id AND pin.source_id = snapshot.source_id
+        AND pin.snapshot_digest = snapshot.snapshot_digest
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_object_mapping mapping
+      WHERE mapping.workspace_id = snapshot.workspace_id AND mapping.source_id = snapshot.source_id
+        AND mapping.last_snapshot_digest = snapshot.snapshot_digest
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_secret_transfer transfer
+      WHERE transfer.workspace_id = snapshot.workspace_id AND transfer.source_id = snapshot.source_id
+        AND transfer.snapshot_digest = snapshot.snapshot_digest
+        AND transfer.status IN ('pending', 'claimed', 'submitted')
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_apply apply
+      WHERE apply.workspace_id = snapshot.workspace_id AND apply.source_id = snapshot.source_id
+        AND apply.snapshot_digest = snapshot.snapshot_digest
+        AND apply.status IN ('pending', 'running')
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_plan plan
+      WHERE plan.workspace_id = snapshot.workspace_id AND plan.source_id = snapshot.source_id
+        AND (plan.from_snapshot_digest = snapshot.snapshot_digest OR plan.to_snapshot_digest = snapshot.snapshot_digest)
+        AND (
+          plan.created_at >= now() - $6::interval
+          OR (
+            (SELECT approval.decision FROM role_source_plan_approval approval
+             WHERE approval.workspace_id = plan.workspace_id AND approval.source_id = plan.source_id
+               AND approval.plan_digest = plan.plan_digest
+             ORDER BY approval.created_at DESC, approval.id DESC LIMIT 1) = 'approved'
+            AND NOT EXISTS (
+                SELECT 1 FROM role_source_apply apply
+                WHERE apply.workspace_id = plan.workspace_id AND apply.source_id = plan.source_id
+                  AND apply.plan_digest = plan.plan_digest AND apply.status = 'succeeded'
+            )
+          )
+        )
+  )
+)
+SELECT snapshot_digest, created_at, estimated_bytes,
+       count(*) OVER ()::bigint AS eligible_count,
+       COALESCE(sum(estimated_bytes) OVER (), 0)::bigint AS total_estimated_bytes
+FROM eligible
+ORDER BY created_at, snapshot_digest
+LIMIT $1
+`
+
+type ListEligibleRoleSourceRetentionSnapshotsParams struct {
+	ResultLimit             int32           `json:"result_limit"`
+	WorkspaceID             pgtype.UUID     `json:"workspace_id"`
+	SourceID                pgtype.UUID     `json:"source_id"`
+	MinimumAgeDays          int32           `json:"minimum_age_days"`
+	KeepSuccessfulSnapshots int32           `json:"keep_successful_snapshots"`
+	PlanGracePeriod         pgtype.Interval `json:"plan_grace_period"`
+}
+
+type ListEligibleRoleSourceRetentionSnapshotsRow struct {
+	SnapshotDigest      string             `json:"snapshot_digest"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	EstimatedBytes      int64              `json:"estimated_bytes"`
+	EligibleCount       int64              `json:"eligible_count"`
+	TotalEstimatedBytes int64              `json:"total_estimated_bytes"`
+}
+
+func (q *Queries) ListEligibleRoleSourceRetentionSnapshots(ctx context.Context, arg ListEligibleRoleSourceRetentionSnapshotsParams) ([]ListEligibleRoleSourceRetentionSnapshotsRow, error) {
+	rows, err := q.db.Query(ctx, listEligibleRoleSourceRetentionSnapshots,
+		arg.ResultLimit,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.MinimumAgeDays,
+		arg.KeepSuccessfulSnapshots,
+		arg.PlanGracePeriod,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEligibleRoleSourceRetentionSnapshotsRow{}
+	for rows.Next() {
+		var i ListEligibleRoleSourceRetentionSnapshotsRow
+		if err := rows.Scan(
+			&i.SnapshotDigest,
+			&i.CreatedAt,
+			&i.EstimatedBytes,
+			&i.EligibleCount,
+			&i.TotalEstimatedBytes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRoleSourceApplyFailures = `-- name: ListRoleSourceApplyFailures :many
@@ -3480,6 +4025,116 @@ func (q *Queries) MarkRoleSourceApplyRunning(ctx context.Context, arg MarkRoleSo
 	return i, err
 }
 
+const queueEligibleRoleSourceRetentionCandidates = `-- name: QueueEligibleRoleSourceRetentionCandidates :many
+WITH latest_policy AS MATERIALIZED (
+    SELECT DISTINCT ON (policy.source_id) policy.id, policy.workspace_id, policy.source_id, policy.version, policy.request_key_digest, policy.enabled, policy.minimum_age_days, policy.keep_successful_snapshots, policy.created_by, policy.created_at
+    FROM role_source_retention_policy policy
+    ORDER BY policy.source_id, policy.version DESC
+), successful AS MATERIALIZED (
+    SELECT apply.source_id, apply.snapshot_digest, max(apply.completed_at) AS applied_at
+    FROM role_source_apply apply
+    WHERE apply.status = 'succeeded'
+    GROUP BY apply.source_id, apply.snapshot_digest
+), successful_rank AS MATERIALIZED (
+    SELECT source_id, snapshot_digest,
+           row_number() OVER (PARTITION BY source_id ORDER BY applied_at DESC, snapshot_digest DESC) AS reserve_rank
+    FROM successful
+), eligible AS MATERIALIZED (
+    SELECT snapshot.source_id, snapshot.workspace_id, snapshot.snapshot_digest, snapshot.manifest_digest, snapshot.kind, snapshot.adapter_version, snapshot.contract_version, snapshot.manifest, snapshot.diagnostics, snapshot.source_evidence, snapshot.reported_by_runtime_id, snapshot.created_at, policy.version AS policy_version,
+           COALESCE((SELECT sum(edge.size_bytes) FROM role_source_snapshot_artifact edge
+                     WHERE edge.workspace_id = snapshot.workspace_id AND edge.source_id = snapshot.source_id
+                       AND edge.snapshot_digest = snapshot.snapshot_digest), 0)::bigint AS estimated_bytes
+    FROM role_source_snapshot snapshot
+    JOIN role_source source ON source.id = snapshot.source_id AND source.workspace_id = snapshot.workspace_id
+    JOIN latest_policy policy ON policy.source_id = snapshot.source_id AND policy.workspace_id = snapshot.workspace_id
+    WHERE policy.enabled
+      AND snapshot.created_at < now() - make_interval(days => policy.minimum_age_days)
+      AND snapshot.snapshot_digest IS DISTINCT FROM source.current_snapshot_digest
+      AND NOT EXISTS (
+          SELECT 1 FROM successful_rank reserved
+          WHERE reserved.source_id = snapshot.source_id AND reserved.snapshot_digest = snapshot.snapshot_digest
+            AND reserved.reserve_rank <= policy.keep_successful_snapshots
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_legal_hold hold
+          WHERE hold.workspace_id = snapshot.workspace_id AND hold.source_id = snapshot.source_id
+            AND (hold.scope = 'source' OR hold.snapshot_digest = snapshot.snapshot_digest)
+            AND NOT EXISTS (SELECT 1 FROM role_source_legal_hold_release release WHERE release.hold_id = hold.id)
+      )
+      AND NOT EXISTS (SELECT 1 FROM role_source_task_pin pin WHERE pin.source_id = snapshot.source_id AND pin.snapshot_digest = snapshot.snapshot_digest)
+      AND NOT EXISTS (SELECT 1 FROM role_source_object_mapping mapping WHERE mapping.source_id = snapshot.source_id AND mapping.last_snapshot_digest = snapshot.snapshot_digest)
+      AND NOT EXISTS (SELECT 1 FROM role_source_secret_transfer transfer WHERE transfer.source_id = snapshot.source_id AND transfer.snapshot_digest = snapshot.snapshot_digest AND transfer.status IN ('pending', 'claimed', 'submitted'))
+      AND NOT EXISTS (SELECT 1 FROM role_source_apply apply WHERE apply.source_id = snapshot.source_id AND apply.snapshot_digest = snapshot.snapshot_digest AND apply.status IN ('pending', 'running'))
+      AND NOT EXISTS (
+          SELECT 1 FROM role_source_plan plan
+          WHERE plan.source_id = snapshot.source_id
+            AND (plan.from_snapshot_digest = snapshot.snapshot_digest OR plan.to_snapshot_digest = snapshot.snapshot_digest)
+            AND (
+              plan.created_at >= now() - $1::interval
+              OR (
+                (SELECT approval.decision FROM role_source_plan_approval approval
+                 WHERE approval.source_id = plan.source_id AND approval.plan_digest = plan.plan_digest
+                 ORDER BY approval.created_at DESC, approval.id DESC LIMIT 1) = 'approved'
+                AND NOT EXISTS (SELECT 1 FROM role_source_apply apply WHERE apply.source_id = plan.source_id AND apply.plan_digest = plan.plan_digest AND apply.status = 'succeeded')
+              )
+            )
+      )
+      AND NOT EXISTS (SELECT 1 FROM role_source_retention_candidate candidate WHERE candidate.source_id = snapshot.source_id AND candidate.snapshot_digest = snapshot.snapshot_digest)
+    ORDER BY snapshot.created_at, snapshot.source_id, snapshot.snapshot_digest
+    LIMIT $2
+)
+INSERT INTO role_source_retention_candidate (
+    id, workspace_id, source_id, snapshot_digest, policy_version,
+    snapshot_created_at, estimated_bytes
+)
+SELECT gen_random_uuid(), workspace_id, source_id, snapshot_digest, policy_version, created_at, estimated_bytes
+FROM eligible
+ON CONFLICT (source_id, snapshot_digest) DO NOTHING
+RETURNING id, workspace_id, source_id, snapshot_digest, policy_version, snapshot_created_at, estimated_bytes, state, attempt, lease_token, lease_expires_at, next_attempt_at, result_code, created_at, updated_at, completed_at
+`
+
+type QueueEligibleRoleSourceRetentionCandidatesParams struct {
+	PlanGracePeriod pgtype.Interval `json:"plan_grace_period"`
+	CandidateLimit  int32           `json:"candidate_limit"`
+}
+
+func (q *Queries) QueueEligibleRoleSourceRetentionCandidates(ctx context.Context, arg QueueEligibleRoleSourceRetentionCandidatesParams) ([]RoleSourceRetentionCandidate, error) {
+	rows, err := q.db.Query(ctx, queueEligibleRoleSourceRetentionCandidates, arg.PlanGracePeriod, arg.CandidateLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceRetentionCandidate{}
+	for rows.Next() {
+		var i RoleSourceRetentionCandidate
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.SourceID,
+			&i.SnapshotDigest,
+			&i.PolicyVersion,
+			&i.SnapshotCreatedAt,
+			&i.EstimatedBytes,
+			&i.State,
+			&i.Attempt,
+			&i.LeaseToken,
+			&i.LeaseExpiresAt,
+			&i.NextAttemptAt,
+			&i.ResultCode,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const queueNextUnreachableRoleSourceArtifact = `-- name: QueueNextUnreachableRoleSourceArtifact :one
 WITH candidate AS MATERIALIZED (
     SELECT artifact.workspace_id, artifact.digest, artifact.size_bytes, artifact.storage_key, artifact.uploaded_by_runtime_id, artifact.first_source_id, artifact.first_scan_request_id, artifact.created_at
@@ -3730,6 +4385,34 @@ type ReleaseRoleSourceArtifactDeleteIntentParams struct {
 
 func (q *Queries) ReleaseRoleSourceArtifactDeleteIntent(ctx context.Context, arg ReleaseRoleSourceArtifactDeleteIntentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, releaseRoleSourceArtifactDeleteIntent, arg.RetryDelay, arg.StorageKey, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const releaseRoleSourceRetentionCandidate = `-- name: ReleaseRoleSourceRetentionCandidate :execrows
+UPDATE role_source_retention_candidate
+SET state = 'pending', lease_token = NULL, lease_expires_at = NULL,
+    next_attempt_at = now() + $1::interval, result_code = $2,
+    updated_at = now()
+WHERE id = $3 AND state = 'claimed' AND lease_token = $4
+`
+
+type ReleaseRoleSourceRetentionCandidateParams struct {
+	RetryDelay pgtype.Interval `json:"retry_delay"`
+	ResultCode pgtype.Text     `json:"result_code"`
+	ID         pgtype.UUID     `json:"id"`
+	LeaseToken pgtype.UUID     `json:"lease_token"`
+}
+
+func (q *Queries) ReleaseRoleSourceRetentionCandidate(ctx context.Context, arg ReleaseRoleSourceRetentionCandidateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseRoleSourceRetentionCandidate,
+		arg.RetryDelay,
+		arg.ResultCode,
+		arg.ID,
+		arg.LeaseToken,
+	)
 	if err != nil {
 		return 0, err
 	}

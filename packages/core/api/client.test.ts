@@ -85,6 +85,31 @@ describe("ApiClient role-source runtime evidence", () => {
       "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/legal-holds/hold-1/release",
     );
   });
+
+  it("previews and updates owner-only role-source retention", async () => {
+    const preview = { policy: { version: 0, enabled: false }, eligible_count: 2 };
+    const policy = { version: 1, enabled: true, minimum_age_days: 90, keep_successful_snapshots: 10 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(policy), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.getRoleSourceRetentionPreview("workspace-1", "source-1")).resolves.toEqual(preview);
+    await client.updateRoleSourceRetentionPolicy("workspace-1", "source-1", {
+      request_key: "retention-policy-1",
+      expected_version: 0,
+      enabled: true,
+      minimum_age_days: 90,
+      keep_successful_snapshots: 10,
+    });
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/retention",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "PATCH" }));
+  });
 });
 
 describe("ApiClient pull-request response schema", () => {

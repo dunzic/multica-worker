@@ -261,6 +261,10 @@ type Handler struct {
 	// RoleSourceArtifactReconciler reclaims unreachable content-addressed
 	// bodies and workspace-deletion leftovers through a durable tombstone tail.
 	RoleSourceArtifactReconciler *service.RoleSourceArtifactReconciler
+	// RoleSourceRetentionReconciler applies owner-approved historical snapshot
+	// policies. It remains independently default-off and is wired only when
+	// permanent artifact GC is also available.
+	RoleSourceRetentionReconciler *service.RoleSourceRetentionReconciler
 	// SlackInstall owns the bring-your-own-app Slack install lifecycle (register
 	// pasted tokens / list / revoke) and the at-rest encryption of each app's bot
 	// + app tokens (MUL-3666). Nil unless MULTICA_SLACK_SECRET_KEY is set.

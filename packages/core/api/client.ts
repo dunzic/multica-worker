@@ -48,6 +48,9 @@ import type {
   RoleSourceLegalHold,
   CreateRoleSourceLegalHoldRequest,
   ReleaseRoleSourceLegalHoldRequest,
+  RoleSourceRetentionPolicy,
+  RoleSourceRetentionPreview,
+  UpdateRoleSourceRetentionPolicyRequest,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -1720,6 +1723,26 @@ export class ApiClient {
     return this.fetch<RoleSourceLegalHold>(
       `/api/workspaces/${workspaceId}/role-sources/${sourceId}/legal-holds/${holdId}/release`,
       { method: "POST", body: JSON.stringify(request) },
+    );
+  }
+
+  async getRoleSourceRetentionPreview(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceRetentionPreview> {
+    return this.fetch<RoleSourceRetentionPreview>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/retention`,
+    );
+  }
+
+  async updateRoleSourceRetentionPolicy(
+    workspaceId: string,
+    sourceId: string,
+    request: UpdateRoleSourceRetentionPolicyRequest,
+  ): Promise<RoleSourceRetentionPolicy> {
+    return this.fetch<RoleSourceRetentionPolicy>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/retention`,
+      { method: "PATCH", body: JSON.stringify(request) },
     );
   }
 

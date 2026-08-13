@@ -96,6 +96,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"role_source_capability_version":     workspaceDelete,
 	"role_source_legal_hold":             workspaceDelete,
 	"role_source_legal_hold_release":     workspaceDelete,
+	"role_source_retention_candidate":    workspaceDelete,
+	"role_source_retention_policy":       workspaceDelete,
 	"role_source_object_mapping":         workspaceDelete,
 	"role_source_plan":                   workspaceDelete,
 	"role_source_plan_approval":          workspaceDelete,

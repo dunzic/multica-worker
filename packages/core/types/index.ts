@@ -108,6 +108,10 @@ export type {
   RoleSourceLegalHoldReleaseReason,
   CreateRoleSourceLegalHoldRequest,
   ReleaseRoleSourceLegalHoldRequest,
+  RoleSourceRetentionPolicy,
+  RoleSourceRetentionCandidate,
+  RoleSourceRetentionPreview,
+  UpdateRoleSourceRetentionPolicyRequest,
 } from "./role-source";
 export type { InboxItem, InboxSeverity, InboxItemType, InboxWorkspaceUnread } from "./inbox";
 export type { NotificationGroupKey, NotificationGroupValue, NotificationPreferences, NotificationPreferenceResponse } from "./notification-preference";

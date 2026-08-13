@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -373,6 +375,120 @@ func TestRoleSourceLegalHoldCreateReleaseAndAudit(t *testing.T) {
 	}
 	if _, err := testPool.Exec(ctx, `UPDATE role_source_legal_hold_release SET reason_code = 'resolved' WHERE hold_id = $1`, util.MustParseUUID(created.ID)); err == nil {
 		t.Fatal("database allowed legal hold release authority to be rewritten")
+	}
+}
+
+func TestRoleSourceRetentionPolicyHoldFenceAndPrune(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	control, ok := testHandler.RoleSources.(*rolesource.ControlPlane)
+	if !ok {
+		t.Fatal("live retention test requires concrete role-source control plane")
+	}
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Role Source Retention")
+	source, err := testHandler.RoleSources.RegisterSource(ctx, rolesource.RegisterSourceInput{
+		WorkspaceID: testWorkspaceID, RuntimeID: runtimeID, ActorUserID: testUserID,
+		Name: "Retention " + runtimeID, Kind: "agentwaker_directory", AdapterVersion: "0.1.0",
+		DaemonConfigID: "production", ConfigSummary: rolesource.ConfigSummary{Configured: true},
+	})
+	if err != nil {
+		t.Fatalf("register retention source: %v", err)
+	}
+	sourceID := util.UUIDToString(source.ID)
+	snapshotDigest := "sha256:" + strings.Repeat("8", 64)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = testPool.Exec(cleanupCtx, `
+			INSERT INTO role_source_legal_hold_release (
+				hold_id, workspace_id, source_id, request_key_digest, reason_code, released_by
+			)
+			SELECT id, workspace_id, source_id, 'sha256:' || repeat('0', 64), 'entered_in_error', $2
+			FROM role_source_legal_hold WHERE source_id = $1
+			ON CONFLICT (hold_id) DO NOTHING
+		`, source.ID, util.MustParseUUID(testUserID))
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source_legal_hold WHERE source_id = $1`, source.ID)
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source_legal_hold_release WHERE source_id = $1`, source.ID)
+		tx, txErr := testPool.Begin(cleanupCtx)
+		if txErr == nil {
+			_, _ = tx.Exec(cleanupCtx, `SELECT set_config('multica.workspace_teardown', 'on', true)`)
+			_, _ = tx.Exec(cleanupCtx, `DELETE FROM role_source_retention_candidate WHERE source_id = $1`, source.ID)
+			_, _ = tx.Exec(cleanupCtx, `DELETE FROM role_source_retention_policy WHERE source_id = $1`, source.ID)
+			_, _ = tx.Exec(cleanupCtx, `DELETE FROM role_source_snapshot_artifact WHERE source_id = $1`, source.ID)
+			_, _ = tx.Exec(cleanupCtx, `DELETE FROM role_source_snapshot WHERE source_id = $1`, source.ID)
+			_ = tx.Commit(cleanupCtx)
+		}
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source_audit_event WHERE source_id = $1`, source.ID)
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source WHERE id = $1`, source.ID)
+	})
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO role_source_snapshot (
+			source_id, workspace_id, snapshot_digest, manifest_digest, kind,
+			adapter_version, contract_version, manifest, diagnostics, source_evidence,
+			reported_by_runtime_id, created_at
+		) VALUES ($1, $2, $3, $3, 'agentwaker_directory', '0.1.0', '1.0',
+			'{"roles":[],"capabilities":[]}'::jsonb, '[]'::jsonb, '{}'::jsonb, $4,
+			now() - interval '120 days')
+	`, source.ID, util.MustParseUUID(testWorkspaceID), snapshotDigest, util.MustParseUUID(runtimeID)); err != nil {
+		t.Fatalf("insert old retention snapshot: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `DELETE FROM role_source_snapshot WHERE source_id = $1 AND snapshot_digest = $2`, source.ID, snapshotDigest); err == nil {
+		t.Fatal("database allowed historical snapshot deletion without retention authority")
+	}
+	policy, err := testHandler.RoleSources.UpdateRetentionPolicy(ctx, rolesource.UpdateRetentionPolicyInput{
+		WorkspaceID: testWorkspaceID, SourceID: sourceID, ActorUserID: testUserID,
+		RequestKey: "retention-live-policy", ExpectedVersion: 0, Enabled: true,
+		MinimumAgeDays: 90, KeepSuccessfulSnapshots: 10,
+	})
+	if err != nil || !policy.Enabled || policy.Version != 1 {
+		t.Fatalf("create retention policy: policy=%+v err=%v", policy, err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE role_source_retention_policy SET enabled = false WHERE source_id = $1`, source.ID); err == nil {
+		t.Fatal("database allowed an in-place retention policy revision")
+	}
+	hold, err := testHandler.RoleSources.CreateLegalHold(ctx, rolesource.CreateLegalHoldInput{
+		WorkspaceID: testWorkspaceID, SourceID: sourceID, ActorUserID: testUserID,
+		RequestKey: "retention-live-hold", Scope: rolesource.LegalHoldScopeSnapshot,
+		SnapshotDigest: snapshotDigest, ReasonCode: rolesource.LegalHoldReasonLitigation,
+	})
+	if err != nil {
+		t.Fatalf("create retention hold: %v", err)
+	}
+	if _, err := control.QueueNextRetentionCandidate(ctx); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("legal-held snapshot became retention candidate: %v", err)
+	}
+	if _, err := testHandler.RoleSources.ReleaseLegalHold(ctx, rolesource.ReleaseLegalHoldInput{
+		WorkspaceID: testWorkspaceID, SourceID: sourceID, HoldID: hold.ID, ActorUserID: testUserID,
+		RequestKey: "retention-live-release", ReasonCode: rolesource.LegalHoldReleaseCourtOrder,
+	}); err != nil {
+		t.Fatalf("release retention hold: %v", err)
+	}
+	candidate, err := control.QueueNextRetentionCandidate(ctx)
+	if err != nil || candidate.SnapshotDigest != snapshotDigest {
+		t.Fatalf("queue retention candidate: candidate=%+v err=%v", candidate, err)
+	}
+	token := util.MustParseUUID("00000000-0000-4000-8000-000000000089")
+	claimed, err := testHandler.Queries.ClaimNextRoleSourceRetentionCandidate(ctx, db.ClaimNextRoleSourceRetentionCandidateParams{
+		LeaseToken: token, LeaseDuration: pgtype.Interval{Microseconds: (5 * time.Minute).Microseconds(), Valid: true},
+	})
+	if err != nil || claimed.ID != candidate.ID {
+		t.Fatalf("claim retention candidate: candidate=%+v err=%v", claimed, err)
+	}
+	outcome, err := control.PruneRetentionCandidate(ctx, candidate.ID, token)
+	if err != nil || outcome != "pruned" {
+		t.Fatalf("prune retention candidate: outcome=%q err=%v", outcome, err)
+	}
+	var snapshots, auditEvents int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM role_source_snapshot WHERE source_id = $1 AND snapshot_digest = $2`, source.ID, snapshotDigest).Scan(&snapshots); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM role_source_audit_event WHERE source_id = $1 AND event_type = 'snapshot_retention_pruned'`, source.ID).Scan(&auditEvents); err != nil {
+		t.Fatal(err)
+	}
+	if snapshots != 0 || auditEvents != 1 {
+		t.Fatalf("retention result snapshots=%d audit_events=%d", snapshots, auditEvents)
 	}
 }
 

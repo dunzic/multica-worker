@@ -92,6 +92,11 @@ type fakeRoleSourceControlPlane struct {
 	releaseLegalHoldErr       error
 	legalHoldRows             []rolesource.LegalHold
 	legalHoldListErr          error
+	retentionPreview          rolesource.RetentionPreview
+	retentionPreviewErr       error
+	retentionPolicyInput      *rolesource.UpdateRetentionPolicyInput
+	retentionPolicy           rolesource.RetentionPolicy
+	retentionPolicyErr        error
 	missingArtifacts          []rolesource.ArtifactRef
 	missingErr                error
 	storedArtifact            db.RoleSourceArtifact
@@ -252,6 +257,17 @@ func (f *fakeRoleSourceControlPlane) ReleaseLegalHold(_ context.Context, input r
 func (f *fakeRoleSourceControlPlane) ListLegalHolds(context.Context, string, string, int32) ([]rolesource.LegalHold, error) {
 	f.calls++
 	return f.legalHoldRows, f.legalHoldListErr
+}
+
+func (f *fakeRoleSourceControlPlane) GetRetentionPreview(context.Context, string, string) (rolesource.RetentionPreview, error) {
+	f.calls++
+	return f.retentionPreview, f.retentionPreviewErr
+}
+
+func (f *fakeRoleSourceControlPlane) UpdateRetentionPolicy(_ context.Context, input rolesource.UpdateRetentionPolicyInput) (rolesource.RetentionPolicy, error) {
+	f.calls++
+	f.retentionPolicyInput = &input
+	return f.retentionPolicy, f.retentionPolicyErr
 }
 
 func (f *fakeRoleSourceControlPlane) ListMissingArtifacts(context.Context, rolesource.ArtifactLeaseInput, []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error) {
@@ -610,6 +626,84 @@ func TestRoleSourceLegalHoldMutation_MapsStateConflicts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRoleSourceRetentionPreviewIsContentFreeAndBounded(t *testing.T) {
+	preview := rolesource.RetentionPreview{
+		Policy: rolesource.RetentionPolicy{
+			WorkspaceID: testWorkspaceID, SourceID: roleSourceTestSourceID,
+			Version: 2, Enabled: true, MinimumAgeDays: 90, KeepSuccessfulSnapshots: 10,
+		},
+		EligibleCount: 1, EstimatedBytes: 4096,
+		Candidates: []rolesource.RetentionCandidatePreview{{
+			SnapshotDigest: "sha256:" + strings.Repeat("a", 64), CreatedAt: "2026-01-01T00:00:00Z", EstimatedBytes: 4096,
+		}},
+	}
+	fake := &fakeRoleSourceControlPlane{retentionPreview: preview}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+	h.GetRoleSourceRetentionPreview(w, req)
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(body, `"minimum_age_days":90`) || !strings.Contains(body, `"estimated_bytes":4096`) {
+		t.Fatalf("retention preview status=%d body=%s", w.Code, body)
+	}
+	for _, forbidden := range []string{"manifest", "diagnostics", "source_evidence", "request_key", "storage_key", "artifact_body"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("retention preview exposed %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestUpdateRoleSourceRetentionPolicyUsesStrictCASRequest(t *testing.T) {
+	policy := rolesource.RetentionPolicy{
+		WorkspaceID: testWorkspaceID, SourceID: roleSourceTestSourceID,
+		Version: 3, Enabled: true, MinimumAgeDays: 180, KeepSuccessfulSnapshots: 12,
+	}
+	fake := &fakeRoleSourceControlPlane{retentionPolicy: policy}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPatch, "/ignored", map[string]any{
+		"request_key": "policy-3", "expected_version": 2, "enabled": true,
+		"minimum_age_days": 180, "keep_successful_snapshots": 12,
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+	h.UpdateRoleSourceRetentionPolicy(w, req)
+	if w.Code != http.StatusOK || fake.retentionPolicyInput == nil || fake.retentionPolicyInput.ExpectedVersion != 2 ||
+		fake.retentionPolicyInput.MinimumAgeDays != 180 || fake.retentionPolicyInput.KeepSuccessfulSnapshots != 12 {
+		t.Fatalf("retention update status=%d input=%+v body=%s", w.Code, fake.retentionPolicyInput, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "policy-3") || strings.Contains(w.Body.String(), "request_key") {
+		t.Fatalf("retention response exposed idempotency key: %s", w.Body.String())
+	}
+}
+
+func TestUpdateRoleSourceRetentionPolicyRejectsUnknownAndMapsConflict(t *testing.T) {
+	t.Run("unknown field", func(t *testing.T) {
+		fake := &fakeRoleSourceControlPlane{}
+		h := roleSourceTestHandler(t, true, fake)
+		w := httptest.NewRecorder()
+		req := withURLParams(newRequestAs(testUserID, http.MethodPatch, "/ignored", map[string]any{
+			"request_key": "policy", "expected_version": 0, "enabled": true,
+			"minimum_age_days": 90, "keep_successful_snapshots": 10, "delete_immediately": true,
+		}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+		h.UpdateRoleSourceRetentionPolicy(w, req)
+		if w.Code != http.StatusBadRequest || fake.calls != 0 {
+			t.Fatalf("unknown retention field status=%d calls=%d", w.Code, fake.calls)
+		}
+	})
+	t.Run("version conflict", func(t *testing.T) {
+		fake := &fakeRoleSourceControlPlane{retentionPolicyErr: rolesource.ErrRetentionVersion}
+		h := roleSourceTestHandler(t, true, fake)
+		w := httptest.NewRecorder()
+		req := withURLParams(newRequestAs(testUserID, http.MethodPatch, "/ignored", map[string]any{
+			"request_key": "policy", "expected_version": 0, "enabled": false,
+			"minimum_age_days": 90, "keep_successful_snapshots": 10,
+		}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+		h.UpdateRoleSourceRetentionPolicy(w, req)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("retention conflict status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
 }
 
 func TestRequestRoleSourceScan_MapsActiveScanToConflict(t *testing.T) {

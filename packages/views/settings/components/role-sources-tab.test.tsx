@@ -1,4 +1,5 @@
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithI18n } from "../../test/i18n";
@@ -10,9 +11,18 @@ const queryFixtures = vi.hoisted(() => ({
   failures: [] as Array<Record<string, unknown>>,
   attestations: [] as Array<Record<string, unknown>>,
   legalHolds: [] as Array<Record<string, unknown>>,
+  retention: undefined as Record<string, unknown> | undefined,
 }));
 
 const memberFixture = vi.hoisted(() => ({ role: "owner" }));
+const apiMocks = vi.hoisted(() => ({
+  updateRoleSourceLifecycle: vi.fn(),
+  createRoleSourceLegalHold: vi.fn(),
+  releaseRoleSourceLegalHold: vi.fn(),
+  updateRoleSourceRetentionPolicy: vi.fn(),
+}));
+
+vi.mock("@multica/core/api", () => ({ api: apiMocks }));
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "workspace-1", name: "Acme" }),
@@ -35,7 +45,9 @@ vi.mock("@tanstack/react-query", async () => {
         : options.queryKey.includes("apply-failures")
           ? queryFixtures.failures
           : options.queryKey.includes("legal-holds")
-            ? queryFixtures.legalHolds
+          ? queryFixtures.legalHolds
+          : options.queryKey.includes("retention")
+            ? queryFixtures.retention
           : options.queryKey.includes("runtime-attestations")
             ? queryFixtures.attestations
             : options.queryKey.includes("plans")
@@ -50,6 +62,7 @@ vi.mock("@tanstack/react-query", async () => {
 import { RoleSourcesTab } from "./role-sources-tab";
 
 beforeEach(() => {
+  vi.clearAllMocks();
   memberFixture.role = "owner";
   queryFixtures.sources = [
     {
@@ -194,6 +207,26 @@ beforeEach(() => {
       status: "active",
     },
   ];
+  queryFixtures.retention = {
+    policy: {
+      workspace_id: "workspace-1",
+      source_id: "source-1",
+      version: 1,
+      enabled: false,
+      minimum_age_days: 90,
+      keep_successful_snapshots: 10,
+    },
+    eligible_count: 1,
+    estimated_bytes: 4096,
+    truncated: false,
+    candidates: [
+      {
+        snapshot_digest: `sha256:${"c".repeat(64)}`,
+        created_at: "2026-01-01T00:00:00Z",
+        estimated_bytes: 4096,
+      },
+    ],
+  };
 });
 
 describe("RoleSourcesTab", () => {
@@ -285,11 +318,41 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByRole("button", { name: "Release hold" })).toBeInTheDocument();
   });
 
+  it("shows an owner-only retention preview without an immediate delete action", () => {
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByText("Historical retention")).toBeInTheDocument();
+    expect(screen.getByText("Pruning disabled")).toBeInTheDocument();
+    expect(screen.getByText(/1 snapshots currently eligible/)).toBeInTheDocument();
+    expect(screen.getByText(/rechecks legal holds, task pins/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit policy" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /delete snapshot|prune now/i })).not.toBeInTheDocument();
+  });
+
+  it("reuses the same retention idempotency key after an ambiguous request failure", async () => {
+    apiMocks.updateRoleSourceRetentionPolicy
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({ version: 2 });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Edit policy" }));
+    await user.click(screen.getByRole("button", { name: "Save policy revision" }));
+    await screen.findByText("Update historical retention policy");
+    await user.click(screen.getByRole("button", { name: "Save policy revision" }));
+
+    expect(apiMocks.updateRoleSourceRetentionPolicy).toHaveBeenCalledTimes(2);
+    const first = apiMocks.updateRoleSourceRetentionPolicy.mock.calls[0]?.[2];
+    const second = apiMocks.updateRoleSourceRetentionPolicy.mock.calls[1]?.[2];
+    expect(first.request_key).toBe(second.request_key);
+  });
+
   it("does not expose legal-hold records or controls to workspace admins", () => {
     memberFixture.role = "admin";
     renderWithI18n(<RoleSourcesTab />);
 
     expect(screen.queryByText("Legal holds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Historical retention")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create legal hold" })).not.toBeInTheDocument();
   });
 });

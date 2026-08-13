@@ -53,7 +53,10 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 }
 
 const deleteWorkspace = `-- name: DeleteWorkspace :exec
-WITH ws_installations AS (
+WITH role_source_teardown_mode AS MATERIALIZED (
+    SELECT set_config('multica.workspace_teardown', 'on', true)
+),
+ws_installations AS (
     SELECT id FROM channel_installation WHERE workspace_id = $1
 ),
 ws_agents AS (
@@ -169,6 +172,14 @@ cleared_role_source_applies AS (
 cleared_role_source_plans AS (
     DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
 ),
+cleared_role_source_retention_candidates AS (
+    DELETE FROM role_source_retention_candidate WHERE role_source_retention_candidate.workspace_id = $1
+),
+cleared_role_source_retention_policies AS (
+    DELETE FROM role_source_retention_policy
+    WHERE role_source_retention_policy.workspace_id = $1
+      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)
+),
 cleared_role_source_legal_holds AS (
     DELETE FROM role_source_legal_hold WHERE role_source_legal_hold.workspace_id = $1
     RETURNING id
@@ -188,7 +199,9 @@ cleared_role_source_runtime_attestations AS (
     DELETE FROM role_source_runtime_attestation WHERE role_source_runtime_attestation.workspace_id = $1
 ),
 cleared_role_source_snapshots AS (
-    DELETE FROM role_source_snapshot WHERE role_source_snapshot.workspace_id = $1
+    DELETE FROM role_source_snapshot
+    WHERE role_source_snapshot.workspace_id = $1
+      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)
 ),
 cleared_role_source_scans AS (
     DELETE FROM role_source_scan_request WHERE role_source_scan_request.workspace_id = $1

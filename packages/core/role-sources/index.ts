@@ -19,4 +19,8 @@ export type {
   RoleSourceLegalHoldReleaseReason,
   CreateRoleSourceLegalHoldRequest,
   ReleaseRoleSourceLegalHoldRequest,
+  RoleSourceRetentionPolicy,
+  RoleSourceRetentionCandidate,
+  RoleSourceRetentionPreview,
+  UpdateRoleSourceRetentionPolicyRequest,
 } from "../types/role-source";

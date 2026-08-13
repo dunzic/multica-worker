@@ -84,6 +84,39 @@ This gate validates the hold fence only. It does not authorize historical
 snapshot pruning; that requires a separate retention-candidate race and restore
 exercise after the retention worker exists.
 
+## Gate B3 — historical-retention transaction and provenance races
+
+```bash
+go -C server test -count=1 -run '^TestRoleSourceRetentionPolicyHoldFenceAndPrune$' ./internal/handler
+go -C server test -race -count=10 -run '^TestRoleSourceRetentionPolicyHoldFenceAndPrune$' ./internal/handler
+```
+
+Then run two server replicas with both retention and permanent artifact-GC gates
+enabled against a disposable PostgreSQL 17 dataset containing current, recent,
+old-successful, never-applied, held, task-pinned and shared-artifact snapshots.
+At the snapshot-row lock, race each of: task enqueue, source/snapshot hold,
+policy disable/extension, apply, secret transfer, new plan approval, rollback,
+workspace delete, worker lease expiry and PostgreSQL failover.
+
+Pass criteria:
+
+- current, held, task-pinned, mapped, in-flight, recent/approved-plan and latest
+  successful reserve snapshots never disappear;
+- a concurrent task pin either commits first and defers prune, or fails because
+  retained snapshot provenance no longer exists—no orphan pin is possible;
+- policy changes are append-only, exact-retry idempotent and CAS-safe; a stricter
+  age/reserve revision applies to already queued candidates;
+- only one replica completes a candidate, and snapshot edges, snapshot content,
+  orphan capability versions, candidate completion and hash-chain audit commit
+  together;
+- shared capability versions and artifact bodies remain while any retained
+  snapshot references them; last-edge artifacts enter the independent purge
+  ledger and are permanently removed only after its settle/tombstone protocol;
+- migration up/down, trigger behavior, EXPLAIN plans, lock waits, WAL, deadlocks,
+  backlog age and p50/p95/p99 remain within the recorded cohort budget;
+- backup restore and point-in-time recovery restore active holds, policy
+  revisions, candidates, snapshots, edges and task pins consistently.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.

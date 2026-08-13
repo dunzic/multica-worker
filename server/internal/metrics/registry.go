@@ -34,6 +34,7 @@ type Registry struct {
 	Wecom                *WecomMetrics
 	RoleSource           *RoleSourceMetrics
 	RoleSourceArtifactGC *RoleSourceArtifactGCMetrics
+	RoleSourceRetention  *RoleSourceRetentionMetrics
 	// Sampler is non-nil only when RegistryOptions.BusinessSampler was
 	// supplied with a valid Pool. Exposed so the cmd/server entrypoint
 	// can plumb the same instance into health checks if it ever wants to.
@@ -68,6 +69,8 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	reg.MustRegister(roleSourceMetrics.Collectors()...)
 	roleSourceArtifactGC := NewRoleSourceArtifactGCMetrics()
 	reg.MustRegister(roleSourceArtifactGC.Collectors()...)
+	roleSourceRetention := NewRoleSourceRetentionMetrics()
+	reg.MustRegister(roleSourceRetention.Collectors()...)
 
 	if opts.Pool != nil {
 		reg.MustRegister(NewDBCollector(opts.Pool))
@@ -92,6 +95,7 @@ func NewRegistry(opts RegistryOptions) *Registry {
 		Wecom:                wecomMetrics,
 		RoleSource:           roleSourceMetrics,
 		RoleSourceArtifactGC: roleSourceArtifactGC,
+		RoleSourceRetention:  roleSourceRetention,
 		Sampler:              sampler,
 	}
 }

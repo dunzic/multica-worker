@@ -1,5 +1,9 @@
 # RS-02/RS-06 artifact reachability review
 
+Status note: the missing legal-hold and historical-retention controls described
+below are implemented by the later RS-06 legal-hold and historical-retention
+reviews. Live PostgreSQL/storage/restore evidence remains open.
+
 Date: 2026-08-13
 
 Gate: design and merge evidence

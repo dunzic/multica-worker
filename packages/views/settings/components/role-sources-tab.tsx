@@ -8,6 +8,7 @@ import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
+import { Switch } from "@multica/ui/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -40,6 +41,7 @@ import {
   roleSourcePlanImpactOptions,
   roleSourcePlanListOptions,
   roleSourceRuntimeAttestationListOptions,
+  roleSourceRetentionPreviewOptions,
   roleSourceKeys,
   type RoleSourceLifecycleAction,
   type RoleSourceLegalHold,
@@ -92,6 +94,13 @@ function legalHoldRequestKey(prefix: "create" | "release") {
   return `role-source-legal-hold-${prefix}-${globalThis.crypto.randomUUID()}`;
 }
 
+function formatRetentionBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+}
+
 export function RoleSourcesTab() {
   const { t } = useT("settings");
   const workspaceId = useCurrentWorkspace()?.id ?? "";
@@ -110,14 +119,22 @@ export function RoleSourcesTab() {
   const [rebindConfigId, setRebindConfigId] = React.useState("");
   const [savingLifecycle, setSavingLifecycle] = React.useState(false);
   const [createHoldOpen, setCreateHoldOpen] = React.useState(false);
+  const [createHoldRequestKey, setCreateHoldRequestKey] = React.useState("");
   const [holdScope, setHoldScope] = React.useState<RoleSourceLegalHoldScope>("source");
   const [holdReason, setHoldReason] = React.useState<RoleSourceLegalHoldReason>("regulatory");
   const [holdSnapshotDigest, setHoldSnapshotDigest] = React.useState("");
   const [holdReferenceDigest, setHoldReferenceDigest] = React.useState("");
   const [holdToRelease, setHoldToRelease] = React.useState<RoleSourceLegalHold | null>(null);
+  const [releaseHoldRequestKey, setReleaseHoldRequestKey] = React.useState("");
   const [releaseReason, setReleaseReason] = React.useState<RoleSourceLegalHoldReleaseReason>("resolved");
   const [releaseReferenceDigest, setReleaseReferenceDigest] = React.useState("");
   const [savingHold, setSavingHold] = React.useState(false);
+  const [retentionDialogOpen, setRetentionDialogOpen] = React.useState(false);
+  const [retentionRequestKey, setRetentionRequestKey] = React.useState("");
+  const [retentionEnabled, setRetentionEnabled] = React.useState(false);
+  const [retentionMinimumDays, setRetentionMinimumDays] = React.useState("90");
+  const [retentionKeepSuccessful, setRetentionKeepSuccessful] = React.useState("10");
+  const [savingRetention, setSavingRetention] = React.useState(false);
 
   React.useEffect(() => {
     if (!sources.data?.length) {
@@ -155,17 +172,28 @@ export function RoleSourcesTab() {
     ...roleSourceLegalHoldListOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId && isOwner),
   });
+  const retention = useQuery({
+    ...roleSourceRetentionPreviewOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId && isOwner),
+  });
+
+  React.useEffect(() => {
+    if (!retention.data?.policy) return;
+    setRetentionEnabled(retention.data.policy.enabled);
+    setRetentionMinimumDays(String(retention.data.policy.minimum_age_days));
+    setRetentionKeepSuccessful(String(retention.data.policy.keep_successful_snapshots));
+  }, [retention.data?.policy]);
 
   const createHoldValid = holdScope === "source" || sha256DigestPattern.test(holdSnapshotDigest.trim());
   const createReferenceValid = !holdReferenceDigest.trim() || sha256DigestPattern.test(holdReferenceDigest.trim());
   const releaseReferenceValid = !releaseReferenceDigest.trim() || sha256DigestPattern.test(releaseReferenceDigest.trim());
 
   async function createLegalHold() {
-    if (!selected || savingHold || !createHoldValid || !createReferenceValid) return;
+    if (!selected || savingHold || !createHoldRequestKey || !createHoldValid || !createReferenceValid) return;
     setSavingHold(true);
     try {
       await api.createRoleSourceLegalHold(workspaceId, selected.id, {
-        request_key: legalHoldRequestKey("create"),
+        request_key: createHoldRequestKey,
         scope: holdScope,
         snapshot_digest: holdScope === "snapshot" ? holdSnapshotDigest.trim() : undefined,
         reason_code: holdReason,
@@ -174,6 +202,7 @@ export function RoleSourcesTab() {
       await queryClient.invalidateQueries({ queryKey: roleSourceKeys.legalHolds(workspaceId, selected.id) });
       toast.success(t(($) => $.role_sources.legal_hold_created));
       setCreateHoldOpen(false);
+      setCreateHoldRequestKey("");
       setHoldScope("source");
       setHoldReason("regulatory");
       setHoldSnapshotDigest("");
@@ -186,23 +215,51 @@ export function RoleSourcesTab() {
   }
 
   async function releaseLegalHold() {
-    if (!selected || !holdToRelease || savingHold || !releaseReferenceValid) return;
+    if (!selected || !holdToRelease || savingHold || !releaseHoldRequestKey || !releaseReferenceValid) return;
     setSavingHold(true);
     try {
       await api.releaseRoleSourceLegalHold(workspaceId, selected.id, holdToRelease.id, {
-        request_key: legalHoldRequestKey("release"),
+        request_key: releaseHoldRequestKey,
         reason_code: releaseReason,
         reference_digest: releaseReferenceDigest.trim() || undefined,
       });
       await queryClient.invalidateQueries({ queryKey: roleSourceKeys.legalHolds(workspaceId, selected.id) });
       toast.success(t(($) => $.role_sources.legal_hold_released));
       setHoldToRelease(null);
+      setReleaseHoldRequestKey("");
       setReleaseReason("resolved");
       setReleaseReferenceDigest("");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.legal_hold_failed));
     } finally {
       setSavingHold(false);
+    }
+  }
+
+  const retentionDays = Number(retentionMinimumDays);
+  const retentionKeep = Number(retentionKeepSuccessful);
+  const retentionInputValid = Number.isInteger(retentionDays) && retentionDays >= 30 && retentionDays <= 3650 &&
+    Number.isInteger(retentionKeep) && retentionKeep >= 2 && retentionKeep <= 100;
+
+  async function updateRetentionPolicy() {
+    if (!selected || !retention.data || savingRetention || !retentionRequestKey || !retentionInputValid) return;
+    setSavingRetention(true);
+    try {
+      await api.updateRoleSourceRetentionPolicy(workspaceId, selected.id, {
+        request_key: retentionRequestKey,
+        expected_version: retention.data.policy.version,
+        enabled: retentionEnabled,
+        minimum_age_days: retentionDays,
+        keep_successful_snapshots: retentionKeep,
+      });
+      await queryClient.invalidateQueries({ queryKey: roleSourceKeys.retention(workspaceId, selected.id) });
+      toast.success(t(($) => $.role_sources.retention_updated));
+      setRetentionDialogOpen(false);
+      setRetentionRequestKey("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.retention_update_failed));
+    } finally {
+      setSavingRetention(false);
     }
   }
 
@@ -399,7 +456,10 @@ export function RoleSourcesTab() {
                     <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
                     <span>{t(($) => $.role_sources.legal_holds_warning)}</span>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => setCreateHoldOpen(true)}>
+                  <Button variant="outline" size="sm" onClick={() => {
+                    setCreateHoldRequestKey(legalHoldRequestKey("create"));
+                    setCreateHoldOpen(true);
+                  }}>
                     <ShieldAlert className="h-4 w-4" />
                     {t(($) => $.role_sources.legal_hold_create)}
                   </Button>
@@ -439,12 +499,84 @@ export function RoleSourcesTab() {
                           ) : null}
                         </div>
                         {hold.status === "active" ? (
-                          <Button variant="outline" size="sm" onClick={() => setHoldToRelease(hold)}>
+                          <Button variant="outline" size="sm" onClick={() => {
+                            setReleaseHoldRequestKey(legalHoldRequestKey("release"));
+                            setHoldToRelease(hold);
+                          }}>
                             {t(($) => $.role_sources.legal_hold_release)}
                           </Button>
                         ) : null}
                       </div>
                     ))}
+                  </div>
+                )}
+              </SettingsCard>
+            </SettingsSection>
+          ) : null}
+
+          {isOwner ? (
+            <SettingsSection
+              title={t(($) => $.role_sources.retention_title)}
+              description={t(($) => $.role_sources.retention_description)}
+            >
+              <SettingsCard>
+                {retention.isLoading ? (
+                  <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t(($) => $.role_sources.loading)}
+                  </div>
+                ) : retention.isError || !retention.data ? (
+                  <div className="p-4 text-caption text-destructive">{t(($) => $.role_sources.retention_load_failed)}</div>
+                ) : (
+                  <div className="divide-y divide-surface-border">
+                    <div className="flex flex-wrap items-start justify-between gap-3 p-4">
+                      <div>
+                        <div className="flex items-center gap-2 text-body font-medium">
+                          <Badge variant={retention.data.policy.enabled ? "destructive" : "outline"}>
+                            {retention.data.policy.enabled
+                              ? t(($) => $.role_sources.retention_enabled)
+                              : t(($) => $.role_sources.retention_disabled)}
+                          </Badge>
+                          <span>{t(($) => $.role_sources.retention_policy_version, { version: retention.data.policy.version })}</span>
+                        </div>
+                        <p className="mt-2 text-caption text-muted-foreground">
+                          {t(($) => $.role_sources.retention_policy_summary, {
+                            days: retention.data.policy.minimum_age_days,
+                            count: retention.data.policy.keep_successful_snapshots,
+                          })}
+                        </p>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => {
+                        setRetentionRequestKey(`role-source-retention-policy-${globalThis.crypto.randomUUID()}`);
+                        setRetentionDialogOpen(true);
+                      }}>
+                        {t(($) => $.role_sources.retention_edit)}
+                      </Button>
+                    </div>
+                    <div className="p-4">
+                      <div className="text-body font-medium">
+                        {t(($) => $.role_sources.retention_preview_summary, {
+                          count: retention.data.eligible_count,
+                          bytes: formatRetentionBytes(retention.data.estimated_bytes),
+                        })}
+                      </div>
+                      <p className="mt-1 text-caption text-muted-foreground">{t(($) => $.role_sources.retention_preview_warning)}</p>
+                      {retention.data.candidates.length ? (
+                        <div className="mt-3 max-h-48 divide-y divide-surface-border overflow-y-auto rounded-md border border-surface-border">
+                          {retention.data.candidates.map((candidate) => (
+                            <div key={candidate.snapshot_digest} className="flex items-center justify-between gap-3 px-3 py-2 text-caption">
+                              <span className="min-w-0 truncate font-mono">{shortDigest(candidate.snapshot_digest)}</span>
+                              <span className="shrink-0 text-muted-foreground">
+                                {candidate.created_at} · {formatRetentionBytes(candidate.estimated_bytes)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {retention.data.truncated ? (
+                        <p className="mt-2 text-caption text-amber-700">{t(($) => $.role_sources.retention_preview_truncated)}</p>
+                      ) : null}
+                    </div>
                   </div>
                 )}
               </SettingsCard>
@@ -713,7 +845,11 @@ export function RoleSourcesTab() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={createHoldOpen} onOpenChange={(open) => !savingHold && setCreateHoldOpen(open)}>
+      <Dialog open={createHoldOpen} onOpenChange={(open) => {
+        if (savingHold) return;
+        setCreateHoldOpen(open);
+        if (!open) setCreateHoldRequestKey("");
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t(($) => $.role_sources.legal_hold_create_title)}</DialogTitle>
@@ -773,7 +909,10 @@ export function RoleSourcesTab() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" disabled={savingHold} onClick={() => setCreateHoldOpen(false)}>{t(($) => $.role_sources.cancel)}</Button>
+            <Button variant="outline" disabled={savingHold} onClick={() => {
+              setCreateHoldOpen(false);
+              setCreateHoldRequestKey("");
+            }}>{t(($) => $.role_sources.cancel)}</Button>
             <Button disabled={savingHold || !createHoldValid || !createReferenceValid} onClick={() => void createLegalHold()}>
               {savingHold ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t(($) => $.role_sources.legal_hold_create)}
@@ -782,7 +921,12 @@ export function RoleSourcesTab() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={holdToRelease !== null} onOpenChange={(open) => !open && !savingHold && setHoldToRelease(null)}>
+      <Dialog open={holdToRelease !== null} onOpenChange={(open) => {
+        if (!open && !savingHold) {
+          setHoldToRelease(null);
+          setReleaseHoldRequestKey("");
+        }
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t(($) => $.role_sources.legal_hold_release_title)}</DialogTitle>
@@ -816,10 +960,52 @@ export function RoleSourcesTab() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" disabled={savingHold} onClick={() => setHoldToRelease(null)}>{t(($) => $.role_sources.cancel)}</Button>
+            <Button variant="outline" disabled={savingHold} onClick={() => {
+              setHoldToRelease(null);
+              setReleaseHoldRequestKey("");
+            }}>{t(($) => $.role_sources.cancel)}</Button>
             <Button variant="destructive" disabled={savingHold || !releaseReferenceValid} onClick={() => void releaseLegalHold()}>
               {savingHold ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t(($) => $.role_sources.legal_hold_release)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={retentionDialogOpen} onOpenChange={(open) => {
+        if (savingRetention) return;
+        setRetentionDialogOpen(open);
+        if (!open) setRetentionRequestKey("");
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.role_sources.retention_edit_title)}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-caption leading-5 text-muted-foreground">
+              {t(($) => $.role_sources.retention_edit_warning)}
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="role-source-retention-enabled">{t(($) => $.role_sources.retention_enable)}</Label>
+              <Switch id="role-source-retention-enabled" checked={retentionEnabled} onCheckedChange={setRetentionEnabled} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="role-source-retention-days">{t(($) => $.role_sources.retention_minimum_days)}</Label>
+              <Input id="role-source-retention-days" type="number" min={30} max={3650} value={retentionMinimumDays} onChange={(event) => setRetentionMinimumDays(event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="role-source-retention-successful">{t(($) => $.role_sources.retention_keep_successful)}</Label>
+              <Input id="role-source-retention-successful" type="number" min={2} max={100} value={retentionKeepSuccessful} onChange={(event) => setRetentionKeepSuccessful(event.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={savingRetention} onClick={() => {
+              setRetentionDialogOpen(false);
+              setRetentionRequestKey("");
+            }}>{t(($) => $.role_sources.cancel)}</Button>
+            <Button variant={retentionEnabled ? "destructive" : "default"} disabled={savingRetention || !retentionInputValid || !retention.data} onClick={() => void updateRetentionPolicy()}>
+              {savingRetention ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t(($) => $.role_sources.retention_save)}
             </Button>
           </DialogFooter>
         </DialogContent>

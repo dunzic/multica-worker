@@ -377,6 +377,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				Storage: store,
 				Logger:  slog.Default(),
 			}
+			if retentionEnabled := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_RETENTION_ENABLED")); retentionEnabled == "true" || retentionEnabled == "1" {
+				h.RoleSourceRetentionReconciler = &service.RoleSourceRetentionReconciler{
+					Queries: queries, Control: roleSourceControlPlane, Logger: slog.Default(),
+				}
+			}
 		}
 	}
 	h.ChannelSupervisor = engine.NewSupervisor(
@@ -1261,6 +1266,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Get("/role-sources/{sourceId}/legal-holds", h.ListRoleSourceLegalHolds)
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Post("/role-sources/{sourceId}/legal-holds", h.CreateRoleSourceLegalHold)
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Post("/role-sources/{sourceId}/legal-holds/{holdId}/release", h.ReleaseRoleSourceLegalHold)
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Get("/role-sources/{sourceId}/retention", h.GetRoleSourceRetentionPreview)
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Patch("/role-sources/{sourceId}/retention", h.UpdateRoleSourceRetentionPolicy)
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
 				// GitHub integration — connect / disconnect remain admin-only;

@@ -59,7 +59,7 @@ func TestLegalHoldIdempotencyRequiresExactAuthorityAndInput(t *testing.T) {
 	}
 
 	release := db.RoleSourceLegalHoldRelease{
-		RequestKeyDigest: legalHoldRequestKeyDigest("release-1"), ReasonCode: "resolved",
+		RequestKeyDigest: roleSourceRequestKeyDigest("release-1"), ReasonCode: "resolved",
 		ReferenceDigest: pgtype.Text{String: testSHA256("c"), Valid: true}, ReleasedBy: actor,
 	}
 	releaseInput := ReleaseLegalHoldInput{
@@ -79,11 +79,11 @@ func TestLegalHoldProjectionExcludesRequestKeys(t *testing.T) {
 		ID:               util.MustParseUUID("00000000-0000-4000-8000-000000000021"),
 		WorkspaceID:      util.MustParseUUID("00000000-0000-4000-8000-000000000022"),
 		SourceID:         util.MustParseUUID("00000000-0000-4000-8000-000000000023"),
-		RequestKeyDigest: legalHoldRequestKeyDigest("must-not-project"), Scope: "source", ReasonCode: "regulatory",
+		RequestKeyDigest: roleSourceRequestKeyDigest("must-not-project"), Scope: "source", ReasonCode: "regulatory",
 		CreatedBy: util.MustParseUUID("00000000-0000-4000-8000-000000000024"),
 		CreatedAt: pgtype.Timestamptz{Valid: true},
 	}
-	projected := legalHoldFromRows(hold, db.RoleSourceLegalHoldRelease{RequestKeyDigest: legalHoldRequestKeyDigest("also-private")})
+	projected := legalHoldFromRows(hold, db.RoleSourceLegalHoldRelease{RequestKeyDigest: roleSourceRequestKeyDigest("also-private")})
 	if !projected.Active() || projected.ID == "" || projected.Scope != LegalHoldScopeSource {
 		t.Fatalf("hold projection=%+v", projected)
 	}

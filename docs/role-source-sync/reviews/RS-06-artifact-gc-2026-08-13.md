@@ -1,5 +1,9 @@
 # RS-06 artifact garbage-collection review
 
+Status note: the missing legal-hold and historical-snapshot policy/UI described
+below are implemented by the later RS-06 reviews. The production deletion
+NO-GO remains until their live PostgreSQL, storage and restore gates pass.
+
 Date: 2026-08-13
 
 Gate: design and merge evidence

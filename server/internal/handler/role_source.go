@@ -53,6 +53,8 @@ type RoleSourceControlPlane interface {
 	CreateLegalHold(context.Context, rolesource.CreateLegalHoldInput) (rolesource.LegalHold, error)
 	ReleaseLegalHold(context.Context, rolesource.ReleaseLegalHoldInput) (rolesource.LegalHold, error)
 	ListLegalHolds(context.Context, string, string, int32) ([]rolesource.LegalHold, error)
+	GetRetentionPreview(context.Context, string, string) (rolesource.RetentionPreview, error)
+	UpdateRetentionPolicy(context.Context, rolesource.UpdateRetentionPolicyInput) (rolesource.RetentionPolicy, error)
 	ListMissingArtifacts(context.Context, rolesource.ArtifactLeaseInput, []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error)
 	StoreArtifactRecord(context.Context, rolesource.StoreArtifactInput) (db.RoleSourceArtifact, bool, error)
 }
@@ -210,6 +212,31 @@ type roleSourceLegalHoldResponse struct {
 	ReleaseReferenceDigest *string                           `json:"release_reference_digest,omitempty"`
 	ReleasedBy             *string                           `json:"released_by,omitempty"`
 	ReleasedAt             *string                           `json:"released_at,omitempty"`
+}
+
+type roleSourceRetentionPolicyResponse struct {
+	WorkspaceID             string `json:"workspace_id"`
+	SourceID                string `json:"source_id"`
+	Version                 int64  `json:"version"`
+	Enabled                 bool   `json:"enabled"`
+	MinimumAgeDays          int32  `json:"minimum_age_days"`
+	KeepSuccessfulSnapshots int32  `json:"keep_successful_snapshots"`
+	CreatedBy               string `json:"created_by,omitempty"`
+	CreatedAt               string `json:"created_at,omitempty"`
+}
+
+type roleSourceRetentionCandidateResponse struct {
+	SnapshotDigest string `json:"snapshot_digest"`
+	CreatedAt      string `json:"created_at"`
+	EstimatedBytes int64  `json:"estimated_bytes"`
+}
+
+type roleSourceRetentionPreviewResponse struct {
+	Policy         roleSourceRetentionPolicyResponse      `json:"policy"`
+	EligibleCount  int                                    `json:"eligible_count"`
+	EstimatedBytes int64                                  `json:"estimated_bytes"`
+	Truncated      bool                                   `json:"truncated"`
+	Candidates     []roleSourceRetentionCandidateResponse `json:"candidates"`
 }
 
 func (h *Handler) roleSourceFeatureEnabled(r *http.Request, workspaceID, key string) bool {
@@ -691,6 +718,61 @@ func writeRoleSourceLegalHoldMutationError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusInternalServerError, "failed to manage legal hold")
 	}
+}
+
+func (h *Handler) GetRoleSourceRetentionPreview(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	preview, err := h.RoleSources.GetRetentionPreview(r.Context(), workspaceID, chi.URLParam(r, "sourceId"))
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to load retention preview")
+		return
+	}
+	writeJSON(w, http.StatusOK, roleSourceRetentionPreviewToResponse(preview))
+}
+
+func (h *Handler) UpdateRoleSourceRetentionPolicy(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot manage retention policy")
+		return
+	}
+	var request struct {
+		RequestKey              string `json:"request_key"`
+		ExpectedVersion         int64  `json:"expected_version"`
+		Enabled                 bool   `json:"enabled"`
+		MinimumAgeDays          int32  `json:"minimum_age_days"`
+		KeepSuccessfulSnapshots int32  `json:"keep_successful_snapshots"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	policy, err := h.RoleSources.UpdateRetentionPolicy(r.Context(), rolesource.UpdateRetentionPolicyInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), ActorUserID: userID,
+		RequestKey: request.RequestKey, ExpectedVersion: request.ExpectedVersion, Enabled: request.Enabled,
+		MinimumAgeDays: request.MinimumAgeDays, KeepSuccessfulSnapshots: request.KeepSuccessfulSnapshots,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "role source not found")
+		case errors.Is(err, rolesource.ErrInvalidRetentionPolicy):
+			writeError(w, http.StatusBadRequest, "invalid retention policy")
+		case errors.Is(err, rolesource.ErrRetentionVersion), errors.Is(err, rolesource.ErrIdempotencyConflict):
+			writeError(w, http.StatusConflict, "retention policy changed; refresh before retrying")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to update retention policy")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, roleSourceRetentionPolicyToResponse(policy))
 }
 
 func (h *Handler) RequestRoleSourceScan(w http.ResponseWriter, r *http.Request) {
@@ -1626,6 +1708,28 @@ func roleSourceLegalHoldToResponse(hold rolesource.LegalHold) roleSourceLegalHol
 		if hold.ReleaseReferenceDigest != "" {
 			response.ReleaseReferenceDigest = &hold.ReleaseReferenceDigest
 		}
+	}
+	return response
+}
+
+func roleSourceRetentionPolicyToResponse(policy rolesource.RetentionPolicy) roleSourceRetentionPolicyResponse {
+	return roleSourceRetentionPolicyResponse{
+		WorkspaceID: policy.WorkspaceID, SourceID: policy.SourceID, Version: policy.Version, Enabled: policy.Enabled,
+		MinimumAgeDays: policy.MinimumAgeDays, KeepSuccessfulSnapshots: policy.KeepSuccessfulSnapshots,
+		CreatedBy: policy.CreatedBy, CreatedAt: policy.CreatedAt,
+	}
+}
+
+func roleSourceRetentionPreviewToResponse(preview rolesource.RetentionPreview) roleSourceRetentionPreviewResponse {
+	response := roleSourceRetentionPreviewResponse{
+		Policy: roleSourceRetentionPolicyToResponse(preview.Policy), EligibleCount: preview.EligibleCount,
+		EstimatedBytes: preview.EstimatedBytes, Truncated: preview.Truncated,
+		Candidates: make([]roleSourceRetentionCandidateResponse, 0, len(preview.Candidates)),
+	}
+	for _, candidate := range preview.Candidates {
+		response.Candidates = append(response.Candidates, roleSourceRetentionCandidateResponse{
+			SnapshotDigest: candidate.SnapshotDigest, CreatedAt: candidate.CreatedAt, EstimatedBytes: candidate.EstimatedBytes,
+		})
 	}
 	return response
 }
