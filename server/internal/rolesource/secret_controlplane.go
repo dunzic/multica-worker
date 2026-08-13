@@ -50,6 +50,23 @@ type ReportSecretTransferInput struct {
 	ErrorCode   string
 }
 
+func (c *ControlPlane) ListSecretTransfers(ctx context.Context, workspaceIDText, sourceIDText, planDigest, approvalIDText string, limit int32) ([]db.RoleSourceSecretTransfer, error) {
+	workspaceID, sourceID, err := parseTwoUUIDs(workspaceIDText, sourceIDText)
+	if err != nil || !sha256Pattern.MatchString(planDigest) {
+		return nil, errors.New("invalid secret transfer list identity")
+	}
+	approvalID, err := util.ParseUUID(approvalIDText)
+	if err != nil || !approvalID.Valid {
+		return nil, errors.New("invalid secret transfer approval id")
+	}
+	if limit < 1 || limit > maxSecretEnvelopeValues {
+		return nil, fmt.Errorf("secret transfer list limit must be between 1 and %d", maxSecretEnvelopeValues)
+	}
+	return c.queries().ListRoleSourceSecretTransfersForPlan(ctx, db.ListRoleSourceSecretTransfersForPlanParams{
+		SourceID: sourceID, WorkspaceID: workspaceID, PlanDigest: planDigest, ApprovalID: approvalID, ResultLimit: limit,
+	})
+}
+
 func (c *ControlPlane) RequestSecretTransfer(ctx context.Context, input RequestSecretTransferInput) (db.RoleSourceSecretTransfer, error) {
 	input.RequestKey = strings.TrimSpace(input.RequestKey)
 	currentBox, ok := c.secretBoxFor(c.secretKeyID)

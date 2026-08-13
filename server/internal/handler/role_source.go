@@ -43,6 +43,7 @@ type RoleSourceControlPlane interface {
 	RecordPlanApproval(context.Context, rolesource.RecordPlanApprovalInput) (db.RoleSourcePlanApproval, error)
 	ApplyPlan(context.Context, rolesource.ApplyPlanInput) (db.RoleSourceApply, rolesource.ApplyReceipt, error)
 	RequestSecretTransfer(context.Context, rolesource.RequestSecretTransferInput) (db.RoleSourceSecretTransfer, error)
+	ListSecretTransfers(context.Context, string, string, string, string, int32) ([]db.RoleSourceSecretTransfer, error)
 	ClaimNextSecretTransfer(context.Context, string, time.Duration) (rolesource.ClaimedSecretTransfer, error)
 	ReportSecretTransfer(context.Context, rolesource.ReportSecretTransferInput) (db.RoleSourceSecretTransfer, error)
 	GetPlan(context.Context, string, string, string) (db.RoleSourcePlan, error)
@@ -184,6 +185,18 @@ type roleSourceSecretTransferResponse struct {
 	PublicKey   string                          `json:"public_key"`
 	Claims      rolesource.SecretEnvelopeClaims `json:"claims"`
 	ExpiresAt   string                          `json:"expires_at"`
+	CreatedAt   string                          `json:"created_at"`
+}
+
+type roleSourceSecretTransferStatusResponse struct {
+	ID          string  `json:"id"`
+	RoleID      string  `json:"role_id"`
+	Status      string  `json:"status"`
+	ExpiresAt   string  `json:"expires_at"`
+	CreatedAt   string  `json:"created_at"`
+	SubmittedAt *string `json:"submitted_at,omitempty"`
+	ConsumedAt  *string `json:"consumed_at,omitempty"`
+	ErrorCode   *string `json:"error_code,omitempty"`
 }
 
 type roleSourceTaskPinResponse struct {
@@ -1314,6 +1327,39 @@ func (h *Handler) RequestRoleSourceSecretTransfer(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusAccepted, response)
 }
 
+func (h *Handler) ListRoleSourceSecretTransfers(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceApply) {
+		return
+	}
+	approvalID := r.URL.Query().Get("approval_id")
+	if parsed, err := util.ParseUUID(approvalID); err != nil || !parsed.Valid {
+		writeError(w, http.StatusBadRequest, "invalid approval id")
+		return
+	}
+	rows, err := h.RoleSources.ListSecretTransfers(
+		r.Context(), workspaceID, chi.URLParam(r, "sourceId"), chi.URLParam(r, "planDigest"), approvalID, 256,
+	)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list role source secret transfers")
+		return
+	}
+	items := make([]roleSourceSecretTransferStatusResponse, 0, len(rows))
+	for _, row := range rows {
+		var errorCode *string
+		if row.ErrorCode.Valid {
+			value := row.ErrorCode.String
+			errorCode = &value
+		}
+		items = append(items, roleSourceSecretTransferStatusResponse{
+			ID: util.UUIDToString(row.ID), RoleID: row.RoleID, Status: row.Status,
+			ExpiresAt: util.TimestampToString(row.ExpiresAt), CreatedAt: util.TimestampToString(row.CreatedAt),
+			SubmittedAt: util.TimestampToPtr(row.SubmittedAt), ConsumedAt: util.TimestampToPtr(row.ConsumedAt), ErrorCode: errorCode,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"secret_transfers": items})
+}
+
 func (h *Handler) ListRoleSourcePlanApprovals(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
@@ -1831,6 +1877,6 @@ func roleSourceSecretTransferToResponse(row db.RoleSourceSecretTransfer) (roleSo
 	return roleSourceSecretTransferResponse{
 		ID: util.UUIDToString(row.ID), SourceID: util.UUIDToString(row.SourceID), WorkspaceID: util.UUIDToString(row.WorkspaceID),
 		PlanDigest: row.PlanDigest, ApprovalID: util.UUIDToString(row.ApprovalID), RoleID: row.RoleID,
-		Status: row.Status, PublicKey: row.PublicKey, Claims: claims, ExpiresAt: util.TimestampToString(row.ExpiresAt),
+		Status: row.Status, PublicKey: row.PublicKey, Claims: claims, ExpiresAt: util.TimestampToString(row.ExpiresAt), CreatedAt: util.TimestampToString(row.CreatedAt),
 	}, nil
 }

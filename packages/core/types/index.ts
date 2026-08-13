@@ -90,6 +90,8 @@ export type {
   RoleSourceObjectRef,
   RoleSourcePlan,
   RoleSourcePlanAction,
+  RoleSourceSecretTransferStatus,
+  RequestRoleSourceSecretTransferRequest,
   RoleSourcePlanBlocker,
   RoleSourcePlanOperation,
   RoleSourcePlanRecord,

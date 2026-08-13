@@ -70,6 +70,8 @@ type fakeRoleSourceControlPlane struct {
 	secretTransferInput       *rolesource.RequestSecretTransferInput
 	secretTransferRow         db.RoleSourceSecretTransfer
 	secretTransferErr         error
+	secretTransferRows        []db.RoleSourceSecretTransfer
+	secretTransferListErr     error
 	claimedSecretTransfer     rolesource.ClaimedSecretTransfer
 	claimSecretTransferErr    error
 	claimSecretTransferCalls  int
@@ -137,6 +139,11 @@ func (f *fakeRoleSourceControlPlane) RequestSecretTransfer(_ context.Context, in
 	f.calls++
 	f.secretTransferInput = &input
 	return f.secretTransferRow, f.secretTransferErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListSecretTransfers(context.Context, string, string, string, string, int32) ([]db.RoleSourceSecretTransfer, error) {
+	f.calls++
+	return f.secretTransferRows, f.secretTransferListErr
 }
 
 func (f *fakeRoleSourceControlPlane) ClaimNextSecretTransfer(context.Context, string, time.Duration) (rolesource.ClaimedSecretTransfer, error) {
@@ -1169,6 +1176,37 @@ func TestRequestRoleSourceSecretTransfer_ReturnsOnlyPublicChallengeAndWakesRunti
 	}
 	if recorder.calls != 1 || recorder.runtimeID != roleSourceTestRuntimeID || recorder.kind != protocol.PendingWorkKindRoleSourceSecretTransfer {
 		t.Fatalf("secret transfer wakeup = %+v", recorder)
+	}
+}
+
+func TestListRoleSourceSecretTransfers_ReturnsOnlyOperatorStatus(t *testing.T) {
+	plan := roleSourceTestPlanRow(t)
+	transferID := util.MustParseUUID("00000000-0000-4000-8000-000000000046")
+	approvalID := util.MustParseUUID("00000000-0000-4000-8000-000000000044")
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	fake := &fakeRoleSourceControlPlane{secretTransferRows: []db.RoleSourceSecretTransfer{{
+		ID: transferID, WorkspaceID: util.MustParseUUID(testWorkspaceID), SourceID: util.MustParseUUID(roleSourceTestSourceID),
+		RuntimeID: util.MustParseUUID(roleSourceTestRuntimeID), PlanDigest: plan.PlanDigest, ApprovalID: approvalID,
+		SnapshotDigest: plan.ToSnapshotDigest, RoleID: "writer", RequestKey: "do-not-expose-request-key", Status: "submitted",
+		PublicKey: strings.Repeat("A", 43), PrivateKeyCiphertext: []byte("do-not-expose-private-key"), KeyID: "do-not-expose-key-id",
+		Claims: []byte(`{"do_not":"expose"}`), Envelope: []byte(`{"do_not":"expose"}`), EnvelopeDigest: pgtype.Text{String: strings.Repeat("f", 64), Valid: true},
+		ExpiresAt: pgtype.Timestamptz{Time: now.Add(15 * time.Minute), Valid: true}, CreatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+		SubmittedAt: pgtype.Timestamptz{Time: now.Add(time.Minute), Valid: true},
+	}}}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored?approval_id="+util.UUIDToString(approvalID), nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "planDigest", plan.PlanDigest)
+
+	h.ListRoleSourceSecretTransfers(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"role_id":"writer"`) || !strings.Contains(w.Body.String(), `"status":"submitted"`) {
+		t.Fatalf("secret transfer list: status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, forbidden := range []string{"request_key", "public_key", "private_key", "key_id", "claims", "envelope", strings.Repeat("f", 64)} {
+		if strings.Contains(w.Body.String(), forbidden) {
+			t.Fatalf("secret transfer list exposed %q: %s", forbidden, w.Body.String())
+		}
 	}
 }
 

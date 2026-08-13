@@ -1345,6 +1345,15 @@ WHERE id = @id
   AND expires_at > now()
 FOR UPDATE;
 
+-- name: ListRoleSourceSecretTransfersForPlan :many
+SELECT DISTINCT ON (role_id) * FROM role_source_secret_transfer
+WHERE source_id = @source_id
+  AND workspace_id = @workspace_id
+  AND plan_digest = @plan_digest
+  AND approval_id = @approval_id
+ORDER BY role_id, created_at DESC, id DESC
+LIMIT @result_limit;
+
 -- name: ClaimNextRoleSourceSecretTransfer :one
 WITH source_candidate AS MATERIALIZED (
     SELECT source.id

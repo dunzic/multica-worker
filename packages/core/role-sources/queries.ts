@@ -15,6 +15,8 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "approvals", sourceId, planDigest] as const,
   applies: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "applies", sourceId] as const,
+  secretTransfers: (workspaceId: string, sourceId: string, planDigest: string, approvalId: string) =>
+    [...roleSourceKeys.all(workspaceId), "secret-transfers", sourceId, planDigest, approvalId] as const,
   runtimeAttestations: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "runtime-attestations", sourceId] as const,
   legalHolds: (workspaceId: string, sourceId: string) =>
@@ -135,5 +137,21 @@ export function roleSourceApplyHistoryListOptions(
     queryKey: roleSourceKeys.applies(workspaceId, sourceId),
     queryFn: () => api.listRoleSourceApplyHistory(workspaceId, sourceId),
     enabled: Boolean(sourceId),
+  });
+}
+
+export function roleSourceSecretTransferListOptions(
+  workspaceId: string,
+  sourceId: string,
+  planDigest: string,
+  approvalId: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.secretTransfers(workspaceId, sourceId, planDigest, approvalId),
+    queryFn: () => api.listRoleSourceSecretTransfers(workspaceId, sourceId, planDigest, approvalId),
+    enabled: Boolean(sourceId && planDigest && approvalId),
+    refetchInterval: (query) => query.state.data?.some((transfer) =>
+      transfer.status === "pending" || transfer.status === "claimed" || transfer.status === "submitted") ? 5000 : false,
+    staleTime: 0,
   });
 }

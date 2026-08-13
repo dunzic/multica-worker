@@ -84,6 +84,19 @@ func TestRoleSourceSecretTransferPersistenceIsCiphertextOnlyAndSelfClearing(t *t
 	}
 }
 
+func TestRoleSourceSecretTransferPlanStatusLookupHasConcurrentIndex(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	index, err := os.ReadFile(filepath.Join(root, "360_role_source_secret_transfer_plan_index.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(index)
+	if !strings.Contains(body, "CREATE INDEX CONCURRENTLY") ||
+		!strings.Contains(body, "workspace_id, source_id, plan_digest, approval_id, role_id, created_at DESC, id DESC") {
+		t.Fatal("secret-transfer status lookup requires a tenant/plan/approval/role concurrent index")
+	}
+}
+
 func TestRoleSourceScanRequestKeysAreDigestOnlyAndConcurrentlyUnique(t *testing.T) {
 	root := filepath.Join("..", "..", "migrations")
 	column, err := os.ReadFile(filepath.Join(root, "358_role_source_scan_request_key.up.sql"))

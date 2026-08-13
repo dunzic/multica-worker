@@ -1,7 +1,9 @@
 package rolesource
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -95,6 +97,47 @@ func TestBuildPlanInitialImportIsDeterministic(t *testing.T) {
 	}
 	if err := ValidatePlan(first); err != nil {
 		t.Fatalf("ValidatePlan rejected generated plan: %v", err)
+	}
+}
+
+func TestBuildPlanMarksRolesThatRequireSecretTransfer(t *testing.T) {
+	manifest := planTestManifest()
+	manifest.Roles[0].Environment = []EnvironmentKey{{Name: "API_TOKEN", Secret: true, Configured: true, ValueDigest: "hmac-sha256:" + strings.Repeat("a", 64)}}
+	target := planTestSnapshot(t, manifest)
+	plan, err := BuildPlan("source-1", nil, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range plan.Actions {
+		if action.Ref == (ObjectRef{Kind: "role", ID: "writer"}) {
+			if !action.NeedsSecretTransfer {
+				t.Fatal("role action did not expose its non-sensitive secret-transfer requirement")
+			}
+			if err := ValidatePlan(plan); err != nil {
+				t.Fatalf("ValidatePlan rejected secret-transfer marker: %v", err)
+			}
+			return
+		}
+	}
+	t.Fatal("writer role action not found")
+}
+
+func TestBuildPlanBlocksMoreSecretTransferRolesThanApplyAccepts(t *testing.T) {
+	manifest := Manifest{ContractVersion: ContractVersion, Roles: make([]Role, maxSecretEnvelopeValues+1)}
+	for index := range manifest.Roles {
+		manifest.Roles[index] = Role{
+			ID: fmt.Sprintf("role-%03d", index), DisplayName: fmt.Sprintf("Role %03d", index),
+			Instructions: testArtifact(fmt.Sprintf("roles/%03d/instructions.md", index)),
+			Environment:  []EnvironmentKey{{Name: "API_TOKEN", Secret: true, Configured: true, ValueDigest: "hmac-sha256:" + strings.Repeat("a", 64)}},
+		}
+	}
+	target := planTestSnapshot(t, manifest)
+	plan, err := BuildPlan("source-1", nil, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Applyable || len(plan.Blockers) != 1 || plan.Blockers[0].Code != "secret_transfer_role_limit" {
+		t.Fatalf("secret-transfer role limit plan = %+v", plan)
 	}
 }
 

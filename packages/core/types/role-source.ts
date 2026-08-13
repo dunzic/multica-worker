@@ -183,6 +183,7 @@ export interface RoleSourceObjectRef {
 export interface RoleSourcePlanAction {
   ref: RoleSourceObjectRef;
   display_name: string;
+  needs_secret_transfer?: boolean;
   operation: RoleSourcePlanOperation;
   proposed_operation?: RoleSourcePlanOperation;
   risk: "none" | "low" | "medium" | "high";
@@ -190,6 +191,23 @@ export interface RoleSourcePlanAction {
   after_digest?: string;
   reason: string;
   blocking_diagnostics?: string[];
+}
+
+export interface RoleSourceSecretTransferStatus {
+  id: string;
+  role_id: string;
+  status: "pending" | "claimed" | "submitted" | "consumed" | "expired" | "failed" | string;
+  expires_at: string;
+  created_at: string;
+  submitted_at?: string;
+  consumed_at?: string;
+  error_code?: string;
+}
+
+export interface RequestRoleSourceSecretTransferRequest {
+  request_key: string;
+  approval_id: string;
+  role_id: string;
 }
 
 export interface RoleSourcePlanBlocker {

@@ -6,6 +6,7 @@ import type {
   RoleSourceApplyResult,
   RoleSourcePlanApproval,
   RoleSourcePlanRecord,
+  RequestRoleSourceSecretTransferRequest,
 } from "../types/role-source";
 import { roleSourceKeys } from "./queries";
 
@@ -23,6 +24,26 @@ export function useRequestRoleSourceScan(workspaceId: string, sourceId: string) 
     },
     onSettled: () => queryClient.invalidateQueries({
       queryKey: roleSourceKeys.latestScan(workspaceId, sourceId),
+    }),
+  });
+}
+
+export function useRequestRoleSourceSecretTransfer(
+  workspaceId: string,
+  sourceId: string,
+  planDigest: string,
+  approvalId: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: RequestRoleSourceSecretTransferRequest) => api.requestRoleSourceSecretTransfer(
+      workspaceId,
+      sourceId,
+      planDigest,
+      request,
+    ),
+    onSettled: () => queryClient.invalidateQueries({
+      queryKey: roleSourceKeys.secretTransfers(workspaceId, sourceId, planDigest, approvalId),
     }),
   });
 }

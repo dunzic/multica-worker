@@ -43,9 +43,11 @@ import type {
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
   RoleSourceApplyResult,
+  RoleSourceSecretTransferStatus,
   CreateRoleSourcePlanRequest,
   CreateRoleSourceApprovalRequest,
   ApplyRoleSourcePlanRequest,
+  RequestRoleSourceSecretTransferRequest,
   RoleSourcePlanImpact,
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
@@ -322,9 +324,12 @@ import {
   RoleSourcePlanApprovalListSchema,
   RoleSourceApplyResultSchema,
   RoleSourceApplyResultListSchema,
+  RoleSourceSecretTransferStatusSchema,
+  RoleSourceSecretTransferStatusListSchema,
   EMPTY_ROLE_SOURCE_PLANS,
   EMPTY_ROLE_SOURCE_APPROVALS,
   EMPTY_ROLE_SOURCE_APPLIES,
+  EMPTY_ROLE_SOURCE_SECRET_TRANSFERS,
   EMPTY_BILLING_BALANCE,
   EMPTY_BILLING_TRANSACTIONS_PAGE,
   EMPTY_BILLING_BATCHES_PAGE,
@@ -1872,6 +1877,35 @@ export class ApiClient {
     return parseWithFallback(raw, RoleSourceApplyResultListSchema, EMPTY_ROLE_SOURCE_APPLIES, {
       endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/applies",
     }).applies;
+  }
+
+  async requestRoleSourceSecretTransfer(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+    request: RequestRoleSourceSecretTransferRequest,
+  ): Promise<RoleSourceSecretTransferStatus | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/secret-transfers`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourceSecretTransferStatus | null>(raw, RoleSourceSecretTransferStatusSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/secret-transfers",
+    });
+  }
+
+  async listRoleSourceSecretTransfers(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+    approvalId: string,
+  ): Promise<RoleSourceSecretTransferStatus[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/secret-transfers?approval_id=${encodeURIComponent(approvalId)}`,
+    );
+    return parseWithFallback(raw, RoleSourceSecretTransferStatusListSchema, EMPTY_ROLE_SOURCE_SECRET_TRANSFERS, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/secret-transfers",
+    }).secret_transfers;
   }
 
   async getRoleSourcePlanImpact(

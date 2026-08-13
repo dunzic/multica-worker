@@ -3886,6 +3886,77 @@ func (q *Queries) ListRoleSourceRuntimeAttestations(ctx context.Context, arg Lis
 	return items, nil
 }
 
+const listRoleSourceSecretTransfersForPlan = `-- name: ListRoleSourceSecretTransfersForPlan :many
+SELECT DISTINCT ON (role_id) id, workspace_id, source_id, runtime_id, plan_digest, approval_id, snapshot_digest, role_id, request_key, status, public_key, private_key_ciphertext, key_id, claims, envelope, envelope_digest, claimed_by_runtime_id, lease_token, lease_expires_at, expires_at, created_by, created_at, claimed_at, submitted_at, consumed_at, error_code FROM role_source_secret_transfer
+WHERE source_id = $1
+  AND workspace_id = $2
+  AND plan_digest = $3
+  AND approval_id = $4
+ORDER BY role_id, created_at DESC, id DESC
+LIMIT $5
+`
+
+type ListRoleSourceSecretTransfersForPlanParams struct {
+	SourceID    pgtype.UUID `json:"source_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	PlanDigest  string      `json:"plan_digest"`
+	ApprovalID  pgtype.UUID `json:"approval_id"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+func (q *Queries) ListRoleSourceSecretTransfersForPlan(ctx context.Context, arg ListRoleSourceSecretTransfersForPlanParams) ([]RoleSourceSecretTransfer, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceSecretTransfersForPlan,
+		arg.SourceID,
+		arg.WorkspaceID,
+		arg.PlanDigest,
+		arg.ApprovalID,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RoleSourceSecretTransfer{}
+	for rows.Next() {
+		var i RoleSourceSecretTransfer
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.SourceID,
+			&i.RuntimeID,
+			&i.PlanDigest,
+			&i.ApprovalID,
+			&i.SnapshotDigest,
+			&i.RoleID,
+			&i.RequestKey,
+			&i.Status,
+			&i.PublicKey,
+			&i.PrivateKeyCiphertext,
+			&i.KeyID,
+			&i.Claims,
+			&i.Envelope,
+			&i.EnvelopeDigest,
+			&i.ClaimedByRuntimeID,
+			&i.LeaseToken,
+			&i.LeaseExpiresAt,
+			&i.ExpiresAt,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.ClaimedAt,
+			&i.SubmittedAt,
+			&i.ConsumedAt,
+			&i.ErrorCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoleSourceSnapshotArtifacts = `-- name: ListRoleSourceSnapshotArtifacts :many
 SELECT workspace_id, source_id, snapshot_digest, artifact_digest, size_bytes, created_at FROM role_source_snapshot_artifact
 WHERE workspace_id = $1

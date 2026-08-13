@@ -206,12 +206,21 @@ describe("ApiClient role-source runtime evidence", () => {
       },
       completed_at: "2026-08-13T00:02:00Z",
     };
+    const transfer = {
+      id: "transfer-1",
+      role_id: "writer",
+      status: "pending",
+      expires_at: "2026-08-13T00:16:00Z",
+      created_at: "2026-08-13T00:01:00Z",
+    };
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(plan), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(approval), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(apply), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ applies: [apply] }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ applies: [apply] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(transfer), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ secret_transfers: [transfer] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const client = new ApiClient("https://api.example.test");
 
@@ -228,6 +237,10 @@ describe("ApiClient role-source runtime evidence", () => {
       approval_id: approval.id,
     })).resolves.toEqual(apply);
     await expect(client.listRoleSourceApplyHistory("workspace-1", "source-1")).resolves.toEqual([apply]);
+    await expect(client.requestRoleSourceSecretTransfer("workspace-1", "source-1", plan.plan.plan_digest, {
+      request_key: "transfer-request-1", approval_id: approval.id, role_id: "writer",
+    })).resolves.toEqual(transfer);
+    await expect(client.listRoleSourceSecretTransfers("workspace-1", "source-1", plan.plan.plan_digest, approval.id)).resolves.toEqual([transfer]);
 
     expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
       method: "POST",
@@ -245,7 +258,9 @@ describe("ApiClient role-source runtime evidence", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ plan: { applyable: true } }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, decision: "approved" }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ status: "succeeded" }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ applies: [{ status: "succeeded" }] }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ applies: [{ status: "succeeded" }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, status: "pending" }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ secret_transfers: [{ id: 42 }] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const client = new ApiClient("https://api.example.test");
 
@@ -257,6 +272,10 @@ describe("ApiClient role-source runtime evidence", () => {
       request_key: "apply-request-1", approval_id: "approval-1",
     })).resolves.toBeNull();
     await expect(client.listRoleSourceApplyHistory("workspace-1", "source-1")).resolves.toEqual([]);
+    await expect(client.requestRoleSourceSecretTransfer("workspace-1", "source-1", "plan", {
+      request_key: "transfer-request-1", approval_id: "approval-1", role_id: "writer",
+    })).resolves.toBeNull();
+    await expect(client.listRoleSourceSecretTransfers("workspace-1", "source-1", "plan", "approval-1")).resolves.toEqual([]);
   });
 });
 

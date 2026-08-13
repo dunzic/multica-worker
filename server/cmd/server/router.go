@@ -1270,6 +1270,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.RecordRoleSourcePlanApproval)
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/apply", h.ApplyRoleSourcePlan)
 					r.Post("/role-sources/{sourceId}/plans/{planDigest}/secret-transfers", h.RequestRoleSourceSecretTransfer)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}/secret-transfers", h.ListRoleSourceSecretTransfers)
 				})
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Get("/role-sources/{sourceId}/legal-holds", h.ListRoleSourceLegalHolds)

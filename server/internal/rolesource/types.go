@@ -297,6 +297,7 @@ type ObjectRef struct {
 type PlanAction struct {
 	Ref                 ObjectRef     `json:"ref"`
 	DisplayName         string        `json:"display_name,omitempty"`
+	NeedsSecretTransfer bool          `json:"needs_secret_transfer,omitempty"`
 	Operation           PlanOperation `json:"operation"`
 	ProposedOperation   PlanOperation `json:"proposed_operation,omitempty"`
 	Risk                PlanRisk      `json:"risk"`

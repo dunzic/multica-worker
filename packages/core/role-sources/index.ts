@@ -4,6 +4,8 @@ export type {
   RoleSource,
   RoleSourcePlan,
   RoleSourcePlanAction,
+  RoleSourceSecretTransferStatus,
+  RequestRoleSourceSecretTransferRequest,
   RoleSourcePlanBlocker,
   RoleSourcePlanRecord,
   RoleSourceArchiveDecision,

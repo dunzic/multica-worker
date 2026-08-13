@@ -13,10 +13,11 @@ import (
 const maxNormalizedObjects = 100_000
 
 type planObject struct {
-	ref         ObjectRef
-	displayName string
-	roleID      string
-	digest      string
+	ref                 ObjectRef
+	displayName         string
+	roleID              string
+	needsSecretTransfer bool
+	digest              string
 }
 
 // BuildPlan compares immutable snapshots without consulting mutable source
@@ -223,6 +224,9 @@ func validateObjectRef(ref ObjectRef) error {
 }
 
 func validateActionSemantics(action PlanAction) error {
+	if action.NeedsSecretTransfer && (action.Ref.Kind != "role" || action.Operation == PlanArchiveCandidate || action.AfterDigest == "") {
+		return errors.New("secret transfer requirement must identify a target role")
+	}
 	validRisk := action.Risk == PlanRiskNone || action.Risk == PlanRiskLow || action.Risk == PlanRiskMedium || action.Risk == PlanRiskHigh
 	if !validRisk {
 		return fmt.Errorf("invalid risk %q", action.Risk)
@@ -342,6 +346,9 @@ func flattenSnapshot(snapshot *Snapshot) (map[string]planObject, error) {
 		if err := add(ObjectRef{Kind: "role", ID: role.ID}, role.DisplayName, role.ID, roleCore); err != nil {
 			return nil, err
 		}
+		roleObject := objects[objectKey(ObjectRef{Kind: "role", ID: role.ID})]
+		roleObject.needsSecretTransfer = roleNeedsSecretTransfer(role)
+		objects[objectKey(roleObject.ref)] = roleObject
 		for _, skill := range role.Skills {
 			if err := add(ObjectRef{Kind: "skill", ParentID: role.ID, ID: skill.ID}, skill.Name, role.ID, skill); err != nil {
 				return nil, err
@@ -385,13 +392,13 @@ func objectKey(ref ObjectRef) string {
 func makePlanAction(before planObject, hadBefore bool, after planObject, hasAfter bool) PlanAction {
 	switch {
 	case !hadBefore && hasAfter:
-		return PlanAction{Ref: after.ref, DisplayName: after.displayName, Operation: PlanCreate, Risk: PlanRiskLow, AfterDigest: after.digest, Reason: "object is new in the target snapshot"}
+		return PlanAction{Ref: after.ref, DisplayName: after.displayName, NeedsSecretTransfer: after.needsSecretTransfer, Operation: PlanCreate, Risk: PlanRiskLow, AfterDigest: after.digest, Reason: "object is new in the target snapshot"}
 	case hadBefore && !hasAfter:
 		return PlanAction{Ref: before.ref, DisplayName: before.displayName, Operation: PlanArchiveCandidate, Risk: PlanRiskHigh, BeforeDigest: before.digest, Reason: "object was removed from the source; explicit archive policy is required"}
 	case before.digest == after.digest:
-		return PlanAction{Ref: after.ref, DisplayName: after.displayName, Operation: PlanUnchanged, Risk: PlanRiskNone, BeforeDigest: before.digest, AfterDigest: after.digest, Reason: "normalized object digest is unchanged"}
+		return PlanAction{Ref: after.ref, DisplayName: after.displayName, NeedsSecretTransfer: after.needsSecretTransfer, Operation: PlanUnchanged, Risk: PlanRiskNone, BeforeDigest: before.digest, AfterDigest: after.digest, Reason: "normalized object digest is unchanged"}
 	default:
-		return PlanAction{Ref: after.ref, DisplayName: after.displayName, Operation: PlanUpdate, Risk: PlanRiskMedium, BeforeDigest: before.digest, AfterDigest: after.digest, Reason: "normalized object digest changed"}
+		return PlanAction{Ref: after.ref, DisplayName: after.displayName, NeedsSecretTransfer: after.needsSecretTransfer, Operation: PlanUpdate, Risk: PlanRiskMedium, BeforeDigest: before.digest, AfterDigest: after.digest, Reason: "normalized object digest changed"}
 	}
 }
 
@@ -422,11 +429,15 @@ func sortPlanBlockers(blockers []PlanBlocker) {
 
 func materializationPlanBlockers(snapshot Snapshot) []PlanBlocker {
 	blockers := []PlanBlocker{}
+	secretTransferRoles := 0
 	capabilities := make(map[string]Capability, len(snapshot.Manifest.Capabilities))
 	for _, capability := range snapshot.Manifest.Capabilities {
 		capabilities[capability.ID] = capability
 	}
 	for _, role := range snapshot.Manifest.Roles {
+		if roleNeedsSecretTransfer(role) {
+			secretTransferRoles++
+		}
 		if role.Profile != nil {
 			blockers = append(blockers, PlanBlocker{
 				Code: "role_profile_target_unsupported", Message: "role profile has no safe Multica target contract", Global: false,
@@ -449,6 +460,11 @@ func materializationPlanBlockers(snapshot Snapshot) []PlanBlocker {
 				}
 			}
 		}
+	}
+	if secretTransferRoles > maxSecretEnvelopeValues {
+		blockers = append(blockers, PlanBlocker{
+			Code: "secret_transfer_role_limit", Message: "snapshot exceeds the bounded secret-transfer role limit", Global: true,
+		})
 	}
 	return blockers
 }

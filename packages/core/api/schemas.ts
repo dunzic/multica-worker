@@ -59,6 +59,7 @@ import type {
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
   RoleSourceApplyResult,
+  RoleSourceSecretTransferStatus,
   SearchIssuesResponse,
   SearchProjectsResponse,
   Squad,
@@ -104,6 +105,7 @@ const RoleSourceObjectRefSchema = z.object({
 const RoleSourcePlanActionSchema = z.object({
   ref: RoleSourceObjectRefSchema,
   display_name: z.string(),
+  needs_secret_transfer: z.boolean().optional(),
   operation: z.string(),
   proposed_operation: z.string().optional(),
   risk: z.string(),
@@ -210,6 +212,23 @@ export const RoleSourceApplyResultListSchema = z.object({
 export const EMPTY_ROLE_SOURCE_PLANS: { plans: RoleSourcePlanRecord[] } = { plans: [] };
 export const EMPTY_ROLE_SOURCE_APPROVALS: { approvals: RoleSourcePlanApproval[] } = { approvals: [] };
 export const EMPTY_ROLE_SOURCE_APPLIES: { applies: RoleSourceApplyResult[] } = { applies: [] };
+
+export const RoleSourceSecretTransferStatusSchema = z.object({
+  id: z.string(),
+  role_id: z.string(),
+  status: z.string(),
+  expires_at: z.string(),
+  created_at: z.string(),
+  submitted_at: z.string().optional(),
+  consumed_at: z.string().optional(),
+  error_code: z.string().optional(),
+}).loose();
+
+export const RoleSourceSecretTransferStatusListSchema = z.object({
+  secret_transfers: z.array(RoleSourceSecretTransferStatusSchema).default([]),
+}).loose();
+
+export const EMPTY_ROLE_SOURCE_SECRET_TRANSFERS: { secret_transfers: RoleSourceSecretTransferStatus[] } = { secret_transfers: [] };
 
 export const GitHubInstallationSchema = z.object({
   id: z.string(),

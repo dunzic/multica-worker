@@ -15,6 +15,7 @@ const queryFixtures = vi.hoisted(() => ({
   latestScan: undefined as Record<string, unknown> | undefined,
   approvals: [] as Array<Record<string, unknown>>,
   applies: [] as Array<Record<string, unknown>>,
+  secretTransfers: [] as Array<Record<string, unknown>>,
 }));
 
 const memberFixture = vi.hoisted(() => ({ role: "owner" }));
@@ -31,6 +32,8 @@ const apiMocks = vi.hoisted(() => ({
   createRoleSourcePlanApproval: vi.fn(),
   applyRoleSourcePlan: vi.fn(),
   listRoleSourceApplyHistory: vi.fn(),
+  requestRoleSourceSecretTransfer: vi.fn(),
+  listRoleSourceSecretTransfers: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({ toast: toastMocks }));
@@ -78,8 +81,10 @@ vi.mock("@tanstack/react-query", async () => {
         ? queryFixtures.impact
         : options.queryKey.includes("approvals")
           ? queryFixtures.approvals
-          : options.queryKey.includes("applies")
+        : options.queryKey.includes("applies")
             ? queryFixtures.applies
+          : options.queryKey.includes("secret-transfers")
+            ? queryFixtures.secretTransfers
         : options.queryKey.includes("apply-failures")
           ? queryFixtures.failures
           : options.queryKey.includes("legal-holds")
@@ -105,6 +110,7 @@ beforeEach(() => {
   featureFlags.roleSourceApply = false;
   queryFixtures.approvals = [];
   queryFixtures.applies = [];
+  queryFixtures.secretTransfers = [];
   queryFixtures.sources = [
     {
       id: "source-1",
@@ -384,12 +390,17 @@ describe("RoleSourcesTab", () => {
 
     const approve = screen.getByRole("button", { name: "Approve exact plan" });
     expect(approve).toBeDisabled();
-    const choices = screen.getAllByRole("combobox");
-    await user.click(choices[0]!);
-    await user.click(screen.getByRole("option", { name: "Retain existing object" }));
+    const alphaChoice = screen.getByRole("combobox", { name: "Alpha" });
+    await user.click(alphaChoice);
+    await user.keyboard("r");
+    await user.keyboard("{Enter}");
     expect(approve).toBeDisabled();
-    await user.click(choices[1]!);
-    await user.click(screen.getByRole("option", { name: "Archive existing object" }));
+    const zetaChoice = screen.getByRole("combobox", { name: "Zeta" });
+    zetaChoice.focus();
+    await user.keyboard("{ArrowDown}");
+    const archiveOption = await screen.findByRole("option", { name: "Archive existing object" });
+    await user.click(archiveOption);
+    expect(approve).toBeEnabled();
     await user.click(approve);
 
     expect(apiMocks.createRoleSourcePlanApproval).toHaveBeenCalledWith(
@@ -438,6 +449,46 @@ describe("RoleSourcesTab", () => {
     const secondRequest = apiMocks.applyRoleSourcePlan.mock.calls[1]?.[3];
     expect(firstRequest.approval_id).toBe("approval-1");
     expect(firstRequest.request_key).toBe(secondRequest.request_key);
+  });
+
+  it("requests daemon-managed secret transfers and keeps apply disabled until every role is submitted", async () => {
+    featureFlags.roleSourceApply = true;
+    queryFixtures.plans[0]!.plan = {
+      ...(queryFixtures.plans[0]!.plan as Record<string, unknown>),
+      applyable: true,
+      summary: { create: 1, update: 0, unchanged: 0, archive_candidate: 0, blocked: 0 },
+      blockers: [],
+      actions: [{
+        ref: { kind: "role", id: "writer" },
+        display_name: "Writer",
+        needs_secret_transfer: true,
+        operation: "create",
+        risk: "low",
+        after_digest: `sha256:${"a".repeat(64)}`,
+        reason: "New role.",
+      }],
+    };
+    queryFixtures.approvals = [{ id: "approval-1", decision: "approved", created_at: "2026-08-13T04:00:00Z" }];
+    apiMocks.requestRoleSourceSecretTransfer.mockResolvedValue({
+      id: "transfer-1",
+      role_id: "writer",
+      status: "pending",
+      expires_at: "2099-08-13T04:15:00Z",
+      created_at: "2026-08-13T04:00:00Z",
+    });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByRole("button", { name: "Apply approved plan" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Request secure transfer" }));
+
+    expect(apiMocks.requestRoleSourceSecretTransfer).toHaveBeenCalledWith(
+      "workspace-1",
+      "source-1",
+      "sha256:plan1234567890abcdef",
+      expect.objectContaining({ approval_id: "approval-1", role_id: "writer" }),
+    );
+    expect(screen.queryByText(/do-not-expose|BEGIN PRIVATE KEY/i)).not.toBeInTheDocument();
   });
 
   it("reuses the scan idempotency key after an ambiguous response failure", async () => {

@@ -44,12 +44,14 @@ import {
   roleSourcePlanApprovalListOptions,
   roleSourcePlanListOptions,
   roleSourceRuntimeAttestationListOptions,
+  roleSourceSecretTransferListOptions,
   roleSourceRetentionPreviewOptions,
   roleSourceKeys,
   useApplyRoleSourcePlan,
   useCreateRoleSourcePlan,
   useCreateRoleSourcePlanApproval,
   useRequestRoleSourceScan,
+  useRequestRoleSourceSecretTransfer,
   type RoleSourceArchiveDecision,
   type RoleSourceLifecycleAction,
   type RoleSourceLegalHold,
@@ -184,6 +186,7 @@ export function RoleSourcesTab() {
   const scanRequestKeyRef = React.useRef("");
   const approvalRequestKeyRef = React.useRef("");
   const applyRequestKeyRef = React.useRef("");
+  const secretTransferRequestKeysRef = React.useRef<Record<string, string>>({});
 
   React.useEffect(() => {
     if (!sources.data?.length) {
@@ -266,6 +269,7 @@ export function RoleSourcesTab() {
     setApplyDialogOpen(false);
     approvalRequestKeyRef.current = "";
     applyRequestKeyRef.current = "";
+    secretTransferRequestKeysRef.current = {};
   }, [latest?.plan.plan_digest, selectedId]);
 
   React.useEffect(() => {
@@ -414,6 +418,54 @@ export function RoleSourcesTab() {
   const approvedApproval = createApproval.data?.decision === "approved"
     ? createApproval.data
     : approvals.data?.find((approval) => approval.decision === "approved");
+  const secretTransferRoles = (latest?.plan.actions ?? [])
+    .filter((action) => action.ref.kind === "role" && action.needs_secret_transfer === true && action.operation !== "archive_candidate")
+    .map((action) => ({ id: action.ref.id, name: action.display_name || action.ref.id }));
+  const secretTransfers = useQuery({
+    ...roleSourceSecretTransferListOptions(
+      workspaceId,
+      selectedId,
+      latest?.plan.plan_digest ?? "",
+      approvedApproval?.id ?? "",
+    ),
+    enabled: Boolean(workspaceId && selectedId && latest?.plan.plan_digest && approvedApproval),
+  });
+  const requestSecretTransfer = useRequestRoleSourceSecretTransfer(
+    workspaceId,
+    selectedId,
+    latest?.plan.plan_digest ?? "",
+    approvedApproval?.id ?? "",
+  );
+  const secretTransferByRole = new Map((secretTransfers.data ?? []).map((transfer) => [transfer.role_id, transfer]));
+  const allSecretTransfersSubmitted = secretTransferRoles.every(
+    (role) => {
+      const transfer = secretTransferByRole.get(role.id);
+      return transfer?.status === "submitted" && new Date(transfer.expires_at).getTime() > Date.now();
+    },
+  );
+
+  async function requestTransfer(roleId: string) {
+    if (!approvedApproval || requestSecretTransfer.isPending) return;
+    if (!secretTransferRequestKeysRef.current[roleId]) {
+      secretTransferRequestKeysRef.current[roleId] = `role-source-secret-transfer-${globalThis.crypto.randomUUID()}`;
+    }
+    try {
+      const transfer = await requestSecretTransfer.mutateAsync({
+        request_key: secretTransferRequestKeysRef.current[roleId]!,
+        approval_id: approvedApproval.id,
+        role_id: roleId,
+      });
+      if (!transfer) {
+        toast.error(t(($) => $.role_sources.secret_transfer_invalid_response));
+        return;
+      }
+      delete secretTransferRequestKeysRef.current[roleId];
+      toast.success(t(($) => $.role_sources.secret_transfer_requested));
+    } catch (error) {
+      if (errorCode(error)) delete secretTransferRequestKeysRef.current[roleId];
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.secret_transfer_failed));
+    }
+  }
 
   async function generatePlan() {
     const snapshotDigest = latestScanData?.status === "succeeded"
@@ -462,7 +514,7 @@ export function RoleSourcesTab() {
   }
 
   async function applyLatestPlan() {
-    if (!approvedApproval || applyPlan.isPending) return;
+    if (!approvedApproval || !allSecretTransfersSubmitted || applyPlan.isPending) return;
     if (!applyRequestKeyRef.current) {
       applyRequestKeyRef.current = `role-source-apply-${globalThis.crypto.randomUUID()}`;
     }
@@ -470,6 +522,10 @@ export function RoleSourcesTab() {
       const result = await applyPlan.mutateAsync({
         request_key: applyRequestKeyRef.current,
         approval_id: approvedApproval.id,
+        secret_transfer_ids: secretTransferRoles.length ? Object.fromEntries(secretTransferRoles.map((role) => [
+          role.id,
+          secretTransferByRole.get(role.id)!.id,
+        ])) : undefined,
       });
       if (!result) {
         toast.error(t(($) => $.role_sources.apply_invalid_response));
@@ -991,7 +1047,7 @@ export function RoleSourcesTab() {
                         </Button>
                         <Button
                           size="sm"
-                          disabled={!approvedApproval || applyPlan.isPending}
+                          disabled={!approvedApproval || !allSecretTransfersSubmitted || applyPlan.isPending}
                           onClick={() => setApplyDialogOpen(true)}
                         >
                           {applyPlan.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -999,6 +1055,45 @@ export function RoleSourcesTab() {
                         </Button>
                       </div>
                     </div>
+                    {approvedApproval && secretTransferRoles.length ? (
+                      <div className="space-y-3 rounded-md border border-surface-border p-3">
+                        <div>
+                          <div className="text-caption font-medium">{t(($) => $.role_sources.secret_transfer_title)}</div>
+                          <p className="mt-1 text-caption text-muted-foreground">{t(($) => $.role_sources.secret_transfer_description)}</p>
+                        </div>
+                        {secretTransferRoles.map((role) => {
+                          const transfer = secretTransferByRole.get(role.id);
+                          const unexpired = transfer ? new Date(transfer.expires_at).getTime() > Date.now() : false;
+                          const ready = transfer?.status === "submitted" && unexpired;
+                          const active = (transfer?.status === "pending" || transfer?.status === "claimed") && unexpired;
+                          return (
+                            <div key={role.id} className="flex flex-wrap items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-caption font-medium">{role.name}</div>
+                                <div className="font-mono text-caption text-muted-foreground">
+                                  {transfer
+                                    ? t(($) => $.role_sources.secret_transfer_status, { status: transfer.status, expires: transfer.expires_at })
+                                    : t(($) => $.role_sources.secret_transfer_not_requested)}
+                                </div>
+                              </div>
+                              {ready ? (
+                                <Badge variant="secondary">{t(($) => $.role_sources.secret_transfer_ready)}</Badge>
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={requestSecretTransfer.isPending || active}
+                                  onClick={() => void requestTransfer(role.id)}
+                                >
+                                  {requestSecretTransfer.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                                  {active ? t(($) => $.role_sources.secret_transfer_waiting) : t(($) => $.role_sources.secret_transfer_request)}
+                                </Button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 
