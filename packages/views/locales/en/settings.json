@@ -386,6 +386,13 @@
     "failed_applies_description": "Append-only, content-free evidence recorded independently after the mutation request returns an error.",
     "failed_applies_commit_notice": "A commit-stage entry means the automatic receipt check did not confirm success. Do not assume rollback; reconcile it against successful receipts before recovery.",
     "failed_applies_load_failed": "Couldn't load failed apply attempts.",
+    "failed_apply_recovery_reconcile": "First reconcile current source state and successful receipts. Never infer rollback from a timeout, cancellation, or commit-stage error.",
+    "failed_apply_recovery_secret": "Request fresh short-lived secret transfers for the current exact approval before returning to the plan; expired or mismatched transfers cannot be reused.",
+    "failed_apply_recovery_retry": "Reconcile receipts first. If the exact plan is still current and approved, resolve capacity or dependency health, then return to the plan and use a new separately confirmed apply request.",
+    "failed_apply_recovery_rebuild": "Refresh and run a new read-only scan. Rebuild and reapprove the plan; do not reuse a stale plan after state, target, or policy conflicts.",
+    "failed_apply_reconcile": "Refresh evidence",
+    "failed_apply_reconciled": "Current source, scan, plan, receipt, and failure evidence refreshed.",
+    "failed_apply_review_plan": "Review current plan",
     "no_failed_applies": "No failed apply attempts have been recorded for this source.",
     "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"
   },

@@ -386,6 +386,13 @@
     "failed_applies_description": "변경 요청이 오류를 반환한 후 독립적으로 기록되는 추가 전용, 콘텐츠 비포함 감사 증거입니다.",
     "failed_applies_commit_notice": "커밋 단계 기록은 자동 영수증 확인으로 성공을 확정하지 못했다는 뜻입니다. 롤백을 가정하지 말고 복구 전에 성공 영수증과 대조하세요.",
     "failed_applies_load_failed": "실패한 적용 시도를 불러올 수 없습니다.",
+    "failed_apply_recovery_reconcile": "먼저 현재 소스 상태와 성공 영수증을 대조하세요. 시간 초과, 취소 또는 커밋 단계 오류만으로 롤백을 추정하지 마세요.",
+    "failed_apply_recovery_secret": "현재 정확한 승인에 대해 단기 비밀 전송을 다시 요청한 뒤 계획으로 돌아가세요. 만료되거나 불일치한 전송은 재사용할 수 없습니다.",
+    "failed_apply_recovery_retry": "먼저 영수증을 대조하세요. 정확한 계획과 승인이 여전히 현재 상태라면 용량 또는 의존성을 복구하고 계획으로 돌아가 별도 확인된 새 적용 요청을 사용하세요.",
+    "failed_apply_recovery_rebuild": "새로 고친 뒤 읽기 전용 스캔을 다시 실행하고 계획을 재생성·재승인하세요. 상태, 대상 또는 정책 충돌 뒤에는 오래된 계획을 재사용하지 마세요.",
+    "failed_apply_reconcile": "증거 새로 고침",
+    "failed_apply_reconciled": "현재 소스, 스캔, 계획, 영수증 및 실패 증거를 새로 고쳤습니다.",
+    "failed_apply_review_plan": "현재 계획 검토",
     "no_failed_applies": "이 역할 소스에 기록된 실패한 적용 시도가 없습니다.",
     "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"
   },

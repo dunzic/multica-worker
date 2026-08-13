@@ -386,6 +386,13 @@
     "failed_applies_description": "变更请求返回错误后独立写入的追加式、无业务内容审计证据。",
     "failed_applies_commit_notice": "出现提交阶段记录，说明自动回执核验未能确认成功。不要假定事务已回滚；恢复前必须先与成功回执对账。",
     "failed_applies_load_failed": "无法加载失败的应用尝试。",
+    "failed_apply_recovery_reconcile": "先刷新当前角色源状态并与成功回执对账。不能根据超时、取消或提交阶段错误推断已回滚。",
+    "failed_apply_recovery_secret": "返回当前计划前，为绑定当前精确批准的角色重新请求短期密钥传输；过期或不匹配的传输不能复用。",
+    "failed_apply_recovery_retry": "先与成功回执对账。若当前计划及批准仍有效，先恢复容量或依赖健康，再回到计划并通过独立确认发起新的应用请求。",
+    "failed_apply_recovery_rebuild": "刷新并运行新的只读扫描，重新生成并批准计划；发生状态、目标或策略冲突后不能复用陈旧计划。",
+    "failed_apply_reconcile": "刷新并对账",
+    "failed_apply_reconciled": "当前角色源、扫描、计划、回执和失败证据已刷新。",
+    "failed_apply_review_plan": "检查当前计划",
     "no_failed_applies": "该角色源尚未记录失败的应用尝试。",
     "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"
   },

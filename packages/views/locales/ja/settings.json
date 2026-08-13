@@ -386,6 +386,13 @@
     "failed_applies_description": "変更リクエストがエラーを返した後に独立して記録される、追記専用かつコンテンツを含まない監査証跡です。",
     "failed_applies_commit_notice": "コミット段階の記録は、自動レシート確認で成功を確定できなかったことを示します。ロールバック済みと決めつけず、復旧前に成功レシートと照合してください。",
     "failed_applies_load_failed": "失敗した適用試行を読み込めませんでした。",
+    "failed_apply_recovery_reconcile": "まず現在のソース状態と成功レシートを照合してください。タイムアウト、キャンセル、コミット段階のエラーからロールバックを推測しないでください。",
+    "failed_apply_recovery_secret": "現在の正確な承認に対して短期シークレット転送を再要求してからプランに戻ってください。期限切れまたは不一致の転送は再利用できません。",
+    "failed_apply_recovery_retry": "まずレシートを照合します。正確なプランと承認がまだ有効なら、容量または依存関係を復旧し、プランに戻って別途確認した新しい適用要求を使用します。",
+    "failed_apply_recovery_rebuild": "更新して新しい読み取り専用スキャンを実行し、プランを再生成して再承認してください。状態、対象、ポリシー競合後に古いプランを再利用しないでください。",
+    "failed_apply_reconcile": "証拠を更新",
+    "failed_apply_reconciled": "現在のソース、スキャン、プラン、レシート、失敗証拠を更新しました。",
+    "failed_apply_review_plan": "現在のプランを確認",
     "no_failed_applies": "このロールソースには失敗した適用試行が記録されていません。",
     "failed_apply_metadata": "{{mode}} · {{stage}} · {{time}}"
   },

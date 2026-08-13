@@ -21,6 +21,7 @@ const queryFixtures = vi.hoisted(() => ({
 const memberFixture = vi.hoisted(() => ({ role: "owner" }));
 const featureFlags = vi.hoisted(() => ({ roleSourceApply: false }));
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+const queryClientMocks = vi.hoisted(() => ({ invalidateQueries: vi.fn().mockResolvedValue(undefined) }));
 const apiMocks = vi.hoisted(() => ({
   requestRoleSourceScan: vi.fn(),
   updateRoleSourceLifecycle: vi.fn(),
@@ -70,7 +71,7 @@ vi.mock("@tanstack/react-query", async () => {
   );
   return {
     ...actual,
-    useQueryClient: () => ({ invalidateQueries: vi.fn().mockResolvedValue(undefined) }),
+    useQueryClient: () => queryClientMocks,
     useMutation: (options: { mutationFn: (requestKey: string) => Promise<unknown> }) => ({
       isPending: false,
       mutateAsync: options.mutationFn,
@@ -107,6 +108,7 @@ import { RoleSourcesTab } from "./role-sources-tab";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  queryClientMocks.invalidateQueries.mockResolvedValue(undefined);
   memberFixture.role = "owner";
   featureFlags.roleSourceApply = false;
   queryFixtures.approvals = [];
@@ -315,6 +317,21 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText("Succeeded")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run read-only scan" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve|apply|retry|recover/i })).not.toBeInTheDocument();
+  });
+
+  it("guides failed apply recovery through evidence reconciliation without a direct retry action", async () => {
+    featureFlags.roleSourceApply = true;
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByText(/run a new read-only scan/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry apply/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review current plan" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh evidence" }));
+
+    expect(queryClientMocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["role-sources", "workspace-1"] });
+    expect(queryClientMocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["role-sources", "workspace-1", "applies", "source-1"] });
+    expect(toastMocks.success).toHaveBeenCalledWith("Current source, scan, plan, receipt, and failure evidence refreshed.");
   });
 
   it("queues a read-only scan and does not expose approval or apply controls", async () => {

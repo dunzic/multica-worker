@@ -134,6 +134,25 @@ function scanRequestErrorTranslationKey(error: unknown) {
   }
 }
 
+function applyFailureRecoveryTranslationKey(code: string, stage: string) {
+  if (stage === "commit" || code === "request_cancelled") return "failed_apply_recovery_reconcile" as const;
+  switch (code) {
+    case "invalid_secret_transfer":
+      return "failed_apply_recovery_secret" as const;
+    case "capacity_exhausted":
+    case "deadline_exceeded":
+    case "dependency_unavailable":
+    case "internal_failure":
+      return "failed_apply_recovery_retry" as const;
+    case "state_conflict":
+    case "resource_not_found":
+    case "materialization_blocked":
+    case "invalid_request":
+    default:
+      return "failed_apply_recovery_rebuild" as const;
+  }
+}
+
 const sha256DigestPattern = /^sha256:[0-9a-f]{64}$/;
 const archiveDecisionPageSize = 50;
 
@@ -191,6 +210,7 @@ export function RoleSourcesTab() {
   const approvalRequestKeyRef = React.useRef("");
   const applyRequestKeyRef = React.useRef("");
   const secretTransferRequestKeysRef = React.useRef<Record<string, string>>({});
+  const planSectionRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (!sources.data?.length) {
@@ -527,6 +547,18 @@ export function RoleSourcesTab() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.rollback_plan_failed));
     }
+  }
+
+  async function reconcileApplyEvidence() {
+    if (!selected) return;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: roleSourceKeys.all(workspaceId) }),
+      queryClient.invalidateQueries({ queryKey: roleSourceKeys.plans(workspaceId, selected.id) }),
+      queryClient.invalidateQueries({ queryKey: roleSourceKeys.applies(workspaceId, selected.id) }),
+      queryClient.invalidateQueries({ queryKey: roleSourceKeys.applyFailures(workspaceId, selected.id) }),
+      queryClient.invalidateQueries({ queryKey: roleSourceKeys.latestScan(workspaceId, selected.id) }),
+    ]);
+    toast.success(t(($) => $.role_sources.failed_apply_reconciled));
   }
 
   async function approveLatestPlan() {
@@ -962,11 +994,12 @@ export function RoleSourcesTab() {
             </SettingsSection>
           ) : null}
 
-          <SettingsSection
-            title={t(($) => $.role_sources.latest_plan_title)}
-            description={t(($) => $.role_sources.latest_plan_description, { name: selected.name })}
-          >
-            <SettingsCard>
+          <div ref={planSectionRef}>
+            <SettingsSection
+              title={t(($) => $.role_sources.latest_plan_title)}
+              description={t(($) => $.role_sources.latest_plan_description, { name: selected.name })}
+            >
+              <SettingsCard>
             {roleSourceApplyEnabled && canManage ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-border p-4">
                 <div className="text-caption text-muted-foreground">
@@ -1294,8 +1327,9 @@ export function RoleSourcesTab() {
                 </div>
               </div>
             )}
-            </SettingsCard>
-          </SettingsSection>
+              </SettingsCard>
+            </SettingsSection>
+          </div>
 
           <SettingsSection
             title={t(($) => $.role_sources.receipts_title)}
@@ -1391,8 +1425,22 @@ export function RoleSourcesTab() {
                         <div className="mt-0.5 font-mono text-caption text-muted-foreground">
                           {shortDigest(failure.plan_digest)}
                         </div>
+                        <div className="mt-1 max-w-2xl text-caption text-muted-foreground">
+                          {t(($) => $.role_sources[applyFailureRecoveryTranslationKey(failure.failure_code, failure.failure_stage)])}
+                        </div>
                       </div>
-                      <Badge variant="outline">{failure.failure_stage}</Badge>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {failure.plan_digest === latest?.plan.plan_digest ? (
+                          <Button variant="outline" size="sm" onClick={() => planSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+                            {t(($) => $.role_sources.failed_apply_review_plan)}
+                          </Button>
+                        ) : null}
+                        <Button variant="outline" size="sm" onClick={() => void reconcileApplyEvidence()}>
+                          <RefreshCw className="h-4 w-4" />
+                          {t(($) => $.role_sources.failed_apply_reconcile)}
+                        </Button>
+                        <Badge variant="outline">{failure.failure_stage}</Badge>
+                      </div>
                     </div>
                   ))}
                 </div>
