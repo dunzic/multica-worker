@@ -121,30 +121,71 @@ WHERE id = ANY(@skill_ids::uuid[]) AND workspace_id = @workspace_id
 ORDER BY id
 FOR UPDATE;
 
--- name: ListRoleSourceSkillFilesForUpdateBySkillIDs :many
+-- name: ListRoleSourceSkillFilesForUpdateByTargets :many
+WITH requested AS MATERIALIZED (
+    SELECT
+        (item ->> 'skill_id')::UUID AS skill_id,
+        item ->> 'path' AS path
+    FROM jsonb_array_elements(@targets::jsonb) AS item
+)
 SELECT file.*
 FROM skill_file file
+JOIN requested ON requested.skill_id = file.skill_id AND requested.path = file.path
 JOIN skill ON skill.id = file.skill_id
-WHERE file.skill_id = ANY(@skill_ids::uuid[]) AND skill.workspace_id = @workspace_id
+WHERE skill.workspace_id = @workspace_id
 ORDER BY file.skill_id, file.path
 FOR UPDATE OF file;
 
--- name: UpsertRoleSourceSkillFiles :many
-WITH input AS (
-    SELECT *
-    FROM jsonb_to_recordset(@files::jsonb) AS item(path TEXT, content TEXT)
+-- name: MaterializeRoleSourceSkillFiles :many
+-- Apply one bounded, canonical final-state batch. Inserts intentionally have no
+-- conflict handler: a user-created path racing the source apply must fail and
+-- roll back instead of being overwritten. Updates/deletes are limited to the
+-- already locked tenant Skill targets and exact paths selected by the caller.
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'skill_id')::UUID AS skill_id,
+        item ->> 'path' AS path,
+        item ->> 'operation' AS operation,
+        item ->> 'content' AS content
+    FROM jsonb_array_elements(@files::jsonb) AS item
+), deleted AS (
+    DELETE FROM skill_file target
+    USING input
+    WHERE input.operation = 'delete'
+      AND target.skill_id = input.skill_id
+      AND target.path = input.path
+      AND EXISTS (
+          SELECT 1 FROM skill
+          WHERE skill.id = target.skill_id AND skill.workspace_id = @workspace_id
+      )
+    RETURNING target.skill_id, target.path, 'delete'::TEXT AS operation
+), updated AS (
+    UPDATE skill_file target
+    SET content = input.content,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.skill_id = input.skill_id
+      AND target.path = input.path
+      AND EXISTS (
+          SELECT 1 FROM skill
+          WHERE skill.id = target.skill_id AND skill.workspace_id = @workspace_id
+      )
+    RETURNING target.skill_id, target.path, 'update'::TEXT AS operation
+), inserted AS (
+    INSERT INTO skill_file (skill_id, path, content)
+    SELECT input.skill_id, input.path, input.content
+    FROM input
+    JOIN skill ON skill.id = input.skill_id AND skill.workspace_id = @workspace_id
+    WHERE input.operation = 'insert'
+    RETURNING skill_file.skill_id, skill_file.path, 'insert'::TEXT AS operation
 )
-INSERT INTO skill_file (skill_id, path, content)
-SELECT @skill_id, path, content FROM input
-ON CONFLICT (skill_id, path) DO UPDATE SET
-    content = EXCLUDED.content,
-    updated_at = now()
-WHERE skill_file.path = ANY(@owned_paths::text[])
-RETURNING skill_file.*;
-
--- name: DeleteRoleSourceSkillFiles :execrows
-DELETE FROM skill_file
-WHERE skill_id = @skill_id AND path = ANY(@paths::text[]);
+SELECT skill_id, path, operation FROM deleted
+UNION ALL
+SELECT skill_id, path, operation FROM updated
+UNION ALL
+SELECT skill_id, path, operation FROM inserted
+ORDER BY skill_id, path;
 
 -- Agent-Skill junction
 

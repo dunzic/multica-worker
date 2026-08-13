@@ -66,24 +66,6 @@ func (q *Queries) CreateSkill(ctx context.Context, arg CreateSkillParams) (Skill
 	return i, err
 }
 
-const deleteRoleSourceSkillFiles = `-- name: DeleteRoleSourceSkillFiles :execrows
-DELETE FROM skill_file
-WHERE skill_id = $1 AND path = ANY($2::text[])
-`
-
-type DeleteRoleSourceSkillFilesParams struct {
-	SkillID pgtype.UUID `json:"skill_id"`
-	Paths   []string    `json:"paths"`
-}
-
-func (q *Queries) DeleteRoleSourceSkillFiles(ctx context.Context, arg DeleteRoleSourceSkillFilesParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteRoleSourceSkillFiles, arg.SkillID, arg.Paths)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const deleteSkill = `-- name: DeleteSkill :exec
 DELETE FROM skill WHERE id = $1 AND workspace_id = $2
 `
@@ -453,22 +435,29 @@ func (q *Queries) ListAgentSkillsByWorkspace(ctx context.Context, workspaceID pg
 	return items, nil
 }
 
-const listRoleSourceSkillFilesForUpdateBySkillIDs = `-- name: ListRoleSourceSkillFilesForUpdateBySkillIDs :many
+const listRoleSourceSkillFilesForUpdateByTargets = `-- name: ListRoleSourceSkillFilesForUpdateByTargets :many
+WITH requested AS MATERIALIZED (
+    SELECT
+        (item ->> 'skill_id')::UUID AS skill_id,
+        item ->> 'path' AS path
+    FROM jsonb_array_elements($2::jsonb) AS item
+)
 SELECT file.id, file.skill_id, file.path, file.content, file.created_at, file.updated_at
 FROM skill_file file
+JOIN requested ON requested.skill_id = file.skill_id AND requested.path = file.path
 JOIN skill ON skill.id = file.skill_id
-WHERE file.skill_id = ANY($1::uuid[]) AND skill.workspace_id = $2
+WHERE skill.workspace_id = $1
 ORDER BY file.skill_id, file.path
 FOR UPDATE OF file
 `
 
-type ListRoleSourceSkillFilesForUpdateBySkillIDsParams struct {
-	SkillIds    []pgtype.UUID `json:"skill_ids"`
-	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+type ListRoleSourceSkillFilesForUpdateByTargetsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Targets     []byte      `json:"targets"`
 }
 
-func (q *Queries) ListRoleSourceSkillFilesForUpdateBySkillIDs(ctx context.Context, arg ListRoleSourceSkillFilesForUpdateBySkillIDsParams) ([]SkillFile, error) {
-	rows, err := q.db.Query(ctx, listRoleSourceSkillFilesForUpdateBySkillIDs, arg.SkillIds, arg.WorkspaceID)
+func (q *Queries) ListRoleSourceSkillFilesForUpdateByTargets(ctx context.Context, arg ListRoleSourceSkillFilesForUpdateByTargetsParams) ([]SkillFile, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceSkillFilesForUpdateByTargets, arg.WorkspaceID, arg.Targets)
 	if err != nil {
 		return nil, err
 	}
@@ -653,6 +642,89 @@ func (q *Queries) LockRoleSourceSkillsForFileSync(ctx context.Context, arg LockR
 	return items, nil
 }
 
+const materializeRoleSourceSkillFiles = `-- name: MaterializeRoleSourceSkillFiles :many
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'skill_id')::UUID AS skill_id,
+        item ->> 'path' AS path,
+        item ->> 'operation' AS operation,
+        item ->> 'content' AS content
+    FROM jsonb_array_elements($1::jsonb) AS item
+), deleted AS (
+    DELETE FROM skill_file target
+    USING input
+    WHERE input.operation = 'delete'
+      AND target.skill_id = input.skill_id
+      AND target.path = input.path
+      AND EXISTS (
+          SELECT 1 FROM skill
+          WHERE skill.id = target.skill_id AND skill.workspace_id = $2
+      )
+    RETURNING target.skill_id, target.path, 'delete'::TEXT AS operation
+), updated AS (
+    UPDATE skill_file target
+    SET content = input.content,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.skill_id = input.skill_id
+      AND target.path = input.path
+      AND EXISTS (
+          SELECT 1 FROM skill
+          WHERE skill.id = target.skill_id AND skill.workspace_id = $2
+      )
+    RETURNING target.skill_id, target.path, 'update'::TEXT AS operation
+), inserted AS (
+    INSERT INTO skill_file (skill_id, path, content)
+    SELECT input.skill_id, input.path, input.content
+    FROM input
+    JOIN skill ON skill.id = input.skill_id AND skill.workspace_id = $2
+    WHERE input.operation = 'insert'
+    RETURNING skill_file.skill_id, skill_file.path, 'insert'::TEXT AS operation
+)
+SELECT skill_id, path, operation FROM deleted
+UNION ALL
+SELECT skill_id, path, operation FROM updated
+UNION ALL
+SELECT skill_id, path, operation FROM inserted
+ORDER BY skill_id, path
+`
+
+type MaterializeRoleSourceSkillFilesParams struct {
+	Files       []byte      `json:"files"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type MaterializeRoleSourceSkillFilesRow struct {
+	SkillID   pgtype.UUID `json:"skill_id"`
+	Path      string      `json:"path"`
+	Operation string      `json:"operation"`
+}
+
+// Apply one bounded, canonical final-state batch. Inserts intentionally have no
+// conflict handler: a user-created path racing the source apply must fail and
+// roll back instead of being overwritten. Updates/deletes are limited to the
+// already locked tenant Skill targets and exact paths selected by the caller.
+func (q *Queries) MaterializeRoleSourceSkillFiles(ctx context.Context, arg MaterializeRoleSourceSkillFilesParams) ([]MaterializeRoleSourceSkillFilesRow, error) {
+	rows, err := q.db.Query(ctx, materializeRoleSourceSkillFiles, arg.Files, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MaterializeRoleSourceSkillFilesRow{}
+	for rows.Next() {
+		var i MaterializeRoleSourceSkillFilesRow
+		if err := rows.Scan(&i.SkillID, &i.Path, &i.Operation); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const materializeRoleSourceSkills = `-- name: MaterializeRoleSourceSkills :many
 WITH input AS MATERIALIZED (
     SELECT
@@ -800,53 +872,6 @@ func (q *Queries) UpdateSkill(ctx context.Context, arg UpdateSkillParams) (Skill
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const upsertRoleSourceSkillFiles = `-- name: UpsertRoleSourceSkillFiles :many
-WITH input AS (
-    SELECT item
-    FROM jsonb_to_recordset($3::jsonb) AS item(path TEXT, content TEXT)
-)
-INSERT INTO skill_file (skill_id, path, content)
-SELECT $1, path, content FROM input
-ON CONFLICT (skill_id, path) DO UPDATE SET
-    content = EXCLUDED.content,
-    updated_at = now()
-WHERE skill_file.path = ANY($2::text[])
-RETURNING skill_file.id, skill_file.skill_id, skill_file.path, skill_file.content, skill_file.created_at, skill_file.updated_at
-`
-
-type UpsertRoleSourceSkillFilesParams struct {
-	SkillID    pgtype.UUID `json:"skill_id"`
-	OwnedPaths []string    `json:"owned_paths"`
-	Files      []byte      `json:"files"`
-}
-
-func (q *Queries) UpsertRoleSourceSkillFiles(ctx context.Context, arg UpsertRoleSourceSkillFilesParams) ([]SkillFile, error) {
-	rows, err := q.db.Query(ctx, upsertRoleSourceSkillFiles, arg.SkillID, arg.OwnedPaths, arg.Files)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []SkillFile{}
-	for rows.Next() {
-		var i SkillFile
-		if err := rows.Scan(
-			&i.ID,
-			&i.SkillID,
-			&i.Path,
-			&i.Content,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const upsertSkillFile = `-- name: UpsertSkillFile :one

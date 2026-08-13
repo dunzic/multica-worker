@@ -36,6 +36,10 @@ const (
 	materializedAgentBatchBytes      = 64 << 20
 	materializedSkillBatchSize       = 250
 	materializedSkillBatchBytes      = 64 << 20
+	materializedSkillFileBatchSize   = 250
+	materializedSkillFileBatchBytes  = 64 << 20
+	materializedSkillFileTargetLimit = 40_000
+	materializedSkillFileTargetBytes = 16 << 20
 	materializedAutomationBatchSize  = 250
 	materializedAutomationBatchBytes = 64 << 20
 	materializationNameMaxBytes      = 16 << 20
@@ -126,6 +130,8 @@ type materializationState struct {
 	pendingAgentSkills map[string]pendingRoleSourceAgentSkill
 	skillFilesReady    bool
 	skillFiles         map[string]map[string]bool
+	skillFilesInitial  map[string]map[string]bool
+	pendingSkillFiles  map[string]pendingRoleSourceSkillFileMutation
 }
 
 type pendingRoleSourceMapping struct {
@@ -140,9 +146,16 @@ type pendingRoleSourceMapping struct {
 	ArchivedAt         *time.Time `json:"archived_at"`
 }
 
-type pendingRoleSourceSkillFile struct {
+type pendingRoleSourceSkillFileMutation struct {
+	SkillID   string `json:"skill_id"`
+	Path      string `json:"path"`
+	Operation string `json:"operation"`
+	Content   string `json:"content"`
+}
+
+type pendingRoleSourceSkillFileTarget struct {
+	SkillID string `json:"skill_id"`
 	Path    string `json:"path"`
-	Content string `json:"content"`
 }
 
 type pendingRoleSourceAgentSkill struct {
@@ -1207,6 +1220,9 @@ func (s *materializationState) materialize(ctx context.Context) error {
 	if err := s.materializeArchives(ctx); err != nil {
 		return err
 	}
+	if err := s.flushSkillFiles(ctx); err != nil {
+		return err
+	}
 	return s.flushMappings(ctx)
 }
 
@@ -1683,10 +1699,48 @@ func (s *materializationState) materializeSkills(ctx context.Context) error {
 
 func (s *materializationState) prepareSkillFileState(ctx context.Context, pending []pendingRoleSourceSkill) error {
 	existingTargets := make(map[string]pgtype.UUID)
-	for _, mapping := range s.mappings {
-		if mapping.TargetKind == "skill" && !mapping.ArchivedAt.Valid {
+	pendingTargets := make(map[string]pendingRoleSourceSkill, len(pending))
+	for _, item := range pending {
+		pendingTargets[objectKey(item.Ref)] = item
+		if item.Operation != "update" {
+			continue
+		}
+		targetID, err := util.ParseUUID(item.ID)
+		if err != nil {
+			return err
+		}
+		existingTargets[item.ID] = targetID
+	}
+	for _, role := range s.snapshot.Manifest.Roles {
+		for _, binding := range role.CapabilityBindings {
+			ref := ObjectRef{Kind: "capability_binding", ParentID: role.ID, ID: capabilityBindingObjectID(binding)}
+			action := s.actions[objectKey(ref)]
+			if action.Operation == PlanUnchanged || action.Operation == PlanArchiveCandidate || action.Operation == PlanBlocked {
+				continue
+			}
+			mapping, ok := s.mappings[objectKey(ObjectRef{Kind: "skill", ParentID: role.ID, ID: binding.SkillID})]
+			if !ok {
+				pendingTarget, planned := pendingTargets[objectKey(ObjectRef{Kind: "skill", ParentID: role.ID, ID: binding.SkillID})]
+				if planned && pendingTarget.Operation == "create" {
+					continue
+				}
+				return fmt.Errorf("%w: capability binding target skill is missing", ErrApplyConflict)
+			}
+			if mapping.ArchivedAt.Valid || mapping.TargetKind != "skill" {
+				return fmt.Errorf("%w: capability binding target skill is missing", ErrApplyConflict)
+			}
 			existingTargets[util.UUIDToString(mapping.TargetID)] = mapping.TargetID
 		}
+	}
+	for _, action := range s.plan.Actions {
+		if action.Ref.Kind != "capability_binding" || action.Operation != PlanArchiveCandidate || s.decisions[objectKey(action.Ref)] != ArchiveDecisionArchive {
+			continue
+		}
+		mapping, ok := s.mappings[objectKey(action.Ref)]
+		if !ok || mapping.ArchivedAt.Valid || mapping.TargetKind != "skill" {
+			return fmt.Errorf("%w: capability archive target skill is missing", ErrApplyConflict)
+		}
+		existingTargets[util.UUIDToString(mapping.TargetID)] = mapping.TargetID
 	}
 	allTargets := make(map[string]pgtype.UUID, len(existingTargets)+len(pending))
 	for id, targetID := range existingTargets {
@@ -1705,8 +1759,11 @@ func (s *materializationState) prepareSkillFileState(ctx context.Context, pendin
 	}
 	sort.Strings(ids)
 	s.skillFiles = make(map[string]map[string]bool, len(ids))
+	s.skillFilesInitial = make(map[string]map[string]bool, len(ids))
+	s.pendingSkillFiles = make(map[string]pendingRoleSourceSkillFileMutation)
 	for _, id := range ids {
 		s.skillFiles[id] = map[string]bool{}
+		s.skillFilesInitial[id] = map[string]bool{}
 	}
 	lockIDs := make([]string, 0, len(existingTargets))
 	for id := range existingTargets {
@@ -1730,8 +1787,23 @@ func (s *materializationState) prepareSkillFileState(ctx context.Context, pendin
 	if _, err := exactPGUUIDs("skill-file targets", lockIDs, locked); err != nil {
 		return err
 	}
-	rows, err := s.q.ListRoleSourceSkillFilesForUpdateBySkillIDs(ctx, db.ListRoleSourceSkillFilesForUpdateBySkillIDsParams{
-		SkillIds: pgIDs, WorkspaceID: s.workspaceID,
+	fileTargets, err := s.collectSkillFileTargets(pendingTargets)
+	if err != nil {
+		return err
+	}
+	if len(fileTargets) == 0 {
+		s.skillFilesReady = true
+		return nil
+	}
+	targetBody, err := json.Marshal(fileTargets)
+	if err != nil {
+		return err
+	}
+	if len(fileTargets) > materializedSkillFileTargetLimit || len(targetBody) > materializedSkillFileTargetBytes {
+		return fmt.Errorf("%w: skill-file lock target set exceeds bounded request limits", ErrMaterializationBlocked)
+	}
+	rows, err := s.q.ListRoleSourceSkillFilesForUpdateByTargets(ctx, db.ListRoleSourceSkillFilesForUpdateByTargetsParams{
+		Targets: targetBody, WorkspaceID: s.workspaceID,
 	})
 	if err != nil {
 		return err
@@ -1746,9 +1818,106 @@ func (s *materializationState) prepareSkillFileState(ctx context.Context, pendin
 			return fmt.Errorf("%w: duplicate skill-file path %s for target %s", ErrApplyConflict, row.Path, targetID)
 		}
 		files[row.Path] = true
+		s.skillFilesInitial[targetID][row.Path] = true
 	}
 	s.skillFilesReady = true
 	return nil
+}
+
+func (s *materializationState) collectSkillFileTargets(pendingTargets map[string]pendingRoleSourceSkill) ([]pendingRoleSourceSkillFileTarget, error) {
+	targets := make(map[string]pendingRoleSourceSkillFileTarget)
+	add := func(targetID pgtype.UUID, paths map[string]bool) {
+		id := util.UUIDToString(targetID)
+		for filePath := range paths {
+			targets[id+"\x00"+filePath] = pendingRoleSourceSkillFileTarget{SkillID: id, Path: filePath}
+		}
+	}
+	ownedPaths := func(mapping db.RoleSourceObjectMapping) map[string]bool {
+		paths := make(map[string]bool)
+		for _, item := range ownershipMask(mapping) {
+			if strings.HasPrefix(item, "skill_file:") {
+				paths[strings.TrimPrefix(item, "skill_file:")] = true
+			}
+		}
+		return paths
+	}
+	for _, item := range pendingTargets {
+		targetID, err := util.ParseUUID(item.ID)
+		if err != nil {
+			return nil, err
+		}
+		paths := make(map[string]bool, len(item.DesiredFiles))
+		for filePath := range item.DesiredFiles {
+			paths[filePath] = true
+		}
+		if mapping, ok := s.mappings[objectKey(item.Ref)]; ok {
+			for filePath := range ownedPaths(mapping) {
+				paths[filePath] = true
+			}
+		}
+		add(targetID, paths)
+	}
+	for _, role := range s.snapshot.Manifest.Roles {
+		for _, binding := range role.CapabilityBindings {
+			ref := ObjectRef{Kind: "capability_binding", ParentID: role.ID, ID: capabilityBindingObjectID(binding)}
+			action := s.actions[objectKey(ref)]
+			if action.Operation == PlanUnchanged || action.Operation == PlanArchiveCandidate || action.Operation == PlanBlocked {
+				continue
+			}
+			targetID, err := s.skillTargetID(role.ID, binding.SkillID, pendingTargets)
+			if err != nil {
+				return nil, err
+			}
+			capability, ok := capabilityByID(s.snapshot.Manifest.Capabilities, binding.CapabilityID)
+			if !ok {
+				return nil, fmt.Errorf("%w: capability binding definition is missing", ErrApplyConflict)
+			}
+			capabilityAction := s.actions[objectKey(ObjectRef{Kind: "capability", ID: capability.ID})]
+			desired, err := s.capabilityBundleFiles(capability, binding, capabilityAction.AfterDigest)
+			if err != nil {
+				return nil, err
+			}
+			paths := make(map[string]bool, len(desired))
+			for filePath := range desired {
+				paths[filePath] = true
+			}
+			if mapping, ok := s.mappings[objectKey(ref)]; ok {
+				for filePath := range ownedPaths(mapping) {
+					paths[filePath] = true
+				}
+			}
+			add(targetID, paths)
+		}
+	}
+	for _, action := range s.plan.Actions {
+		if action.Ref.Kind != "capability_binding" || action.Operation != PlanArchiveCandidate || s.decisions[objectKey(action.Ref)] != ArchiveDecisionArchive {
+			continue
+		}
+		mapping := s.mappings[objectKey(action.Ref)]
+		add(mapping.TargetID, ownedPaths(mapping))
+	}
+	ordered := make([]pendingRoleSourceSkillFileTarget, 0, len(targets))
+	for _, target := range targets {
+		ordered = append(ordered, target)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].SkillID != ordered[j].SkillID {
+			return ordered[i].SkillID < ordered[j].SkillID
+		}
+		return ordered[i].Path < ordered[j].Path
+	})
+	return ordered, nil
+}
+
+func (s *materializationState) skillTargetID(roleID, skillID string, pendingTargets map[string]pendingRoleSourceSkill) (pgtype.UUID, error) {
+	ref := ObjectRef{Kind: "skill", ParentID: roleID, ID: skillID}
+	if mapping, ok := s.mappings[objectKey(ref)]; ok && !mapping.ArchivedAt.Valid && mapping.TargetKind == "skill" {
+		return mapping.TargetID, nil
+	}
+	if pending, ok := pendingTargets[objectKey(ref)]; ok && pending.Operation == "create" {
+		return util.ParseUUID(pending.ID)
+	}
+	return pgtype.UUID{}, fmt.Errorf("%w: capability binding target skill is missing", ErrApplyConflict)
 }
 
 func exactPGUUIDs(label string, requested []string, rows []pgtype.UUID) (map[string]bool, error) {
@@ -1949,36 +2118,15 @@ func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref Obje
 	}
 	sort.Strings(remove)
 	if len(remove) > 0 {
-		if _, err := s.q.DeleteRoleSourceSkillFiles(ctx, db.DeleteRoleSourceSkillFilesParams{SkillID: targetID, Paths: remove}); err != nil {
-			return nil, err
-		}
 		for _, filePath := range remove {
 			delete(existing, filePath)
+			s.stageSkillFileMutation(targetKey, filePath, "")
 		}
 	}
 	if len(paths) > 0 {
-		files := make([]pendingRoleSourceSkillFile, 0, len(paths))
-		for _, filePath := range paths {
-			files = append(files, pendingRoleSourceSkillFile{Path: filePath, Content: desired[filePath]})
-		}
-		body, err := json.Marshal(files)
-		if err != nil {
-			return nil, err
-		}
-		ownedPaths := make([]string, 0, len(owned))
-		for filePath := range owned {
-			ownedPaths = append(ownedPaths, filePath)
-		}
-		sort.Strings(ownedPaths)
-		upserted, err := s.q.UpsertRoleSourceSkillFiles(ctx, db.UpsertRoleSourceSkillFilesParams{SkillID: targetID, Files: body, OwnedPaths: ownedPaths})
-		if err != nil {
-			return nil, err
-		}
-		if err := exactSkillFilePaths(targetID, paths, upserted); err != nil {
-			return nil, err
-		}
 		for _, filePath := range paths {
 			existing[filePath] = true
+			s.stageSkillFileMutation(targetKey, filePath, desired[filePath])
 		}
 	}
 	mask := make([]string, 0, len(paths))
@@ -1988,31 +2136,114 @@ func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref Obje
 	return mask, nil
 }
 
-func exactSkillFilePaths(targetID pgtype.UUID, requested []string, rows []db.SkillFile) error {
-	expected := make(map[string]bool, len(requested))
-	for _, filePath := range requested {
-		if expected[filePath] {
-			return fmt.Errorf("%w: source-owned skill file request contains duplicate path %s", ErrApplyConflict, filePath)
+func (s *materializationState) stageSkillFileMutation(skillID, filePath, content string) {
+	initial := s.skillFilesInitial[skillID][filePath]
+	current := s.skillFiles[skillID][filePath]
+	key := skillID + "\x00" + filePath
+	if initial == current {
+		if !current {
+			delete(s.pendingSkillFiles, key)
+			return
 		}
-		expected[filePath] = true
+		s.pendingSkillFiles[key] = pendingRoleSourceSkillFileMutation{SkillID: skillID, Path: filePath, Operation: "update", Content: content}
+		return
+	}
+	operation := "delete"
+	if current {
+		operation = "insert"
+	}
+	s.pendingSkillFiles[key] = pendingRoleSourceSkillFileMutation{SkillID: skillID, Path: filePath, Operation: operation, Content: content}
+}
+
+func (s *materializationState) flushSkillFiles(ctx context.Context) error {
+	mutations := make([]pendingRoleSourceSkillFileMutation, 0, len(s.pendingSkillFiles))
+	for _, mutation := range s.pendingSkillFiles {
+		mutations = append(mutations, mutation)
+	}
+	sort.Slice(mutations, func(i, j int) bool {
+		if mutations[i].SkillID != mutations[j].SkillID {
+			return mutations[i].SkillID < mutations[j].SkillID
+		}
+		return mutations[i].Path < mutations[j].Path
+	})
+	batches, err := materializedSkillFileBatches(mutations)
+	if err != nil {
+		return err
+	}
+	for _, batch := range batches {
+		body, err := json.Marshal(batch)
+		if err != nil {
+			return err
+		}
+		rows, err := s.q.MaterializeRoleSourceSkillFiles(ctx, db.MaterializeRoleSourceSkillFilesParams{
+			Files: body, WorkspaceID: s.workspaceID,
+		})
+		if err != nil {
+			return err
+		}
+		if err := exactMaterializedSkillFiles(batch, rows); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func exactMaterializedSkillFiles(requested []pendingRoleSourceSkillFileMutation, rows []db.MaterializeRoleSourceSkillFilesRow) error {
+	expected := make(map[string]string, len(requested))
+	for _, item := range requested {
+		key := item.SkillID + "\x00" + item.Path
+		if _, duplicate := expected[key]; duplicate {
+			return fmt.Errorf("%w: skill-file batch requests duplicate target %s", ErrApplyConflict, item.Path)
+		}
+		expected[key] = item.Operation
 	}
 	returned := make(map[string]bool, len(rows))
 	for _, row := range rows {
-		if row.SkillID != targetID {
-			return fmt.Errorf("%w: source-owned skill file returned another target", ErrApplyConflict)
+		key := util.UUIDToString(row.SkillID) + "\x00" + row.Path
+		operation, ok := expected[key]
+		if !ok {
+			return fmt.Errorf("%w: skill-file batch returned unexpected target %s", ErrApplyConflict, row.Path)
 		}
-		if !expected[row.Path] {
-			return fmt.Errorf("%w: source-owned skill files returned unexpected path %s", ErrApplyConflict, row.Path)
+		if operation != row.Operation {
+			return fmt.Errorf("%w: skill-file batch returned operation %s for %s, expected %s", ErrApplyConflict, row.Operation, row.Path, operation)
 		}
-		if returned[row.Path] {
-			return fmt.Errorf("%w: source-owned skill files returned duplicate path %s", ErrApplyConflict, row.Path)
+		if returned[key] {
+			return fmt.Errorf("%w: skill-file batch returned duplicate target %s", ErrApplyConflict, row.Path)
 		}
-		returned[row.Path] = true
+		returned[key] = true
 	}
 	if len(returned) != len(expected) {
-		return fmt.Errorf("%w: persisted %d of %d source-owned skill files", ErrApplyConflict, len(returned), len(expected))
+		return fmt.Errorf("%w: persisted %d of %d source-owned skill-file mutations", ErrApplyConflict, len(returned), len(expected))
 	}
 	return nil
+}
+
+func materializedSkillFileBatches(mutations []pendingRoleSourceSkillFileMutation) ([][]pendingRoleSourceSkillFileMutation, error) {
+	if len(mutations) == 0 {
+		return nil, nil
+	}
+	batches := make([][]pendingRoleSourceSkillFileMutation, 0, (len(mutations)+materializedSkillFileBatchSize-1)/materializedSkillFileBatchSize)
+	start, encodedBytes := 0, 2
+	for index, mutation := range mutations {
+		body, err := json.Marshal(mutation)
+		if err != nil {
+			return nil, err
+		}
+		if len(body)+2 > materializedSkillFileBatchBytes {
+			return nil, fmt.Errorf("%w: skill file %q exceeds batch byte limit", ErrMaterializationBlocked, mutation.Path)
+		}
+		separator := 0
+		if index > start {
+			separator = 1
+		}
+		if index > start && (index-start >= materializedSkillFileBatchSize || encodedBytes+separator+len(body) > materializedSkillFileBatchBytes) {
+			batches = append(batches, mutations[start:index])
+			start, encodedBytes, separator = index, 2, 0
+		}
+		encodedBytes += separator + len(body)
+	}
+	batches = append(batches, mutations[start:])
+	return batches, nil
 }
 
 func (s *materializationState) materializeAutomations(ctx context.Context) error {

@@ -248,6 +248,42 @@ func TestTenThousandAutomationTargetsFitBoundedBatches(t *testing.T) {
 	}
 }
 
+func TestTenThousandSkillFileMutationsFitBoundedBatches(t *testing.T) {
+	count := productionApplyRoleCount * productionApplySkillsPerRole
+	mutations := make([]pendingRoleSourceSkillFileMutation, count)
+	for index := range mutations {
+		mutations[index] = pendingRoleSourceSkillFileMutation{
+			SkillID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("skill-file-target-%05d", index))).String(),
+			Path:    fmt.Sprintf("supporting/file-%05d.md", index), Operation: "insert", Content: "production-shaped supporting content",
+		}
+	}
+	batches, err := materializedSkillFileBatches(mutations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBatches := (count + materializedSkillFileBatchSize - 1) / materializedSkillFileBatchSize
+	if len(batches) != wantBatches {
+		t.Fatalf("skill-file batches=%d, want=%d", len(batches), wantBatches)
+	}
+	actual := 0
+	for _, batch := range batches {
+		if len(batch) == 0 || len(batch) > materializedSkillFileBatchSize {
+			t.Fatalf("invalid skill-file batch size=%d", len(batch))
+		}
+		body, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > materializedSkillFileBatchBytes {
+			t.Fatalf("skill-file batch bytes=%d exceed limit=%d", len(body), materializedSkillFileBatchBytes)
+		}
+		actual += len(batch)
+	}
+	if actual != count {
+		t.Fatalf("skill-file batch count=%d", actual)
+	}
+}
+
 func TestTenThousandMaterializationNamesFitOnePreflight(t *testing.T) {
 	snapshot := planTestSnapshot(t, productionScaleManifest())
 	plan, err := BuildPlan("scale-name-source", nil, snapshot)

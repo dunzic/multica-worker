@@ -516,26 +516,32 @@ func TestExactPGUUIDsRejectsIncompleteOrAmbiguousLocks(t *testing.T) {
 	}
 }
 
-func TestExactSkillFilePathsRejectsIncompleteOrAmbiguousWrites(t *testing.T) {
+func TestExactMaterializedSkillFilesRejectsIncompleteOrAmbiguousWrites(t *testing.T) {
 	targetID := util.MustParseUUID("00000000-0000-4000-8000-000000000044")
 	otherID := util.MustParseUUID("00000000-0000-4000-8000-000000000045")
-	row := func(skillID pgtype.UUID, path string) db.SkillFile { return db.SkillFile{SkillID: skillID, Path: path} }
-	requested := []string{"a.md", "b.md"}
-	if err := exactSkillFilePaths(targetID, requested, []db.SkillFile{row(targetID, "a.md"), row(targetID, "b.md")}); err != nil {
+	row := func(skillID pgtype.UUID, path, operation string) db.MaterializeRoleSourceSkillFilesRow {
+		return db.MaterializeRoleSourceSkillFilesRow{SkillID: skillID, Path: path, Operation: operation}
+	}
+	requested := []pendingRoleSourceSkillFileMutation{
+		{SkillID: util.UUIDToString(targetID), Path: "a.md", Operation: "insert"},
+		{SkillID: util.UUIDToString(targetID), Path: "b.md", Operation: "update"},
+	}
+	if err := exactMaterializedSkillFiles(requested, []db.MaterializeRoleSourceSkillFilesRow{row(targetID, "a.md", "insert"), row(targetID, "b.md", "update")}); err != nil {
 		t.Fatalf("exact skill-file set error=%v", err)
 	}
 	for name, test := range map[string]struct {
-		requested []string
-		rows      []db.SkillFile
+		requested []pendingRoleSourceSkillFileMutation
+		rows      []db.MaterializeRoleSourceSkillFilesRow
 	}{
-		"duplicate request": {requested: []string{"a.md", "a.md"}},
-		"duplicate return":  {requested: requested, rows: []db.SkillFile{row(targetID, "a.md"), row(targetID, "a.md")}},
-		"missing":           {requested: requested, rows: []db.SkillFile{row(targetID, "a.md")}},
-		"unexpected":        {requested: requested, rows: []db.SkillFile{row(targetID, "a.md"), row(targetID, "c.md")}},
-		"wrong target":      {requested: requested, rows: []db.SkillFile{row(targetID, "a.md"), row(otherID, "b.md")}},
+		"duplicate request": {requested: []pendingRoleSourceSkillFileMutation{requested[0], requested[0]}},
+		"duplicate return":  {requested: requested, rows: []db.MaterializeRoleSourceSkillFilesRow{row(targetID, "a.md", "insert"), row(targetID, "a.md", "insert")}},
+		"missing":           {requested: requested, rows: []db.MaterializeRoleSourceSkillFilesRow{row(targetID, "a.md", "insert")}},
+		"unexpected":        {requested: requested, rows: []db.MaterializeRoleSourceSkillFilesRow{row(targetID, "a.md", "insert"), row(targetID, "c.md", "update")}},
+		"wrong target":      {requested: requested, rows: []db.MaterializeRoleSourceSkillFilesRow{row(targetID, "a.md", "insert"), row(otherID, "b.md", "update")}},
+		"wrong operation":   {requested: requested, rows: []db.MaterializeRoleSourceSkillFilesRow{row(targetID, "a.md", "insert"), row(targetID, "b.md", "delete")}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := exactSkillFilePaths(targetID, test.requested, test.rows); !errors.Is(err, ErrApplyConflict) {
+			if err := exactMaterializedSkillFiles(test.requested, test.rows); !errors.Is(err, ErrApplyConflict) {
 				t.Fatalf("skill-file set error=%v", err)
 			}
 		})
@@ -550,9 +556,11 @@ func TestRoleSourceSkillFileQueriesLockAndFailClosedOnPathRace(t *testing.T) {
 	query := string(body)
 	for _, required := range []string{
 		"LockRoleSourceSkillsForFileSync", "id = ANY(@skill_ids::uuid[])", "workspace_id = @workspace_id",
-		"ORDER BY id\nFOR UPDATE", "ListRoleSourceSkillFilesForUpdateBySkillIDs",
-		"ORDER BY file.skill_id, file.path\nFOR UPDATE OF file", "UpsertRoleSourceSkillFiles",
-		"WHERE skill_file.path = ANY(@owned_paths::text[])",
+		"ORDER BY id\nFOR UPDATE", "ListRoleSourceSkillFilesForUpdateByTargets", "jsonb_array_elements(@targets::jsonb)",
+		"requested.skill_id = file.skill_id AND requested.path = file.path",
+		"ORDER BY file.skill_id, file.path\nFOR UPDATE OF file", "MaterializeRoleSourceSkillFiles",
+		"WHERE input.operation = 'insert'", "WHERE input.operation = 'update'", "WHERE input.operation = 'delete'",
+		"skill.workspace_id = @workspace_id",
 	} {
 		if !strings.Contains(query, required) {
 			t.Errorf("skill-file query contract missing %q", required)
@@ -560,6 +568,103 @@ func TestRoleSourceSkillFileQueriesLockAndFailClosedOnPathRace(t *testing.T) {
 	}
 	if strings.Contains(query, "GetRoleSourceSkillForUpdate") || strings.Contains(query, "ListRoleSourceSkillFilesForUpdate :many") {
 		t.Fatal("per-skill file lock queries must not remain")
+	}
+	start := strings.Index(query, "-- name: MaterializeRoleSourceSkillFiles ")
+	if start < 0 {
+		t.Fatal("role-source skill-file materialization query is missing")
+	}
+	section := query[start:]
+	if next := strings.Index(section[1:], "\n-- name: "); next >= 0 {
+		section = section[:next+1]
+	}
+	if strings.Contains(section, "ON CONFLICT") {
+		t.Fatal("role-source skill-file insert must fail on a concurrent path conflict")
+	}
+}
+
+func TestSkillFileMutationStateCollapsesToFinalTransition(t *testing.T) {
+	targetID := "00000000-0000-4000-8000-000000000046"
+	state := materializationState{
+		skillFiles:        map[string]map[string]bool{targetID: {"existing.md": true}},
+		skillFilesInitial: map[string]map[string]bool{targetID: {"existing.md": true}},
+		pendingSkillFiles: map[string]pendingRoleSourceSkillFileMutation{},
+	}
+	delete(state.skillFiles[targetID], "existing.md")
+	state.stageSkillFileMutation(targetID, "existing.md", "")
+	mutation := state.pendingSkillFiles[targetID+"\x00existing.md"]
+	if mutation.Operation != "delete" {
+		t.Fatalf("existing-to-missing mutation=%+v", mutation)
+	}
+	state.skillFiles[targetID]["existing.md"] = true
+	state.stageSkillFileMutation(targetID, "existing.md", "replacement")
+	mutation = state.pendingSkillFiles[targetID+"\x00existing.md"]
+	if mutation.Operation != "update" || mutation.Content != "replacement" {
+		t.Fatalf("path transfer mutation=%+v", mutation)
+	}
+	state.skillFiles[targetID]["new.md"] = true
+	state.stageSkillFileMutation(targetID, "new.md", "temporary")
+	if state.pendingSkillFiles[targetID+"\x00new.md"].Operation != "insert" {
+		t.Fatalf("missing-to-existing mutation=%+v", state.pendingSkillFiles[targetID+"\x00new.md"])
+	}
+	delete(state.skillFiles[targetID], "new.md")
+	state.stageSkillFileMutation(targetID, "new.md", "")
+	if _, exists := state.pendingSkillFiles[targetID+"\x00new.md"]; exists {
+		t.Fatal("missing-to-existing-to-missing transition must not write")
+	}
+}
+
+func TestCollectSkillFileTargetsIncludesOnlyDesiredAndOwnedPaths(t *testing.T) {
+	ref := ObjectRef{Kind: "skill", ParentID: "role", ID: "existing"}
+	targetID := util.MustParseUUID("00000000-0000-4000-8000-000000000047")
+	mask, err := json.Marshal([]string{"name", "skill_file:old.md", "skill_file:shared.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := pendingRoleSourceSkill{
+		Ref: ref, ID: util.UUIDToString(targetID), Operation: "update",
+		DesiredFiles: map[string]string{"new.md": "new", "shared.md": "changed"},
+	}
+	state := materializationState{
+		mappings: map[string]db.RoleSourceObjectMapping{
+			objectKey(ref): {TargetKind: "skill", TargetID: targetID, OwnershipMask: mask},
+		},
+		actions:   map[string]PlanAction{},
+		decisions: map[string]ArchiveDecision{},
+	}
+	targets, err := state.collectSkillFileTargets(map[string]pendingRoleSourceSkill{objectKey(ref): pending})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 3 {
+		t.Fatalf("skill-file lock targets=%+v", targets)
+	}
+	want := []string{"new.md", "old.md", "shared.md"}
+	for index, target := range targets {
+		if target.SkillID != util.UUIDToString(targetID) || target.Path != want[index] {
+			t.Fatalf("skill-file lock target[%d]=%+v, want path %q", index, target, want[index])
+		}
+	}
+}
+
+func TestMaterializedSkillFileBatchesRespectCountAndByteLimits(t *testing.T) {
+	mutations := make([]pendingRoleSourceSkillFileMutation, materializedSkillFileBatchSize+1)
+	for index := range mutations {
+		mutations[index] = pendingRoleSourceSkillFileMutation{
+			SkillID: uuid.NewString(), Path: fmt.Sprintf("file-%03d.md", index), Operation: "insert", Content: "bounded",
+		}
+	}
+	batches, err := materializedSkillFileBatches(mutations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != materializedSkillFileBatchSize || len(batches[1]) != 1 {
+		t.Fatalf("skill-file batches=%v", []int{len(batches[0]), len(batches[1])})
+	}
+	oversized := []pendingRoleSourceSkillFileMutation{{
+		SkillID: uuid.NewString(), Path: "oversized.md", Operation: "insert", Content: strings.Repeat("x", materializedSkillFileBatchBytes),
+	}}
+	if _, err := materializedSkillFileBatches(oversized); !errors.Is(err, ErrMaterializationBlocked) {
+		t.Fatalf("oversized skill-file mutation error=%v", err)
 	}
 }
 
