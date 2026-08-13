@@ -755,6 +755,94 @@ func TestMaterializedSkillBatchRequiresExactReturnedIDs(t *testing.T) {
 	}
 }
 
+func TestMaterializedAutomationBatchesRespectCountLimit(t *testing.T) {
+	automations := make([]pendingRoleSourceAutomation, materializedAutomationBatchSize+1)
+	for index := range automations {
+		automations[index] = pendingRoleSourceAutomation{
+			Ref: ObjectRef{Kind: "automation", ParentID: "writer", ID: fmt.Sprintf("automation-%03d", index)},
+			ID:  uuid.NewString(), Operation: "create", Title: fmt.Sprintf("Automation %03d", index),
+			Description: "bounded", AssigneeID: uuid.NewString(), CreatedByID: uuid.NewString(),
+			TriggerID: uuid.NewString(), CronExpression: "0 * * * *", Timezone: "UTC", Label: "Managed by role source",
+		}
+	}
+	batches, err := materializedAutomationBatches(automations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != materializedAutomationBatchSize || len(batches[1]) != 1 {
+		t.Fatalf("automation batches=%v", []int{len(batches[0]), len(batches[1])})
+	}
+}
+
+func TestMaterializedAutomationBatchPreservesSafetyBoundary(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "autopilot.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(body)
+	start := strings.Index(query, "-- name: MaterializeRoleSourceAutomations ")
+	end := strings.Index(query[start+1:], "\n-- name: ")
+	if start < 0 || end < 0 {
+		t.Fatal("automation batch query is missing")
+	}
+	section := query[start : start+1+end]
+	for _, required := range []string{
+		"jsonb_array_elements(@automations::jsonb)", "target.workspace_id = @workspace_id",
+		"target.assignee_type = 'agent'", "target.assignee_id = input.assignee_id", "target.status <> 'archived'",
+		"'paused', 'run_only'", "'schedule', false", "autopilot_trigger.autopilot_id = EXCLUDED.autopilot_id",
+		"autopilot_trigger.kind = 'schedule'", "SELECT autopilot_id FROM triggers",
+	} {
+		if !strings.Contains(section, required) {
+			t.Errorf("automation batch query missing %q", required)
+		}
+	}
+	updateStart := strings.Index(section, "UPDATE autopilot target")
+	updateEnd := strings.Index(section[updateStart:], "\n    FROM input")
+	if updateStart < 0 || updateEnd < 0 {
+		t.Fatal("automation update SET clause is missing")
+	}
+	updateSet := section[updateStart : updateStart+updateEnd]
+	for _, forbidden := range []string{"status =", "enabled =", "assignee_id =", "execution_mode ="} {
+		if strings.Contains(updateSet, forbidden) {
+			t.Errorf("automation batch updates protected field %q", forbidden)
+		}
+	}
+	triggerUpdateStart := strings.Index(section, "ON CONFLICT (id) DO UPDATE SET")
+	triggerUpdateEnd := strings.Index(section[triggerUpdateStart:], "\n    WHERE autopilot_trigger.autopilot_id")
+	if triggerUpdateStart < 0 || triggerUpdateEnd < 0 {
+		t.Fatal("automation trigger update SET clause is missing")
+	}
+	triggerUpdateSet := section[triggerUpdateStart : triggerUpdateStart+triggerUpdateEnd]
+	for _, forbidden := range []string{"enabled =", "autopilot_id =", "kind ="} {
+		if strings.Contains(triggerUpdateSet, forbidden) {
+			t.Errorf("automation trigger batch updates protected field %q", forbidden)
+		}
+	}
+}
+
+func TestMaterializedAutomationBatchRequiresExactReturnedIDs(t *testing.T) {
+	first := uuid.New()
+	second := uuid.New()
+	unexpected := uuid.New()
+	requested := []pendingRoleSourceAutomation{{ID: first.String()}, {ID: second.String()}}
+	pgID := func(value uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: value, Valid: true} }
+
+	if _, err := exactMaterializedAutomationIDs(requested, []pgtype.UUID{pgID(first), pgID(second)}); err != nil {
+		t.Fatalf("exact set error=%v", err)
+	}
+	for name, rows := range map[string][]pgtype.UUID{
+		"duplicate":  {pgID(first), pgID(first)},
+		"missing":    {pgID(first)},
+		"unexpected": {pgID(first), pgID(unexpected)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := exactMaterializedAutomationIDs(requested, rows); !errors.Is(err, ErrApplyConflict) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestApplyPreflightsObjectStorageBeforeMutationLocks(t *testing.T) {
 	body, err := os.ReadFile("apply.go")
 	if err != nil {
@@ -819,7 +907,7 @@ func TestMaterializationQueriesPreserveUserManagedFields(t *testing.T) {
 		forbidden []string
 	}{
 		{"agent.sql", "UpdateRoleSourceAgent", []string{"custom_env =", "mcp_config =", "model =", "permission_mode =", "status =", "archived_at ="}},
-		{"autopilot.sql", "UpdateRoleSourceAutopilot", []string{"status =", "enabled =", "assignee_id =", "execution_mode ="}},
+		{"autopilot.sql", "MaterializeRoleSourceAutomations", []string{"status =", "enabled =", "assignee_id =", "execution_mode ="}},
 		{"skill.sql", "MaterializeRoleSourceSkills", []string{"config =", "created_by ="}},
 	}
 	for _, test := range tests {
@@ -838,11 +926,15 @@ func TestMaterializationQueriesPreserveUserManagedFields(t *testing.T) {
 			if next := strings.Index(section[len(start):], "\n-- name: "); next >= 0 {
 				section = section[:len(start)+next]
 			}
-			if set := strings.Index(section, "\nSET "); set >= 0 {
+			if set := strings.Index(section, "SET "); set >= 0 {
 				section = section[set:]
-				if where := strings.Index(section, "\nWHERE "); where >= 0 {
-					section = section[:where]
+				end := len(section)
+				for _, marker := range []string{"\n    FROM input", "\nFROM input", "\nWHERE "} {
+					if index := strings.Index(section, marker); index >= 0 && index < end {
+						end = index
+					}
 				}
+				section = section[:end]
 			}
 			for _, forbidden := range test.forbidden {
 				if strings.Contains(section, forbidden) {

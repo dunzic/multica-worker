@@ -209,6 +209,45 @@ func TestTenThousandSkillTargetsFitBoundedBatches(t *testing.T) {
 	}
 }
 
+func TestTenThousandAutomationTargetsFitBoundedBatches(t *testing.T) {
+	count := productionScaleRoleCount
+	automations := make([]pendingRoleSourceAutomation, count)
+	for index := range automations {
+		automations[index] = pendingRoleSourceAutomation{
+			Ref:       ObjectRef{Kind: "automation", ParentID: fmt.Sprintf("role-%05d", index), ID: "daily"},
+			ID:        uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("automation-target-%05d", index))).String(),
+			Operation: "create", Title: fmt.Sprintf("Role %05d - Daily", index), Description: "production-shaped prompt",
+			AssigneeID: uuid.NewString(), CreatedByID: uuid.NewString(), TriggerID: uuid.NewString(),
+			CronExpression: "0 9 * * *", Timezone: "UTC", Label: "Managed by role source",
+		}
+	}
+	batches, err := materializedAutomationBatches(automations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBatches := (count + materializedAutomationBatchSize - 1) / materializedAutomationBatchSize
+	if len(batches) != wantBatches {
+		t.Fatalf("automation batches=%d, want=%d", len(batches), wantBatches)
+	}
+	actual := 0
+	for _, batch := range batches {
+		if len(batch) == 0 || len(batch) > materializedAutomationBatchSize {
+			t.Fatalf("invalid automation batch size=%d", len(batch))
+		}
+		body, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > materializedAutomationBatchBytes {
+			t.Fatalf("automation batch bytes=%d exceed limit=%d", len(body), materializedAutomationBatchBytes)
+		}
+		actual += len(batch)
+	}
+	if actual != count {
+		t.Fatalf("automation batch count=%d", actual)
+	}
+}
+
 func TestTenThousandMaterializationNamesFitOnePreflight(t *testing.T) {
 	snapshot := planTestSnapshot(t, productionScaleManifest())
 	plan, err := BuildPlan("scale-name-source", nil, snapshot)

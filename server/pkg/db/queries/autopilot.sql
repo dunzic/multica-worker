@@ -63,46 +63,76 @@ INSERT INTO autopilot (
     $7, $8
 ) RETURNING *;
 
--- name: CreateRoleSourceAutopilot :one
-INSERT INTO autopilot (
-    workspace_id, title, description, assignee_type, assignee_id,
-    status, execution_mode, created_by_type, created_by_id
-) VALUES (
-    @workspace_id, @title, @description, 'agent', @assignee_id,
-    'paused', 'run_only', 'member', @created_by_id
-) RETURNING *;
-
--- name: UpdateRoleSourceAutopilot :one
--- Source sync never resumes, retargets or archives a user-controlled rule.
-UPDATE autopilot
-SET title = @title,
-    description = @description,
-    updated_at = now()
-WHERE id = @id
-  AND workspace_id = @workspace_id
-  AND assignee_type = 'agent'
-  AND assignee_id = @assignee_id
-  AND status <> 'archived'
-RETURNING *;
-
--- name: UpsertRoleSourceScheduleTrigger :one
-INSERT INTO autopilot_trigger (
-    id, autopilot_id, kind, enabled, cron_expression, timezone,
-    label, provider, published_by_type, published_by_id
-) VALUES (
-    @id, @autopilot_id, 'schedule', false, @cron_expression, @timezone,
-    @label, 'generic', 'member', @published_by_id
+-- name: MaterializeRoleSourceAutomations :many
+-- Create/update bounded paused Autopilots and their deterministic disabled
+-- schedule triggers in one statement. Existing status, execution mode,
+-- assignee and trigger enabled state are preserved. Only a trigger successfully
+-- inserted or updated contributes an ID to the exact-set response.
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'id')::UUID AS id,
+        item ->> 'operation' AS operation,
+        item ->> 'title' AS title,
+        item ->> 'description' AS description,
+        (item ->> 'assignee_id')::UUID AS assignee_id,
+        (item ->> 'created_by_id')::UUID AS created_by_id,
+        (item ->> 'trigger_id')::UUID AS trigger_id,
+        item ->> 'cron_expression' AS cron_expression,
+        item ->> 'timezone' AS timezone,
+        item ->> 'label' AS label
+    FROM jsonb_array_elements(@automations::jsonb) AS item
+), updated AS (
+    UPDATE autopilot target
+    SET title = input.title,
+        description = input.description,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.id = input.id
+      AND target.workspace_id = @workspace_id
+      AND target.assignee_type = 'agent'
+      AND target.assignee_id = input.assignee_id
+      AND target.status <> 'archived'
+    RETURNING target.id
+), inserted AS (
+    INSERT INTO autopilot (
+        id, workspace_id, title, description, assignee_type, assignee_id,
+        status, execution_mode, created_by_type, created_by_id
+    )
+    SELECT
+        id, @workspace_id, title, description, 'agent', assignee_id,
+        'paused', 'run_only', 'member', created_by_id
+    FROM input
+    WHERE operation = 'create'
+    RETURNING autopilot.id
+), targets AS MATERIALIZED (
+    SELECT id FROM updated
+    UNION ALL
+    SELECT id FROM inserted
+), triggers AS (
+    INSERT INTO autopilot_trigger (
+        id, autopilot_id, kind, enabled, cron_expression, timezone,
+        label, provider, published_by_type, published_by_id
+    )
+    SELECT
+        input.trigger_id, input.id, 'schedule', false,
+        input.cron_expression, input.timezone, input.label,
+        'generic', 'member', input.created_by_id
+    FROM input
+    JOIN targets ON targets.id = input.id
+    ON CONFLICT (id) DO UPDATE SET
+        cron_expression = EXCLUDED.cron_expression,
+        timezone = EXCLUDED.timezone,
+        label = EXCLUDED.label,
+        published_by_type = EXCLUDED.published_by_type,
+        published_by_id = EXCLUDED.published_by_id,
+        updated_at = now()
+    WHERE autopilot_trigger.autopilot_id = EXCLUDED.autopilot_id
+      AND autopilot_trigger.kind = 'schedule'
+    RETURNING autopilot_id
 )
-ON CONFLICT (id) DO UPDATE SET
-    cron_expression = EXCLUDED.cron_expression,
-    timezone = EXCLUDED.timezone,
-    label = EXCLUDED.label,
-    published_by_type = EXCLUDED.published_by_type,
-    published_by_id = EXCLUDED.published_by_id,
-    updated_at = now()
-WHERE autopilot_trigger.autopilot_id = EXCLUDED.autopilot_id
-  AND autopilot_trigger.kind = 'schedule'
-RETURNING *;
+SELECT autopilot_id FROM triggers
+ORDER BY autopilot_id;
 
 -- name: UpdateAutopilot :one
 UPDATE autopilot SET

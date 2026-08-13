@@ -26,17 +26,19 @@ import (
 )
 
 const (
-	ApplyReceiptContractVersion = "1.1"
-	maxApplyArtifacts           = 20_000
-	maxApplyArtifactBytes       = 128 << 20
-	maxConcurrentArtifactReads  = 16
-	capabilityVersionBatchSize  = 500
-	capabilityVersionBatchBytes = 2 << 20
-	materializedAgentBatchSize  = 250
-	materializedAgentBatchBytes = 64 << 20
-	materializedSkillBatchSize  = 250
-	materializedSkillBatchBytes = 64 << 20
-	materializationNameMaxBytes = 16 << 20
+	ApplyReceiptContractVersion      = "1.1"
+	maxApplyArtifacts                = 20_000
+	maxApplyArtifactBytes            = 128 << 20
+	maxConcurrentArtifactReads       = 16
+	capabilityVersionBatchSize       = 500
+	capabilityVersionBatchBytes      = 2 << 20
+	materializedAgentBatchSize       = 250
+	materializedAgentBatchBytes      = 64 << 20
+	materializedSkillBatchSize       = 250
+	materializedSkillBatchBytes      = 64 << 20
+	materializedAutomationBatchSize  = 250
+	materializedAutomationBatchBytes = 64 << 20
+	materializationNameMaxBytes      = 16 << 20
 )
 
 var (
@@ -184,6 +186,21 @@ type pendingRoleSourceSkill struct {
 	CreatedBy    string            `json:"created_by"`
 	ObjectDigest string            `json:"-"`
 	DesiredFiles map[string]string `json:"-"`
+}
+
+type pendingRoleSourceAutomation struct {
+	Ref            ObjectRef `json:"-"`
+	ID             string    `json:"id"`
+	Operation      string    `json:"operation"`
+	Title          string    `json:"title"`
+	Description    string    `json:"description"`
+	AssigneeID     string    `json:"assignee_id"`
+	CreatedByID    string    `json:"created_by_id"`
+	TriggerID      string    `json:"trigger_id"`
+	CronExpression string    `json:"cron_expression"`
+	Timezone       string    `json:"timezone"`
+	Label          string    `json:"label"`
+	ObjectDigest   string    `json:"-"`
 }
 
 type applyPreflight struct {
@@ -1182,12 +1199,8 @@ func (s *materializationState) materialize(ctx context.Context) error {
 			}
 		}
 	}
-	for _, role := range s.snapshot.Manifest.Roles {
-		for _, automation := range role.Automations {
-			if err := s.materializeAutomation(ctx, role, automation); err != nil {
-				return err
-			}
-		}
+	if err := s.materializeAutomations(ctx); err != nil {
+		return err
 	}
 	if err := s.materializeArchives(ctx); err != nil {
 		return err
@@ -1876,60 +1889,132 @@ func (s *materializationState) syncOwnedSkillFiles(ctx context.Context, ref Obje
 	return mask, nil
 }
 
-func (s *materializationState) materializeAutomation(ctx context.Context, role Role, automation Automation) error {
-	ref := ObjectRef{Kind: "automation", ParentID: role.ID, ID: automation.ID}
-	action := s.actions[objectKey(ref)]
-	if action.Operation == PlanUnchanged {
-		s.receipt.Counts.Unchanged++
-		return s.advanceExistingMappingSnapshot(ctx, ref)
-	}
-	if action.Operation == PlanArchiveCandidate {
-		return nil
-	}
-	roleMapping, ok := s.mappings[objectKey(ObjectRef{Kind: "role", ID: role.ID})]
-	if !ok || roleMapping.ArchivedAt.Valid {
-		return fmt.Errorf("%w: role mapping is missing for automation %s", ErrApplyConflict, automation.ID)
-	}
-	title := automationTitle(role.DisplayName, automation.Name)
-	mapping, mapped := s.mappings[objectKey(ref)]
-	var target db.Autopilot
-	var err error
-	description := pgtype.Text{String: s.artifacts[automation.Prompt.Digest].body, Valid: true}
-	if mapped {
-		target, err = s.q.UpdateRoleSourceAutopilot(ctx, db.UpdateRoleSourceAutopilotParams{
-			Title: title, Description: description, ID: mapping.TargetID, WorkspaceID: s.workspaceID, AssigneeID: roleMapping.TargetID,
-		})
-	} else {
-		target, err = s.q.CreateRoleSourceAutopilot(ctx, db.CreateRoleSourceAutopilotParams{
-			WorkspaceID: s.workspaceID, Title: title, Description: description, AssigneeID: roleMapping.TargetID, CreatedByID: s.actorID,
-		})
-	}
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("%w: mapped automation target is missing or retargeted", ErrApplyConflict)
+func (s *materializationState) materializeAutomations(ctx context.Context) error {
+	pending := make([]pendingRoleSourceAutomation, 0)
+	for _, role := range s.snapshot.Manifest.Roles {
+		for _, automation := range role.Automations {
+			ref := ObjectRef{Kind: "automation", ParentID: role.ID, ID: automation.ID}
+			action := s.actions[objectKey(ref)]
+			if action.Operation == PlanUnchanged {
+				s.receipt.Counts.Unchanged++
+				if err := s.advanceExistingMappingSnapshot(ctx, ref); err != nil {
+					return err
+				}
+				continue
+			}
+			if action.Operation == PlanArchiveCandidate {
+				continue
+			}
+			roleMapping, ok := s.mappings[objectKey(ObjectRef{Kind: "role", ID: role.ID})]
+			if !ok || roleMapping.ArchivedAt.Valid {
+				return fmt.Errorf("%w: role mapping is missing for automation %s", ErrApplyConflict, automation.ID)
+			}
+			mapping, mapped := s.mappings[objectKey(ref)]
+			if mapped && mapping.ArchivedAt.Valid {
+				return fmt.Errorf("%w: archived automation mapping cannot be reused", ErrApplyConflict)
+			}
+			targetID := mapping.TargetID
+			operation := "update"
+			if !mapped {
+				var err error
+				targetID, err = newPGUUID()
+				if err != nil {
+					return err
+				}
+				operation = "create"
+			}
+			triggerID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(util.UUIDToString(s.source.ID)+"/"+role.ID+"/"+automation.ID))
+			pending = append(pending, pendingRoleSourceAutomation{
+				Ref: ref, ID: util.UUIDToString(targetID), Operation: operation,
+				Title: automationTitle(role.DisplayName, automation.Name), Description: s.artifacts[automation.Prompt.Digest].body,
+				AssigneeID: util.UUIDToString(roleMapping.TargetID), CreatedByID: util.UUIDToString(s.actorID),
+				TriggerID: triggerID.String(), CronExpression: automation.Schedule, Timezone: automation.Timezone,
+				Label: "Managed by role source", ObjectDigest: action.AfterDigest,
+			})
 		}
-		return err
 	}
-	triggerID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(util.UUIDToString(s.source.ID)+"/"+role.ID+"/"+automation.ID))
-	triggerPG, err := util.ParseUUID(triggerID.String())
+	batches, err := materializedAutomationBatches(pending)
 	if err != nil {
 		return err
 	}
-	if _, err := s.q.UpsertRoleSourceScheduleTrigger(ctx, db.UpsertRoleSourceScheduleTriggerParams{
-		ID: triggerPG, AutopilotID: target.ID, CronExpression: pgtype.Text{String: automation.Schedule, Valid: true},
-		Timezone: pgtype.Text{String: automation.Timezone, Valid: true}, Label: pgtype.Text{String: "Managed by role source", Valid: true}, PublishedByID: s.actorID,
-	}); err != nil {
-		return err
-	}
-	if err := s.upsertMapping(ctx, ref, "autopilot", target.ID, action.AfterDigest, []string{"title", "description", "schedule"}, pgtype.Timestamptz{}); err != nil {
-		return err
-	}
-	if mapped {
-		s.receipt.Counts.Updated++
-	} else {
-		s.receipt.Counts.Created++
+	for _, batch := range batches {
+		body, err := json.Marshal(batch)
+		if err != nil {
+			return err
+		}
+		rows, err := s.q.MaterializeRoleSourceAutomations(ctx, db.MaterializeRoleSourceAutomationsParams{
+			Automations: body, WorkspaceID: s.workspaceID,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := exactMaterializedAutomationIDs(batch, rows); err != nil {
+			return err
+		}
+		for _, item := range batch {
+			targetID, err := util.ParseUUID(item.ID)
+			if err != nil {
+				return err
+			}
+			if err := s.upsertMapping(ctx, item.Ref, "autopilot", targetID, item.ObjectDigest, []string{"title", "description", "schedule"}, pgtype.Timestamptz{}); err != nil {
+				return err
+			}
+			if item.Operation == "create" {
+				s.receipt.Counts.Created++
+			} else {
+				s.receipt.Counts.Updated++
+			}
+		}
 	}
 	return nil
+}
+
+func exactMaterializedAutomationIDs(requested []pendingRoleSourceAutomation, rows []pgtype.UUID) (map[string]bool, error) {
+	returned := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		id := util.UUIDToString(row)
+		if returned[id] {
+			return nil, fmt.Errorf("%w: automation batch returned duplicate %s", ErrApplyConflict, id)
+		}
+		returned[id] = true
+	}
+	if len(returned) != len(requested) {
+		return nil, fmt.Errorf("%w: persisted %d of %d automation targets and triggers", ErrApplyConflict, len(returned), len(requested))
+	}
+	for _, item := range requested {
+		if !returned[item.ID] {
+			return nil, fmt.Errorf("%w: automation target or trigger %s was not persisted", ErrApplyConflict, item.ID)
+		}
+	}
+	return returned, nil
+}
+
+func materializedAutomationBatches(automations []pendingRoleSourceAutomation) ([][]pendingRoleSourceAutomation, error) {
+	if len(automations) == 0 {
+		return nil, nil
+	}
+	batches := make([][]pendingRoleSourceAutomation, 0, (len(automations)+materializedAutomationBatchSize-1)/materializedAutomationBatchSize)
+	start, encodedBytes := 0, 2
+	for index, automation := range automations {
+		body, err := json.Marshal(automation)
+		if err != nil {
+			return nil, err
+		}
+		if len(body)+2 > materializedAutomationBatchBytes {
+			return nil, fmt.Errorf("%w: automation target %q exceeds batch byte limit", ErrMaterializationBlocked, automation.Ref.ID)
+		}
+		separator := 0
+		if index > start {
+			separator = 1
+		}
+		if index > start && (index-start >= materializedAutomationBatchSize || encodedBytes+separator+len(body) > materializedAutomationBatchBytes) {
+			batches = append(batches, automations[start:index])
+			start, encodedBytes, separator = index, 2, 0
+		}
+		encodedBytes += separator + len(body)
+	}
+	batches = append(batches, automations[start:])
+	return batches, nil
 }
 
 func (s *materializationState) materializeArchives(ctx context.Context) error {
