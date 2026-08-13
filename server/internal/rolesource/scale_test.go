@@ -133,6 +133,44 @@ func TestTenThousandAgentSkillBindingsFitOneDeterministicBatch(t *testing.T) {
 	}
 }
 
+func TestThousandRoleTargetsFitBoundedBatches(t *testing.T) {
+	agents := make([]pendingRoleSourceAgent, productionApplyRoleCount)
+	for index := range agents {
+		agents[index] = pendingRoleSourceAgent{
+			Ref:       ObjectRef{Kind: "role", ID: fmt.Sprintf("role-%04d", index)},
+			ID:        uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("role-target-%04d", index))).String(),
+			Operation: "create", Name: fmt.Sprintf("Role %04d", index),
+			RuntimeMode: "local", RuntimeID: uuid.NewString(), OwnerID: uuid.NewString(),
+			Instructions: "production-shaped role instructions",
+		}
+	}
+	batches, err := materializedAgentBatches(agents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBatches := (productionApplyRoleCount + materializedAgentBatchSize - 1) / materializedAgentBatchSize
+	if len(batches) != wantBatches {
+		t.Fatalf("role target batches=%d, want=%d", len(batches), wantBatches)
+	}
+	count := 0
+	for _, batch := range batches {
+		if len(batch) == 0 || len(batch) > materializedAgentBatchSize {
+			t.Fatalf("invalid role target batch size=%d", len(batch))
+		}
+		body, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > materializedAgentBatchBytes {
+			t.Fatalf("role target batch bytes=%d exceed limit=%d", len(body), materializedAgentBatchBytes)
+		}
+		count += len(batch)
+	}
+	if count != productionApplyRoleCount {
+		t.Fatalf("role target batch count=%d", count)
+	}
+}
+
 func TestTenThousandMaterializationNamesFitOnePreflight(t *testing.T) {
 	snapshot := planTestSnapshot(t, productionScaleManifest())
 	plan, err := BuildPlan("scale-name-source", nil, snapshot)

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -609,6 +610,78 @@ func TestCapabilityVersionBatchesRespectCountAndEncodedByteLimits(t *testing.T) 
 	}
 	if _, err := capabilityVersionBatches([]pendingRoleSourceCapabilityVersion{oversized}); !errors.Is(err, ErrMaterializationBlocked) {
 		t.Fatalf("oversized capability error=%v", err)
+	}
+}
+
+func TestMaterializedAgentBatchesRespectCountLimit(t *testing.T) {
+	agents := make([]pendingRoleSourceAgent, materializedAgentBatchSize+1)
+	for index := range agents {
+		agents[index] = pendingRoleSourceAgent{
+			Ref: ObjectRef{Kind: "role", ID: fmt.Sprintf("role-%03d", index)},
+			ID:  uuid.NewString(), Operation: "create", Name: fmt.Sprintf("Role %03d", index),
+			RuntimeMode: "local", RuntimeID: uuid.NewString(), OwnerID: uuid.NewString(),
+			Instructions: "bounded",
+		}
+	}
+	batches, err := materializedAgentBatches(agents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != materializedAgentBatchSize || len(batches[1]) != 1 {
+		t.Fatalf("role target batches=%v", []int{len(batches[0]), len(batches[1])})
+	}
+}
+
+func TestMaterializedAgentBatchPreservesSourceOwnedBoundary(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(body)
+	start := strings.Index(query, "-- name: MaterializeRoleSourceAgents ")
+	end := strings.Index(query[start+1:], "\n-- name: ")
+	if start < 0 || end < 0 {
+		t.Fatal("role target batch query is missing")
+	}
+	section := query[start : start+1+end]
+	for _, required := range []string{
+		"jsonb_array_elements(@agents::jsonb)", "(item ->> 'id')::UUID", "target.workspace_id = @workspace_id",
+		"target.kind = 'user'", "target.archived_at IS NULL", "WHERE operation = 'create'",
+		"'private', 'private'", "'{}'::jsonb", "'[]'::jsonb", "RETURNING target.id", "RETURNING agent.id",
+	} {
+		if !strings.Contains(section, required) {
+			t.Errorf("role target batch query missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"permission_mode =", "owner_id =", "custom_env =", "mcp_config =", "model =", "status =", "archived_at =",
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Errorf("role target batch updates user-owned field %q", forbidden)
+		}
+	}
+}
+
+func TestMaterializedAgentBatchRequiresExactReturnedIDs(t *testing.T) {
+	first := uuid.New()
+	second := uuid.New()
+	unexpected := uuid.New()
+	requested := []pendingRoleSourceAgent{{ID: first.String()}, {ID: second.String()}}
+	pgID := func(value uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: value, Valid: true} }
+
+	if _, err := exactMaterializedAgentIDs(requested, []pgtype.UUID{pgID(first), pgID(second)}); err != nil {
+		t.Fatalf("exact set error=%v", err)
+	}
+	for name, rows := range map[string][]pgtype.UUID{
+		"duplicate":  {pgID(first), pgID(first)},
+		"missing":    {pgID(first)},
+		"unexpected": {pgID(first), pgID(unexpected)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := exactMaterializedAgentIDs(requested, rows); !errors.Is(err, ErrApplyConflict) {
+				t.Fatalf("error=%v", err)
+			}
+		})
 	}
 }
 

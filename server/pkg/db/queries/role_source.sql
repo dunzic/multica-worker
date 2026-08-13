@@ -1005,6 +1005,56 @@ WHERE
           AND (requested.allowed_id IS NULL OR target.id <> requested.allowed_id)
     ));
 
+-- name: MaterializeRoleSourceAgents :many
+-- Create or update one bounded role batch. The caller preallocates every new
+-- ID and verifies that this statement returns the exact requested ID set.
+-- Updates are deliberately limited to source-owned fields; permission, owner,
+-- lifecycle, model, secrets, MCP and user preferences remain untouched.
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'id')::UUID AS id,
+        item ->> 'operation' AS operation,
+        item ->> 'name' AS name,
+        item ->> 'description' AS description,
+        item ->> 'runtime_mode' AS runtime_mode,
+        (item ->> 'runtime_id')::UUID AS runtime_id,
+        (item ->> 'owner_id')::UUID AS owner_id,
+        item ->> 'instructions' AS instructions
+    FROM jsonb_array_elements(@agents::jsonb) AS item
+), updated AS (
+    UPDATE agent target
+    SET name = input.name,
+        description = input.description,
+        runtime_mode = input.runtime_mode,
+        runtime_id = input.runtime_id,
+        instructions = input.instructions,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.id = input.id
+      AND target.workspace_id = @workspace_id
+      AND target.kind = 'user'
+      AND target.archived_at IS NULL
+    RETURNING target.id
+), inserted AS (
+    INSERT INTO agent (
+        id, workspace_id, name, description, runtime_mode, runtime_config,
+        runtime_id, visibility, permission_mode, max_concurrent_tasks,
+        owner_id, instructions, custom_env, custom_args, mcp_config
+    )
+    SELECT
+        id, @workspace_id, name, description, runtime_mode, '{}'::jsonb,
+        runtime_id, 'private', 'private', 1,
+        owner_id, instructions, '{}'::jsonb, '[]'::jsonb, NULL
+    FROM input
+    WHERE operation = 'create'
+    RETURNING agent.id
+)
+SELECT id FROM updated
+UNION ALL
+SELECT id FROM inserted
+ORDER BY id;
+
 -- name: UpsertRoleSourceObjectMappings :many
 -- One apply can materialize thousands of objects. Send mapping mutations as a
 -- single typed JSON recordset so the transaction does not pay one network

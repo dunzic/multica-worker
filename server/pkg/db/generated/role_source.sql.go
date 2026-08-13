@@ -4351,6 +4351,82 @@ func (q *Queries) MarkRoleSourceArtifactUploadedForIntegrity(ctx context.Context
 	return i, err
 }
 
+const materializeRoleSourceAgents = `-- name: MaterializeRoleSourceAgents :many
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'id')::UUID AS id,
+        item ->> 'operation' AS operation,
+        item ->> 'name' AS name,
+        item ->> 'description' AS description,
+        item ->> 'runtime_mode' AS runtime_mode,
+        (item ->> 'runtime_id')::UUID AS runtime_id,
+        (item ->> 'owner_id')::UUID AS owner_id,
+        item ->> 'instructions' AS instructions
+    FROM jsonb_array_elements($1::jsonb) AS item
+), updated AS (
+    UPDATE agent target
+    SET name = input.name,
+        description = input.description,
+        runtime_mode = input.runtime_mode,
+        runtime_id = input.runtime_id,
+        instructions = input.instructions,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.id = input.id
+      AND target.workspace_id = $2
+      AND target.kind = 'user'
+      AND target.archived_at IS NULL
+    RETURNING target.id
+), inserted AS (
+    INSERT INTO agent (
+        id, workspace_id, name, description, runtime_mode, runtime_config,
+        runtime_id, visibility, permission_mode, max_concurrent_tasks,
+        owner_id, instructions, custom_env, custom_args, mcp_config
+    )
+    SELECT
+        id, $2, name, description, runtime_mode, '{}'::jsonb,
+        runtime_id, 'private', 'private', 1,
+        owner_id, instructions, '{}'::jsonb, '[]'::jsonb, NULL
+    FROM input
+    WHERE operation = 'create'
+    RETURNING agent.id
+)
+SELECT id FROM updated
+UNION ALL
+SELECT id FROM inserted
+ORDER BY id
+`
+
+type MaterializeRoleSourceAgentsParams struct {
+	Agents      []byte      `json:"agents"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Create or update one bounded role batch. The caller preallocates every new
+// ID and verifies that this statement returns the exact requested ID set.
+// Updates are deliberately limited to source-owned fields; permission, owner,
+// lifecycle, model, secrets, MCP and user preferences remain untouched.
+func (q *Queries) MaterializeRoleSourceAgents(ctx context.Context, arg MaterializeRoleSourceAgentsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, materializeRoleSourceAgents, arg.Agents, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const quarantineRoleSourceArtifactIntegrity = `-- name: QuarantineRoleSourceArtifactIntegrity :execrows
 UPDATE role_source_artifact_integrity
 SET state = 'quarantined', last_outcome = $1,
