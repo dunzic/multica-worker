@@ -217,6 +217,15 @@ cleared_role_source_applies AS (
 cleared_role_source_plans AS (
     DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
 ),
+cleared_role_source_legal_holds AS (
+    DELETE FROM role_source_legal_hold WHERE role_source_legal_hold.workspace_id = $1
+    RETURNING id
+),
+cleared_role_source_legal_hold_releases AS (
+    DELETE FROM role_source_legal_hold_release
+    WHERE role_source_legal_hold_release.workspace_id = $1
+      AND role_source_legal_hold_release.hold_id IN (SELECT id FROM cleared_role_source_legal_holds)
+),
 cleared_role_source_snapshot_artifacts AS (
     DELETE FROM role_source_snapshot_artifact WHERE role_source_snapshot_artifact.workspace_id = $1
 ),

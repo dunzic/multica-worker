@@ -572,6 +572,22 @@ func (q *Queries) ConsumeRoleSourceSecretTransfer(ctx context.Context, arg Consu
 	return i, err
 }
 
+const countActiveRoleSourceLegalHoldsInWorkspace = `-- name: CountActiveRoleSourceLegalHoldsInWorkspace :one
+SELECT count(*) FROM role_source_legal_hold hold
+WHERE hold.workspace_id = $1
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_legal_hold_release release
+      WHERE release.hold_id = hold.id
+  )
+`
+
+func (q *Queries) CountActiveRoleSourceLegalHoldsInWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveRoleSourceLegalHoldsInWorkspace, workspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countInvalidRoleSourceObjectMappings = `-- name: CountInvalidRoleSourceObjectMappings :one
 SELECT count(*) FROM role_source_object_mapping mapping
 WHERE mapping.source_id = $1
@@ -707,6 +723,103 @@ func (q *Queries) CreateRoleSource(ctx context.Context, arg CreateRoleSourcePara
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createRoleSourceLegalHold = `-- name: CreateRoleSourceLegalHold :one
+INSERT INTO role_source_legal_hold (
+    id, workspace_id, source_id, request_key_digest, scope, snapshot_digest,
+    reason_code, reference_digest, created_by
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6::text, $7,
+    $8::text, $9
+)
+RETURNING id, workspace_id, source_id, request_key_digest, scope, snapshot_digest, reason_code, reference_digest, created_by, created_at
+`
+
+type CreateRoleSourceLegalHoldParams struct {
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	SourceID         pgtype.UUID `json:"source_id"`
+	RequestKeyDigest string      `json:"request_key_digest"`
+	Scope            string      `json:"scope"`
+	SnapshotDigest   pgtype.Text `json:"snapshot_digest"`
+	ReasonCode       string      `json:"reason_code"`
+	ReferenceDigest  pgtype.Text `json:"reference_digest"`
+	CreatedBy        pgtype.UUID `json:"created_by"`
+}
+
+func (q *Queries) CreateRoleSourceLegalHold(ctx context.Context, arg CreateRoleSourceLegalHoldParams) (RoleSourceLegalHold, error) {
+	row := q.db.QueryRow(ctx, createRoleSourceLegalHold,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.RequestKeyDigest,
+		arg.Scope,
+		arg.SnapshotDigest,
+		arg.ReasonCode,
+		arg.ReferenceDigest,
+		arg.CreatedBy,
+	)
+	var i RoleSourceLegalHold
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RequestKeyDigest,
+		&i.Scope,
+		&i.SnapshotDigest,
+		&i.ReasonCode,
+		&i.ReferenceDigest,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createRoleSourceLegalHoldRelease = `-- name: CreateRoleSourceLegalHoldRelease :one
+INSERT INTO role_source_legal_hold_release (
+    hold_id, workspace_id, source_id, request_key_digest, reason_code,
+    reference_digest, released_by
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6::text, $7
+)
+RETURNING hold_id, workspace_id, source_id, request_key_digest, reason_code, reference_digest, released_by, released_at
+`
+
+type CreateRoleSourceLegalHoldReleaseParams struct {
+	HoldID           pgtype.UUID `json:"hold_id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	SourceID         pgtype.UUID `json:"source_id"`
+	RequestKeyDigest string      `json:"request_key_digest"`
+	ReasonCode       string      `json:"reason_code"`
+	ReferenceDigest  pgtype.Text `json:"reference_digest"`
+	ReleasedBy       pgtype.UUID `json:"released_by"`
+}
+
+func (q *Queries) CreateRoleSourceLegalHoldRelease(ctx context.Context, arg CreateRoleSourceLegalHoldReleaseParams) (RoleSourceLegalHoldRelease, error) {
+	row := q.db.QueryRow(ctx, createRoleSourceLegalHoldRelease,
+		arg.HoldID,
+		arg.WorkspaceID,
+		arg.SourceID,
+		arg.RequestKeyDigest,
+		arg.ReasonCode,
+		arg.ReferenceDigest,
+		arg.ReleasedBy,
+	)
+	var i RoleSourceLegalHoldRelease
+	err := row.Scan(
+		&i.HoldID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RequestKeyDigest,
+		&i.ReasonCode,
+		&i.ReferenceDigest,
+		&i.ReleasedBy,
+		&i.ReleasedAt,
 	)
 	return i, err
 }
@@ -1222,6 +1335,93 @@ func (q *Queries) GetRoleSourceInWorkspace(ctx context.Context, arg GetRoleSourc
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceLegalHoldByRequestKey = `-- name: GetRoleSourceLegalHoldByRequestKey :one
+SELECT id, workspace_id, source_id, request_key_digest, scope, snapshot_digest, reason_code, reference_digest, created_by, created_at FROM role_source_legal_hold
+WHERE workspace_id = $1 AND source_id = $2
+  AND request_key_digest = $3
+`
+
+type GetRoleSourceLegalHoldByRequestKeyParams struct {
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	SourceID         pgtype.UUID `json:"source_id"`
+	RequestKeyDigest string      `json:"request_key_digest"`
+}
+
+func (q *Queries) GetRoleSourceLegalHoldByRequestKey(ctx context.Context, arg GetRoleSourceLegalHoldByRequestKeyParams) (RoleSourceLegalHold, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceLegalHoldByRequestKey, arg.WorkspaceID, arg.SourceID, arg.RequestKeyDigest)
+	var i RoleSourceLegalHold
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RequestKeyDigest,
+		&i.Scope,
+		&i.SnapshotDigest,
+		&i.ReasonCode,
+		&i.ReferenceDigest,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceLegalHoldForUpdate = `-- name: GetRoleSourceLegalHoldForUpdate :one
+SELECT id, workspace_id, source_id, request_key_digest, scope, snapshot_digest, reason_code, reference_digest, created_by, created_at FROM role_source_legal_hold
+WHERE id = $1 AND workspace_id = $2 AND source_id = $3
+FOR UPDATE
+`
+
+type GetRoleSourceLegalHoldForUpdateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+}
+
+func (q *Queries) GetRoleSourceLegalHoldForUpdate(ctx context.Context, arg GetRoleSourceLegalHoldForUpdateParams) (RoleSourceLegalHold, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceLegalHoldForUpdate, arg.ID, arg.WorkspaceID, arg.SourceID)
+	var i RoleSourceLegalHold
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RequestKeyDigest,
+		&i.Scope,
+		&i.SnapshotDigest,
+		&i.ReasonCode,
+		&i.ReferenceDigest,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRoleSourceLegalHoldRelease = `-- name: GetRoleSourceLegalHoldRelease :one
+SELECT hold_id, workspace_id, source_id, request_key_digest, reason_code, reference_digest, released_by, released_at FROM role_source_legal_hold_release
+WHERE hold_id = $1 AND workspace_id = $2 AND source_id = $3
+`
+
+type GetRoleSourceLegalHoldReleaseParams struct {
+	HoldID      pgtype.UUID `json:"hold_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+}
+
+func (q *Queries) GetRoleSourceLegalHoldRelease(ctx context.Context, arg GetRoleSourceLegalHoldReleaseParams) (RoleSourceLegalHoldRelease, error) {
+	row := q.db.QueryRow(ctx, getRoleSourceLegalHoldRelease, arg.HoldID, arg.WorkspaceID, arg.SourceID)
+	var i RoleSourceLegalHoldRelease
+	err := row.Scan(
+		&i.HoldID,
+		&i.WorkspaceID,
+		&i.SourceID,
+		&i.RequestKeyDigest,
+		&i.ReasonCode,
+		&i.ReferenceDigest,
+		&i.ReleasedBy,
+		&i.ReleasedAt,
 	)
 	return i, err
 }
@@ -2474,6 +2674,78 @@ func (q *Queries) ListRoleSourceAuditEvents(ctx context.Context, arg ListRoleSou
 			&i.EventDigest,
 			&i.Payload,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoleSourceLegalHolds = `-- name: ListRoleSourceLegalHolds :many
+SELECT
+    hold.id, hold.workspace_id, hold.source_id, hold.scope,
+    hold.snapshot_digest, hold.reason_code, hold.reference_digest,
+    hold.created_by, hold.created_at,
+    release.reason_code AS release_reason_code,
+    release.reference_digest AS release_reference_digest,
+    release.released_by, release.released_at
+FROM role_source_legal_hold hold
+LEFT JOIN role_source_legal_hold_release release
+  ON release.hold_id = hold.id
+WHERE hold.workspace_id = $1 AND hold.source_id = $2
+ORDER BY hold.created_at DESC, hold.id
+LIMIT $3
+`
+
+type ListRoleSourceLegalHoldsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SourceID    pgtype.UUID `json:"source_id"`
+	ResultLimit int32       `json:"result_limit"`
+}
+
+type ListRoleSourceLegalHoldsRow struct {
+	ID                     pgtype.UUID        `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	SourceID               pgtype.UUID        `json:"source_id"`
+	Scope                  string             `json:"scope"`
+	SnapshotDigest         pgtype.Text        `json:"snapshot_digest"`
+	ReasonCode             string             `json:"reason_code"`
+	ReferenceDigest        pgtype.Text        `json:"reference_digest"`
+	CreatedBy              pgtype.UUID        `json:"created_by"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	ReleaseReasonCode      pgtype.Text        `json:"release_reason_code"`
+	ReleaseReferenceDigest pgtype.Text        `json:"release_reference_digest"`
+	ReleasedBy             pgtype.UUID        `json:"released_by"`
+	ReleasedAt             pgtype.Timestamptz `json:"released_at"`
+}
+
+func (q *Queries) ListRoleSourceLegalHolds(ctx context.Context, arg ListRoleSourceLegalHoldsParams) ([]ListRoleSourceLegalHoldsRow, error) {
+	rows, err := q.db.Query(ctx, listRoleSourceLegalHolds, arg.WorkspaceID, arg.SourceID, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRoleSourceLegalHoldsRow{}
+	for rows.Next() {
+		var i ListRoleSourceLegalHoldsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.SourceID,
+			&i.Scope,
+			&i.SnapshotDigest,
+			&i.ReasonCode,
+			&i.ReferenceDigest,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.ReleaseReasonCode,
+			&i.ReleaseReferenceDigest,
+			&i.ReleasedBy,
+			&i.ReleasedAt,
 		); err != nil {
 			return nil, err
 		}

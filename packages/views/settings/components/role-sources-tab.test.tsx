@@ -9,14 +9,17 @@ const queryFixtures = vi.hoisted(() => ({
   impact: undefined as Record<string, unknown> | undefined,
   failures: [] as Array<Record<string, unknown>>,
   attestations: [] as Array<Record<string, unknown>>,
+  legalHolds: [] as Array<Record<string, unknown>>,
 }));
+
+const memberFixture = vi.hoisted(() => ({ role: "owner" }));
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "workspace-1", name: "Acme" }),
 }));
 
 vi.mock("@multica/core/permissions", () => ({
-  useCurrentMember: () => ({ role: "owner", userId: "user-1", member: null, isLoading: false }),
+  useCurrentMember: () => ({ role: memberFixture.role, userId: "user-1", member: null, isLoading: false }),
 }));
 
 vi.mock("@tanstack/react-query", async () => {
@@ -31,6 +34,8 @@ vi.mock("@tanstack/react-query", async () => {
         ? queryFixtures.impact
         : options.queryKey.includes("apply-failures")
           ? queryFixtures.failures
+          : options.queryKey.includes("legal-holds")
+            ? queryFixtures.legalHolds
           : options.queryKey.includes("runtime-attestations")
             ? queryFixtures.attestations
             : options.queryKey.includes("plans")
@@ -45,6 +50,7 @@ vi.mock("@tanstack/react-query", async () => {
 import { RoleSourcesTab } from "./role-sources-tab";
 
 beforeEach(() => {
+  memberFixture.role = "owner";
   queryFixtures.sources = [
     {
       id: "source-1",
@@ -175,6 +181,19 @@ beforeEach(() => {
       observation_count: 1,
     },
   ];
+  queryFixtures.legalHolds = [
+    {
+      id: "hold-1",
+      workspace_id: "workspace-1",
+      source_id: "source-1",
+      scope: "source",
+      reason_code: "regulatory",
+      reference_digest: `sha256:${"a".repeat(64)}`,
+      created_by: "user-1",
+      created_at: "2026-08-13T03:00:00Z",
+      status: "active",
+    },
+  ];
 });
 
 describe("RoleSourcesTab", () => {
@@ -254,5 +273,23 @@ describe("RoleSourcesTab", () => {
 
     expect(screen.getByRole("button", { name: "Rebind" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
+  });
+
+  it("shows owner-only legal holds as retention controls, not lifecycle controls", () => {
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByText("Legal holds")).toBeInTheDocument();
+    expect(screen.getByText("Regulatory requirement")).toBeInTheDocument();
+    expect(screen.getByText(/does not pause scanning or applying changes/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create legal hold" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Release hold" })).toBeInTheDocument();
+  });
+
+  it("does not expose legal-hold records or controls to workspace admins", () => {
+    memberFixture.role = "admin";
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.queryByText("Legal holds")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create legal hold" })).not.toBeInTheDocument();
   });
 });

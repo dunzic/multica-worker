@@ -1047,6 +1047,30 @@ type RoleSourceCapabilityVersion struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
+type RoleSourceLegalHold struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	SourceID         pgtype.UUID        `json:"source_id"`
+	RequestKeyDigest string             `json:"request_key_digest"`
+	Scope            string             `json:"scope"`
+	SnapshotDigest   pgtype.Text        `json:"snapshot_digest"`
+	ReasonCode       string             `json:"reason_code"`
+	ReferenceDigest  pgtype.Text        `json:"reference_digest"`
+	CreatedBy        pgtype.UUID        `json:"created_by"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+type RoleSourceLegalHoldRelease struct {
+	HoldID           pgtype.UUID        `json:"hold_id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	SourceID         pgtype.UUID        `json:"source_id"`
+	RequestKeyDigest string             `json:"request_key_digest"`
+	ReasonCode       string             `json:"reason_code"`
+	ReferenceDigest  pgtype.Text        `json:"reference_digest"`
+	ReleasedBy       pgtype.UUID        `json:"released_by"`
+	ReleasedAt       pgtype.Timestamptz `json:"released_at"`
+}
+
 type RoleSourceObjectMapping struct {
 	SourceID           pgtype.UUID        `json:"source_id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`

@@ -152,6 +152,24 @@ that materializes after its client abandoned the upload. Exact re-upload may
 cancel a pending/tombstoned intent, but never an actively deleting one. Metrics
 report queued objects, purges, failures, active backlog and tombstones.
 
+Legal hold is independent retention authority, not a source lifecycle state.
+Only a workspace owner may create, list or release a hold. A hold applies to an
+entire source or one existing immutable snapshot and uses closed reason codes;
+Multica accepts no case narrative or case number. An optional external-record
+reference is stored only as a SHA-256 commitment, and callers should use an
+approved high-entropy or HMAC-derived value rather than a predictable
+identifier. Idempotency keys are stored only as SHA-256 digests.
+
+Creation and release serialize on the workspace/source lock order and write
+hash-chained audit events. Release is a separate immutable row, so it cannot
+rewrite the authority that established the hold. Database triggers reject
+updates to holds/releases and reject direct deletion of an active hold. An
+active hold blocks workspace teardown before any tenant mutation. The future
+historical-retention worker must query this authority inside its candidate
+selection transaction: a source hold protects current and future snapshots; a
+snapshot hold protects that exact digest. This establishes the hard fence and
+owner surface only—it does not yet delete historical snapshots.
+
 Every role-source mutation first takes a shared lock on the workspace row. Workspace teardown takes an exclusive lock on the same row, then deletes audit events, approvals, applies, plans, snapshots, scan requests and sources explicitly before runtimes and the workspace. This lock order prevents a concurrent scan report from inserting an orphan after the no-foreign-key cleanup sweep.
 
 ### Deterministic plan and atomic apply

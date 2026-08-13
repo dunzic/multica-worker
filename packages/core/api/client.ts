@@ -45,6 +45,9 @@ import type {
   RoleSourceApplyFailure,
   RoleSourceRuntimeAttestation,
   UpdateRoleSourceLifecycleRequest,
+  RoleSourceLegalHold,
+  CreateRoleSourceLegalHoldRequest,
+  ReleaseRoleSourceLegalHoldRequest,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -1684,6 +1687,39 @@ export class ApiClient {
     await this.fetch<void>(
       `/api/workspaces/${workspaceId}/role-sources/${sourceId}`,
       { method: "PATCH", body: JSON.stringify(request) },
+    );
+  }
+
+  async listRoleSourceLegalHolds(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceLegalHold[]> {
+    const response = await this.fetch<{ legal_holds?: RoleSourceLegalHold[] }>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/legal-holds`,
+    );
+    return response.legal_holds ?? [];
+  }
+
+  async createRoleSourceLegalHold(
+    workspaceId: string,
+    sourceId: string,
+    request: CreateRoleSourceLegalHoldRequest,
+  ): Promise<RoleSourceLegalHold> {
+    return this.fetch<RoleSourceLegalHold>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/legal-holds`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+  }
+
+  async releaseRoleSourceLegalHold(
+    workspaceId: string,
+    sourceId: string,
+    holdId: string,
+    request: ReleaseRoleSourceLegalHoldRequest,
+  ): Promise<RoleSourceLegalHold> {
+    return this.fetch<RoleSourceLegalHold>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/legal-holds/${holdId}/release`,
+      { method: "POST", body: JSON.stringify(request) },
     );
   }
 

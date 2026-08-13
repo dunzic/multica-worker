@@ -95,6 +95,64 @@ SELECT * FROM role_source
 WHERE workspace_id = @workspace_id
 ORDER BY created_at DESC, id;
 
+-- name: CreateRoleSourceLegalHold :one
+INSERT INTO role_source_legal_hold (
+    id, workspace_id, source_id, request_key_digest, scope, snapshot_digest,
+    reason_code, reference_digest, created_by
+) VALUES (
+    @id, @workspace_id, @source_id, @request_key_digest, @scope,
+    sqlc.narg('snapshot_digest')::text, @reason_code,
+    sqlc.narg('reference_digest')::text, @created_by
+)
+RETURNING *;
+
+-- name: GetRoleSourceLegalHoldByRequestKey :one
+SELECT * FROM role_source_legal_hold
+WHERE workspace_id = @workspace_id AND source_id = @source_id
+  AND request_key_digest = @request_key_digest;
+
+-- name: GetRoleSourceLegalHoldForUpdate :one
+SELECT * FROM role_source_legal_hold
+WHERE id = @id AND workspace_id = @workspace_id AND source_id = @source_id
+FOR UPDATE;
+
+-- name: CreateRoleSourceLegalHoldRelease :one
+INSERT INTO role_source_legal_hold_release (
+    hold_id, workspace_id, source_id, request_key_digest, reason_code,
+    reference_digest, released_by
+) VALUES (
+    @hold_id, @workspace_id, @source_id, @request_key_digest, @reason_code,
+    sqlc.narg('reference_digest')::text, @released_by
+)
+RETURNING *;
+
+-- name: GetRoleSourceLegalHoldRelease :one
+SELECT * FROM role_source_legal_hold_release
+WHERE hold_id = @hold_id AND workspace_id = @workspace_id AND source_id = @source_id;
+
+-- name: ListRoleSourceLegalHolds :many
+SELECT
+    hold.id, hold.workspace_id, hold.source_id, hold.scope,
+    hold.snapshot_digest, hold.reason_code, hold.reference_digest,
+    hold.created_by, hold.created_at,
+    release.reason_code AS release_reason_code,
+    release.reference_digest AS release_reference_digest,
+    release.released_by, release.released_at
+FROM role_source_legal_hold hold
+LEFT JOIN role_source_legal_hold_release release
+  ON release.hold_id = hold.id
+WHERE hold.workspace_id = @workspace_id AND hold.source_id = @source_id
+ORDER BY hold.created_at DESC, hold.id
+LIMIT @result_limit;
+
+-- name: CountActiveRoleSourceLegalHoldsInWorkspace :one
+SELECT count(*) FROM role_source_legal_hold hold
+WHERE hold.workspace_id = @workspace_id
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_legal_hold_release release
+      WHERE release.hold_id = hold.id
+  );
+
 -- name: CountRoleSourcesByRuntime :one
 -- Detached sources retain their last binding as audit context but no longer
 -- keep that runtime alive. Rebind locks the new runtime before activation.

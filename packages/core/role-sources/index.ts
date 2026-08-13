@@ -13,4 +13,10 @@ export type {
   RoleSourceRuntimeAttestation,
   RoleSourceLifecycleAction,
   UpdateRoleSourceLifecycleRequest,
+  RoleSourceLegalHold,
+  RoleSourceLegalHoldScope,
+  RoleSourceLegalHoldReason,
+  RoleSourceLegalHoldReleaseReason,
+  CreateRoleSourceLegalHoldRequest,
+  ReleaseRoleSourceLegalHoldRequest,
 } from "../types/role-source";

@@ -53,6 +53,38 @@ describe("ApiClient role-source runtime evidence", () => {
       }),
     );
   });
+
+  it("lists, creates, and releases owner-only legal holds", async () => {
+    const hold = { id: "hold-1", status: "active" };
+    const released = { ...hold, status: "released" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ legal_holds: [hold] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(hold), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(released), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listRoleSourceLegalHolds("workspace-1", "source-1")).resolves.toEqual([hold]);
+    await client.createRoleSourceLegalHold("workspace-1", "source-1", {
+      request_key: "hold-request-1",
+      scope: "source",
+      reason_code: "regulatory",
+      reference_digest: `sha256:${"a".repeat(64)}`,
+    });
+    await client.releaseRoleSourceLegalHold("workspace-1", "source-1", "hold-1", {
+      request_key: "release-request-1",
+      reason_code: "court_order",
+    });
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/legal-holds",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "POST" }));
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/legal-holds/hold-1/release",
+    );
+  });
 });
 
 describe("ApiClient pull-request response schema", () => {

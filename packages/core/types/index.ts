@@ -102,6 +102,12 @@ export type {
   RoleSourceRuntimeAttestation,
   RoleSourceLifecycleAction,
   UpdateRoleSourceLifecycleRequest,
+  RoleSourceLegalHold,
+  RoleSourceLegalHoldScope,
+  RoleSourceLegalHoldReason,
+  RoleSourceLegalHoldReleaseReason,
+  CreateRoleSourceLegalHoldRequest,
+  ReleaseRoleSourceLegalHoldRequest,
 } from "./role-source";
 export type { InboxItem, InboxSeverity, InboxItemType, InboxWorkspaceUnread } from "./inbox";
 export type { NotificationGroupKey, NotificationGroupValue, NotificationPreferences, NotificationPreferenceResponse } from "./notification-preference";

@@ -50,6 +50,9 @@ type RoleSourceControlPlane interface {
 	ListApplyFailures(context.Context, string, string, int32) ([]db.RoleSourceApplyFailure, error)
 	ListSnapshots(context.Context, string, string, int32) ([]db.RoleSourceSnapshot, error)
 	ListPlanApprovals(context.Context, string, string, string, int32) ([]db.RoleSourcePlanApproval, error)
+	CreateLegalHold(context.Context, rolesource.CreateLegalHoldInput) (rolesource.LegalHold, error)
+	ReleaseLegalHold(context.Context, rolesource.ReleaseLegalHoldInput) (rolesource.LegalHold, error)
+	ListLegalHolds(context.Context, string, string, int32) ([]rolesource.LegalHold, error)
 	ListMissingArtifacts(context.Context, rolesource.ArtifactLeaseInput, []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error)
 	StoreArtifactRecord(context.Context, rolesource.StoreArtifactInput) (db.RoleSourceArtifact, bool, error)
 }
@@ -190,6 +193,23 @@ type roleSourceTaskPinResponse struct {
 type roleSourceTaskPinCursor struct {
 	CreatedAt string `json:"created_at"`
 	TaskID    string `json:"task_id"`
+}
+
+type roleSourceLegalHoldResponse struct {
+	ID                     string                            `json:"id"`
+	WorkspaceID            string                            `json:"workspace_id"`
+	SourceID               string                            `json:"source_id"`
+	Scope                  rolesource.LegalHoldScope         `json:"scope"`
+	SnapshotDigest         *string                           `json:"snapshot_digest,omitempty"`
+	ReasonCode             rolesource.LegalHoldReason        `json:"reason_code"`
+	ReferenceDigest        *string                           `json:"reference_digest,omitempty"`
+	CreatedBy              string                            `json:"created_by"`
+	CreatedAt              string                            `json:"created_at"`
+	Status                 string                            `json:"status"`
+	ReleaseReasonCode      rolesource.LegalHoldReleaseReason `json:"release_reason_code,omitempty"`
+	ReleaseReferenceDigest *string                           `json:"release_reference_digest,omitempty"`
+	ReleasedBy             *string                           `json:"released_by,omitempty"`
+	ReleasedAt             *string                           `json:"released_at,omitempty"`
 }
 
 func (h *Handler) roleSourceFeatureEnabled(r *http.Request, workspaceID, key string) bool {
@@ -569,6 +589,108 @@ func (h *Handler) UpdateRoleSourceLifecycle(w http.ResponseWriter, r *http.Reque
 	// requires fresh liveness and attestation reads. Return no partial DTO; the
 	// client invalidates the authoritative list query after this 204.
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) ListRoleSourceLegalHolds(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	limit := int32(100)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 200")
+			return
+		}
+		limit = int32(parsed)
+	}
+	holds, err := h.RoleSources.ListLegalHolds(r.Context(), workspaceID, chi.URLParam(r, "sourceId"), limit)
+	if err != nil {
+		writeRoleSourceReadError(w, err, "failed to list legal holds")
+		return
+	}
+	items := make([]roleSourceLegalHoldResponse, 0, len(holds))
+	for _, hold := range holds {
+		items = append(items, roleSourceLegalHoldToResponse(hold))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"legal_holds": items})
+}
+
+func (h *Handler) CreateRoleSourceLegalHold(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot manage legal holds")
+		return
+	}
+	var request struct {
+		RequestKey      string                     `json:"request_key"`
+		Scope           rolesource.LegalHoldScope  `json:"scope"`
+		SnapshotDigest  string                     `json:"snapshot_digest,omitempty"`
+		ReasonCode      rolesource.LegalHoldReason `json:"reason_code"`
+		ReferenceDigest string                     `json:"reference_digest,omitempty"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	hold, err := h.RoleSources.CreateLegalHold(r.Context(), rolesource.CreateLegalHoldInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), ActorUserID: userID,
+		RequestKey: request.RequestKey, Scope: request.Scope, SnapshotDigest: request.SnapshotDigest,
+		ReasonCode: request.ReasonCode, ReferenceDigest: request.ReferenceDigest,
+	})
+	if err != nil {
+		writeRoleSourceLegalHoldMutationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, roleSourceLegalHoldToResponse(hold))
+}
+
+func (h *Handler) ReleaseRoleSourceLegalHold(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceID, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	userID := requestUserID(r)
+	if actorType, _ := h.resolveActor(r, userID, workspaceID); actorType == "agent" {
+		writeError(w, http.StatusForbidden, "agents cannot manage legal holds")
+		return
+	}
+	var request struct {
+		RequestKey      string                            `json:"request_key"`
+		ReasonCode      rolesource.LegalHoldReleaseReason `json:"reason_code"`
+		ReferenceDigest string                            `json:"reference_digest,omitempty"`
+	}
+	if err := decodeStrictRoleSourceJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	hold, err := h.RoleSources.ReleaseLegalHold(r.Context(), rolesource.ReleaseLegalHoldInput{
+		WorkspaceID: workspaceID, SourceID: chi.URLParam(r, "sourceId"), HoldID: chi.URLParam(r, "holdId"),
+		ActorUserID: userID, RequestKey: request.RequestKey, ReasonCode: request.ReasonCode, ReferenceDigest: request.ReferenceDigest,
+	})
+	if err != nil {
+		writeRoleSourceLegalHoldMutationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, roleSourceLegalHoldToResponse(hold))
+}
+
+func writeRoleSourceLegalHoldMutationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusNotFound, "role source, snapshot, or legal hold not found")
+	case errors.Is(err, rolesource.ErrInvalidLegalHold):
+		writeError(w, http.StatusBadRequest, "invalid legal hold request")
+	case errors.Is(err, rolesource.ErrIdempotencyConflict), errors.Is(err, rolesource.ErrLegalHoldReleased):
+		writeError(w, http.StatusConflict, "legal hold request conflicts with existing state")
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to manage legal hold")
+	}
 }
 
 func (h *Handler) RequestRoleSourceScan(w http.ResponseWriter, r *http.Request) {
@@ -1483,6 +1605,29 @@ func roleSourceScanToResponse(row db.RoleSourceScanRequest) roleSourceScanRespon
 		SnapshotDigest: util.TextToPtr(row.SnapshotDigest), ErrorCode: util.TextToPtr(row.ErrorCode),
 		RequestedAt: util.TimestampToString(row.RequestedAt), ClaimedAt: util.TimestampToPtr(row.ClaimedAt), CompletedAt: util.TimestampToPtr(row.CompletedAt),
 	}
+}
+
+func roleSourceLegalHoldToResponse(hold rolesource.LegalHold) roleSourceLegalHoldResponse {
+	response := roleSourceLegalHoldResponse{
+		ID: hold.ID, WorkspaceID: hold.WorkspaceID, SourceID: hold.SourceID,
+		Scope: hold.Scope, ReasonCode: hold.ReasonCode, CreatedBy: hold.CreatedBy, CreatedAt: hold.CreatedAt,
+		Status: "active", ReleaseReasonCode: hold.ReleaseReasonCode,
+	}
+	if hold.SnapshotDigest != "" {
+		response.SnapshotDigest = &hold.SnapshotDigest
+	}
+	if hold.ReferenceDigest != "" {
+		response.ReferenceDigest = &hold.ReferenceDigest
+	}
+	if !hold.Active() {
+		response.Status = "released"
+		response.ReleasedBy = &hold.ReleasedBy
+		response.ReleasedAt = &hold.ReleasedAt
+		if hold.ReleaseReferenceDigest != "" {
+			response.ReleaseReferenceDigest = &hold.ReleaseReferenceDigest
+		}
+	}
+	return response
 }
 
 func roleSourceSnapshotToResponse(row db.RoleSourceSnapshot) (roleSourceSnapshotResponse, error) {

@@ -55,6 +55,35 @@ Pass criteria:
 - a heartbeat blocked behind runtime deletion fails after the deletion commits and cannot recreate current or historical orphan rows;
 - role-source registration's shared runtime lock conflicts with deletion's exclusive lock.
 
+## Gate B2 — legal-hold authority and deletion races
+
+Run the control-plane and handler tests against the disposable PostgreSQL 17
+database, then repeat the workspace-delete race from two server replicas:
+
+```bash
+go -C server test -count=1 -run '^TestRoleSourceLegalHoldCreateReleaseAndAudit$|^TestDeleteWorkspace_ActiveRoleSourceLegalHoldIsHardFence$' ./internal/handler
+go -C server test -race -count=10 -run '^TestDeleteWorkspace_ActiveRoleSourceLegalHoldIsHardFence$' ./internal/handler
+```
+
+In staging, hold the workspace deletion transaction after its workspace lock;
+concurrently create a source-scoped hold. Repeat with hold creation first,
+release racing deletion, a snapshot-scoped hold and a direct legacy cleanup
+query. Pass criteria:
+
+- exactly one lock order wins without deadlock or partial tenant teardown;
+- an active hold leaves workspace, source, snapshots, artifacts and the hold
+  intact, and direct active-hold deletion fails at the database layer;
+- exact create/release retries produce one row and one audit event each, while
+  changed retries fail closed;
+- after an authorized release, teardown deletes the hold before its release
+  record and completes without residue;
+- API, logs and reports contain no raw idempotency key, case number, narrative,
+  path, body or credential.
+
+This gate validates the hold fence only. It does not authorize historical
+snapshot pruning; that requires a separate retention-candidate race and restore
+exercise after the retention worker exists.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.

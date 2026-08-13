@@ -286,6 +286,83 @@ func TestRoleSourceRuntimeAttestationIsBoundedRedactedAndExplicitlyDeleted(t *te
 	}
 }
 
+func TestRoleSourceLegalHoldIsAppendOnlyContentFreeAndFencesWorkspaceDeletion(t *testing.T) {
+	migrationBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "339_role_source_legal_hold.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(migrationBody))
+	for _, forbidden := range []string{"request_key text", "case_number", "case_reference text", "reason text", "description", "notes", "payload", "manifest", "artifact_body", "credential", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("legal-hold schema contains sensitive/free-text field %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"create table role_source_legal_hold", "create table role_source_legal_hold_release",
+		"request_key_digest", "scope text", "snapshot_digest", "reason_code", "reference_digest", "released_by", "released_at",
+	} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("legal-hold schema is missing %q", required)
+		}
+	}
+
+	queriesBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queriesBody)
+	for _, required := range []string{
+		"GetRoleSourceLegalHoldForUpdate", "FOR UPDATE", "CountActiveRoleSourceLegalHoldsInWorkspace",
+		"NOT EXISTS", "role_source_legal_hold_release",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("legal-hold persistence is missing %q", required)
+		}
+	}
+	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
+		cleanup, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(cleanup)
+		holdAt := strings.Index(text, "DELETE FROM role_source_legal_hold WHERE")
+		releaseAt := strings.Index(text, "DELETE FROM role_source_legal_hold_release")
+		sourceAt := strings.LastIndex(text, "DELETE FROM role_source ")
+		if releaseAt < 0 || holdAt < 0 || sourceAt < 0 || !(holdAt < releaseAt && releaseAt < sourceAt) ||
+			!strings.Contains(text[releaseAt:sourceAt], "SELECT id FROM") {
+			t.Fatalf("%s must delete released holds before their releases and before sources", name)
+		}
+	}
+
+	guardBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "344_role_source_legal_hold_mutation_guard.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := strings.ToLower(string(guardBody))
+	for _, required := range []string{
+		"before update or delete on role_source_legal_hold",
+		"active role source legal hold cannot be deleted",
+		"before update on role_source_legal_hold_release",
+		"role source legal hold releases are immutable",
+	} {
+		if !strings.Contains(guard, required) {
+			t.Fatalf("legal-hold database mutation guard is missing %q", required)
+		}
+	}
+
+	handlerBody, err := os.ReadFile(filepath.Join("..", "handler", "workspace.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := string(handlerBody)
+	lockAt := strings.Index(handler, "qtx.LockWorkspaceForDelete")
+	holdAt := strings.Index(handler, "qtx.CountActiveRoleSourceLegalHoldsInWorkspace")
+	deleteAt := strings.Index(handler, `name: "delete leaf data"`)
+	if lockAt < 0 || holdAt < 0 || deleteAt < 0 || !(lockAt < holdAt && holdAt < deleteAt) {
+		t.Fatal("workspace deletion must check legal hold after its workspace lock and before any teardown mutation")
+	}
+}
+
 func TestRoleSourceLifecycleUsesOneLockOrderAndClearsPendingSecrets(t *testing.T) {
 	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
 	if err != nil {

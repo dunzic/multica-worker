@@ -3,11 +3,18 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2, PauseCircle, PlayCircle, Repeat2, Unplug } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleSlash2, Loader2, PauseCircle, PlayCircle, Repeat2, ShieldAlert, Unplug } from "lucide-react";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,12 +35,17 @@ import {
 import { cn } from "@multica/ui/lib/utils";
 import {
   roleSourceApplyFailureListOptions,
+  roleSourceLegalHoldListOptions,
   roleSourceListOptions,
   roleSourcePlanImpactOptions,
   roleSourcePlanListOptions,
   roleSourceRuntimeAttestationListOptions,
   roleSourceKeys,
   type RoleSourceLifecycleAction,
+  type RoleSourceLegalHold,
+  type RoleSourceLegalHoldReason,
+  type RoleSourceLegalHoldReleaseReason,
+  type RoleSourceLegalHoldScope,
   type RoleSourcePlanAction,
 } from "@multica/core/role-sources";
 import { api } from "@multica/core/api";
@@ -74,11 +86,18 @@ function runtimeConfigTranslationKey(status: string) {
   }
 }
 
+const sha256DigestPattern = /^sha256:[0-9a-f]{64}$/;
+
+function legalHoldRequestKey(prefix: "create" | "release") {
+  return `role-source-legal-hold-${prefix}-${globalThis.crypto.randomUUID()}`;
+}
+
 export function RoleSourcesTab() {
   const { t } = useT("settings");
   const workspaceId = useCurrentWorkspace()?.id ?? "";
   const queryClient = useQueryClient();
   const { role } = useCurrentMember(workspaceId);
+  const isOwner = role === "owner";
   const canManage = role === "owner" || role === "admin";
   const sources = useQuery({
     ...roleSourceListOptions(workspaceId),
@@ -90,6 +109,15 @@ export function RoleSourcesTab() {
   const [rebindRuntimeId, setRebindRuntimeId] = React.useState("");
   const [rebindConfigId, setRebindConfigId] = React.useState("");
   const [savingLifecycle, setSavingLifecycle] = React.useState(false);
+  const [createHoldOpen, setCreateHoldOpen] = React.useState(false);
+  const [holdScope, setHoldScope] = React.useState<RoleSourceLegalHoldScope>("source");
+  const [holdReason, setHoldReason] = React.useState<RoleSourceLegalHoldReason>("regulatory");
+  const [holdSnapshotDigest, setHoldSnapshotDigest] = React.useState("");
+  const [holdReferenceDigest, setHoldReferenceDigest] = React.useState("");
+  const [holdToRelease, setHoldToRelease] = React.useState<RoleSourceLegalHold | null>(null);
+  const [releaseReason, setReleaseReason] = React.useState<RoleSourceLegalHoldReleaseReason>("resolved");
+  const [releaseReferenceDigest, setReleaseReferenceDigest] = React.useState("");
+  const [savingHold, setSavingHold] = React.useState(false);
 
   React.useEffect(() => {
     if (!sources.data?.length) {
@@ -123,6 +151,60 @@ export function RoleSourcesTab() {
     ...roleSourceRuntimeAttestationListOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId),
   });
+  const legalHolds = useQuery({
+    ...roleSourceLegalHoldListOptions(workspaceId, selectedId),
+    enabled: Boolean(workspaceId && selectedId && isOwner),
+  });
+
+  const createHoldValid = holdScope === "source" || sha256DigestPattern.test(holdSnapshotDigest.trim());
+  const createReferenceValid = !holdReferenceDigest.trim() || sha256DigestPattern.test(holdReferenceDigest.trim());
+  const releaseReferenceValid = !releaseReferenceDigest.trim() || sha256DigestPattern.test(releaseReferenceDigest.trim());
+
+  async function createLegalHold() {
+    if (!selected || savingHold || !createHoldValid || !createReferenceValid) return;
+    setSavingHold(true);
+    try {
+      await api.createRoleSourceLegalHold(workspaceId, selected.id, {
+        request_key: legalHoldRequestKey("create"),
+        scope: holdScope,
+        snapshot_digest: holdScope === "snapshot" ? holdSnapshotDigest.trim() : undefined,
+        reason_code: holdReason,
+        reference_digest: holdReferenceDigest.trim() || undefined,
+      });
+      await queryClient.invalidateQueries({ queryKey: roleSourceKeys.legalHolds(workspaceId, selected.id) });
+      toast.success(t(($) => $.role_sources.legal_hold_created));
+      setCreateHoldOpen(false);
+      setHoldScope("source");
+      setHoldReason("regulatory");
+      setHoldSnapshotDigest("");
+      setHoldReferenceDigest("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.legal_hold_failed));
+    } finally {
+      setSavingHold(false);
+    }
+  }
+
+  async function releaseLegalHold() {
+    if (!selected || !holdToRelease || savingHold || !releaseReferenceValid) return;
+    setSavingHold(true);
+    try {
+      await api.releaseRoleSourceLegalHold(workspaceId, selected.id, holdToRelease.id, {
+        request_key: legalHoldRequestKey("release"),
+        reason_code: releaseReason,
+        reference_digest: releaseReferenceDigest.trim() || undefined,
+      });
+      await queryClient.invalidateQueries({ queryKey: roleSourceKeys.legalHolds(workspaceId, selected.id) });
+      toast.success(t(($) => $.role_sources.legal_hold_released));
+      setHoldToRelease(null);
+      setReleaseReason("resolved");
+      setReleaseReferenceDigest("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t(($) => $.role_sources.legal_hold_failed));
+    } finally {
+      setSavingHold(false);
+    }
+  }
 
   async function updateLifecycle(
     action: RoleSourceLifecycleAction,
@@ -305,6 +387,69 @@ export function RoleSourcesTab() {
               )}
             </SettingsCard>
           </SettingsSection>
+
+          {isOwner ? (
+            <SettingsSection
+              title={t(($) => $.role_sources.legal_holds_title)}
+              description={t(($) => $.role_sources.legal_holds_description)}
+            >
+              <SettingsCard>
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-border p-4">
+                  <div className="flex max-w-2xl gap-2 text-caption leading-5 text-muted-foreground">
+                    <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                    <span>{t(($) => $.role_sources.legal_holds_warning)}</span>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setCreateHoldOpen(true)}>
+                    <ShieldAlert className="h-4 w-4" />
+                    {t(($) => $.role_sources.legal_hold_create)}
+                  </Button>
+                </div>
+                {legalHolds.isLoading ? (
+                  <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t(($) => $.role_sources.loading)}
+                  </div>
+                ) : legalHolds.isError ? (
+                  <div className="p-4 text-caption text-destructive">{t(($) => $.role_sources.legal_holds_load_failed)}</div>
+                ) : !legalHolds.data?.length ? (
+                  <div className="p-4 text-caption text-muted-foreground">{t(($) => $.role_sources.legal_holds_empty)}</div>
+                ) : (
+                  <div className="max-h-80 divide-y divide-surface-border overflow-y-auto">
+                    {legalHolds.data.map((hold) => (
+                      <div key={hold.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 text-body font-medium">
+                            <Badge variant={hold.status === "active" ? "destructive" : "outline"}>
+                              {hold.status === "active"
+                                ? t(($) => $.role_sources.legal_hold_active)
+                                : t(($) => $.role_sources.legal_hold_released_status)}
+                            </Badge>
+                            <span>{t(($) => $.role_sources[`legal_hold_reason_${hold.reason_code}`])}</span>
+                          </div>
+                          <div className="mt-1 font-mono text-caption text-muted-foreground">
+                            {hold.scope === "source"
+                              ? t(($) => $.role_sources.legal_hold_scope_source)
+                              : `${t(($) => $.role_sources.legal_hold_scope_snapshot)} · ${shortDigest(hold.snapshot_digest)}`}
+                            {` · ${hold.created_at}`}
+                          </div>
+                          {hold.reference_digest ? (
+                            <div className="mt-0.5 font-mono text-caption text-muted-foreground">
+                              {t(($) => $.role_sources.legal_hold_reference)}: {shortDigest(hold.reference_digest)}
+                            </div>
+                          ) : null}
+                        </div>
+                        {hold.status === "active" ? (
+                          <Button variant="outline" size="sm" onClick={() => setHoldToRelease(hold)}>
+                            {t(($) => $.role_sources.legal_hold_release)}
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </SettingsCard>
+            </SettingsSection>
+          ) : null}
 
           <SettingsSection
             title={t(($) => $.role_sources.latest_plan_title)}
@@ -563,6 +708,118 @@ export function RoleSourcesTab() {
             >
               {savingLifecycle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t(($) => $.role_sources.rebind)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={createHoldOpen} onOpenChange={(open) => !savingHold && setCreateHoldOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.role_sources.legal_hold_create_title)}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-caption text-muted-foreground">{t(($) => $.role_sources.legal_hold_create_description)}</p>
+            <div className="space-y-2">
+              <Label>{t(($) => $.role_sources.legal_hold_scope)}</Label>
+              <Select
+                items={[
+                  { value: "source", label: t(($) => $.role_sources.legal_hold_scope_source) },
+                  { value: "snapshot", label: t(($) => $.role_sources.legal_hold_scope_snapshot) },
+                ]}
+                value={holdScope}
+                onValueChange={(value) => value && setHoldScope(value as RoleSourceLegalHoldScope)}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="source">{t(($) => $.role_sources.legal_hold_scope_source)}</SelectItem>
+                  <SelectItem value="snapshot">{t(($) => $.role_sources.legal_hold_scope_snapshot)}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {holdScope === "snapshot" ? (
+              <div className="space-y-2">
+                <Label htmlFor="legal-hold-snapshot">{t(($) => $.role_sources.legal_hold_snapshot_digest)}</Label>
+                <Input id="legal-hold-snapshot" value={holdSnapshotDigest} onChange={(event) => setHoldSnapshotDigest(event.target.value)} placeholder="sha256:…" autoComplete="off" />
+              </div>
+            ) : null}
+            <div className="space-y-2">
+              <Label>{t(($) => $.role_sources.legal_hold_reason)}</Label>
+              <Select
+                items={[
+                  { value: "investigation", label: t(($) => $.role_sources.legal_hold_reason_investigation) },
+                  { value: "litigation", label: t(($) => $.role_sources.legal_hold_reason_litigation) },
+                  { value: "regulatory", label: t(($) => $.role_sources.legal_hold_reason_regulatory) },
+                  { value: "customer_request", label: t(($) => $.role_sources.legal_hold_reason_customer_request) },
+                  { value: "security_incident", label: t(($) => $.role_sources.legal_hold_reason_security_incident) },
+                ]}
+                value={holdReason}
+                onValueChange={(value) => value && setHoldReason(value as RoleSourceLegalHoldReason)}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="investigation">{t(($) => $.role_sources.legal_hold_reason_investigation)}</SelectItem>
+                  <SelectItem value="litigation">{t(($) => $.role_sources.legal_hold_reason_litigation)}</SelectItem>
+                  <SelectItem value="regulatory">{t(($) => $.role_sources.legal_hold_reason_regulatory)}</SelectItem>
+                  <SelectItem value="customer_request">{t(($) => $.role_sources.legal_hold_reason_customer_request)}</SelectItem>
+                  <SelectItem value="security_incident">{t(($) => $.role_sources.legal_hold_reason_security_incident)}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="legal-hold-reference">{t(($) => $.role_sources.legal_hold_reference_digest)}</Label>
+              <Input id="legal-hold-reference" value={holdReferenceDigest} onChange={(event) => setHoldReferenceDigest(event.target.value)} placeholder="sha256:…" autoComplete="off" />
+              <p className="text-caption text-muted-foreground">{t(($) => $.role_sources.legal_hold_reference_hint)}</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={savingHold} onClick={() => setCreateHoldOpen(false)}>{t(($) => $.role_sources.cancel)}</Button>
+            <Button disabled={savingHold || !createHoldValid || !createReferenceValid} onClick={() => void createLegalHold()}>
+              {savingHold ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t(($) => $.role_sources.legal_hold_create)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={holdToRelease !== null} onOpenChange={(open) => !open && !savingHold && setHoldToRelease(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.role_sources.legal_hold_release_title)}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-caption text-muted-foreground">{t(($) => $.role_sources.legal_hold_release_description)}</p>
+            <div className="space-y-2">
+              <Label>{t(($) => $.role_sources.legal_hold_release_reason)}</Label>
+              <Select
+                items={[
+                  { value: "resolved", label: t(($) => $.role_sources.legal_hold_release_reason_resolved) },
+                  { value: "court_order", label: t(($) => $.role_sources.legal_hold_release_reason_court_order) },
+                  { value: "entered_in_error", label: t(($) => $.role_sources.legal_hold_release_reason_entered_in_error) },
+                  { value: "authorization_expired", label: t(($) => $.role_sources.legal_hold_release_reason_authorization_expired) },
+                ]}
+                value={releaseReason}
+                onValueChange={(value) => value && setReleaseReason(value as RoleSourceLegalHoldReleaseReason)}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="resolved">{t(($) => $.role_sources.legal_hold_release_reason_resolved)}</SelectItem>
+                  <SelectItem value="court_order">{t(($) => $.role_sources.legal_hold_release_reason_court_order)}</SelectItem>
+                  <SelectItem value="entered_in_error">{t(($) => $.role_sources.legal_hold_release_reason_entered_in_error)}</SelectItem>
+                  <SelectItem value="authorization_expired">{t(($) => $.role_sources.legal_hold_release_reason_authorization_expired)}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="legal-hold-release-reference">{t(($) => $.role_sources.legal_hold_reference_digest)}</Label>
+              <Input id="legal-hold-release-reference" value={releaseReferenceDigest} onChange={(event) => setReleaseReferenceDigest(event.target.value)} placeholder="sha256:…" autoComplete="off" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={savingHold} onClick={() => setHoldToRelease(null)}>{t(($) => $.role_sources.cancel)}</Button>
+            <Button variant="destructive" disabled={savingHold || !releaseReferenceValid} onClick={() => void releaseLegalHold()}>
+              {savingHold ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t(($) => $.role_sources.legal_hold_release)}
             </Button>
           </DialogFooter>
         </DialogContent>

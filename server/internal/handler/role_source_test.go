@@ -25,6 +25,7 @@ const (
 	roleSourceTestRuntimeID = "00000000-0000-4000-8000-000000000041"
 	roleSourceTestSourceID  = "00000000-0000-4000-8000-000000000042"
 	roleSourceTestScanID    = "00000000-0000-4000-8000-000000000043"
+	roleSourceTestHoldID    = "00000000-0000-4000-8000-000000000045"
 )
 
 type fakeRoleSourceControlPlane struct {
@@ -83,6 +84,14 @@ type fakeRoleSourceControlPlane struct {
 	snapshotListErr           error
 	approvalRows              []db.RoleSourcePlanApproval
 	approvalListErr           error
+	createLegalHoldInput      *rolesource.CreateLegalHoldInput
+	createLegalHoldRow        rolesource.LegalHold
+	createLegalHoldErr        error
+	releaseLegalHoldInput     *rolesource.ReleaseLegalHoldInput
+	releaseLegalHoldRow       rolesource.LegalHold
+	releaseLegalHoldErr       error
+	legalHoldRows             []rolesource.LegalHold
+	legalHoldListErr          error
 	missingArtifacts          []rolesource.ArtifactRef
 	missingErr                error
 	storedArtifact            db.RoleSourceArtifact
@@ -228,6 +237,23 @@ func (f *fakeRoleSourceControlPlane) ListPlanApprovals(context.Context, string, 
 	return f.approvalRows, f.approvalListErr
 }
 
+func (f *fakeRoleSourceControlPlane) CreateLegalHold(_ context.Context, input rolesource.CreateLegalHoldInput) (rolesource.LegalHold, error) {
+	f.calls++
+	f.createLegalHoldInput = &input
+	return f.createLegalHoldRow, f.createLegalHoldErr
+}
+
+func (f *fakeRoleSourceControlPlane) ReleaseLegalHold(_ context.Context, input rolesource.ReleaseLegalHoldInput) (rolesource.LegalHold, error) {
+	f.calls++
+	f.releaseLegalHoldInput = &input
+	return f.releaseLegalHoldRow, f.releaseLegalHoldErr
+}
+
+func (f *fakeRoleSourceControlPlane) ListLegalHolds(context.Context, string, string, int32) ([]rolesource.LegalHold, error) {
+	f.calls++
+	return f.legalHoldRows, f.legalHoldListErr
+}
+
 func (f *fakeRoleSourceControlPlane) ListMissingArtifacts(context.Context, rolesource.ArtifactLeaseInput, []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error) {
 	f.calls++
 	return f.missingArtifacts, f.missingErr
@@ -278,6 +304,22 @@ func roleSourceTestScanRow() db.RoleSourceScanRequest {
 		WorkspaceID: util.MustParseUUID(testWorkspaceID), Status: "running", ExpectedAdapterVersion: "1.0.0",
 		LeaseToken: util.MustParseUUID("00000000-0000-4000-8000-000000000044"), RequestedAt: now, ClaimedAt: now,
 	}
+}
+
+func roleSourceTestLegalHold(active bool) rolesource.LegalHold {
+	hold := rolesource.LegalHold{
+		ID: roleSourceTestHoldID, WorkspaceID: testWorkspaceID, SourceID: roleSourceTestSourceID,
+		Scope: rolesource.LegalHoldScopeSnapshot, SnapshotDigest: "sha256:" + strings.Repeat("a", 64),
+		ReasonCode: rolesource.LegalHoldReasonLitigation, ReferenceDigest: "sha256:" + strings.Repeat("b", 64),
+		CreatedBy: testUserID, CreatedAt: "2026-08-13T10:02:00Z",
+	}
+	if !active {
+		hold.ReleaseReasonCode = rolesource.LegalHoldReleaseResolved
+		hold.ReleaseReferenceDigest = "sha256:" + strings.Repeat("c", 64)
+		hold.ReleasedBy = testUserID
+		hold.ReleasedAt = "2026-08-13T11:02:00Z"
+	}
+	return hold
 }
 
 func roleSourceTestPlanRow(t *testing.T) db.RoleSourcePlan {
@@ -474,6 +516,97 @@ func TestUpdateRoleSourceLifecycle_MapsSafeConflicts(t *testing.T) {
 				if strings.Contains(w.Body.String(), forbidden) {
 					t.Fatalf("conflict response exposed %q: %s", forbidden, w.Body.String())
 				}
+			}
+		})
+	}
+}
+
+func TestCreateRoleSourceLegalHold_UsesStrictContentFreeRequest(t *testing.T) {
+	hold := roleSourceTestLegalHold(true)
+	fake := &fakeRoleSourceControlPlane{createLegalHoldRow: hold}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+		"request_key": "hold-request-1", "scope": "snapshot", "snapshot_digest": hold.SnapshotDigest,
+		"reason_code": "litigation", "reference_digest": hold.ReferenceDigest,
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.CreateRoleSourceLegalHold(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create hold status=%d body=%s", w.Code, w.Body.String())
+	}
+	if fake.createLegalHoldInput == nil || fake.createLegalHoldInput.RequestKey != "hold-request-1" ||
+		fake.createLegalHoldInput.Scope != rolesource.LegalHoldScopeSnapshot || fake.createLegalHoldInput.SnapshotDigest != hold.SnapshotDigest {
+		t.Fatalf("create legal hold input=%+v", fake.createLegalHoldInput)
+	}
+	body := w.Body.String()
+	for _, forbidden := range []string{"request_key", "hold-request-1", "case_number", "case_reference"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("legal hold response exposed %q: %s", forbidden, body)
+		}
+	}
+	if !strings.Contains(body, `"status":"active"`) || !strings.Contains(body, hold.ReferenceDigest) {
+		t.Fatalf("legal hold response=%s", body)
+	}
+}
+
+func TestCreateRoleSourceLegalHold_RejectsUnknownFieldsBeforeControlPlane(t *testing.T) {
+	fake := &fakeRoleSourceControlPlane{}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+		"request_key": "hold-request-1", "scope": "source", "reason_code": "regulatory", "case_number": "secret-case",
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+
+	h.CreateRoleSourceLegalHold(w, req)
+
+	if w.Code != http.StatusBadRequest || fake.calls != 0 {
+		t.Fatalf("unknown legal hold field status=%d calls=%d body=%s", w.Code, fake.calls, w.Body.String())
+	}
+}
+
+func TestReleaseAndListRoleSourceLegalHolds_ReturnSafeState(t *testing.T) {
+	released := roleSourceTestLegalHold(false)
+	fake := &fakeRoleSourceControlPlane{releaseLegalHoldRow: released, legalHoldRows: []rolesource.LegalHold{released}}
+	h := roleSourceTestHandler(t, true, fake)
+	w := httptest.NewRecorder()
+	req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+		"request_key": "release-request-1", "reason_code": "resolved", "reference_digest": released.ReleaseReferenceDigest,
+	}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "holdId", roleSourceTestHoldID)
+
+	h.ReleaseRoleSourceLegalHold(w, req)
+	if w.Code != http.StatusOK || fake.releaseLegalHoldInput == nil || fake.releaseLegalHoldInput.HoldID != roleSourceTestHoldID {
+		t.Fatalf("release hold status=%d input=%+v body=%s", w.Code, fake.releaseLegalHoldInput, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "release-request-1") || !strings.Contains(w.Body.String(), `"status":"released"`) {
+		t.Fatalf("release response=%s", w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored?limit=100", nil),
+		"id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
+	h.ListRoleSourceLegalHolds(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"legal_holds"`) || !strings.Contains(w.Body.String(), `"status":"released"`) {
+		t.Fatalf("list holds status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRoleSourceLegalHoldMutation_MapsStateConflicts(t *testing.T) {
+	for name, controlErr := range map[string]error{
+		"idempotency": rolesource.ErrIdempotencyConflict,
+		"released":    rolesource.ErrLegalHoldReleased,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeRoleSourceControlPlane{releaseLegalHoldErr: controlErr}
+			h := roleSourceTestHandler(t, true, fake)
+			w := httptest.NewRecorder()
+			req := withURLParams(newRequestAs(testUserID, http.MethodPost, "/ignored", map[string]any{
+				"request_key": "release-request-1", "reason_code": "resolved",
+			}), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID, "holdId", roleSourceTestHoldID)
+			h.ReleaseRoleSourceLegalHold(w, req)
+			if w.Code != http.StatusConflict || strings.Contains(w.Body.String(), roleSourceTestHoldID) {
+				t.Fatalf("hold conflict status=%d body=%s", w.Code, w.Body.String())
 			}
 		})
 	}
@@ -1049,5 +1182,118 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 	}
 	if deleteIntentCount != 1 {
 		t.Fatalf("workspace delete artifact intent count = %d, want 1", deleteIntentCount)
+	}
+}
+
+func TestDeleteWorkspace_ActiveRoleSourceLegalHoldIsHardFence(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	var workspaceID, runtimeID, sourceID, holdID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description)
+		VALUES ('Legal Hold Delete Fence', 'legal-hold-delete-' || gen_random_uuid()::text, '')
+		RETURNING id
+	`).Scan(&workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `
+			INSERT INTO role_source_legal_hold_release (
+				hold_id, workspace_id, source_id, request_key_digest, reason_code, released_by
+			)
+			SELECT id, workspace_id, source_id, 'sha256:' || repeat('0', 64), 'entered_in_error', $2
+			FROM role_source_legal_hold WHERE workspace_id = $1
+			ON CONFLICT (hold_id) DO NOTHING
+		`, workspaceID, testUserID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM role_source_legal_hold WHERE workspace_id = $1", workspaceID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM role_source_legal_hold_release WHERE workspace_id = $1", workspaceID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM role_source WHERE workspace_id = $1", workspaceID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM agent_runtime WHERE workspace_id = $1", workspaceID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM member WHERE workspace_id = $1", workspaceID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM workspace WHERE id = $1", workspaceID)
+	})
+	if _, err := testPool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, workspaceID, testUserID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider, status, device_info, metadata, owner_id)
+		VALUES ($1, 'legal-hold-runtime', 'cloud', 'handler_test_runtime', 'online', 'fixture', '{}'::jsonb, $2)
+		RETURNING id
+	`, workspaceID, testUserID).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO role_source (
+			id, workspace_id, runtime_id, name, kind, adapter_version, daemon_config_id,
+			config_redacted, policy, created_by, updated_by
+		) VALUES (
+			gen_random_uuid(), $1, $2, 'legal hold fixture', 'agentwaker_directory', '0.1.0', 'fixture',
+			'{"configured":true}'::jsonb, '{}'::jsonb, $3, $3
+		) RETURNING id
+	`, workspaceID, runtimeID, testUserID).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO role_source_legal_hold (
+			id, workspace_id, source_id, request_key_digest, scope, reason_code, reference_digest, created_by
+		) VALUES (
+			gen_random_uuid(), $1, $2, $3, 'source', 'regulatory', $4, $5
+		) RETURNING id
+	`, workspaceID, sourceID, "sha256:"+strings.Repeat("c", 64), "sha256:"+strings.Repeat("d", 64), testUserID).Scan(&holdID); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteWorkspace := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := withURLParam(newRequestAs(testUserID, http.MethodDelete, "/api/workspaces/"+workspaceID, nil), "id", workspaceID)
+		testHandler.DeleteWorkspace(recorder, request)
+		return recorder
+	}
+	blocked := deleteWorkspace()
+	if blocked.Code != http.StatusConflict || !strings.Contains(blocked.Body.String(), "active legal holds") {
+		t.Fatalf("held workspace delete status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+	for table, idColumn := range map[string]string{"workspace": "id", "role_source": "id", "role_source_legal_hold": "id"} {
+		id := workspaceID
+		if table == "role_source" {
+			id = sourceID
+		} else if table == "role_source_legal_hold" {
+			id = holdID
+		}
+		var count int
+		if err := testPool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE "+idColumn+" = $1", id).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("%s after blocked delete count=%d err=%v", table, count, err)
+		}
+	}
+	if _, err := testPool.Exec(ctx, "DELETE FROM role_source_legal_hold WHERE id = $1", holdID); err == nil {
+		t.Fatal("database allowed direct deletion of an active legal hold")
+	}
+	var holdCount int
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM role_source_legal_hold WHERE id = $1", holdID).Scan(&holdCount); err != nil || holdCount != 1 {
+		t.Fatalf("active hold after direct delete attempt count=%d err=%v", holdCount, err)
+	}
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO role_source_legal_hold_release (
+			hold_id, workspace_id, source_id, request_key_digest, reason_code, released_by
+		) VALUES ($1, $2, $3, $4, 'court_order', $5)
+	`, holdID, workspaceID, sourceID, "sha256:"+strings.Repeat("e", 64), testUserID); err != nil {
+		t.Fatal(err)
+	}
+	released := deleteWorkspace()
+	if released.Code != http.StatusNoContent {
+		t.Fatalf("released workspace delete status=%d body=%s", released.Code, released.Body.String())
+	}
+	for _, table := range []string{"workspace", "role_source", "role_source_legal_hold", "role_source_legal_hold_release"} {
+		var count int
+		column := "workspace_id"
+		if table == "workspace" {
+			column = "id"
+		}
+		if err := testPool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE "+column+" = $1", workspaceID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s after released delete count=%d err=%v", table, count, err)
+		}
 	}
 }

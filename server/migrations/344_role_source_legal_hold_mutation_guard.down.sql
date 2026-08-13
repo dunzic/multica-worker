@@ -1,0 +1,4 @@
+DROP TRIGGER IF EXISTS trg_guard_role_source_legal_hold_release_update ON role_source_legal_hold_release;
+DROP FUNCTION IF EXISTS guard_role_source_legal_hold_release_update();
+DROP TRIGGER IF EXISTS trg_guard_role_source_legal_hold_mutation ON role_source_legal_hold;
+DROP FUNCTION IF EXISTS guard_role_source_legal_hold_mutation();

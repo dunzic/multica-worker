@@ -59,6 +59,50 @@ export interface UpdateRoleSourceLifecycleRequest {
   daemon_config_id?: string;
 }
 
+export type RoleSourceLegalHoldScope = "source" | "snapshot";
+export type RoleSourceLegalHoldReason =
+  | "investigation"
+  | "litigation"
+  | "regulatory"
+  | "customer_request"
+  | "security_incident";
+export type RoleSourceLegalHoldReleaseReason =
+  | "resolved"
+  | "court_order"
+  | "entered_in_error"
+  | "authorization_expired";
+
+export interface RoleSourceLegalHold {
+  id: string;
+  workspace_id: string;
+  source_id: string;
+  scope: RoleSourceLegalHoldScope;
+  snapshot_digest?: string;
+  reason_code: RoleSourceLegalHoldReason;
+  reference_digest?: string;
+  created_by: string;
+  created_at: string;
+  status: "active" | "released";
+  release_reason_code?: RoleSourceLegalHoldReleaseReason;
+  release_reference_digest?: string;
+  released_by?: string;
+  released_at?: string;
+}
+
+export interface CreateRoleSourceLegalHoldRequest {
+  request_key: string;
+  scope: RoleSourceLegalHoldScope;
+  snapshot_digest?: string;
+  reason_code: RoleSourceLegalHoldReason;
+  reference_digest?: string;
+}
+
+export interface ReleaseRoleSourceLegalHoldRequest {
+  request_key: string;
+  reason_code: RoleSourceLegalHoldReleaseReason;
+  reference_digest?: string;
+}
+
 export interface RoleSourceRuntimeAttestation {
   status: RoleSourceAttestationStatus;
   contract_version: string;

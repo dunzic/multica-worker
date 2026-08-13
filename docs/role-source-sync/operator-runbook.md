@@ -61,6 +61,33 @@ the source paused; obtain fresh matching loaded evidence and complete a
 read-only scan before **Resume**. A stale version or invalid transition must be
 refreshed and reviewed, never forced.
 
+## Legal-hold operations
+
+Only a workspace owner may create or release a role-source legal hold. Use the
+**Role sources → Legal holds** panel; do not insert, update or delete hold rows
+manually.
+
+1. Keep the case narrative and authority document in the approved external
+   investigation/legal system. Select one closed Multica reason code.
+2. Prefer a source-scoped hold when present and future snapshots must remain
+   protected. Use snapshot scope only for an exact existing SHA-256 snapshot
+   digest.
+3. If correlation is required, submit an approved high-entropy or HMAC-derived
+   SHA-256 commitment. Do not submit a predictable case number, customer name,
+   email address or free text.
+4. Confirm the hold appears as **Active hold** before relying on it. An active
+   hold blocks workspace deletion and future historical pruning; it does not
+   pause scans, apply changes or worker execution.
+5. Release only after the external authority permits it. Select a closed
+   release reason and retain that approval externally. Release is append-only
+   and does not immediately delete evidence.
+
+If workspace deletion returns `409` for active legal holds, stop the deletion
+workflow and contact the case owner. Never delete the hold or release row in
+the database. For an unexpected database mutation-guard error after all holds
+show released, preserve the transaction error code, commit, workspace ID and
+redacted hold IDs; escalate to engineering without disabling triggers.
+
 ## Attestation status recovery
 
 The effective status and last evidence status answer different questions. A

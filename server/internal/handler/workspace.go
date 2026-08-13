@@ -863,6 +863,20 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Legal hold is a hard compliance fence, not another best-effort child
+	// cleanup. Check it after the workspace lock so a concurrent hold creation
+	// either commits first and blocks this deletion, or waits and then finds the
+	// workspace gone. No teardown mutation has run at this point.
+	activeLegalHolds, err := qtx.CountActiveRoleSourceLegalHoldsInWorkspace(r.Context(), requester.WorkspaceID)
+	if err != nil {
+		failWorkspaceDelete(w, r, workspaceID, "check legal holds", err)
+		return
+	}
+	if activeLegalHolds > 0 {
+		writeError(w, http.StatusConflict, "workspace deletion is blocked by active legal holds")
+		return
+	}
+
 	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock chat sessions", err)
 		return

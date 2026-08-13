@@ -13,12 +13,25 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "apply-failures", sourceId] as const,
   runtimeAttestations: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "runtime-attestations", sourceId] as const,
+  legalHolds: (workspaceId: string, sourceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "legal-holds", sourceId] as const,
 };
 
 export function roleSourceListOptions(workspaceId: string) {
   return queryOptions({
     queryKey: roleSourceKeys.list(workspaceId),
     queryFn: () => api.listRoleSources(workspaceId),
+  });
+}
+
+export function roleSourceLegalHoldListOptions(
+  workspaceId: string,
+  sourceId: string,
+) {
+  return queryOptions({
+    queryKey: roleSourceKeys.legalHolds(workspaceId, sourceId),
+    queryFn: () => api.listRoleSourceLegalHolds(workspaceId, sourceId),
+    enabled: Boolean(sourceId),
   });
 }
 

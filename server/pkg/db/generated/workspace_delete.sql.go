@@ -473,6 +473,15 @@ deleted_artifacts AS (
 deleted_snapshot_artifacts AS (
     DELETE FROM role_source_snapshot_artifact WHERE role_source_snapshot_artifact.workspace_id = $1
 ),
+deleted_legal_holds AS (
+    DELETE FROM role_source_legal_hold WHERE role_source_legal_hold.workspace_id = $1
+    RETURNING id
+),
+deleted_legal_hold_releases AS (
+    DELETE FROM role_source_legal_hold_release
+    WHERE role_source_legal_hold_release.workspace_id = $1
+      AND role_source_legal_hold_release.hold_id IN (SELECT id FROM deleted_legal_holds)
+),
 deleted_snapshots AS (
     DELETE FROM role_source_snapshot WHERE role_source_snapshot.workspace_id = $1
 ),

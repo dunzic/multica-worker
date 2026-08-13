@@ -278,6 +278,104 @@ func TestRoleSourceLifecyclePauseResumeDetachAndRebind(t *testing.T) {
 	}
 }
 
+func TestRoleSourceLegalHoldCreateReleaseAndAudit(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Role Source Legal Hold")
+	source, err := testHandler.RoleSources.RegisterSource(ctx, rolesource.RegisterSourceInput{
+		WorkspaceID: testWorkspaceID, RuntimeID: runtimeID, ActorUserID: testUserID,
+		Name: "Legal Hold " + runtimeID, Kind: "agentwaker_directory", AdapterVersion: "0.1.0",
+		DaemonConfigID: "production", ConfigSummary: rolesource.ConfigSummary{Configured: true},
+	})
+	if err != nil {
+		t.Fatalf("register legal-hold source: %v", err)
+	}
+	sourceID := util.UUIDToString(source.ID)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = testPool.Exec(cleanupCtx, `
+			INSERT INTO role_source_legal_hold_release (
+				hold_id, workspace_id, source_id, request_key_digest, reason_code, released_by
+			)
+			SELECT id, workspace_id, source_id, 'sha256:' || repeat('0', 64), 'entered_in_error', $2
+			FROM role_source_legal_hold WHERE source_id = $1
+			ON CONFLICT (hold_id) DO NOTHING
+		`, source.ID, util.MustParseUUID(testUserID))
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source_legal_hold WHERE source_id = $1`, source.ID)
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source_legal_hold_release WHERE source_id = $1`, source.ID)
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source_audit_event WHERE source_id = $1`, source.ID)
+		_, _ = testPool.Exec(cleanupCtx, `DELETE FROM role_source WHERE id = $1`, source.ID)
+	})
+
+	createInput := rolesource.CreateLegalHoldInput{
+		WorkspaceID: testWorkspaceID, SourceID: sourceID, ActorUserID: testUserID,
+		RequestKey: "legal-hold-live-create", Scope: rolesource.LegalHoldScopeSource,
+		ReasonCode: rolesource.LegalHoldReasonRegulatory, ReferenceDigest: "sha256:" + strings.Repeat("e", 64),
+	}
+	created, err := testHandler.RoleSources.CreateLegalHold(ctx, createInput)
+	if err != nil || !created.Active() {
+		t.Fatalf("create legal hold: hold=%+v err=%v", created, err)
+	}
+	retried, err := testHandler.RoleSources.CreateLegalHold(ctx, createInput)
+	if err != nil || retried.ID != created.ID {
+		t.Fatalf("retry legal hold: hold=%+v err=%v", retried, err)
+	}
+	conflicting := createInput
+	conflicting.ReasonCode = rolesource.LegalHoldReasonLitigation
+	if _, err := testHandler.RoleSources.CreateLegalHold(ctx, conflicting); !errors.Is(err, rolesource.ErrIdempotencyConflict) {
+		t.Fatalf("conflicting legal hold retry error=%v", err)
+	}
+
+	listed, err := testHandler.RoleSources.ListLegalHolds(ctx, testWorkspaceID, sourceID, 100)
+	if err != nil || len(listed) != 1 || listed[0].ID != created.ID || !listed[0].Active() {
+		t.Fatalf("list active legal hold: rows=%+v err=%v", listed, err)
+	}
+	releaseInput := rolesource.ReleaseLegalHoldInput{
+		WorkspaceID: testWorkspaceID, SourceID: sourceID, HoldID: created.ID, ActorUserID: testUserID,
+		RequestKey: "legal-hold-live-release", ReasonCode: rolesource.LegalHoldReleaseCourtOrder,
+		ReferenceDigest: "sha256:" + strings.Repeat("f", 64),
+	}
+	released, err := testHandler.RoleSources.ReleaseLegalHold(ctx, releaseInput)
+	if err != nil || released.Active() || released.ReleaseReasonCode != rolesource.LegalHoldReleaseCourtOrder {
+		t.Fatalf("release legal hold: hold=%+v err=%v", released, err)
+	}
+	retriedRelease, err := testHandler.RoleSources.ReleaseLegalHold(ctx, releaseInput)
+	if err != nil || retriedRelease.ReleasedAt != released.ReleasedAt {
+		t.Fatalf("retry legal hold release: hold=%+v err=%v", retriedRelease, err)
+	}
+	retriedCreateAfterRelease, err := testHandler.RoleSources.CreateLegalHold(ctx, createInput)
+	if err != nil || retriedCreateAfterRelease.Active() || retriedCreateAfterRelease.ReleasedAt != released.ReleasedAt {
+		t.Fatalf("retry legal hold creation after release: hold=%+v err=%v", retriedCreateAfterRelease, err)
+	}
+	conflictingRelease := releaseInput
+	conflictingRelease.RequestKey = "another-release"
+	if _, err := testHandler.RoleSources.ReleaseLegalHold(ctx, conflictingRelease); !errors.Is(err, rolesource.ErrLegalHoldReleased) {
+		t.Fatalf("conflicting legal hold release error=%v", err)
+	}
+
+	var createEvents, releaseEvents int
+	if err := testPool.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE event_type = 'legal_hold_created'),
+			count(*) FILTER (WHERE event_type = 'legal_hold_released')
+		FROM role_source_audit_event WHERE source_id = $1
+	`, source.ID).Scan(&createEvents, &releaseEvents); err != nil {
+		t.Fatal(err)
+	}
+	if createEvents != 1 || releaseEvents != 1 {
+		t.Fatalf("legal-hold audit counts=create:%d release:%d, want 1/1", createEvents, releaseEvents)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE role_source_legal_hold SET reason_code = 'litigation' WHERE id = $1`, util.MustParseUUID(created.ID)); err == nil {
+		t.Fatal("database allowed legal hold authority to be rewritten")
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE role_source_legal_hold_release SET reason_code = 'resolved' WHERE hold_id = $1`, util.MustParseUUID(created.ID)); err == nil {
+		t.Fatal("database allowed legal hold release authority to be rewritten")
+	}
+}
+
 func liveRoleSourceAttestationRequest(t *testing.T, runtimeID, revisionByte, adapterVersion string) protocol.DaemonHeartbeatRequestPayload {
 	t.Helper()
 	configDigest, err := protocol.RoleSourceConfigIDDigest(runtimeID, "production")
