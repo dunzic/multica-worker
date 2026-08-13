@@ -39,9 +39,11 @@ real cluster exercise.
   An administrator cannot skip pause before detach.
 - Confirmation copy explains that pause cancels scans and destroys unconsumed
   secret transfers while preserving materialized workers and history.
-- Rebind requires the destination runtime ID and daemon-local config handle,
-  then visibly remains paused. Resume is a separate act and requires new loaded
-  evidence for the destination binding.
+- Rebind offers the registered runtimes returned for the current workspace,
+  using their shared alias/provider label and showing online/offline status;
+  the operator still supplies the daemon-local config handle. The server remains
+  authoritative for workspace ownership, and the source visibly remains paused
+  until a separate evidence-gated resume.
 - Members retain the read-only audit view; only workspace owners/admins see
   lifecycle controls, matching server authorization.
 - The same settings card now renders the newest 100 lifecycle events with the
@@ -51,9 +53,10 @@ real cluster exercise.
 - Unknown future lifecycle event types use a neutral fallback label instead of
   inventing semantics or breaking an older installed client.
 
-Open objection: runtime selection is an exact-ID entry rather than a guided
-eligible-runtime picker. This is a usability gap, not a reason to weaken the
-server transition contract.
+Open objection: the generic runtime list does not prove that the destination
+daemon has already loaded the entered config handle. Rebind deliberately permits
+that maintenance sequence while paused; resume remains the fail-closed proof
+gate, so the picker must not label a runtime as ready before attestation exists.
 
 ## Test expert
 

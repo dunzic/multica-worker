@@ -6,6 +6,7 @@ import { renderWithI18n } from "../../test/i18n";
 
 const queryFixtures = vi.hoisted(() => ({
   sources: [] as Array<Record<string, unknown>>,
+  runtimes: [] as Array<Record<string, unknown>>,
   plans: [] as Array<Record<string, unknown>>,
   impact: undefined as Record<string, unknown> | undefined,
   failures: [] as Array<Record<string, unknown>>,
@@ -79,7 +80,9 @@ vi.mock("@tanstack/react-query", async () => {
       mutateAsync: options.mutationFn,
     }),
     useQuery: (options: { queryKey: readonly unknown[] }) => ({
-      data: options.queryKey.includes("latest-scan")
+      data: options.queryKey.includes("runtimes")
+        ? queryFixtures.runtimes
+        : options.queryKey.includes("latest-scan")
         ? queryFixtures.latestScan
         : options.queryKey.includes("lifecycle-events")
           ? queryFixtures.lifecycleEvents
@@ -144,6 +147,26 @@ beforeEach(() => {
         observed_at: "2026-08-13T00:05:00Z",
         changed_at: "2026-08-13T00:05:00Z",
       },
+    },
+  ];
+  queryFixtures.runtimes = [
+    {
+      id: "00000000-0000-4000-8000-000000000011",
+      workspace_id: "workspace-1",
+      daemon_id: "daemon-1",
+      name: "Codex (build-host)",
+      custom_name: "Build runtime",
+      runtime_mode: "local",
+      provider: "codex",
+      launch_header: "codex",
+      status: "online",
+      device_info: "macOS",
+      metadata: {},
+      owner_id: "user-1",
+      visibility: "private",
+      last_seen_at: "2026-08-13T05:00:00Z",
+      created_at: "2026-08-13T00:00:00Z",
+      updated_at: "2026-08-13T05:00:00Z",
     },
   ];
   queryFixtures.latestScan = {
@@ -759,6 +782,31 @@ describe("RoleSourcesTab", () => {
 
     expect(screen.getByRole("button", { name: "Rebind" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
+  });
+
+  it("guides rebind through registered workspace runtimes instead of a raw UUID field", async () => {
+    queryFixtures.sources[0] = { ...queryFixtures.sources[0], state: "detached" };
+    apiMocks.updateRoleSourceLifecycle.mockResolvedValue({ ...queryFixtures.sources[0], state: "paused" });
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    await user.click(screen.getByRole("button", { name: "Rebind" }));
+    expect(screen.queryByRole("textbox", { name: "Destination runtime ID" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Destination runtime ID" }));
+    await user.click(await screen.findByRole("option", { name: "Build runtime (Codex) · online" }));
+    await user.type(screen.getByRole("textbox", { name: "Daemon config handle" }), "agentwaker-production");
+    await user.click(screen.getByRole("button", { name: "Rebind" }));
+
+    expect(apiMocks.updateRoleSourceLifecycle).toHaveBeenCalledWith(
+      "workspace-1",
+      "source-1",
+      {
+        action: "rebind",
+        expected_version: 3,
+        runtime_id: "00000000-0000-4000-8000-000000000011",
+        daemon_config_id: "agentwaker-production",
+      },
+    );
   });
 
   it("shows owner-only legal holds as retention controls, not lifecycle controls", () => {

@@ -67,6 +67,7 @@ import { api, errorCode } from "@multica/core/api";
 import { useFlag } from "@multica/core/feature-flags";
 import { useCurrentMember } from "@multica/core/permissions";
 import { useCurrentWorkspace } from "@multica/core/paths";
+import { runtimeDisplayLabel, runtimeListOptions } from "@multica/core/runtimes";
 import { useT } from "../../i18n";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
 
@@ -202,6 +203,10 @@ export function RoleSourcesTab() {
     ...roleSourceListOptions(workspaceId),
     enabled: Boolean(workspaceId),
   });
+  const runtimes = useQuery({
+    ...runtimeListOptions(workspaceId),
+    enabled: Boolean(workspaceId && canManage),
+  });
   const [selectedId, setSelectedId] = React.useState("");
   const [pendingAction, setPendingAction] = React.useState<Exclude<RoleSourceLifecycleAction, "rebind"> | null>(null);
   const [rebindOpen, setRebindOpen] = React.useState(false);
@@ -250,6 +255,18 @@ export function RoleSourcesTab() {
     enabled: Boolean(workspaceId && selectedId),
   });
   const selected = sources.data?.find((source) => source.id === selectedId);
+  const rebindRuntimeOptions = React.useMemo(
+    () => [...(runtimes.data ?? [])]
+      .sort((left, right) => {
+        if (left.status !== right.status) return left.status === "online" ? -1 : 1;
+        return runtimeDisplayLabel(left).localeCompare(runtimeDisplayLabel(right));
+      })
+      .map((runtime) => ({
+        value: runtime.id,
+        label: `${runtimeDisplayLabel(runtime)} · ${runtime.status}`,
+      })),
+    [runtimes.data],
+  );
   const latestScan = useQuery({
     ...roleSourceLatestScanOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId),
@@ -1658,7 +1675,31 @@ export function RoleSourcesTab() {
             <p className="text-caption text-muted-foreground">{t(($) => $.role_sources.rebind_description)}</p>
             <div className="space-y-2">
               <Label htmlFor="role-source-runtime-id">{t(($) => $.role_sources.rebind_runtime_id)}</Label>
-              <Input id="role-source-runtime-id" value={rebindRuntimeId} onChange={(event) => setRebindRuntimeId(event.target.value)} autoComplete="off" />
+              {runtimes.isLoading ? (
+                <div className="flex min-h-9 items-center gap-2 text-caption text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t(($) => $.role_sources.rebind_runtimes_loading)}
+                </div>
+              ) : runtimes.isError ? (
+                <div className="text-caption text-destructive">{t(($) => $.role_sources.rebind_runtimes_failed)}</div>
+              ) : rebindRuntimeOptions.length ? (
+                <Select
+                  items={rebindRuntimeOptions}
+                  value={rebindRuntimeId || null}
+                  onValueChange={(value) => setRebindRuntimeId(value ?? "")}
+                >
+                  <SelectTrigger id="role-source-runtime-id" className="w-full">
+                    <SelectValue placeholder={t(($) => $.role_sources.rebind_runtime_placeholder)} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {rebindRuntimeOptions.map((runtime) => (
+                      <SelectItem key={runtime.value} value={runtime.value}>{runtime.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="text-caption text-muted-foreground">{t(($) => $.role_sources.rebind_runtimes_empty)}</div>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="role-source-config-id">{t(($) => $.role_sources.rebind_config_id)}</Label>
@@ -1670,7 +1711,7 @@ export function RoleSourcesTab() {
               {t(($) => $.role_sources.cancel)}
             </Button>
             <Button
-              disabled={savingLifecycle || !rebindRuntimeId.trim() || !rebindConfigId.trim()}
+              disabled={savingLifecycle || runtimes.isLoading || runtimes.isError || !rebindRuntimeId.trim() || !rebindConfigId.trim()}
               onClick={() => void updateLifecycle("rebind", { runtime_id: rebindRuntimeId.trim(), daemon_config_id: rebindConfigId.trim() })}
             >
               {savingLifecycle ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
