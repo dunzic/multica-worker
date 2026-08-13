@@ -712,6 +712,25 @@ describe("RoleSourcesTab", () => {
     expect(screen.queryByRole("button", { name: "Run read-only scan" })).not.toBeInTheDocument();
   });
 
+  it("filters scan history and maps stable failure families to safe recovery guidance", async () => {
+    const user = userEvent.setup();
+    renderWithI18n(<RoleSourcesTab />);
+
+    expect(screen.getByText(/Verify the publisher identity, active signing key and revision policy/)).toBeInTheDocument();
+    const statusFilter = screen.getByRole("combobox", { name: "Status" });
+    await user.click(statusFilter);
+    await user.click(await screen.findByRole("option", { name: "Succeeded" }));
+    expect(screen.queryByText("remote_trust_invalid")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/sha256:dddddd/).length).toBeGreaterThan(0);
+
+    await user.click(statusFilter);
+    await user.click(await screen.findByRole("option", { name: "All statuses" }));
+    await user.type(screen.getByRole("textbox", { name: "Error code" }), "trust");
+    expect(screen.getByText("remote_trust_invalid")).toBeInTheDocument();
+    expect(screen.getAllByText(/sha256:dddddd/)).toHaveLength(1);
+    expect(screen.getByText(/Verify the publisher identity, active signing key and revision policy/)).toBeInTheDocument();
+  });
+
   it("disables scan requests while a scan is active", () => {
     queryFixtures.latestScan = { ...queryFixtures.latestScan, status: "claimed", completed_at: null };
     renderWithI18n(<RoleSourcesTab />);

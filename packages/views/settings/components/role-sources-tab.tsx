@@ -145,6 +145,31 @@ function lifecycleEventTranslationKey(eventType: string) {
   }
 }
 
+function scanRecoveryTranslationKey(code: string) {
+  switch (code) {
+    case "remote_unavailable":
+    case "artifact_preflight_failed":
+    case "artifact_upload_failed":
+    case "scan_timeout":
+      return "scan_recovery_retry" as const;
+    case "remote_trust_invalid":
+      return "scan_recovery_trust" as const;
+    case "config_not_found":
+    case "adapter_not_supported":
+    case "adapter_version_mismatch":
+    case "scanner_unavailable":
+      return "scan_recovery_runtime" as const;
+    case "remote_content_invalid":
+    case "source_invalid":
+    case "artifact_manifest_invalid":
+    case "artifact_preflight_invalid":
+    case "source_changed":
+      return "scan_recovery_source" as const;
+    default:
+      return "scan_recovery_unknown" as const;
+  }
+}
+
 function scanRequestErrorTranslationKey(error: unknown) {
   switch (errorCode(error)) {
     case "role_source_scan_already_active":
@@ -213,6 +238,8 @@ export function RoleSourcesTab() {
   const [rebindRuntimeId, setRebindRuntimeId] = React.useState("");
   const [rebindConfigId, setRebindConfigId] = React.useState("");
   const [savingLifecycle, setSavingLifecycle] = React.useState(false);
+  const [scanStatusFilter, setScanStatusFilter] = React.useState("all");
+  const [scanCodeFilter, setScanCodeFilter] = React.useState("");
   const [createHoldOpen, setCreateHoldOpen] = React.useState(false);
   const [createHoldRequestKey, setCreateHoldRequestKey] = React.useState("");
   const [holdScope, setHoldScope] = React.useState<RoleSourceLegalHoldScope>("source");
@@ -279,6 +306,13 @@ export function RoleSourcesTab() {
     ...roleSourceLifecycleEventListOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId),
   });
+  const filteredScanHistory = React.useMemo(() => {
+    const code = scanCodeFilter.trim().toLowerCase();
+    return (scanHistory.data ?? []).filter((scan) =>
+      (scanStatusFilter === "all" || scan.status === scanStatusFilter) &&
+      (!code || scan.error_code?.toLowerCase().includes(code)),
+    );
+  }, [scanCodeFilter, scanHistory.data, scanStatusFilter]);
   const latestScanData = latestScan.data;
   const requestScan = useRequestRoleSourceScan(workspaceId, selectedId);
   const latest = plans.data?.[0];
@@ -1433,6 +1467,43 @@ export function RoleSourcesTab() {
             description={t(($) => $.role_sources.scan_history_description)}
           >
             <SettingsCard>
+              <div className="grid gap-3 border-b border-surface-border p-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="role-source-scan-status-filter">{t(($) => $.role_sources.scan_history_status_filter)}</Label>
+                  <Select
+                    items={[
+                      { value: "all", label: t(($) => $.role_sources.scan_history_status_all) },
+                      { value: "succeeded", label: t(($) => $.role_sources.scan_status_succeeded) },
+                      { value: "failed", label: t(($) => $.role_sources.scan_status_failed) },
+                      { value: "cancelled", label: t(($) => $.role_sources.scan_status_cancelled) },
+                      { value: "queued", label: t(($) => $.role_sources.scan_status_queued) },
+                      { value: "claimed", label: t(($) => $.role_sources.scan_status_claimed) },
+                    ]}
+                    value={scanStatusFilter}
+                    onValueChange={(value) => setScanStatusFilter(value ?? "all")}
+                  >
+                    <SelectTrigger id="role-source-scan-status-filter" className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">{t(($) => $.role_sources.scan_history_status_all)}</SelectItem>
+                      <SelectItem value="succeeded">{t(($) => $.role_sources.scan_status_succeeded)}</SelectItem>
+                      <SelectItem value="failed">{t(($) => $.role_sources.scan_status_failed)}</SelectItem>
+                      <SelectItem value="cancelled">{t(($) => $.role_sources.scan_status_cancelled)}</SelectItem>
+                      <SelectItem value="queued">{t(($) => $.role_sources.scan_status_queued)}</SelectItem>
+                      <SelectItem value="claimed">{t(($) => $.role_sources.scan_status_claimed)}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="role-source-scan-code-filter">{t(($) => $.role_sources.scan_history_code_filter)}</Label>
+                  <Input
+                    id="role-source-scan-code-filter"
+                    value={scanCodeFilter}
+                    onChange={(event) => setScanCodeFilter(event.target.value)}
+                    placeholder={t(($) => $.role_sources.scan_history_code_placeholder)}
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
               {scanHistory.isLoading ? (
                 <div className="flex min-h-20 items-center justify-center gap-2 text-caption text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -1442,9 +1513,11 @@ export function RoleSourcesTab() {
                 <div className="p-4 text-caption text-destructive">{t(($) => $.role_sources.scan_history_load_failed)}</div>
               ) : !scanHistory.data?.length ? (
                 <div className="p-4 text-caption text-muted-foreground">{t(($) => $.role_sources.scan_history_empty)}</div>
+              ) : !filteredScanHistory.length ? (
+                <div className="p-4 text-caption text-muted-foreground">{t(($) => $.role_sources.scan_history_no_matches)}</div>
               ) : (
                 <div className="max-h-80 divide-y divide-surface-border overflow-y-auto">
-                  {scanHistory.data.map((scan) => (
+                  {filteredScanHistory.map((scan) => (
                     <div key={scan.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 text-body font-medium">
@@ -1454,6 +1527,11 @@ export function RoleSourcesTab() {
                         <div className="mt-1 font-mono text-caption text-muted-foreground">
                           {shortDigest(scan.snapshot_digest)} · {scan.completed_at ?? scan.requested_at}
                         </div>
+                        {scan.error_code ? (
+                          <div className="mt-1 text-caption text-muted-foreground">
+                            {t(($) => $.role_sources[scanRecoveryTranslationKey(scan.error_code ?? "")])}
+                          </div>
+                        ) : null}
                       </div>
                       <Badge variant={scan.status === "failed" ? "destructive" : scan.status === "succeeded" ? "secondary" : "outline"}>
                         {scan.expected_adapter_version}

@@ -18,14 +18,20 @@ same independent scan feature gate.
 Operators can now distinguish repeated trust/content/runtime failures from a
 single transient event using status, stable error code, snapshot digest,
 adapter version and completion time. The latest-scan control remains concise;
-history is a separate bounded timeline. Search, incident correlation and
-guided remediation by error family remain future work.
+history is a separate bounded timeline. The timeline now filters the returned
+bounded set by status and stable-code substring, and maps known trust, runtime,
+source/content and transient families to conservative recovery guidance. Trust
+failures explicitly forbid blind retry; no guidance mutates state automatically.
+
+Open objection: this is bounded in-memory triage for the newest 100 events, not
+server-side fleet search or a complete incident-management workflow.
 
 ## Test review — 2/3
 
 Handler tests prove redaction, bounded response shape and safe status presence;
 client schema tests fail closed on malformed rows; the operator component shows
-successful and failed historical scans. Focused Go, Core and Views tests pass.
+successful and failed historical scans, filter behavior and trust/source
+recovery guidance. Focused Go, Core and Views tests pass.
 Missing: live high-churn history query plan and daemon outage/recovery timeline.
 
 ## CEO review — 2/3
