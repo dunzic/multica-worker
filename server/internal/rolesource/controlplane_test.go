@@ -12,6 +12,48 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+func TestControlPlaneMaterializationConcurrencyIsBounded(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		value   int
+		wantCap int
+		valid   bool
+	}{
+		{name: "default", wantCap: DefaultMaterializationConcurrency, valid: true},
+		{name: "one", value: 1, wantCap: 1, valid: true},
+		{name: "maximum", value: MaxMaterializationConcurrency, wantCap: MaxMaterializationConcurrency, valid: true},
+		{name: "negative", value: -1},
+		{name: "above maximum", value: MaxMaterializationConcurrency + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeMaterializationConcurrency(test.value)
+			if test.valid {
+				if err != nil || got != test.wantCap {
+					t.Fatalf("capacity=%d err=%v, want %d", got, err, test.wantCap)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("invalid concurrency %d was accepted", test.value)
+			}
+		})
+	}
+}
+
+func TestMaterializationAdmissionRejectsWorkBeyondConfiguredCapacity(t *testing.T) {
+	control := &ControlPlane{materializeSlots: make(chan struct{}, 2)}
+	if !control.acquireMaterializeSlot() || !control.acquireMaterializeSlot() {
+		t.Fatal("configured materialization capacity was not admitted")
+	}
+	if control.acquireMaterializeSlot() {
+		t.Fatal("materialization beyond configured capacity was admitted")
+	}
+	control.releaseMaterializeSlot()
+	if !control.acquireMaterializeSlot() {
+		t.Fatal("released materialization capacity was not reusable")
+	}
+}
+
 func TestCanonicalJSONObjectIsStableAndRejectsTrailingValues(t *testing.T) {
 	first, err := canonicalJSONObject(json.RawMessage(`{"z":1,"a":{"b":true}}`), 1024)
 	if err != nil {

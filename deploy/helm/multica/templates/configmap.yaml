@@ -1,3 +1,7 @@
+{{- $roleSourceApplyConcurrency := int .Values.roleSource.applyConcurrency -}}
+{{- if or (lt $roleSourceApplyConcurrency 1) (gt $roleSourceApplyConcurrency 8) -}}
+{{- fail "roleSource.applyConcurrency must be an integer between 1 and 8" -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -30,6 +34,7 @@ data:
   FF_ROLE_SOURCE_SYNC: {{ .Values.roleSource.syncEnabled | quote }}
   FF_ROLE_SOURCE_SCAN: {{ .Values.roleSource.scanEnabled | quote }}
   FF_ROLE_SOURCE_APPLY: {{ .Values.roleSource.applyEnabled | quote }}
+  MULTICA_ROLE_SOURCE_APPLY_CONCURRENCY: {{ $roleSourceApplyConcurrency | quote }}
   MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED: {{ .Values.roleSource.artifactGCEnabled | quote }}
   MULTICA_ROLE_SOURCE_ARTIFACT_INTEGRITY_ENABLED: {{ .Values.roleSource.artifactIntegrityEnabled | quote }}
   MULTICA_ROLE_SOURCE_RETENTION_ENABLED: {{ .Values.roleSource.retentionEnabled | quote }}

@@ -26,6 +26,11 @@ var (
 	ErrScanSourceState   = errors.New("role source state does not accept scans")
 )
 
+const (
+	DefaultMaterializationConcurrency = 2
+	MaxMaterializationConcurrency     = 8
+)
+
 type controlPlaneDB interface {
 	db.DBTX
 	Begin(context.Context) (pgx.Tx, error)
@@ -49,6 +54,10 @@ type ControlPlane struct {
 	now               func() time.Time
 }
 
+type ControlPlaneOptions struct {
+	MaterializationConcurrency int
+}
+
 // ApplyMetrics accepts bounded operational labels only. Implementations must
 // never attach workspace, source, actor, plan, approval or request identifiers
 // to metric series; those belong in the tenant-scoped audit ledger and logs.
@@ -63,12 +72,30 @@ type ArtifactReader interface {
 }
 
 func NewControlPlane(database controlPlaneDB, catalog DescriptorProvider) (*ControlPlane, error) {
+	return NewControlPlaneWithOptions(database, catalog, ControlPlaneOptions{})
+}
+
+func NewControlPlaneWithOptions(database controlPlaneDB, catalog DescriptorProvider, options ControlPlaneOptions) (*ControlPlane, error) {
 	if database == nil || catalog == nil {
 		return nil, errors.New("role source control plane requires database and adapter catalog")
 	}
+	materializationConcurrency, err := normalizeMaterializationConcurrency(options.MaterializationConcurrency)
+	if err != nil {
+		return nil, err
+	}
 	return &ControlPlane{
-		database: database, catalog: catalog, materializeSlots: make(chan struct{}, 8), now: time.Now,
+		database: database, catalog: catalog, materializeSlots: make(chan struct{}, materializationConcurrency), now: time.Now,
 	}, nil
+}
+
+func normalizeMaterializationConcurrency(value int) (int, error) {
+	if value == 0 {
+		return DefaultMaterializationConcurrency, nil
+	}
+	if value < 1 || value > MaxMaterializationConcurrency {
+		return 0, fmt.Errorf("role source materialization concurrency must be between 1 and %d", MaxMaterializationConcurrency)
+	}
+	return value, nil
 }
 
 func (c *ControlPlane) SetArtifactReader(reader ArtifactReader) {

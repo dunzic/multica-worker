@@ -1,6 +1,7 @@
 package rolesource
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -60,11 +61,17 @@ func BenchmarkBuildPlanTenThousandRoles(b *testing.B) {
 }
 
 func productionApplyArtifact(path string) ArtifactRef {
-	digest := sha256.Sum256([]byte(path))
+	body := productionApplyArtifactBody(path)
+	digest := sha256.Sum256(body)
 	return ArtifactRef{
 		Path: path, Digest: "sha256:" + hex.EncodeToString(digest[:]),
-		MediaType: "text/markdown", SizeBytes: productionApplyArtifactBytes,
+		MediaType: "text/markdown", SizeBytes: int64(len(body)),
 	}
+}
+
+func productionApplyArtifactBody(path string) []byte {
+	prefix := []byte("# Production-shaped role-source artifact\n\n" + path + "\n")
+	return bytes.Repeat(prefix, (int(productionApplyArtifactBytes)+len(prefix)-1)/len(prefix))[:productionApplyArtifactBytes]
 }
 
 func productionApplyManifest() Manifest {
@@ -75,7 +82,7 @@ func productionApplyManifest() Manifest {
 		for skillIndex := range skills {
 			skillID := fmt.Sprintf("skill-%02d", skillIndex)
 			skills[skillIndex] = Skill{
-				ID: skillID, Name: fmt.Sprintf("Skill %02d", skillIndex),
+				ID: skillID, Name: fmt.Sprintf("Role %04d Skill %02d", roleIndex, skillIndex),
 				Entrypoint: productionApplyArtifact("roles/" + roleID + "/skills/" + skillID + "/SKILL.md"),
 			}
 		}

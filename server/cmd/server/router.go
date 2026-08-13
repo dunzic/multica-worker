@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -259,7 +261,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	if err != nil {
 		panic("build role source adapter catalog: " + err.Error())
 	}
-	roleSourceControlPlane, err := rolesource.NewControlPlane(pool, roleSourceCatalog)
+	materializationConcurrency, err := roleSourceMaterializationConcurrencyFromEnv()
+	if err != nil {
+		panic("configure role source materialization concurrency: " + err.Error())
+	}
+	roleSourceControlPlane, err := rolesource.NewControlPlaneWithOptions(pool, roleSourceCatalog, rolesource.ControlPlaneOptions{
+		MaterializationConcurrency: materializationConcurrency,
+	})
 	if err != nil {
 		panic("build role source control plane: " + err.Error())
 	}
@@ -1881,6 +1889,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	return r, h
+}
+
+func roleSourceMaterializationConcurrencyFromEnv() (int, error) {
+	raw := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_APPLY_CONCURRENCY"))
+	if raw == "" {
+		return rolesource.DefaultMaterializationConcurrency, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > rolesource.MaxMaterializationConcurrency {
+		return 0, fmt.Errorf("MULTICA_ROLE_SOURCE_APPLY_CONCURRENCY must be an integer between 1 and %d", rolesource.MaxMaterializationConcurrency)
+	}
+	return value, nil
 }
 
 func newRoleSourceAdapterCatalog() (*rolesource.Catalog, error) {

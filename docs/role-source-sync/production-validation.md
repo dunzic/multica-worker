@@ -396,6 +396,26 @@ S3, metrics and failover evidence below.
   and fires `MulticaRoleSourceRuntimeUnavailable` after the configured hold;
   paused/detached sources do not page.
 
+Before a candidate-image Gate E run, execute the repository's default-off
+single-node write baseline against an otherwise empty, fully migrated
+PostgreSQL 17 database:
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_SCALE_TEST=1 \
+DATABASE_URL='postgres://...' \
+go -C server test -count=3 \
+  -run '^TestRoleSourceProductionScaleApplyPostgres$' -v ./internal/rolesource
+```
+
+Every run must persist exactly 1,000 Agents, 10,000 Skills, 10,000 bindings,
+11,000 mappings, one apply, one success audit and one outbox event; a new
+control plane must return the same receipt on retry, and fixture cleanup must
+leave zero workspace/source/user/artifact residue. Preserve every
+`scale_evidence` line, including verified artifact bytes, fixture/apply/retry
+duration, database growth, WAL, current and peak heap, total allocation and
+receipt bytes. This local baseline intentionally does not claim the Gate E
+two-replica, object-storage, contention, failover, CPU or lock-wait SLO.
+
 Required initial SLOs for the engineering cohort:
 
 - steady-state heartbeats carry no attestation payload after acknowledgement;

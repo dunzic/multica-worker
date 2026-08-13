@@ -156,6 +156,10 @@ roleSource:
   syncEnabled: false
   scanEnabled: false
   applyEnabled: false
+  # Per-backend apply admission limit. A 1,000-role/10,000-skill local PG17
+  # run peaked near 276 MiB Go heap, so the 1 GiB backend default admits two
+  # large applies with headroom. Raise only with candidate-image memory proof.
+  applyConcurrency: 2
   # Destructive background workers remain independently default-off even when
   # product flags are enabled. Gate B3/F must pass before changing these.
   artifactGCEnabled: false
