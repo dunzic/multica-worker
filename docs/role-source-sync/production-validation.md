@@ -72,19 +72,25 @@ Pass criteria: no invalid concurrent index, duplicate migration, missing table/i
 ## Gate B — loaded-config attestation transactions
 
 ```bash
-go -C server test -count=1 -run '^TestRoleSourceRuntimeAttestation(PersistsDistinctRestartHistory|CannotReappearAfterRuntimeDelete)$|^TestRoleSourceRegistrationLockSerializesRuntimeDelete$' ./internal/handler
+go -C server test -count=1 -run '^TestRoleSourceRuntimeAttestation(PersistsDistinctRestartHistory|PersistsUnloadedSourcesAsEmptyArray|ShapeConstraintsRejectScalarsCleanly|CannotReappearAfterRuntimeDelete)$|^TestRoleSourceRegistrationLockSerializesRuntimeDelete$' ./internal/handler
 ```
 
 Repeat the transaction races under the Go race detector:
 
 ```bash
-go -C server test -race -count=10 -run '^TestRoleSourceRuntimeAttestation(PersistsDistinctRestartHistory|CannotReappearAfterRuntimeDelete)$|^TestRoleSourceRegistrationLockSerializesRuntimeDelete$' ./internal/handler
+go -C server test -race -count=10 -run '^TestRoleSourceRuntimeAttestation(PersistsDistinctRestartHistory|PersistsUnloadedSourcesAsEmptyArray|ShapeConstraintsRejectScalarsCleanly|CannotReappearAfterRuntimeDelete)$|^TestRoleSourceRegistrationLockSerializesRuntimeDelete$' ./internal/handler
 ```
 
 Pass criteria:
 
 - duplicate restart evidence produces one distinct history row and increments its observation count;
 - changed config evidence produces a new history state and becomes current;
+- a valid unloaded statement is persisted as the JSON array `[]` in current
+  and history evidence, even when its omitted wire field decoded to a nil Go
+  slice;
+- direct scalar writes to either evidence table fail as SQLSTATE `23514`
+  without invoking `jsonb_array_length` on the scalar or producing SQLSTATE
+  `22023`;
 - a heartbeat blocked behind runtime deletion fails after the deletion commits and cannot recreate current or historical orphan rows;
 - role-source registration's shared runtime lock conflicts with deletion's exclusive lock.
 

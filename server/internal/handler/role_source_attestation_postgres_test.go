@@ -93,6 +93,73 @@ func TestRoleSourceRuntimeAttestationPersistsDistinctRestartHistory(t *testing.T
 	}
 }
 
+func TestRoleSourceRuntimeAttestationPersistsUnloadedSourcesAsEmptyArray(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Role Source Unloaded Attestation")
+	cleanupRoleSourceRuntimeAttestations(t, runtimeID)
+	runtime, err := testHandler.Queries.GetAgentRuntime(ctx, parseUUID(runtimeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attestation, err := protocol.NewRoleSourceConfigAttestation(false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.DaemonHeartbeatRequestPayload{
+		RuntimeID: runtimeID, SupportsRoleSourceConfigAttestation: true,
+		RoleSourceConfigAttestation: &attestation,
+	}
+	accepted, err := testHandler.recordRoleSourceRuntimeAttestation(ctx, runtime, request)
+	if err != nil {
+		t.Fatalf("persist unloaded attestation: %v", err)
+	}
+	if accepted != attestation.AttestationID {
+		t.Fatalf("accepted attestation = %q, want %q", accepted, attestation.AttestationID)
+	}
+
+	for _, table := range []string{
+		"role_source_runtime_attestation",
+		"role_source_runtime_attestation_observation",
+	} {
+		var sourceType, sourceBody string
+		query := "SELECT jsonb_typeof(sources), sources::text FROM " + table + " WHERE runtime_id = $1"
+		if err := testPool.QueryRow(ctx, query, runtimeID).Scan(&sourceType, &sourceBody); err != nil {
+			t.Fatalf("read %s unloaded evidence: %v", table, err)
+		}
+		if sourceType != "array" || sourceBody != "[]" {
+			t.Fatalf("%s sources = type %q body %q, want array []", table, sourceType, sourceBody)
+		}
+	}
+}
+
+func TestRoleSourceRuntimeAttestationShapeConstraintsRejectScalarsCleanly(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Role Source Invalid Attestation Shape")
+	cleanupRoleSourceRuntimeAttestations(t, runtimeID)
+
+	for _, table := range []string{
+		"role_source_runtime_attestation",
+		"role_source_runtime_attestation_observation",
+	} {
+		_, err := testPool.Exec(ctx, `
+			INSERT INTO `+table+` (
+				runtime_id, workspace_id, contract_version, loaded,
+				attestation_id, config_revision, sources
+			) VALUES ($1, $2, $3, false, $4, NULL, 'null'::jsonb)
+		`, runtimeID, testWorkspaceID, protocol.RoleSourceConfigAttestationContractV1, "sha256:"+strings.Repeat("d", 64))
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+			t.Fatalf("%s scalar sources error = %v, want SQLSTATE 23514 check violation", table, err)
+		}
+	}
+}
+
 func TestRoleSourceRuntimeAttestationCannotReappearAfterRuntimeDelete(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")

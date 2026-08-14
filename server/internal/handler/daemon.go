@@ -1152,7 +1152,16 @@ func (h *Handler) recordRoleSourceRuntimeAttestation(ctx context.Context, rt db.
 		h.recordRoleSourceRuntimeAttestationMetric("invalid")
 		return "", fmt.Errorf("%w: %v", errInvalidRoleSourceRuntimeAttestation, err)
 	}
-	sources, err := json.Marshal(attestation.Sources)
+	// A valid unloaded attestation has no sources. Its wire representation may
+	// omit the field, which decodes to a nil slice; json.Marshal would encode
+	// that as the JSON scalar null. Persistence deliberately requires an array,
+	// so normalize the empty state at the storage boundary instead of relying on
+	// each daemon implementation to allocate an empty slice.
+	sourcesForStorage := attestation.Sources
+	if len(sourcesForStorage) == 0 {
+		sourcesForStorage = []protocol.RoleSourceLoadedConfig{}
+	}
+	sources, err := json.Marshal(sourcesForStorage)
 	if err != nil {
 		h.recordRoleSourceRuntimeAttestationMetric("persist_failed")
 		return "", fmt.Errorf("encode role source attested configs: %w", err)

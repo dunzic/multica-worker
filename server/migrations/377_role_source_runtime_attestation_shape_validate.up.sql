@@ -1,0 +1,5 @@
+ALTER TABLE role_source_runtime_attestation
+    VALIDATE CONSTRAINT role_source_runtime_attestation_shape_check;
+
+ALTER TABLE role_source_runtime_attestation_observation
+    VALIDATE CONSTRAINT role_source_runtime_attestation_observation_shape_check;

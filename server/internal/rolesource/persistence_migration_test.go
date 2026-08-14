@@ -491,6 +491,54 @@ func TestRoleSourceRuntimeAttestationIsBoundedRedactedAndExplicitlyDeleted(t *te
 	}
 }
 
+func TestRoleSourceRuntimeAttestationShapeMigrationFailsClosedWithoutFunctionErrors(t *testing.T) {
+	guardBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "376_role_source_runtime_attestation_shape_guard.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := strings.ToLower(string(guardBody))
+	for _, required := range []string{
+		"role_source_runtime_attestation_shape_check",
+		"role_source_runtime_attestation_observation_shape_check",
+		"case",
+		"when jsonb_typeof(sources) = 'array'",
+		"else false",
+		"not valid",
+	} {
+		if !strings.Contains(guard, required) {
+			t.Fatalf("runtime attestation shape guard is missing %q", required)
+		}
+	}
+
+	validateBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "377_role_source_runtime_attestation_shape_validate.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validate := strings.ToLower(string(validateBody))
+	for _, constraint := range []string{
+		"role_source_runtime_attestation_shape_check",
+		"role_source_runtime_attestation_observation_shape_check",
+	} {
+		if !strings.Contains(validate, "validate constraint "+constraint) {
+			t.Fatalf("runtime attestation shape validation is missing %q", constraint)
+		}
+	}
+
+	replaceBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "378_role_source_runtime_attestation_shape_replace.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replace := strings.ToLower(string(replaceBody))
+	for _, constraint := range []string{
+		"role_source_runtime_attestation_check",
+		"role_source_runtime_attestation_observation_check",
+	} {
+		if !strings.Contains(replace, "drop constraint "+constraint) {
+			t.Fatalf("runtime attestation unsafe constraint replacement is missing %q", constraint)
+		}
+	}
+}
+
 func TestRoleSourceLegalHoldIsAppendOnlyContentFreeAndFencesWorkspaceDeletion(t *testing.T) {
 	migrationBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "339_role_source_legal_hold.up.sql"))
 	if err != nil {
