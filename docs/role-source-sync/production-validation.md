@@ -375,10 +375,40 @@ Pass criteria for both Agent and Skill:
   errors and string-only lookalikes remain unclassified;
 - three consecutive runs leave zero fixture rows.
 
-This closes single-primary Agent/Skill same-name insertion races. Autopilot
-uses the separate shared advisory-title-lock contract and still requires its
-own live create/rename/apply matrix. Primary failover, full adopted-apply
-rollback and Gate E contention also remain open.
+This closes single-primary Agent/Skill same-name insertion races. Primary
+failover, full adopted-apply rollback and Gate E contention remain open.
+
+## Gate B10 — ordinary Autopilot and managed-title races
+
+Run the six-case matrix against a disposable, fully migrated PostgreSQL 17
+database from independent connection pools:
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_TITLE_RACE_TEST=1 \
+  go -C server test -count=3 -v \
+  -run '^TestRoleSourceAutomationTitleRacesPostgres$' ./internal/rolesource
+```
+
+Pass criteria:
+
+- an uncommitted ordinary create holds the shared title lock; after it commits,
+  the waiting Role Source materializer returns typed `state_conflict` and
+  leaves no managed target or mapping;
+- an uncommitted Role Source materialization plus active mapping holds the same
+  lock; after it commits, ordinary create and ordinary rename both observe the
+  managed claim and return the stable title-conflict decision without writing;
+- an ordinary rename away from the desired title lets the waiting Role Source
+  create and map exactly one managed Autopilot after the rename commits;
+- an ordinary create rollback releases the claim and lets the waiting Role
+  Source transaction complete with no transient-row residue;
+- two transactions requesting two titles in reverse order both complete after
+  a real advisory-lock wait and never deadlock, proving canonical title order;
+- every run finishes with zero fixture users, workspaces, Agents, Autopilots,
+  triggers and mappings.
+
+This gate preserves ordinary duplicate-title behavior. It does not substitute
+for candidate-topology statement-timeout, process-kill, two-replica load or
+primary-failover evidence.
 
 ## Gate C — configured S3-compatible backend
 
