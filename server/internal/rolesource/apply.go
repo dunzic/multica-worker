@@ -900,18 +900,18 @@ func (c *ControlPlane) loadApplySecretTransfers(ctx context.Context, q *db.Queri
 			}
 			return nil, nil, err
 		}
-		claims, err := validatedStoredSecretTransfer(row)
+		claims, claimsAAD, err := validatedStoredSecretTransferWithAAD(row)
 		secretBox, keyAvailable := c.secretBoxFor(row.KeyID)
 		if err != nil || claims.SnapshotDigest != snapshot.SnapshotDigest || !keyAvailable {
 			clearSecretPayloadMap(payloads)
 			return nil, nil, fmt.Errorf("%w: secret transfer key or claims are unavailable", ErrInvalidApplyRequest)
 		}
-		envelope, err := decodeApplySecretEnvelope(row.Envelope)
+		envelope, err := decodeStoredSecretEnvelope(row.Envelope)
 		if err != nil || envelope.Claims != claims {
 			clearSecretPayloadMap(payloads)
 			return nil, nil, fmt.Errorf("%w: stored secret envelope is invalid", ErrInvalidApplyRequest)
 		}
-		privateKey, err := secretBox.OpenWithAAD(row.PrivateKeyCiphertext, row.Claims)
+		privateKey, err := secretBox.OpenWithAAD(row.PrivateKeyCiphertext, claimsAAD)
 		if err != nil {
 			clearSecretPayloadMap(payloads)
 			return nil, nil, fmt.Errorf("open apply secret transfer key: %w", err)
@@ -937,7 +937,7 @@ func (c *ControlPlane) loadApplySecretTransfers(ctx context.Context, q *db.Queri
 	return payloads, transfers, nil
 }
 
-func decodeApplySecretEnvelope(body []byte) (SecretEnvelope, error) {
+func decodeStoredSecretEnvelope(body []byte) (SecretEnvelope, error) {
 	var envelope SecretEnvelope
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
@@ -2873,7 +2873,11 @@ func (s *materializationState) flushMappings(ctx context.Context) error {
 
 func isRoleSourceMappingTargetConflict(err error) bool {
 	var databaseError *pgconn.PgError
-	return errors.As(err, &databaseError) && databaseError.Code == "23505" && databaseError.ConstraintName == "role_source_mapping_target_unique"
+	if !errors.As(err, &databaseError) || databaseError.Code != "23505" {
+		return false
+	}
+	return databaseError.ConstraintName == "role_source_mapping_target_unique" ||
+		databaseError.ConstraintName == "role_source_mapping_materialized_target_unique"
 }
 
 func isRoleSourceMaterializationNameConflict(err error, targetKind string) bool {

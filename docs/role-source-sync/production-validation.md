@@ -410,6 +410,44 @@ This gate preserves ordinary duplicate-title behavior. It does not substitute
 for candidate-topology statement-timeout, process-kill, two-replica load or
 primary-failover evidence.
 
+## Gate B11 — secret/MCP transfer and atomic consumption
+
+Run the real one-time transfer lifecycle against a disposable database migrated
+through 380. The test uses the production AES-256-GCM at-rest box and the real
+X25519/AES-GCM envelope; plaintext markers are unique and searchable.
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_SECRET_TRANSFER_TEST=1 \
+  go -C server test -count=3 -v \
+  -run '^TestRoleSourceSecretTransferLifecyclePostgres$' ./internal/rolesource
+```
+
+Pass criteria:
+
+- an exact request retry returns the same transfer while a different lease
+  token is rejected; only the assigned runtime can claim and submit;
+- PostgreSQL `jsonb` representation changes do not alter canonical claims AAD
+  or envelope digest, and submitted transfer storage contains no plaintext;
+- a fault after the production consume query rolls back transfer consumption,
+  Agent creation, mappings and source snapshot advancement; the same request
+  then succeeds and an exact retry returns the same apply/receipt;
+- only the target Agent receives the declared environment and MCP values;
+  receipt, audit, outbox and transfer control-plane representations contain no
+  plaintext marker;
+- consumed and swept-expired rows have null envelope, null lease and exactly
+  60 zero bytes in `private_key_ciphertext`;
+- role/skill/automation targets remain uniquely source-managed, while their
+  environment/MCP/capability-binding field mappings can share the parent
+  target; migrations 379/380 pass down/up and the final index predicate is
+  exact;
+- three consecutive runs leave zero fixture rows in every touched business and
+  evidence table.
+
+This single-primary local gate does not prove KMS/HSM provisioning, live key
+rotation, two-daemon lease reclaim after process death, database failover,
+10,000-user bursts or exfiltration monitoring. Those remain production NO-GO
+conditions.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.

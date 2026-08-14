@@ -3,7 +3,6 @@ package rolesource
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +20,16 @@ var (
 	ErrInvalidSecretTransfer   = errors.New("invalid role source secret transfer request")
 	ErrSecretStoreUnavailable  = errors.New("role source secret store is unavailable")
 	ErrSecretTransferLeaseLost = errors.New("role source secret transfer lease is stale or no longer owned")
+)
+
+const (
+	// The application and PostgreSQL can be on different hosts. This tolerance
+	// is used only when validating the original 15-minute window against the DB
+	// created_at clock; it never extends the authenticated claims expiry.
+	secretTransferClockSkew = time.Minute
+	// PostgreSQL timestamps have microsecond precision while RFC3339Nano claims
+	// can retain nanoseconds across the JSON round trip.
+	secretTransferTimestampTolerance = time.Microsecond
 )
 
 type RequestSecretTransferInput struct {
@@ -157,7 +166,7 @@ func (c *ControlPlane) RequestSecretTransfer(ctx context.Context, input RequestS
 	if err != nil {
 		return db.RoleSourceSecretTransfer{}, err
 	}
-	now := c.now().UTC()
+	now := c.now().UTC().Truncate(time.Microsecond)
 	claims := SecretEnvelopeClaims{
 		ContractVersion: SecretEnvelopeContractVersion, TransferID: util.UUIDToString(transferID),
 		WorkspaceID: input.WorkspaceID, SourceID: input.SourceID, RoleID: input.RoleID,
@@ -224,11 +233,7 @@ func roleNeedsSecretTransfer(role Role) bool {
 }
 
 func secretTransferIdentityMatches(row db.RoleSourceSecretTransfer, input RequestSecretTransferInput, actorID pgtype.UUID) bool {
-	claims, err := decodeSecretTransferClaims(row.Claims)
-	if err != nil {
-		return false
-	}
-	_, err = canonicalSecretEnvelopeClaims(claims, row.CreatedAt.Time.UTC(), false)
+	claims, err := validatedStoredSecretTransfer(row)
 	if err != nil {
 		return false
 	}
@@ -358,7 +363,7 @@ func (c *ControlPlane) ReportSecretTransfer(ctx context.Context, input ReportSec
 	if row.RuntimeID != runtimeID || source.RuntimeID != runtimeID || row.ClaimedByRuntimeID != runtimeID || row.LeaseToken != leaseToken {
 		return db.RoleSourceSecretTransfer{}, ErrSecretTransferLeaseLost
 	}
-	claims, err := validatedStoredSecretTransfer(row)
+	claims, claimsAAD, err := validatedStoredSecretTransferWithAAD(row)
 	if err != nil {
 		return db.RoleSourceSecretTransfer{}, err
 	}
@@ -395,14 +400,15 @@ func (c *ControlPlane) ReportSecretTransfer(ctx context.Context, input ReportSec
 	if input.Envelope.Claims != claims {
 		return db.RoleSourceSecretTransfer{}, fmt.Errorf("%w: envelope claims do not match challenge", ErrInvalidSecretEnvelope)
 	}
-	body, err := json.Marshal(input.Envelope)
+	body, digest, err := encodeSecretEnvelope(*input.Envelope)
 	if err != nil || len(body) > 400<<10 {
 		return db.RoleSourceSecretTransfer{}, fmt.Errorf("%w: envelope exceeds storage limit", ErrInvalidSecretEnvelope)
 	}
-	digestValue := sha256.Sum256(body)
-	digest := "sha256:" + fmt.Sprintf("%x", digestValue[:])
 	if row.Status == "submitted" {
-		if row.EnvelopeDigest.Valid && row.EnvelopeDigest.String == digest && bytes.Equal(row.Envelope, body) {
+		storedEnvelope, decodeErr := decodeStoredSecretEnvelope(row.Envelope)
+		_, storedDigest, digestErr := encodeSecretEnvelope(storedEnvelope)
+		if decodeErr == nil && digestErr == nil && storedEnvelope.Claims == claims &&
+			row.EnvelopeDigest.Valid && row.EnvelopeDigest.String == digest && storedDigest == digest {
 			if err := tx.Commit(ctx); err != nil {
 				return db.RoleSourceSecretTransfer{}, err
 			}
@@ -414,7 +420,7 @@ func (c *ControlPlane) ReportSecretTransfer(ctx context.Context, input ReportSec
 	if row.Status != "claimed" || !ok {
 		return db.RoleSourceSecretTransfer{}, ErrSecretTransferLeaseLost
 	}
-	privateKey, err := secretBox.OpenWithAAD(row.PrivateKeyCiphertext, row.Claims)
+	privateKey, err := secretBox.OpenWithAAD(row.PrivateKeyCiphertext, claimsAAD)
 	if err != nil {
 		return db.RoleSourceSecretTransfer{}, fmt.Errorf("open secret transfer private key: %w", err)
 	}
@@ -446,18 +452,46 @@ func (c *ControlPlane) ReportSecretTransfer(ctx context.Context, input ReportSec
 }
 
 func validatedStoredSecretTransfer(row db.RoleSourceSecretTransfer) (SecretEnvelopeClaims, error) {
+	claims, _, err := validatedStoredSecretTransferWithAAD(row)
+	return claims, err
+}
+
+func validatedStoredSecretTransferWithAAD(row db.RoleSourceSecretTransfer) (SecretEnvelopeClaims, []byte, error) {
 	claims, err := decodeSecretTransferClaims(row.Claims)
 	if err != nil {
-		return SecretEnvelopeClaims{}, fmt.Errorf("decode stored secret transfer claims: %w", err)
+		return SecretEnvelopeClaims{}, nil, fmt.Errorf("decode stored secret transfer claims: %w", err)
 	}
-	if _, err := canonicalSecretEnvelopeClaims(claims, row.CreatedAt.Time.UTC(), false); err != nil {
-		return SecretEnvelopeClaims{}, err
+	claimsExpiry, err := time.Parse(time.RFC3339Nano, claims.ExpiresAt)
+	if err != nil {
+		return SecretEnvelopeClaims{}, nil, fmt.Errorf("decode stored secret transfer expiry: %w", err)
+	}
+	// Validate canonical syntax independently of the database clock. The
+	// persisted row checks below then bind the authenticated expiry back to the
+	// database identity and enforce the creation-window invariant with bounded
+	// clock skew.
+	claimsAAD, err := canonicalSecretEnvelopeClaims(claims, claimsExpiry.Add(-15*time.Minute), false)
+	if err != nil {
+		return SecretEnvelopeClaims{}, nil, err
+	}
+	if !row.CreatedAt.Valid || !row.ExpiresAt.Valid {
+		return SecretEnvelopeClaims{}, nil, errors.New("stored secret transfer timestamps are missing")
+	}
+	rowExpiry := row.ExpiresAt.Time.UTC()
+	delta := rowExpiry.Sub(claimsExpiry)
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > secretTransferTimestampTolerance {
+		return SecretEnvelopeClaims{}, nil, errors.New("stored secret transfer expiry does not match authenticated claims")
+	}
+	if claimsExpiry.After(row.CreatedAt.Time.UTC().Add(15*time.Minute + secretTransferClockSkew)) {
+		return SecretEnvelopeClaims{}, nil, errors.New("stored secret transfer expiry exceeds the creation window")
 	}
 	if claims.TransferID != util.UUIDToString(row.ID) || claims.WorkspaceID != util.UUIDToString(row.WorkspaceID) ||
 		claims.SourceID != util.UUIDToString(row.SourceID) || claims.RoleID != row.RoleID || claims.SnapshotDigest != row.SnapshotDigest {
-		return SecretEnvelopeClaims{}, errors.New("stored secret transfer claims do not match row identity")
+		return SecretEnvelopeClaims{}, nil, errors.New("stored secret transfer claims do not match row identity")
 	}
-	return claims, nil
+	return claims, claimsAAD, nil
 }
 
 // ValidatePersistedSecretTransferIdentity is used by offline restore

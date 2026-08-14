@@ -84,6 +84,31 @@ func TestRoleSourceSecretTransferPersistenceIsCiphertextOnlyAndSelfClearing(t *t
 	}
 }
 
+func TestRoleSourceMaterializedTargetUniquenessAllowsOwnedAgentFields(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	replacement, err := os.ReadFile(filepath.Join(root, "379_role_source_materialized_target_unique.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(replacement)
+	for _, required := range []string{
+		"CREATE UNIQUE INDEX CONCURRENTLY role_source_mapping_materialized_target_unique",
+		"workspace_id, target_kind, target_id",
+		"source_kind IN ('role', 'skill', 'automation')",
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("materialized target index is missing %q", required)
+		}
+	}
+	if strings.Contains(body, "environment") || strings.Contains(body, "mcp") || strings.Contains(body, "capability_binding") {
+		t.Fatal("subordinate field mappings must be allowed to share their parent Agent or Skill target")
+	}
+	relax, err := os.ReadFile(filepath.Join(root, "380_role_source_mapping_target_unique_relax.up.sql"))
+	if err != nil || strings.TrimSpace(string(relax)) != "DROP INDEX CONCURRENTLY IF EXISTS role_source_mapping_target_unique;" {
+		t.Fatalf("legacy over-broad mapping index is not dropped safely: %v", err)
+	}
+}
+
 func TestRoleSourceSecretTransferPlanStatusLookupHasConcurrentIndex(t *testing.T) {
 	root := filepath.Join("..", "..", "migrations")
 	index, err := os.ReadFile(filepath.Join(root, "360_role_source_secret_transfer_plan_index.up.sql"))

@@ -66,6 +66,15 @@ type SecretEnvelopeKeyPair struct {
 	PublicKey  string
 }
 
+func encodeSecretEnvelope(envelope SecretEnvelope) ([]byte, string, error) {
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, "", err
+	}
+	digestValue := sha256.Sum256(body)
+	return body, "sha256:" + fmt.Sprintf("%x", digestValue[:]), nil
+}
+
 func NewSecretEnvelopeKeyPair() (SecretEnvelopeKeyPair, error) {
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {

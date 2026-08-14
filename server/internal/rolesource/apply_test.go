@@ -53,8 +53,10 @@ func TestClassifyApplyFailureUsesStableContentFreeCodes(t *testing.T) {
 }
 
 func TestRoleSourceMappingTargetConflictIsNarrowlyClassified(t *testing.T) {
-	if !isRoleSourceMappingTargetConflict(&pgconn.PgError{Code: "23505", ConstraintName: "role_source_mapping_target_unique"}) {
-		t.Fatal("mapping target race was not classified")
+	for _, constraint := range []string{"role_source_mapping_target_unique", "role_source_mapping_materialized_target_unique"} {
+		if !isRoleSourceMappingTargetConflict(&pgconn.PgError{Code: "23505", ConstraintName: constraint}) {
+			t.Fatalf("mapping target race %s was not classified", constraint)
+		}
 	}
 	for _, err := range []error{
 		&pgconn.PgError{Code: "23505", ConstraintName: "role_source_mapping_identity_unique"},

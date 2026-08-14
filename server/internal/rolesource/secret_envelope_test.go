@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 type testSecretBox struct{ marker byte }
@@ -70,6 +75,37 @@ func TestSecretEnvelopeRoundTripDoesNotExposePlaintext(t *testing.T) {
 	}
 }
 
+func TestSecretEnvelopeDigestSurvivesJSONBRepresentationChanges(t *testing.T) {
+	keyPair, claims, payload := secretEnvelopeFixture(t)
+	envelope, err := SealSecretEnvelope(keyPair.PublicKey, claims, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalBody, canonicalDigest, err := encodeSecretEnvelope(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jsonbValue map[string]any
+	if err := json.Unmarshal(canonicalBody, &jsonbValue); err != nil {
+		t.Fatal(err)
+	}
+	jsonbBody, err := json.Marshal(jsonbValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(jsonbBody, canonicalBody) {
+		t.Fatal("test fixture did not change the JSON byte representation")
+	}
+	storedEnvelope, err := decodeStoredSecretEnvelope(jsonbBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, storedDigest, err := encodeSecretEnvelope(storedEnvelope)
+	if err != nil || storedDigest != canonicalDigest {
+		t.Fatalf("stored digest=%s want=%s err=%v", storedDigest, canonicalDigest, err)
+	}
+}
+
 func TestSecretEnvelopeClaimsPreventCrossTenantRoleAndSnapshotReplay(t *testing.T) {
 	keyPair, claims, payload := secretEnvelopeFixture(t)
 	envelope, err := SealSecretEnvelope(keyPair.PublicKey, claims, payload)
@@ -89,6 +125,63 @@ func TestSecretEnvelopeClaimsPreventCrossTenantRoleAndSnapshotReplay(t *testing.
 		if _, err := OpenSecretEnvelope(keyPair.PrivateKey, copy, time.Now().UTC()); !errors.Is(err, ErrInvalidSecretEnvelope) {
 			t.Fatalf("mutated claims error = %v", err)
 		}
+	}
+}
+
+func TestPersistedSecretTransferIdentityToleratesBoundedDBClockSkewAndBindsExpiry(t *testing.T) {
+	expiresAt := time.Date(2026, 8, 14, 9, 30, 0, 123456789, time.UTC)
+	claims := SecretEnvelopeClaims{
+		ContractVersion: SecretEnvelopeContractVersion,
+		TransferID:      "00000000-0000-4000-8000-000000000051",
+		WorkspaceID:     "00000000-0000-4000-8000-000000000001",
+		SourceID:        "00000000-0000-4000-8000-000000000042",
+		RoleID:          "writer",
+		SnapshotDigest:  testSHA256("a"),
+		ExpiresAt:       expiresAt.Format(time.RFC3339Nano),
+	}
+	claimsBody, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := db.RoleSourceSecretTransfer{
+		ID: util.MustParseUUID(claims.TransferID), WorkspaceID: util.MustParseUUID(claims.WorkspaceID),
+		SourceID: util.MustParseUUID(claims.SourceID), RoleID: claims.RoleID, SnapshotDigest: claims.SnapshotDigest,
+		Claims: claimsBody,
+		// The DB clock is 30 seconds behind the application clock. The
+		// authenticated expiry is still exactly the application's 15-minute TTL.
+		CreatedAt: pgtype.Timestamptz{Time: expiresAt.Add(-15*time.Minute - 30*time.Second), Valid: true},
+		ExpiresAt: pgtype.Timestamptz{Time: expiresAt.Truncate(time.Microsecond), Valid: true},
+	}
+	if err := ValidatePersistedSecretTransferIdentity(row); err != nil {
+		t.Fatalf("bounded database clock skew rejected: %v", err)
+	}
+	// PostgreSQL jsonb does not preserve the byte representation inserted by
+	// the application. Decryption AAD must therefore be regenerated from the
+	// validated typed claims instead of reusing row.Claims.
+	row.Claims = []byte(fmt.Sprintf(`{
+		"workspace_id": %q, "transfer_id": %q, "source_id": %q,
+		"snapshot_digest": %q, "role_id": %q, "expires_at": %q,
+		"contract_version": %q
+	}`, claims.WorkspaceID, claims.TransferID, claims.SourceID, claims.SnapshotDigest, claims.RoleID, claims.ExpiresAt, claims.ContractVersion))
+	_, claimsAAD, err := validatedStoredSecretTransferWithAAD(row)
+	if err != nil {
+		t.Fatalf("jsonb-reformatted claims rejected: %v", err)
+	}
+	wantAAD, err := json.Marshal(claims)
+	if err != nil || !bytes.Equal(claimsAAD, wantAAD) || bytes.Equal(claimsAAD, row.Claims) {
+		t.Fatalf("canonical AAD=%s want=%s row=%s err=%v", claimsAAD, wantAAD, row.Claims, err)
+	}
+
+	tamperedExpiry := row
+	tamperedExpiry.ExpiresAt.Time = expiresAt.Add(time.Second)
+	if err := ValidatePersistedSecretTransferIdentity(tamperedExpiry); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("row expiry tamper error=%v", err)
+	}
+
+	excessiveSkew := row
+	excessiveSkew.CreatedAt.Time = expiresAt.Add(-15*time.Minute - secretTransferClockSkew - time.Second)
+	if err := ValidatePersistedSecretTransferIdentity(excessiveSkew); err == nil || !strings.Contains(err.Error(), "creation window") {
+		t.Fatalf("excessive clock skew error=%v", err)
 	}
 }
 
