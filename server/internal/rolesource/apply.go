@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/autopilotlock"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -2848,6 +2849,9 @@ func (s *materializationState) flushMappings(ctx context.Context) error {
 			Mappings: body, SourceID: s.source.ID, WorkspaceID: s.workspaceID,
 		})
 		if err != nil {
+			if isRoleSourceMappingTargetConflict(err) {
+				return fmt.Errorf("%w: mapping target was claimed concurrently", ErrApplyConflict)
+			}
 			return err
 		}
 		if err := exactMaterializedMappings(batch, rows); err != nil {
@@ -2859,6 +2863,11 @@ func (s *materializationState) flushMappings(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func isRoleSourceMappingTargetConflict(err error) bool {
+	var databaseError *pgconn.PgError
+	return errors.As(err, &databaseError) && databaseError.Code == "23505" && databaseError.ConstraintName == "role_source_mapping_target_unique"
 }
 
 func materializedMappingBatches(mappings []pendingRoleSourceMapping) ([][]pendingRoleSourceMapping, error) {

@@ -330,13 +330,19 @@ Pass criteria:
 - after lock release, a rename changes the version commitment and makes the
   approved old-name identity disappear; an authorized delete then makes the
   renamed exact identity disappear;
+- when another source inserts the same target mapping after candidate
+  resolution, the original materializer waits on the real unique-index
+  transaction, then returns a typed `state_conflict`; exactly the winner
+  mapping remains, and later candidate resolution reports that source as the
+  manager;
 - three consecutive runs leave zero workspace, actor, Agent, Skill and
-  Autopilot fixture rows; cleanup failures fail the test and run before the
-  connection pool closes.
+  Autopilot or mapping fixture rows; cleanup failures fail the test and run
+  before the connection pool closes.
 
 This closes the target edit/rename/delete and cross-tenant resolution slice. It
-does not close concurrent mapping insertion, ordinary same-name creation,
-end-to-end adopted domain-write rollback, primary failover or Gate E scale.
+also closes single-primary mapping insertion before/after candidate resolution.
+It does not close ordinary same-name creation, end-to-end adopted domain-write
+rollback, primary failover or Gate E scale.
 
 ## Gate C — configured S3-compatible backend
 

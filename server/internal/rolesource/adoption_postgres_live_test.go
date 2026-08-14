@@ -112,6 +112,7 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	if err != nil || len(foreign) != 0 {
 		t.Fatalf("cross-tenant target resolved: rows=%+v err=%v", foreign, err)
 	}
+	proveAdoptionMappingClaimRace(t, ctx, pool, workspaceID, agentID, "Adopt Writer")
 
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -187,6 +188,74 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	}
 }
 
+func proveAdoptionMappingClaimRace(t *testing.T, ctx context.Context, observer *pgxpool.Pool, workspaceID, targetID uuid.UUID, targetName string) {
+	t.Helper()
+	winnerPool, _ := newApplyReplicaPool(t, ctx, "mapping-winner")
+	loserPool, loserName := newApplyReplicaPool(t, ctx, "mapping-loser")
+	winnerSourceID, loserSourceID := uuid.New(), uuid.New()
+	winnerTx, err := winnerPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer winnerTx.Rollback(ctx) //nolint:errcheck
+	if _, err := winnerTx.Exec(ctx, `
+INSERT INTO role_source_object_mapping (
+  source_id,workspace_id,source_kind,source_parent_id,source_object_id,
+  target_kind,target_id,ownership_mask,last_applied_digest,last_snapshot_digest
+) VALUES ($1,$2,'role','','winner-role','agent',$3,'[]'::jsonb,$4,$5)
+`, winnerSourceID, workspaceID, targetID, testSHA256("b"), testSHA256("c")); err != nil {
+		t.Fatal(err)
+	}
+
+	loserTx, err := loserPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loserTx.Rollback(ctx) //nolint:errcheck
+	pending := pendingRoleSourceMapping{
+		SourceKind: "role", SourceObjectID: "loser-role", TargetKind: "agent", TargetID: targetID.String(),
+		OwnershipMask: []string{"name", "instructions"}, LastAppliedDigest: testSHA256("d"), LastSnapshotDigest: testSHA256("e"),
+	}
+	state := materializationState{
+		q: db.New(loserTx), source: db.RoleSource{ID: util.MustParseUUID(loserSourceID.String())},
+		workspaceID:     util.MustParseUUID(workspaceID.String()),
+		pendingMappings: map[string]pendingRoleSourceMapping{objectKey(ObjectRef{Kind: "role", ID: "loser-role"}): pending},
+		mappings:        map[string]db.RoleSourceObjectMapping{},
+	}
+	result := make(chan error, 1)
+	go func() { result <- state.flushMappings(ctx) }()
+	waitEvent := awaitReplicaLockWait(t, ctx, observer, loserName)
+	if err := winnerTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrApplyConflict) {
+			t.Fatalf("mapping loser error=%v, want ErrApplyConflict", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("mapping loser did not finish after winner commit")
+	}
+	if err := loserTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := observer.QueryRow(ctx, `SELECT count(*) FROM role_source_object_mapping WHERE workspace_id=$1 AND target_kind='agent' AND target_id=$2 AND source_id=$3`, workspaceID, targetID, winnerSourceID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("mapping race winner count=%d err=%v", count, err)
+	}
+	requestBody, _ := json.Marshal([]adoptionTargetRequest{{TargetKind: "agent", Name: targetName}})
+	managed, err := db.New(observer).ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
+		Targets: requestBody, WorkspaceID: util.MustParseUUID(workspaceID.String()),
+	})
+	if err != nil || len(managed) != 1 || !managed[0].ManagedBySourceID.Valid || util.UUIDToString(managed[0].ManagedBySourceID) != winnerSourceID.String() {
+		t.Fatalf("mapping winner was not visible to later plan resolution: rows=%+v err=%v", managed, err)
+	}
+	if _, err := observer.Exec(ctx, `DELETE FROM role_source_object_mapping WHERE workspace_id=$1 AND target_kind='agent' AND target_id=$2`, workspaceID, targetID); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("adoption_evidence case=concurrent_mapping_claim loser_wait_event=%s winner_mappings=1 loser_error=state_conflict", waitEvent)
+}
+
 func expectAdoptionLockTimeout(t *testing.T, ctx context.Context, pool *pgxpool.Pool, statement string, targetID uuid.UUID) {
 	t.Helper()
 	tx, err := pool.Begin(ctx)
@@ -222,6 +291,7 @@ func cleanupAdoptionPostgresFixture(t *testing.T, pool *pgxpool.Pool, userID, wo
 		name      string
 		statement string
 	}{
+		{name: "mappings", statement: `DELETE FROM role_source_object_mapping WHERE workspace_id IN ($1, $2)`},
 		{name: "autopilots", statement: `DELETE FROM autopilot WHERE workspace_id IN ($1, $2)`},
 		{name: "skills", statement: `DELETE FROM skill WHERE workspace_id IN ($1, $2)`},
 		{name: "agents", statement: `DELETE FROM agent WHERE workspace_id IN ($1, $2)`},

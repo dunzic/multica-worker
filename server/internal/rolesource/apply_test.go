@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -48,6 +49,21 @@ func TestClassifyApplyFailureUsesStableContentFreeCodes(t *testing.T) {
 				t.Fatalf("classifyApplyFailure()=%q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestRoleSourceMappingTargetConflictIsNarrowlyClassified(t *testing.T) {
+	if !isRoleSourceMappingTargetConflict(&pgconn.PgError{Code: "23505", ConstraintName: "role_source_mapping_target_unique"}) {
+		t.Fatal("mapping target race was not classified")
+	}
+	for _, err := range []error{
+		&pgconn.PgError{Code: "23505", ConstraintName: "role_source_mapping_identity_unique"},
+		&pgconn.PgError{Code: "40001", ConstraintName: "role_source_mapping_target_unique"},
+		errors.New("role_source_mapping_target_unique"),
+	} {
+		if isRoleSourceMappingTargetConflict(err) {
+			t.Fatalf("unrelated error was classified as mapping target race: %v", err)
+		}
 	}
 }
 

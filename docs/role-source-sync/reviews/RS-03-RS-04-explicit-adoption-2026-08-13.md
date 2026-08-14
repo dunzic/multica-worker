@@ -43,11 +43,18 @@ rename changes the version commitment and removes the old approved identity;
 an authorized delete removes the renamed identity. System or archived
 same-name Agents participate in the namespace check but are marked ineligible,
 so the plan blocks before the database name constraint can fail at apply time.
+The same live matrix now holds an uncommitted winner mapping, observes the
+losing materializer wait on `transactionid`, commits the winner and verifies
+the loser returns typed `ErrApplyConflict` rather than a raw SQL error. The
+winner is the only persisted mapping and a later plan-resolution query reports
+its exact source as manager. Only the target-mapping unique index is translated
+to this state conflict; unrelated unique and serialization errors remain
+distinct.
 
-Open objection: the remaining live matrix must still cover mapping insertion,
-ordinary same-name creation, adopted domain-write rollback, primary failover
-and production-shaped contention. Target-row evidence is not a substitute for
-the rest of that matrix.
+Open objection: the remaining live matrix must still cover ordinary same-name
+creation, adopted domain-write rollback, primary failover and
+production-shaped contention. Target-row and mapping-index evidence are not a
+substitute for the rest of that matrix.
 
 ## Product review — 2/3
 
@@ -71,14 +78,15 @@ compatibility, query lock/provenance contracts, API schemas, and a 30-case
 settings suite including confirm/undo/exact payload behavior. The opt-in live
 PostgreSQL test passes three consecutive runs with cross-tenant rejection,
 native lock-timeout assertions for edit/delete, post-plan rename/delete
-invalidation and zero fixture residue. Cleanup is strict, exact-workspace
+invalidation, real unique-index mapping contention, narrow `state_conflict`
+classification and zero fixture residue. Cleanup is strict, exact-workspace
 scoped and runs before the pool closes. Focused `rolesource`, `handler`, core
 API and views tests pass.
 
-Missing evidence: concurrent mapping insertion and ordinary same-name creation,
-transaction failure injection after every adopted domain write, end-to-end
-Agent/Skill/Autopilot apply fixtures, primary failover, candidate-scale
-contention and browser accessibility/performance profiling.
+Missing evidence: ordinary same-name creation, transaction failure injection
+after every adopted domain write, end-to-end Agent/Skill/Autopilot apply
+fixtures, primary failover, candidate-scale contention and browser
+accessibility/performance profiling.
 
 ## CEO review — 2/3
 
@@ -95,7 +103,8 @@ NO-GO for customer mutation.
 
 1. ~~target edit/rename/delete before and after the apply row lock~~ — covered
    for exact Skill identity with native PostgreSQL lock-timeout evidence;
-2. a second Role Source mapping the target before and after plan creation;
+2. ~~a second Role Source mapping the target before and after plan creation~~ —
+   covered by managed-candidate resolution plus real unique-index wait/winner;
 3. ordinary same-name Agent/Skill/Autopilot creation during apply;
 4. winner rollback and waiter continuation;
 5. statement timeout, primary failover and retry with the same idempotency key;
