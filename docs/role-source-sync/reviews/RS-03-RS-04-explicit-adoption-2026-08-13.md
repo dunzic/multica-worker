@@ -36,15 +36,18 @@ receipts without changing their digest serialization.
 
 A disposable migrated PostgreSQL 17 test now proves the generated set query
 executes against the real schema, resolves Agent/Skill/Autopilot rows, preserves
-two same-title Autopilots as an ambiguous pair, blocks a concurrent Skill
-mutation while the adoption row lock is held, and observes a different version
-commitment after the lock is released and the row changes. System or archived
+two same-title Autopilots as an ambiguous pair and rejects an exact cross-tenant
+Skill UUID. Independent UPDATE and DELETE transactions both hit PostgreSQL
+SQLSTATE `55P03` while the approved Skill row is locked. After release, a
+rename changes the version commitment and removes the old approved identity;
+an authorized delete removes the renamed identity. System or archived
 same-name Agents participate in the namespace check but are marked ineligible,
 so the plan blocks before the database name constraint can fail at apply time.
 
-Open objection: the remaining live matrix must still cover target delete,
-mapping insertion, ordinary name-create, rollback, timeout and failover races.
-One row-lock test is not a substitute for that matrix.
+Open objection: the remaining live matrix must still cover mapping insertion,
+ordinary same-name creation, adopted domain-write rollback, primary failover
+and production-shaped contention. Target-row evidence is not a substitute for
+the rest of that matrix.
 
 ## Product review — 2/3
 
@@ -59,20 +62,23 @@ human-readable owner/last-modified context and a large-candidate review/search
 experience. Raw UUID remains necessary audit evidence but should not be the
 only identity cue.
 
-## Test review — 2/3
+## Test review — 3/3 for target identity and row-lock races; 2/3 overall
 
 Passing local evidence covers exact candidate approval, substituted-target
 rejection, unique/ambiguous/managed candidate resolution, plan revalidation,
 version mutation detection, synthetic mapping identity, historical receipt
 compatibility, query lock/provenance contracts, API schemas, and a 30-case
 settings suite including confirm/undo/exact payload behavior. The opt-in live
-PostgreSQL test described above also passes. Focused `rolesource`, `handler`,
-core API and views tests pass.
+PostgreSQL test passes three consecutive runs with cross-tenant rejection,
+native lock-timeout assertions for edit/delete, post-plan rename/delete
+invalidation and zero fixture residue. Cleanup is strict, exact-workspace
+scoped and runs before the pool closes. Focused `rolesource`, `handler`, core
+API and views tests pass.
 
-Missing evidence: the remaining PostgreSQL 17 multi-connection race matrix,
+Missing evidence: concurrent mapping insertion and ordinary same-name creation,
 transaction failure injection after every adopted domain write, end-to-end
-Agent/Skill/Autopilot apply fixtures, and browser accessibility/performance
-profiling.
+Agent/Skill/Autopilot apply fixtures, primary failover, candidate-scale
+contention and browser accessibility/performance profiling.
 
 ## CEO review — 2/3
 
@@ -87,7 +93,8 @@ NO-GO for customer mutation.
 
 ## Required live race matrix
 
-1. target edit/rename/delete before and after the apply row lock;
+1. ~~target edit/rename/delete before and after the apply row lock~~ — covered
+   for exact Skill identity with native PostgreSQL lock-timeout evidence;
 2. a second Role Source mapping the target before and after plan creation;
 3. ordinary same-name Agent/Skill/Autopilot creation during apply;
 4. winner rollback and waiter continuation;

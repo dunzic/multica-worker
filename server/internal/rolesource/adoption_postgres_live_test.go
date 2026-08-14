@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -33,10 +34,11 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	suffix := uuid.NewString()
-	userID, workspaceID, agentID, systemAgentID, skillID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	userID, workspaceID, foreignWorkspaceID := uuid.New(), uuid.New(), uuid.New()
+	agentID, systemAgentID, skillID, foreignSkillID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	autopilotID, duplicateAutopilotID := uuid.New(), uuid.New()
 	setupTx, err := pool.Begin(ctx)
 	if err != nil {
@@ -49,6 +51,9 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	if _, err := setupTx.Exec(ctx, `INSERT INTO workspace (id, name, slug) VALUES ($1, 'Adoption workspace', $2)`, workspaceID, "adoption-"+suffix); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := setupTx.Exec(ctx, `INSERT INTO workspace (id, name, slug) VALUES ($1, 'Foreign adoption workspace', $2)`, foreignWorkspaceID, "foreign-adoption-"+suffix); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := setupTx.Exec(ctx, `INSERT INTO agent (id, workspace_id, name, runtime_mode) VALUES ($1, $2, 'Adopt Writer', 'local')`, agentID, workspaceID); err != nil {
 		t.Fatal(err)
 	}
@@ -58,18 +63,16 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	if _, err := setupTx.Exec(ctx, `INSERT INTO skill (id, workspace_id, name) VALUES ($1, $2, 'Adopt Draft')`, skillID, workspaceID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := setupTx.Exec(ctx, `INSERT INTO skill (id, workspace_id, name) VALUES ($1, $2, 'Adopt Draft')`, foreignSkillID, foreignWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := setupTx.Exec(ctx, `INSERT INTO autopilot (id, workspace_id, title, assignee_id, created_by_type, created_by_id) VALUES ($1, $2, 'Adopt Schedule', $3, 'member', $4)`, autopilotID, workspaceID, agentID, userID); err != nil {
 		t.Fatal(err)
 	}
 	if err := setupTx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cleanupCancel()
-		_, _ = pool.Exec(cleanupCtx, `DELETE FROM workspace WHERE id = $1`, workspaceID)
-		_, _ = pool.Exec(cleanupCtx, `DELETE FROM "user" WHERE id = $1`, userID)
-	})
+	t.Cleanup(func() { cleanupAdoptionPostgresFixture(t, pool, userID, workspaceID, foreignWorkspaceID) })
 
 	queries := db.New(pool)
 	requests := []adoptionTargetRequest{
@@ -102,6 +105,13 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	if err != nil || len(ineligible) != 1 || !ineligible[0].AdoptionEligible.Valid || ineligible[0].AdoptionEligible.Bool {
 		t.Fatalf("ineligible system agent=%+v err=%v", ineligible, err)
 	}
+	foreignBody, _ := json.Marshal([]adoptionTargetRequest{{TargetKind: "skill", Name: "Adopt Draft", TargetID: foreignSkillID.String()}})
+	foreign, err := queries.ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
+		Targets: foreignBody, WorkspaceID: util.MustParseUUID(workspaceID.String()),
+	})
+	if err != nil || len(foreign) != 0 {
+		t.Fatalf("cross-tenant target resolved: rows=%+v err=%v", foreign, err)
+	}
 
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -127,20 +137,23 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blockedCtx, blockedCancel := context.WithTimeout(ctx, 250*time.Millisecond)
-	defer blockedCancel()
-	_, err = pool.Exec(blockedCtx, `UPDATE skill SET updated_at = clock_timestamp() WHERE id = $1`, skillID)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("concurrent target mutation was not blocked by adoption row lock: %v", err)
-	}
+	expectAdoptionLockTimeout(t, ctx, pool, `UPDATE skill SET updated_at = clock_timestamp() WHERE id = $1`, skillID)
+	expectAdoptionLockTimeout(t, ctx, pool, `DELETE FROM skill WHERE id = $1`, skillID)
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE skill SET updated_at = clock_timestamp() + interval '1 second' WHERE id = $1`, skillID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE skill SET name = 'Adopt Draft Renamed', updated_at = clock_timestamp() + interval '1 second' WHERE id = $1`, skillID); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := queries.ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
+	disappeared, err := queries.ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
 		Targets: targetBody, WorkspaceID: util.MustParseUUID(workspaceID.String()),
+	})
+	if err != nil || len(disappeared) != 0 {
+		t.Fatalf("renamed target still resolved under approved name: rows=%+v err=%v", disappeared, err)
+	}
+	renamedBody, _ := json.Marshal([]adoptionTargetRequest{{TargetKind: "skill", Name: "Adopt Draft Renamed", TargetID: skillID.String()}})
+	changed, err := queries.ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
+		Targets: renamedBody, WorkspaceID: util.MustParseUUID(workspaceID.String()),
 	})
 	if err != nil || len(changed) != 1 {
 		t.Fatalf("changed target=%+v err=%v", changed, err)
@@ -148,6 +161,15 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	after, err := adoptionVersionCommitment(changed[0].UpdatedAt)
 	if err != nil || before == after {
 		t.Fatalf("target mutation did not change version commitment: before=%q after=%q err=%v", before, after, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM skill WHERE id = $1`, skillID); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := queries.ListRoleSourceAdoptionTargetsForUpdate(ctx, db.ListRoleSourceAdoptionTargetsForUpdateParams{
+		Targets: renamedBody, WorkspaceID: util.MustParseUUID(workspaceID.String()),
+	})
+	if err != nil || len(deleted) != 0 {
+		t.Fatalf("deleted target still resolved: rows=%+v err=%v", deleted, err)
 	}
 
 	if _, err := pool.Exec(ctx, `
@@ -162,5 +184,59 @@ func TestRoleSourceAdoptionPostgresResolutionAndLocking(t *testing.T) {
 	})
 	if err != nil || len(ambiguous) != 2 {
 		t.Fatalf("ambiguous targets=%+v err=%v", ambiguous, err)
+	}
+}
+
+func expectAdoptionLockTimeout(t *testing.T, ctx context.Context, pool *pgxpool.Pool, statement string, targetID uuid.UUID) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '250ms'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(ctx, statement, targetID)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("concurrent target mutation did not hit PostgreSQL lock timeout: %v", err)
+	}
+}
+
+func cleanupAdoptionPostgresFixture(t *testing.T, pool *pgxpool.Pool, userID, workspaceID, foreignWorkspaceID uuid.UUID) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Errorf("begin adoption cleanup: %v", err)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := db.New(tx).SetWorkspaceTeardownMode(ctx); err != nil {
+		t.Errorf("set adoption teardown mode: %v", err)
+		return
+	}
+	for _, cleanup := range []struct {
+		name      string
+		statement string
+	}{
+		{name: "autopilots", statement: `DELETE FROM autopilot WHERE workspace_id IN ($1, $2)`},
+		{name: "skills", statement: `DELETE FROM skill WHERE workspace_id IN ($1, $2)`},
+		{name: "agents", statement: `DELETE FROM agent WHERE workspace_id IN ($1, $2)`},
+		{name: "workspaces", statement: `DELETE FROM workspace WHERE id IN ($1, $2)`},
+	} {
+		if _, err := tx.Exec(ctx, cleanup.statement, workspaceID, foreignWorkspaceID); err != nil {
+			t.Errorf("delete adoption %s: %v", cleanup.name, err)
+			return
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, userID); err != nil {
+		t.Errorf("delete adoption actor: %v", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Errorf("commit adoption cleanup: %v", err)
 	}
 }

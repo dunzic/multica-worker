@@ -307,6 +307,37 @@ This gate proves same-primary concurrency across two application instances. It
 does not prove Redis publish/ack recovery, database primary failover, process
 death, large materialization contention or the Gate E latency/throughput SLO.
 
+## Gate B8 — adoption target identity and row-lock races
+
+Run the tenant-scoped adoption resolver against a disposable, fully migrated
+PostgreSQL 17 database with multiple independent connections:
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_ADOPTION_TEST=1 \
+  go -C server test -count=3 -v \
+  -run '^TestRoleSourceAdoptionPostgresResolutionAndLocking$' ./internal/rolesource
+```
+
+Pass criteria:
+
+- one name-only request resolves the eligible Agent, Skill and Autopilot in the
+  selected workspace, keeps duplicate-title Autopilots ambiguous, and marks a
+  system Agent ineligible;
+- an exact target UUID from another workspace resolves zero rows even when its
+  kind and name match;
+- while the exact Skill target is locked for apply, independent UPDATE and
+  DELETE transactions both end with PostgreSQL lock-timeout SQLSTATE `55P03`;
+- after lock release, a rename changes the version commitment and makes the
+  approved old-name identity disappear; an authorized delete then makes the
+  renamed exact identity disappear;
+- three consecutive runs leave zero workspace, actor, Agent, Skill and
+  Autopilot fixture rows; cleanup failures fail the test and run before the
+  connection pool closes.
+
+This closes the target edit/rename/delete and cross-tenant resolution slice. It
+does not close concurrent mapping insertion, ordinary same-name creation,
+end-to-end adopted domain-write rollback, primary failover or Gate E scale.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.
