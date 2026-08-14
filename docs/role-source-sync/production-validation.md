@@ -274,6 +274,39 @@ This single-node gate proves transaction atomicity and commit ambiguity. It
 does not prove behavior when PostgreSQL is completely unavailable or during a
 primary failover; retain those as Gate D and deployment-topology blockers.
 
+## Gate B7 — two-control-plane apply concurrency
+
+Run two independent control planes with separate PostgreSQL pools against a
+disposable, fully migrated PostgreSQL 17 database. The test holds one real
+apply transaction after its durable apply row becomes `running` and observes
+the second pool through its bounded `application_name` in `pg_stat_activity`.
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_APPLY_CONCURRENCY_TEST=1 \
+  go -C server test -count=1 -v \
+  -run '^TestRoleSourceApplyConcurrencyPostgres$' ./internal/rolesource
+```
+
+Pass criteria:
+
+- an exact duplicate request on another control plane waits on PostgreSQL's
+  transaction lock, then returns the same apply ID and receipt digest with
+  exactly one succeeded apply, success audit and outbox event;
+- a different approved plan for the same source waits on the same lock, then
+  loses the current-snapshot CAS with `ErrApplyConflict`, leaving one winner
+  and one content-free `state_conflict` failure record whose request key is
+  represented only by its SHA-256 commitment;
+- a second source in the same workspace completes while the first source is
+  held, proving that the transaction-long workspace teardown guard remains
+  compatible between ordinary mutations and serialization stays source-local;
+- each fixture leaves zero workspace, user, source and artifact-deletion-intent
+  residue, and cleanup deletes only the exact artifact keys created by that
+  fixture so parallel test runs cannot erase one another's evidence.
+
+This gate proves same-primary concurrency across two application instances. It
+does not prove Redis publish/ack recovery, database primary failover, process
+death, large materialization contention or the Gate E latency/throughput SLO.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.

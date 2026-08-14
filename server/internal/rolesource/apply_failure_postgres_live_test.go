@@ -156,10 +156,14 @@ type applyFailureFixture struct {
 	workspaceID    uuid.UUID
 	sourceID       uuid.UUID
 	actorID        uuid.UUID
+	runtimeID      uuid.UUID
 	fromDigest     string
 	toDigest       string
+	fromSnapshot   Snapshot
+	toSnapshot     Snapshot
 	input          ApplyPlanInput
 	artifactReader ArtifactReader
+	artifactKeys   []string
 }
 
 func createApplyFailureFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) applyFailureFixture {
@@ -189,8 +193,10 @@ func createApplyFailureFixtureForManifest(t *testing.T, ctx context.Context, poo
 	t.Helper()
 	fixture := applyFailureFixture{workspaceID: uuid.New(), sourceID: uuid.New(), actorID: uuid.New(), artifactReader: noArtifactReader{}}
 	runtimeID, approvalID := uuid.New(), uuid.New()
+	fixture.runtimeID = runtimeID
 	from := emptyApplySnapshot(t, "from-"+uuid.NewString())
 	to := applyFailureSnapshot(t, target, "to-"+uuid.NewString())
+	fixture.fromSnapshot, fixture.toSnapshot = from, to
 	plan, err := BuildPlan(fixture.sourceID.String(), &from, to)
 	if err != nil || !plan.Applyable {
 		t.Fatalf("build apply plan=%+v err=%v", plan, err)
@@ -231,7 +237,8 @@ func createApplyFailureFixtureForManifest(t *testing.T, ctx context.Context, poo
 	if len(artifacts) > 0 {
 		bodies := make(map[string][]byte, len(artifacts))
 		for digest, body := range artifacts {
-			storageKey := "apply-failure/" + strings.TrimPrefix(digest, "sha256:")
+			storageKey := "apply-failure/" + fixture.workspaceID.String() + "/" + strings.TrimPrefix(digest, "sha256:")
+			fixture.artifactKeys = append(fixture.artifactKeys, storageKey)
 			bodies[storageKey] = append([]byte(nil), body...)
 			if _, err := pool.Exec(ctx, `INSERT INTO role_source_artifact (workspace_id,digest,size_bytes,storage_key,uploaded_by_runtime_id,first_source_id,first_scan_request_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`, fixture.workspaceID, digest, len(body), storageKey, runtimeID, fixture.sourceID, uuid.New()); err != nil {
 				t.Fatal(err)
@@ -384,18 +391,43 @@ func assertApplyCommittedOnce(t *testing.T, ctx context.Context, pool *pgxpool.P
 
 func cleanupApplyFailureFixture(t *testing.T, pool *pgxpool.Pool, fixture applyFailureFixture) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		t.Log(err)
+		t.Errorf("begin apply failure cleanup: %v", err)
 		return
 	}
+	defer tx.Rollback(ctx) //nolint:errcheck
 	q := db.New(tx)
-	if err := q.SetWorkspaceTeardownMode(ctx); err == nil {
-		_ = q.DeleteWorkspaceRoleSources(ctx, pgUUID(fixture.workspaceID))
-		_, _ = tx.Exec(ctx, `DELETE FROM agent_runtime WHERE workspace_id=$1`, fixture.workspaceID)
-		_, _ = tx.Exec(ctx, `DELETE FROM workspace WHERE id=$1`, fixture.workspaceID)
-		_, _ = tx.Exec(ctx, `DELETE FROM "user" WHERE id=$1`, fixture.actorID)
+	if err := q.SetWorkspaceTeardownMode(ctx); err != nil {
+		t.Errorf("set apply failure teardown mode: %v", err)
+		return
 	}
-	_ = tx.Commit(ctx)
+	if err := q.DeleteWorkspaceRoleSources(ctx, pgUUID(fixture.workspaceID)); err != nil {
+		t.Errorf("delete apply failure role sources: %v", err)
+		return
+	}
+	if len(fixture.artifactKeys) > 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM role_source_artifact_delete_intent WHERE storage_key = ANY($1::text[])`, fixture.artifactKeys); err != nil {
+			t.Errorf("delete apply failure artifact intents: %v", err)
+			return
+		}
+	}
+	for name, statement := range map[string]string{
+		"workspace": `DELETE FROM workspace WHERE id=$1`,
+		"actor":     `DELETE FROM "user" WHERE id=$1`,
+	} {
+		arg := any(fixture.workspaceID)
+		if name == "actor" {
+			arg = fixture.actorID
+		}
+		if _, err := tx.Exec(ctx, statement, arg); err != nil {
+			t.Errorf("delete apply failure %s: %v", name, err)
+			return
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Errorf("commit apply failure cleanup: %v", err)
+	}
 }
