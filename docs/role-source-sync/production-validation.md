@@ -344,6 +344,36 @@ also closes single-primary mapping insertion before/after candidate resolution.
 It does not close ordinary same-name creation, end-to-end adopted domain-write
 rollback, primary failover or Gate E scale.
 
+## Gate B9 — ordinary Agent and Skill name-claim races
+
+Run two independent materialization pools against ordinary workspace creates
+on a disposable, fully migrated PostgreSQL 17 database:
+
+```bash
+MULTICA_LIVE_ROLE_SOURCE_NAME_RACE_TEST=1 \
+  go -C server test -count=3 -v \
+  -run '^TestRoleSourceMaterializationNameRacesPostgres$' ./internal/rolesource
+```
+
+Pass criteria for both Agent and Skill:
+
+- an ordinary transaction inserts the desired workspace name but does not
+  commit; the Role Source batch insert waits on PostgreSQL `transactionid`;
+- after the ordinary transaction commits, the materializer returns typed
+  `state_conflict`, not a raw SQLSTATE/constraint error;
+- exactly the ordinary winner row remains and the Role Source transaction
+  contributes no target or mapping row;
+- classification accepts only SQLSTATE `23505` plus the exact
+  `agent_workspace_name_unique` or `skill_workspace_id_name_key` constraint for
+  the matching target kind; crossed kinds, other constraints, serialization
+  errors and string-only lookalikes remain unclassified;
+- three consecutive runs leave zero fixture rows.
+
+This closes single-primary Agent/Skill same-name insertion races. Autopilot
+uses the separate shared advisory-title-lock contract and still requires its
+own live create/rename/apply matrix. Primary failover, full adopted-apply
+rollback and Gate E contention also remain open.
+
 ## Gate C — configured S3-compatible backend
 
 The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.

@@ -1708,6 +1708,9 @@ func (s *materializationState) materializeRoles(ctx context.Context) error {
 			Agents: body, WorkspaceID: s.workspaceID,
 		})
 		if err != nil {
+			if isRoleSourceMaterializationNameConflict(err, "agent") {
+				return fmt.Errorf("%w: agent name was claimed concurrently", ErrApplyConflict)
+			}
 			return err
 		}
 		_, err = exactMaterializedAgentIDs(batch, rows)
@@ -1851,6 +1854,9 @@ func (s *materializationState) materializeSkills(ctx context.Context) error {
 			Skills: body, WorkspaceID: s.workspaceID,
 		})
 		if err != nil {
+			if isRoleSourceMaterializationNameConflict(err, "skill") {
+				return fmt.Errorf("%w: skill name was claimed concurrently", ErrApplyConflict)
+			}
 			return err
 		}
 		if _, err := exactMaterializedSkillIDs(batch, rows); err != nil {
@@ -2868,6 +2874,18 @@ func (s *materializationState) flushMappings(ctx context.Context) error {
 func isRoleSourceMappingTargetConflict(err error) bool {
 	var databaseError *pgconn.PgError
 	return errors.As(err, &databaseError) && databaseError.Code == "23505" && databaseError.ConstraintName == "role_source_mapping_target_unique"
+}
+
+func isRoleSourceMaterializationNameConflict(err error, targetKind string) bool {
+	constraint := map[string]string{
+		"agent": "agent_workspace_name_unique",
+		"skill": "skill_workspace_id_name_key",
+	}[targetKind]
+	if constraint == "" {
+		return false
+	}
+	var databaseError *pgconn.PgError
+	return errors.As(err, &databaseError) && databaseError.Code == "23505" && databaseError.ConstraintName == constraint
 }
 
 func materializedMappingBatches(mappings []pendingRoleSourceMapping) ([][]pendingRoleSourceMapping, error) {

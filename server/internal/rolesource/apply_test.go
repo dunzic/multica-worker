@@ -67,6 +67,31 @@ func TestRoleSourceMappingTargetConflictIsNarrowlyClassified(t *testing.T) {
 	}
 }
 
+func TestRoleSourceMaterializationNameConflictIsNarrowlyClassified(t *testing.T) {
+	for kind, constraint := range map[string]string{
+		"agent": "agent_workspace_name_unique",
+		"skill": "skill_workspace_id_name_key",
+	} {
+		if !isRoleSourceMaterializationNameConflict(&pgconn.PgError{Code: "23505", ConstraintName: constraint}, kind) {
+			t.Fatalf("%s name race was not classified", kind)
+		}
+	}
+	for _, test := range []struct {
+		err  error
+		kind string
+	}{
+		{err: &pgconn.PgError{Code: "23505", ConstraintName: "agent_workspace_name_unique"}, kind: "skill"},
+		{err: &pgconn.PgError{Code: "23505", ConstraintName: "skill_workspace_id_name_key"}, kind: "agent"},
+		{err: &pgconn.PgError{Code: "40001", ConstraintName: "agent_workspace_name_unique"}, kind: "agent"},
+		{err: errors.New("agent_workspace_name_unique"), kind: "agent"},
+		{err: &pgconn.PgError{Code: "23505", ConstraintName: "agent_workspace_name_unique"}, kind: "autopilot"},
+	} {
+		if isRoleSourceMaterializationNameConflict(test.err, test.kind) {
+			t.Fatalf("unrelated %s error was classified as name race: %v", test.kind, test.err)
+		}
+	}
+}
+
 func TestNewApplyFailureParamsContainsOnlyBoundedAuditMetadata(t *testing.T) {
 	id := util.MustParseUUID("00000000-0000-4000-8000-000000000040")
 	workspaceID := util.MustParseUUID("00000000-0000-4000-8000-000000000041")

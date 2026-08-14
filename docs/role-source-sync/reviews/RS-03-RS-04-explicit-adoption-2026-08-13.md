@@ -51,10 +51,15 @@ its exact source as manager. Only the target-mapping unique index is translated
 to this state conflict; unrelated unique and serialization errors remain
 distinct.
 
-Open objection: the remaining live matrix must still cover ordinary same-name
-creation, adopted domain-write rollback, primary failover and
-production-shaped contention. Target-row and mapping-index evidence are not a
-substitute for the rest of that matrix.
+The ordinary Agent and Skill batch materializers now also have a separate live
+matrix: each waits on an uncommitted same-name workspace create, preserves that
+winner and returns a narrowly classified state conflict. Autopilot title
+creation/rename remains a separate policy and evidence gate.
+
+Open objection: the remaining live matrix must still cover ordinary Autopilot
+same-title creation/rename, adopted domain-write rollback, primary failover and
+production-shaped contention. Target-row, name-constraint and mapping-index
+evidence are not a substitute for the rest of that matrix.
 
 ## Product review — 2/3
 
@@ -83,10 +88,10 @@ classification and zero fixture residue. Cleanup is strict, exact-workspace
 scoped and runs before the pool closes. Focused `rolesource`, `handler`, core
 API and views tests pass.
 
-Missing evidence: ordinary same-name creation, transaction failure injection
-after every adopted domain write, end-to-end Agent/Skill/Autopilot apply
-fixtures, primary failover, candidate-scale contention and browser
-accessibility/performance profiling.
+Missing evidence: ordinary same-title Autopilot create/rename, transaction
+failure injection after every adopted domain write, end-to-end
+Agent/Skill/Autopilot apply fixtures, primary failover, candidate-scale
+contention and browser accessibility/performance profiling.
 
 ## CEO review — 2/3
 
@@ -105,7 +110,8 @@ NO-GO for customer mutation.
    for exact Skill identity with native PostgreSQL lock-timeout evidence;
 2. ~~a second Role Source mapping the target before and after plan creation~~ —
    covered by managed-candidate resolution plus real unique-index wait/winner;
-3. ordinary same-name Agent/Skill/Autopilot creation during apply;
+3. ordinary same-name Agent/Skill/Autopilot creation during apply — Agent and
+   Skill are covered by real unique-index waits; Autopilot remains open;
 4. winner rollback and waiter continuation;
 5. statement timeout, primary failover and retry with the same idempotency key;
 6. 1,000 adopted roles and 10,000 adopted Skills under the candidate-image SLO.
