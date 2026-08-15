@@ -210,3 +210,21 @@ Final strategy decision: ship migrations and the offline reconciliation command
 to the controlled pilot after candidate deployment smoke tests pass. Keep the
 ordinary product UI read-only. Do not enable broad customer claims until every
 external gate above has an owner, dated evidence and an accepted rollback drill.
+
+## Local candidate deployment evidence
+
+The controlled-pilot implementation was committed as `cfb0f4f29` and installed
+in the local self-host Compose environment on 2026-08-15. The PostgreSQL volume
+was preserved while only backend and frontend were recreated.
+
+- the running backend binary contains commit `cfb0f4f29`;
+- `/health`, `/readyz` and the frontend `/login` route each returned HTTP 200;
+- backend startup applied migrations 390–397 once; `schema_migrations` reports
+  `397_chat_message_assistant_task_index` as the latest version;
+- all four channel-delivery constraints report `convalidated=true`, the four
+  reconciliation indexes exist, and `idx_chat_message_assistant_task` exists;
+- `/app/channel_delivery_reconcile` is executable and migration 397 is present
+  in the runtime image;
+- the environment is intentionally single-node/in-memory-realtime and has no
+  Slack/DingTalk key configured. It proves packaging, migration and local
+  runtime health, not the two-replica, real-provider or KMS/HSM external gates.
