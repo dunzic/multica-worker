@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY role_source_lifecycle_audit_listing_idx ON role_source_audit_event (workspace_id, source_id, sequence DESC) WHERE event_type IN ('source_paused', 'source_resumed', 'source_detached', 'source_rebound');

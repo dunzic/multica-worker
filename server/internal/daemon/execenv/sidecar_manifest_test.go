@@ -2,7 +2,9 @@ package execenv
 
 import (
 	"errors"
+	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -160,6 +162,71 @@ var allFileBasedProviders = []string{
 	"antigravity",
 	"qwen",
 	"qwenpaw",
+}
+
+func TestRoleSourceCapabilityBundleSurvivesProviderSkillMaterialization(t *testing.T) {
+	t.Parallel()
+	markerPath := ".multica/role-source/capability-bindings/" + strings.Repeat("a", 64) + "/manifest.json"
+	entrypointPath := ".multica/role-source/capability-bindings/" + strings.Repeat("a", 64) + "/files/" + strings.Repeat("b", 64) + ".artifact"
+	for _, provider := range allFileBasedProviders {
+		if provider == "codex" || provider == "hermes" {
+			continue // Both call the same writeSkillFiles helper from their task-home Prepare path.
+		}
+		provider := provider
+		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
+			workDir := t.TempDir()
+			ctx := TaskContextForEnv{IssueID: "role-source-capability", AgentSkills: []SkillContextForEnv{{
+				Name: "Source Capability", Content: "Use the pinned capability package.",
+				Files: []SkillFileContextForEnv{{Path: markerPath, Content: `{"contract_version":"role-source-capability-bundle-v1"}`}, {Path: entrypointPath, Content: "pinned entrypoint"}},
+			}}}
+			if err := writeContextFiles(workDir, provider, ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			skillDir := filepath.Join(skillsDirPath(workDir, provider), "source-capability")
+			for relative, expected := range map[string]string{markerPath: `{"contract_version":"role-source-capability-bundle-v1"}`, entrypointPath: "pinned entrypoint"} {
+				body, err := os.ReadFile(filepath.Join(skillDir, filepath.FromSlash(relative)))
+				if err != nil {
+					t.Fatalf("read %s: %v", relative, err)
+				}
+				if string(body) != expected {
+					t.Fatalf("%s content=%q, want %q", relative, body, expected)
+				}
+			}
+		})
+	}
+}
+
+func TestRoleSourceCapabilityBundleSurvivesTaskHomeSkillMaterialization(t *testing.T) {
+	markerPath := ".multica/role-source/capability-bindings/" + strings.Repeat("c", 64) + "/manifest.json"
+	entrypointPath := ".multica/role-source/capability-bindings/" + strings.Repeat("c", 64) + "/files/" + strings.Repeat("d", 64) + ".artifact"
+	skills := []SkillContextForEnv{{Name: "Source Capability", Content: "Pinned", Files: []SkillFileContextForEnv{{Path: markerPath, Content: "marker"}, {Path: entrypointPath, Content: "entrypoint"}}}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, runtime := range []string{"codex", "hermes"} {
+		runtime := runtime
+		t.Run(runtime, func(t *testing.T) {
+			home := t.TempDir()
+			var err error
+			if runtime == "codex" {
+				err = hydrateCodexSkills(home, skills, nil, logger)
+			} else {
+				err = writeHermesBoundSkills(home, skills, logger)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			skillDir := filepath.Join(home, "skills", "source-capability")
+			for relative, expected := range map[string]string{markerPath: "marker", entrypointPath: "entrypoint"} {
+				body, err := os.ReadFile(filepath.Join(skillDir, filepath.FromSlash(relative)))
+				if err != nil {
+					t.Fatalf("read %s: %v", relative, err)
+				}
+				if string(body) != expected {
+					t.Fatalf("%s content=%q, want %q", relative, body, expected)
+				}
+			}
+		})
+	}
 }
 
 // TestPrepareThenCleanupSidecarsRoundTripEmptyWorkdir is the headline

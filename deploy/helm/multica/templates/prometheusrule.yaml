@@ -1,5 +1,5 @@
 {{- if .Values.monitoring.prometheusRule.enabled }}
-{{- $samplerQueryNames := "active_users|active_workspaces|task_queued|task_running|task_stuck|runtime_online|runtime_heartbeat_age|workspace_total" -}}
+{{- $samplerQueryNames := "active_users|active_workspaces|task_queued|task_running|task_stuck|runtime_online|runtime_heartbeat_age|workspace_total|role_source_runtime_availability" -}}
 {{- $samplerErrorNames := printf "acquire|%s" $samplerQueryNames -}}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -40,4 +40,166 @@ spec:
           annotations:
             summary: "Business sampler query p95 is high"
             description: "Business sampler query {{ "{{ $labels.name }}" }} p95 is above 300ms, leaving little headroom before the 500ms statement_timeout."
+    - name: multica-role-source
+      rules:
+        - alert: MulticaRoleSourceApplyFailureAuditWriteFailed
+          expr: |
+            sum by (outcome) (
+              increase(multica_role_source_apply_failure_audit_writes_total{outcome=~"persist_failed|id_generation_failed"}[5m])
+            ) > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceAuditWriteFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source apply failure evidence could not be persisted"
+            description: "At least one apply request returned an error, but its independent failure-audit row could not be written (outcome={{ "{{ $labels.outcome }}" }}). Preserve server logs, stop role-source apply rollout, and reconcile successful receipts before retry or recovery."
+        - alert: MulticaRoleSourceApplyCommitReconciliationFailed
+          expr: |
+            sum by (outcome) (
+              increase(multica_role_source_apply_commit_reconciliations_total{outcome=~"query_failed|conflict"}[5m])
+            ) > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceCommitReconciliationFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source apply commit outcome could not be reconciled"
+            description: "An apply COMMIT returned an error and the independent receipt check could not safely establish the outcome (outcome={{ "{{ $labels.outcome }}" }}). Stop apply rollout and reconcile the request against successful receipts before retry or recovery."
+        - alert: MulticaRoleSourceOutboxDeliveryFailed
+          expr: |
+            sum by (outcome) (
+              increase(multica_role_source_outbox_dispatches_total{outcome=~"dead|ack_failed|release_failed"}[5m])
+            ) > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceOutboxFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source realtime outbox cannot confirm delivery"
+            description: "A durable role-source event exhausted retries or its publish outcome could not be durably acknowledged (outcome={{ "{{ $labels.outcome }}" }}). Materialization is already committed; inspect PostgreSQL and Redis, preserve the outbox row, and do not replay the apply request."
+        - alert: MulticaRoleSourceOutboxBacklogOld
+          expr: multica_role_source_outbox_oldest_active_seconds > 300
+          for: {{ .Values.monitoring.prometheusRule.roleSourceOutboxBacklogFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source realtime outbox is delayed"
+            description: "The oldest pending role-source invalidation is more than five minutes old. Authoritative data remains committed and clients recover by refetch; inspect worker, PostgreSQL and Redis health before the backlog grows."
+        - alert: MulticaRoleSourceOutboxDeadLetters
+          expr: multica_role_source_outbox_dead > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceOutboxFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source realtime outbox has dead letters"
+            description: "At least one durable role-source invalidation exhausted 20 delivery attempts. Do not delete the evidence before PostgreSQL/Redis recovery and an operator-approved replay procedure."
+        - alert: MulticaRoleSourceArtifactGCDeleteFailures
+          expr: increase(multica_role_source_artifact_gc_delete_failures_total[15m]) > 20
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source artifact garbage collection cannot permanently purge objects"
+            description: "More than 20 role-source artifact purges failed in 15 minutes and the failure rate stayed elevated. The durable intents are retained for retry; inspect object-storage availability, version-list/version-delete permissions, Object Lock/legal hold and backend purge support before backlog growth exhausts capacity."
+        - alert: MulticaRoleSourceArtifactGCAmbiguousEvidence
+          expr: increase(multica_role_source_artifact_gc_ambiguous_failures_total[15m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source artifact purge has incomplete provider-operation evidence"
+            description: "A purge request may have changed object storage before its response was lost, partially failed or its worker lease expired. Exact-key absence remains retryable and auditable, but version and observed-byte counts in the eventual receipt are lower bounds; retain provider logs and reconcile request/inventory evidence before making deletion-volume or billing claims."
+        - alert: MulticaRoleSourceArtifactIntegrityQuarantined
+          expr: multica_role_source_artifact_integrity_quarantined > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Role-source artifact bodies are quarantined"
+            description: "Confirmed missing or corrupt role-source artifact bodies must be reuploaded by a fresh source scan before snapshot acceptance or apply."
+        - alert: MulticaRoleSourceArtifactIntegrityReadFailures
+          expr: increase(multica_role_source_artifact_integrity_outcomes_total{outcome="read_failed"}[15m]) > 20
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source artifact readback verification is failing"
+            description: "Repeated readback failures may indicate object-storage availability or permission issues. Objects are not quarantined on transient reads."
+        - alert: MulticaRoleSourceArtifactIntegrityWorkerFailures
+          expr: increase(multica_role_source_artifact_integrity_failures_total[15m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source artifact integrity worker cannot persist progress"
+            description: "The bounded integrity worker is failing to claim, persist, or count verification state. Quarantine and pending gauges may be stale until database health and worker progress recover."
+        - alert: MulticaRoleSourceRetentionFailures
+          expr: increase(multica_role_source_retention_failures_total[15m]) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source historical retention cannot safely reconcile candidates"
+            description: "At least one historical snapshot candidate failed before a transactional prune or bounded policy deferral committed. The candidate lease is retained for retry; inspect PostgreSQL availability, migration state and retention backlog before enabling more policies."
+        - alert: MulticaRoleSourceRetentionBacklogOld
+          expr: multica_role_source_retention_oldest_active_seconds > 172800
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source historical retention backlog is older than two days"
+            description: "A pending or claimed retention candidate has remained active for more than two days. Review bounded outcome metrics, legal holds, rollback reserves and worker health; do not bypass the snapshot mutation guard."
+        - alert: MulticaRoleSourceRuntimeAttestationPersistenceFailed
+          expr: increase(multica_role_source_runtime_config_attestations_total{outcome="persist_failed"}[5m]) > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceAuditWriteFailureFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.roleSourceSeverity | quote }}
+          annotations:
+            summary: "Role-source runtime loaded-configuration evidence could not be persisted"
+            description: "A daemon supplied a valid loaded-configuration attestation but the server could not durably record it. The daemon will retry because no acknowledgement was returned; inspect PostgreSQL availability and migration state before enabling role-source scans."
+        - alert: MulticaRoleSourceRuntimeUnavailable
+          expr: multica_role_source_runtime_availability{status="runtime_unavailable"} > 0
+          for: {{ .Values.monitoring.prometheusRule.roleSourceRuntimeUnavailableFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "One or more managed role sources have no fresh runtime"
+            description: "At least one active, registered or error-state role source has remained bound to an offline, missing or DB-stale runtime. Tenant/source identifiers are deliberately absent from metrics; use the authorized role-source settings view and operator runbook to identify and repair the affected source."
+    - name: multica-channel-delivery
+      rules:
+        - alert: MulticaChannelDeliveryFailuresElevated
+          expr: |
+            sum by (connector, operation) (
+              increase(multica_channel_delivery_transitions_total{status="failed"}[15m])
+            ) > 20
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Channel delivery failures are elevated"
+            description: "More than 20 {{ "{{ $labels.connector }}" }} {{ "{{ $labels.operation }}" }} deliveries were explicitly rejected in 15 minutes. Inspect authorization, rate limits and provider availability before retrying."
+        - alert: MulticaChannelDeliveryAcceptanceAmbiguous
+          expr: |
+            sum by (connector, operation, error_code) (
+              increase(multica_channel_delivery_transitions_total{status="ambiguous"}[5m])
+            ) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "Channel delivery acceptance is ambiguous and automatic resend is blocked"
+            description: "At least one {{ "{{ $labels.connector }}" }} {{ "{{ $labels.operation }}" }} delivery entered {{ "{{ $labels.error_code }}" }}. The provider may already have accepted the message; do not resend until authorized reconciliation confirms the outcome."
+        - alert: MulticaChannelDeliveryReconcilerErrors
+          expr: increase(multica_channel_delivery_reconciliations_total{outcome=~"query_failed|write_failed"}[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Channel delivery reconciler cannot freeze abandoned leases"
+            description: "The delivery reconciler cannot claim or persist ambiguity evidence for expired send leases. Pending rows remain non-retryable; restore PostgreSQL writes and let reconciliation complete before handling connector events."
+        - alert: MulticaChannelDeliveryAuthorizedRetryStalled
+          expr: increase(multica_channel_delivery_reconciliations_total{outcome=~"retry_query_failed|retry_publish_failed|retry_unconsumed"}[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "An authorized channel-delivery retry is stalled"
+            description: "A signed non-delivery reconciliation could not be loaded, reconstructed from the persisted terminal chat result, or consumed by the connector. The row remains retry_authorized and cannot bypass its one-shot claim fence. Repair the dependency or digest mismatch; never publish replacement content manually."
 {{- end }}

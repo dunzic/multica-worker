@@ -115,7 +115,8 @@ When `S3_BUCKET` is unset, Multica uses local disk.
 | `S3_REGION` | `us-west-2` | Region the bucket lives in |
 | `AWS_ACCESS_KEY_ID` | SDK default credential chain | Static access key |
 | `AWS_SECRET_ACCESS_KEY` | SDK default credential chain | Static secret key |
-| `AWS_ENDPOINT_URL` | empty | S3-compatible endpoint such as MinIO |
+| `S3_ENDPOINT_URL` | empty | Preferred S3-compatible endpoint such as MinIO; scoped to S3 only |
+| `AWS_ENDPOINT_URL` | empty | Legacy `S3_ENDPOINT_URL` alias; forbidden in KMS-backed DR jobs |
 | `S3_USE_PATH_STYLE` | `true` with a custom endpoint | Whether to use path-style addressing |
 | `ATTACHMENT_DOWNLOAD_MODE` | `auto` | `auto`, `cloudfront`, `presign`, or `proxy` |
 | `ATTACHMENT_DOWNLOAD_URL_TTL` | `30m` | Lifetime of signed download URLs |

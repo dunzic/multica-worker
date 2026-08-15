@@ -34,6 +34,43 @@ INSERT INTO skill (workspace_id, name, description, content, config, created_by)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
+-- name: MaterializeRoleSourceSkills :many
+-- Create or update one bounded source-owned Skill batch. New identities are
+-- allocated by the caller. Updates preserve config, creator and all fields not
+-- listed in the SET clause. The caller verifies the exact returned ID set.
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'id')::UUID AS id,
+        item ->> 'operation' AS operation,
+        item ->> 'name' AS name,
+        item ->> 'description' AS description,
+        item ->> 'content' AS content,
+        item -> 'config' AS config,
+        (item ->> 'created_by')::UUID AS created_by
+    FROM jsonb_array_elements(@skills::jsonb) AS item
+), updated AS (
+    UPDATE skill target
+    SET name = input.name,
+        description = input.description,
+        content = input.content,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.id = input.id
+      AND target.workspace_id = @workspace_id
+    RETURNING target.id
+), inserted AS (
+    INSERT INTO skill (id, workspace_id, name, description, content, config, created_by)
+    SELECT id, @workspace_id, name, description, content, config, created_by
+    FROM input
+    WHERE operation = 'create'
+    RETURNING skill.id
+)
+SELECT id FROM updated
+UNION ALL
+SELECT id FROM inserted
+ORDER BY id;
+
 -- name: UpdateSkill :one
 UPDATE skill SET
     name = COALESCE(sqlc.narg('name'), name),
@@ -73,6 +110,81 @@ DELETE FROM skill_file WHERE id = $1;
 -- name: DeleteSkillFilesBySkill :exec
 DELETE FROM skill_file WHERE skill_id = $1;
 
+-- name: LockRoleSourceSkillsForFileSync :many
+-- Lock every target Skill in canonical order before any supporting-file work.
+-- The caller verifies the exact returned ID set before using the file cache.
+SELECT id
+FROM skill
+WHERE id = ANY(@skill_ids::uuid[]) AND workspace_id = @workspace_id
+ORDER BY id
+FOR UPDATE;
+
+-- name: ListRoleSourceSkillFilesForUpdateByTargets :many
+WITH requested AS MATERIALIZED (
+    SELECT
+        (item ->> 'skill_id')::UUID AS skill_id,
+        item ->> 'path' AS path
+    FROM jsonb_array_elements(@targets::jsonb) AS item
+)
+SELECT file.*
+FROM skill_file file
+JOIN requested ON requested.skill_id = file.skill_id AND requested.path = file.path
+JOIN skill ON skill.id = file.skill_id
+WHERE skill.workspace_id = @workspace_id
+ORDER BY file.skill_id, file.path
+FOR UPDATE OF file;
+
+-- name: MaterializeRoleSourceSkillFiles :many
+-- Apply one bounded, canonical final-state batch. Inserts intentionally have no
+-- conflict handler: a user-created path racing the source apply must fail and
+-- roll back instead of being overwritten. Updates/deletes are limited to the
+-- already locked tenant Skill targets and exact paths selected by the caller.
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'skill_id')::UUID AS skill_id,
+        item ->> 'path' AS path,
+        item ->> 'operation' AS operation,
+        item ->> 'content' AS content
+    FROM jsonb_array_elements(@files::jsonb) AS item
+), deleted AS (
+    DELETE FROM skill_file target
+    USING input
+    WHERE input.operation = 'delete'
+      AND target.skill_id = input.skill_id
+      AND target.path = input.path
+      AND EXISTS (
+          SELECT 1 FROM skill
+          WHERE skill.id = target.skill_id AND skill.workspace_id = @workspace_id
+      )
+    RETURNING target.skill_id, target.path, 'delete'::TEXT AS operation
+), updated AS (
+    UPDATE skill_file target
+    SET content = input.content,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.skill_id = input.skill_id
+      AND target.path = input.path
+      AND EXISTS (
+          SELECT 1 FROM skill
+          WHERE skill.id = target.skill_id AND skill.workspace_id = @workspace_id
+      )
+    RETURNING target.skill_id, target.path, 'update'::TEXT AS operation
+), inserted AS (
+    INSERT INTO skill_file (skill_id, path, content)
+    SELECT input.skill_id, input.path, input.content
+    FROM input
+    JOIN skill ON skill.id = input.skill_id AND skill.workspace_id = @workspace_id
+    WHERE input.operation = 'insert'
+    RETURNING skill_file.skill_id, skill_file.path, 'insert'::TEXT AS operation
+)
+SELECT skill_id, path, operation FROM deleted
+UNION ALL
+SELECT skill_id, path, operation FROM updated
+UNION ALL
+SELECT skill_id, path, operation FROM inserted
+ORDER BY skill_id, path;
+
 -- Agent-Skill junction
 
 -- name: ListAgentSkills :many
@@ -102,6 +214,45 @@ ORDER BY ask.agent_id, s.name ASC;
 INSERT INTO agent_skill (agent_id, skill_id)
 VALUES ($1, $2)
 ON CONFLICT DO NOTHING;
+
+-- name: EnsureRoleSourceAgentSkills :many
+-- A large source apply can bind thousands of newly materialized skills. Keep
+-- each caller-bounded association batch set-based and tenant-validate both
+-- endpoints before insertion. Existing disabled associations remain disabled,
+-- matching the single-row AddAgentSkill ownership behavior.
+WITH requested AS (
+    SELECT
+        (binding ->> 'agent_id')::UUID AS requested_agent_id,
+        (binding ->> 'skill_id')::UUID AS requested_skill_id
+    FROM jsonb_array_elements(@bindings::jsonb) AS binding
+), valid AS (
+    SELECT requested.requested_agent_id AS agent_id, requested.requested_skill_id AS skill_id
+    FROM requested
+    JOIN agent ON agent.id = requested.requested_agent_id
+              AND agent.workspace_id = @workspace_id
+              AND agent.kind = 'user'
+              AND agent.archived_at IS NULL
+    JOIN skill ON skill.id = requested.requested_skill_id
+              AND skill.workspace_id = @workspace_id
+), inserted AS (
+    INSERT INTO agent_skill (agent_id, skill_id)
+    SELECT agent_id, skill_id FROM valid
+    ON CONFLICT DO NOTHING
+    RETURNING agent_id, skill_id
+)
+SELECT inserted.agent_id, inserted.skill_id FROM inserted
+UNION ALL
+SELECT valid.agent_id, valid.skill_id
+FROM valid
+JOIN agent_skill existing
+  ON existing.agent_id = valid.agent_id
+ AND existing.skill_id = valid.skill_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM inserted
+    WHERE inserted.agent_id = valid.agent_id
+      AND inserted.skill_id = valid.skill_id
+)
+ORDER BY 1, 2;
 
 -- name: SetAgentSkillEnabled :execrows
 UPDATE agent_skill

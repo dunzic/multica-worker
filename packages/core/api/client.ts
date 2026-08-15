@@ -35,6 +35,34 @@ import type {
   WorkspaceWorkingAgent,
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
+  RoleSource,
+  RoleSourceAdapterDescriptor,
+  CreateRoleSourceRequest,
+  RoleSourcePlanRecord,
+  RoleSourcePlanApproval,
+  RoleSourceApplyResult,
+  RoleSourceSecretTransferStatus,
+  CreateRoleSourcePlanRequest,
+  CreateRoleSourceApprovalRequest,
+  ApplyRoleSourcePlanRequest,
+  RequestRoleSourceSecretTransferRequest,
+  RoleSourcePlanImpact,
+  RoleSourceApplyFailure,
+  RoleSourceRuntimeAttestation,
+  RoleSourceScan,
+  RoleSourceLifecycleEvent,
+  RoleSourceSnapshotSummary,
+  RoleSourceSnapshotComparison,
+  RoleSourceConfigurationReview,
+  ChannelDelivery,
+  UpdateRoleSourceLifecycleRequest,
+  RoleSourceLegalHold,
+  CreateRoleSourceLegalHoldRequest,
+  ReleaseRoleSourceLegalHoldRequest,
+  RoleSourceRetentionPolicy,
+  RoleSourceRetentionPreview,
+  RoleSourceArtifactPurgeReceiptSummary,
+  UpdateRoleSourceRetentionPolicyRequest,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -317,6 +345,31 @@ import {
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
+  RoleSourceScanSchema,
+  RoleSourceScanListSchema,
+  RoleSourceLifecycleEventListSchema,
+  RoleSourceSnapshotSummaryListSchema,
+  RoleSourceSnapshotComparisonSchema,
+  RoleSourceConfigurationReviewSchema,
+  RoleSourceRetentionPreviewSchema,
+  EMPTY_ROLE_SOURCE_RETENTION_PREVIEW,
+  RoleSourceArtifactPurgeReceiptSummarySchema,
+  EMPTY_ROLE_SOURCE_ARTIFACT_PURGE_RECEIPT_SUMMARY,
+  RoleSourceAdapterDescriptorListSchema,
+  RoleSourceSchema,
+  ChannelDeliveryListSchema,
+  RoleSourcePlanRecordSchema,
+  RoleSourcePlanRecordListSchema,
+  RoleSourcePlanApprovalSchema,
+  RoleSourcePlanApprovalListSchema,
+  RoleSourceApplyResultSchema,
+  RoleSourceApplyResultListSchema,
+  RoleSourceSecretTransferStatusSchema,
+  RoleSourceSecretTransferStatusListSchema,
+  EMPTY_ROLE_SOURCE_PLANS,
+  EMPTY_ROLE_SOURCE_APPROVALS,
+  EMPTY_ROLE_SOURCE_APPLIES,
+  EMPTY_ROLE_SOURCE_SECRET_TRANSFERS,
   EMPTY_BILLING_BALANCE,
   EMPTY_BILLING_TRANSACTIONS_PAGE,
   EMPTY_BILLING_BATCHES_PAGE,
@@ -1740,6 +1793,394 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/runtime-profiles`,
     );
     return res.runtime_profiles ?? [];
+  }
+
+  async listRoleSources(workspaceId: string): Promise<RoleSource[]> {
+    const response = await this.fetch<{ sources?: RoleSource[] }>(
+      `/api/workspaces/${workspaceId}/role-sources`,
+    );
+    return response.sources ?? [];
+  }
+
+  async listRoleSourceAdapters(workspaceId: string): Promise<RoleSourceAdapterDescriptor[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-source-adapters`,
+    );
+    return parseWithFallback(raw, RoleSourceAdapterDescriptorListSchema, { adapters: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-source-adapters",
+    }).adapters;
+  }
+
+  async createRoleSource(
+    workspaceId: string,
+    request: CreateRoleSourceRequest,
+  ): Promise<RoleSource | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSource | null>(raw, RoleSourceSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources",
+    });
+  }
+
+  async listRoleSourceRuntimeAttestations(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceRuntimeAttestation[]> {
+    const response = await this.fetch<{
+      attestations?: RoleSourceRuntimeAttestation[];
+    }>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/runtime-attestations`,
+    );
+    return response.attestations ?? [];
+  }
+
+  async getLatestRoleSourceScan(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceScan | null> {
+    try {
+      const raw: unknown = await this.fetch(
+        `/api/workspaces/${workspaceId}/role-sources/${sourceId}/scans/latest`,
+      );
+      return parseWithFallback<RoleSourceScan | null>(raw, RoleSourceScanSchema, null, {
+        endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/scans/latest",
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async listRoleSourceScans(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceScan[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/scans`,
+    );
+    return parseWithFallback(raw, RoleSourceScanListSchema, { scans: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/scans",
+    }).scans;
+  }
+
+  async listRoleSourceLifecycleEvents(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceLifecycleEvent[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/lifecycle-events`,
+    );
+    return parseWithFallback(raw, RoleSourceLifecycleEventListSchema, { events: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/lifecycle-events",
+    }).events;
+  }
+
+  async listRoleSourceSnapshotSummaries(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceSnapshotSummary[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/snapshot-summaries`,
+    );
+    return parseWithFallback(raw, RoleSourceSnapshotSummaryListSchema, { snapshots: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/snapshot-summaries",
+    }).snapshots;
+  }
+
+  async compareRoleSourceSnapshots(
+    workspaceId: string,
+    sourceId: string,
+    fromSnapshotDigest: string,
+    toSnapshotDigest: string,
+    offset: number,
+    limit = 100,
+  ): Promise<RoleSourceSnapshotComparison | null> {
+    const params = new URLSearchParams({
+      from: fromSnapshotDigest,
+      to: toSnapshotDigest,
+      offset: String(offset),
+      limit: String(limit),
+    });
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/snapshot-comparison?${params}`,
+    );
+    const comparison = parseWithFallback<RoleSourceSnapshotComparison | null>(
+      raw,
+      RoleSourceSnapshotComparisonSchema,
+      null,
+      { endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/snapshot-comparison" },
+    );
+    if (!comparison || comparison.from_snapshot_digest !== fromSnapshotDigest || comparison.to_snapshot_digest !== toSnapshotDigest || comparison.offset !== offset || comparison.limit !== limit) {
+      return null;
+    }
+    return comparison;
+  }
+
+  async getRoleSourceConfigurationReview(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+  ): Promise<RoleSourceConfigurationReview | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${planDigest}/configuration-review?offset=0&limit=100`,
+    );
+    const review = parseWithFallback<RoleSourceConfigurationReview | null>(
+      raw,
+      RoleSourceConfigurationReviewSchema,
+      null,
+      { endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/configuration-review" },
+    );
+    return review?.plan_digest === planDigest ? review : null;
+  }
+
+  async listChannelDeliveries(workspaceId: string): Promise<ChannelDelivery[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/channel-deliveries?limit=100`,
+    );
+    return parseWithFallback(raw, ChannelDeliveryListSchema, { deliveries: [] }, {
+      endpoint: "GET /api/workspaces/:workspaceId/channel-deliveries",
+    }).deliveries;
+  }
+
+  async requestRoleSourceScan(
+    workspaceId: string,
+    sourceId: string,
+    requestKey: string,
+  ): Promise<RoleSourceScan | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/scans`,
+      { method: "POST", body: JSON.stringify({ request_key: requestKey }) },
+    );
+    return parseWithFallback<RoleSourceScan | null>(raw, RoleSourceScanSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/scans",
+    });
+  }
+
+  async updateRoleSourceLifecycle(
+    workspaceId: string,
+    sourceId: string,
+    request: UpdateRoleSourceLifecycleRequest,
+  ): Promise<void> {
+    await this.fetch<void>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}`,
+      { method: "PATCH", body: JSON.stringify(request) },
+    );
+  }
+
+  async listRoleSourceLegalHolds(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceLegalHold[]> {
+    const response = await this.fetch<{ legal_holds?: RoleSourceLegalHold[] }>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/legal-holds`,
+    );
+    return response.legal_holds ?? [];
+  }
+
+  async createRoleSourceLegalHold(
+    workspaceId: string,
+    sourceId: string,
+    request: CreateRoleSourceLegalHoldRequest,
+  ): Promise<RoleSourceLegalHold> {
+    return this.fetch<RoleSourceLegalHold>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/legal-holds`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+  }
+
+  async releaseRoleSourceLegalHold(
+    workspaceId: string,
+    sourceId: string,
+    holdId: string,
+    request: ReleaseRoleSourceLegalHoldRequest,
+  ): Promise<RoleSourceLegalHold> {
+    return this.fetch<RoleSourceLegalHold>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/legal-holds/${holdId}/release`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+  }
+
+  async getRoleSourceRetentionPreview(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceRetentionPreview> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/retention`,
+    );
+    return parseWithFallback(raw, RoleSourceRetentionPreviewSchema, EMPTY_ROLE_SOURCE_RETENTION_PREVIEW, {
+      endpoint: "GET /api/workspaces/:id/role-sources/:sourceId/retention",
+    });
+  }
+
+  async getWorkspaceRoleSourceArtifactPurgeReceipts(
+    workspaceId: string,
+  ): Promise<RoleSourceArtifactPurgeReceiptSummary> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/role-source-purge-receipts`,
+    );
+    return parseWithFallback(
+      raw,
+      RoleSourceArtifactPurgeReceiptSummarySchema,
+      EMPTY_ROLE_SOURCE_ARTIFACT_PURGE_RECEIPT_SUMMARY,
+      { endpoint: "GET /api/workspaces/:id/role-source-purge-receipts" },
+    );
+  }
+
+  async updateRoleSourceRetentionPolicy(
+    workspaceId: string,
+    sourceId: string,
+    request: UpdateRoleSourceRetentionPolicyRequest,
+  ): Promise<RoleSourceRetentionPolicy> {
+    return this.fetch<RoleSourceRetentionPolicy>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/retention`,
+      { method: "PATCH", body: JSON.stringify(request) },
+    );
+  }
+
+  async listRoleSourcePlans(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourcePlanRecord[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans`,
+    );
+    return parseWithFallback(raw, RoleSourcePlanRecordListSchema, EMPTY_ROLE_SOURCE_PLANS, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/plans",
+    }).plans;
+  }
+
+  async createRoleSourcePlan(
+    workspaceId: string,
+    sourceId: string,
+    request: CreateRoleSourcePlanRequest,
+  ): Promise<RoleSourcePlanRecord | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourcePlanRecord | null>(raw, RoleSourcePlanRecordSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/plans",
+    });
+  }
+
+  async createRoleSourceRollbackPlan(
+    workspaceId: string,
+    sourceId: string,
+    request: CreateRoleSourcePlanRequest,
+  ): Promise<RoleSourcePlanRecord | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/rollback-plans`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourcePlanRecord | null>(raw, RoleSourcePlanRecordSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/rollback-plans",
+    });
+  }
+
+  async listRoleSourcePlanApprovals(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+  ): Promise<RoleSourcePlanApproval[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/approvals`,
+    );
+    return parseWithFallback(raw, RoleSourcePlanApprovalListSchema, EMPTY_ROLE_SOURCE_APPROVALS, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/approvals",
+    }).approvals;
+  }
+
+  async createRoleSourcePlanApproval(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+    request: CreateRoleSourceApprovalRequest,
+  ): Promise<RoleSourcePlanApproval | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/approvals`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourcePlanApproval | null>(raw, RoleSourcePlanApprovalSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/approvals",
+    });
+  }
+
+  async applyRoleSourcePlan(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+    request: ApplyRoleSourcePlanRequest,
+  ): Promise<RoleSourceApplyResult | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/apply`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourceApplyResult | null>(raw, RoleSourceApplyResultSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/apply",
+    });
+  }
+
+  async listRoleSourceApplyHistory(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceApplyResult[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/applies`,
+    );
+    return parseWithFallback(raw, RoleSourceApplyResultListSchema, EMPTY_ROLE_SOURCE_APPLIES, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/applies",
+    }).applies;
+  }
+
+  async requestRoleSourceSecretTransfer(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+    request: RequestRoleSourceSecretTransferRequest,
+  ): Promise<RoleSourceSecretTransferStatus | null> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/secret-transfers`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+    return parseWithFallback<RoleSourceSecretTransferStatus | null>(raw, RoleSourceSecretTransferStatusSchema, null, {
+      endpoint: "POST /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/secret-transfers",
+    });
+  }
+
+  async listRoleSourceSecretTransfers(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+    approvalId: string,
+  ): Promise<RoleSourceSecretTransferStatus[]> {
+    const raw: unknown = await this.fetch(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/secret-transfers?approval_id=${encodeURIComponent(approvalId)}`,
+    );
+    return parseWithFallback(raw, RoleSourceSecretTransferStatusListSchema, EMPTY_ROLE_SOURCE_SECRET_TRANSFERS, {
+      endpoint: "GET /api/workspaces/:workspaceId/role-sources/:sourceId/plans/:planDigest/secret-transfers",
+    }).secret_transfers;
+  }
+
+  async getRoleSourcePlanImpact(
+    workspaceId: string,
+    sourceId: string,
+    planDigest: string,
+  ): Promise<RoleSourcePlanImpact> {
+    return this.fetch<RoleSourcePlanImpact>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/plans/${encodeURIComponent(planDigest)}/impact`,
+    );
+  }
+
+  async listRoleSourceApplyFailures(
+    workspaceId: string,
+    sourceId: string,
+  ): Promise<RoleSourceApplyFailure[]> {
+    const response = await this.fetch<{ failures?: RoleSourceApplyFailure[] }>(
+      `/api/workspaces/${workspaceId}/role-sources/${sourceId}/apply-failures`,
+    );
+    return response.failures ?? [];
   }
 
   async getRuntimeProfile(

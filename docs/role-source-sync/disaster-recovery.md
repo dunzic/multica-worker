@@ -1,0 +1,265 @@
+# Role-source disaster recovery
+
+Status: the packaged local PostgreSQL 17 signed backup/restore baseline passes
+behind disabled retention/GC gates. Production rollout remains NO-GO until the
+recorded candidate database, versioned object-store, KMS and topology drill in
+`production-validation.md` passes.
+
+## Recovery contract
+
+A PostgreSQL dump alone is not a role-source backup. Runnable historical state
+also depends on immutable artifact bodies and, for an unexpired one-time secret
+transfer, the active and decrypt-only previous master keys. Publisher private
+keys and raw signed-bundle signatures never belong in Multica's backup.
+
+`role_source_dr backup` takes the migration lock and an exclusive role-source
+DR advisory lock, opens one repeatable-read transaction, exports that exact
+PostgreSQL snapshot, streams every ready artifact into a deterministic archive,
+and writes a content-free manifest. Historical pruning, workspace teardown and
+permanent object purge take the shared side of the same lock. Normal scans and
+applies continue; PostgreSQL MVCC puts their commits either before or after the
+exported snapshot.
+
+The manifest contains table row counts and SHA-256 commitments, schema migration
+commitment, artifact count/bytes/commitment, archive and dump digests, and only
+the key IDs needed by unexpired transfers. It contains no snapshot JSON, source
+configuration, local path, request key, ciphertext, envelope, artifact body or
+credential.
+
+The immutable `role_source_artifact_purge_receipt` ledger is part of the table
+inventory even though its corresponding object bodies are deliberately absent
+from the artifact archive. Each row is content-free: it retains digests,
+logical size, stable backend/mode, aggregate provider observations, verified
+absence and completion time, never a raw storage key. Backup/restore preserves
+these rows as audit evidence; it must not recreate purged bodies from receipts.
+
+The manifest is domain-separated and Ed25519-signed. New backups use the
+`ed25519-sha512-commitment-v2` scheme: SHA-512 commits the canonical manifest
+under a dedicated domain and Ed25519 signs a second domain plus that 64-byte
+commitment. This keeps the remote signing message below the AWS KMS 4 KiB RAW
+limit without changing the committed manifest content. Restore keeps verifying
+legacy v1 signatures whose `signature_scheme` field is absent; removing or
+substituting the v2 scheme breaks verification.
+
+Production backup Jobs should use the `aws_kms` signer so private key material
+never enters the container. The command fetches the KMS public key, requires
+`ECC_NIST_EDWARDS25519`, `SIGN_VERIFY` and `ED25519_SHA_512`, compares the exact
+DER-decoded key to an independently pinned raw public key, resolves an alias to
+the returned immutable key ARN, requests `MessageType=RAW`, and locally verifies
+the returned signature before publishing the manifest. Provider errors are
+reduced to stable messages and each KMS operation has a 15-second application
+deadline. KMS mode rejects global and service-specific AWS endpoint variables
+before creating the output directory or reading artifact storage, disables
+shared AWS config/credential files, and reinstalls the official
+region/FIPS-aware KMS resolver as defense in depth. A custom object store uses
+the S3-only `S3_ENDPOINT_URL`, which cannot redirect the STS credential exchange
+or KMS signing request. Only the backup command has a development-only
+`--allow-unsigned-manifest` option; restore and verification always reject
+unsigned manifests.
+
+For a local/HSM signer that accepts imported keys, bootstrap a key once, import
+the private file into the approved signer, then securely delete that bootstrap
+file after verified import. Distribute the public file independently. For AWS
+KMS, create an asymmetric signing key with key spec
+`ECC_NIST_EDWARDS25519` and key usage `SIGN_VERIFY`; do not generate or import a
+raw private key through this command.
+
+```bash
+/app/role_source_dr generate-signing-key --key-id backup-v1 \
+  --private-key-file /private/bootstrap/backup-v1.private \
+  --public-key-file /private/bootstrap/backup-v1.public
+```
+
+## Backup
+
+Use PostgreSQL 17 client tools against the primary and the same object-storage
+configuration as the server. The output directory must not already exist.
+`DATABASE_URL` must use the documented `postgres://` or `postgresql://` form.
+The DR command passes a password-free URL and explicit database user to
+`pg_dump`, supplies the password only through `PGPASSWORD`, and removes pgx-only
+`pool_*` query settings before invoking the PostgreSQL client.
+
+The raw-private-key mode below remains available for the repeatable local gate
+and non-production self-hosting compatibility:
+
+```bash
+export MULTICA_ROLE_SOURCE_DR_SIGNING_PROVIDER='private_key'
+export MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID='backup-v1'
+export MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY='BASE64_ED25519_PRIVATE_KEY_FROM_APPROVED_SIGNER'
+/app/role_source_dr backup \
+  --output-dir /private/backup/role-source-2026-08-13
+```
+
+Use workload identity and an immutable KMS key ARN for a production Job. The
+stable signer key ID must change whenever the signing key changes. The public
+key is not secret, but it must come through an independently reviewed channel:
+
+```bash
+export MULTICA_ROLE_SOURCE_DR_SIGNING_PROVIDER='aws_kms'
+export MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID='backup-kms-2026q3'
+export MULTICA_ROLE_SOURCE_DR_AWS_KMS_KEY_ID='arn:aws:kms:REGION:ACCOUNT:key/KEY_UUID'
+export MULTICA_ROLE_SOURCE_DR_SIGNING_PUBLIC_KEY='BASE64_RAW_ED25519_PUBLIC_KEY'
+export AWS_REGION='REGION'
+# Optional for a non-AWS S3-compatible artifact store:
+export S3_ENDPOINT_URL='https://OBJECT_STORE_ENDPOINT'
+/app/role_source_dr backup \
+  --output-dir /private/backup/role-source-2026-08-15
+```
+
+AWS mode rejects any simultaneously configured raw signing private key. It does
+not fall back to unsigned or local signing when KMS is disabled, revoked,
+unreachable, returns another key, changes algorithm metadata or returns a bad
+signature.
+
+When running inside the Helm backend pod with local PVC storage, explicitly set
+`LOCAL_UPLOAD_DIR=/app/data/uploads` and mount a separate encrypted backup
+volume at `/private/backup`; never write the bundle to the uploads PVC itself.
+For S3, use a dedicated backup job/pod based on the same image and credentials,
+with the output volume mounted only for that job. The
+chart provides an explicitly default-off one-shot backup Job template; it does
+not schedule backups automatically. Set a unique DNS-safe `runName`, a separate
+backup PVC and a new single-directory `outputDirectory`. For `private_key`, set
+the legacy signer Secret name. For `aws_kms`, set a workload-identity service
+account, immutable KMS key ARN, stable signer key ID and pinned public key; the
+rendered Job contains no signing-private-key variable or signer Secret. KMS mode
+also rejects `storageSecretName` and static AWS credential/profile environment
+variables. After resolution, the credential source must identify Web Identity
+or the container credential endpoint; shared files, profiles, static values,
+assume-role chains and the node/EC2 role are refused. Use the same reviewed
+workload identity for S3 and KMS, or the local artifact PVC. For object storage,
+set the chart's non-secret `storageBucket`, `storageRegion`, optional
+`storageEndpointUrl` and `storageUsePathStyle` values. The endpoint must be
+HTTPS and renders only as `S3_ENDPOINT_URL`; the KMS key ARN supplies the
+Job's `AWS_REGION`. The Job refuses retries and the backup tool refuses an
+existing directory.
+
+The command produces `database.dump`, `artifacts.tar` and `manifest.json`, all
+mode 0600 below a mode 0700 directory. Copy the bundle to approved encrypted,
+immutable backup storage. Separately escrow every key ID named in
+`key_requirements` through the organization's KMS/secret-backup process. Never
+put key bytes beside the bundle.
+
+## Local repeatable baseline
+
+The repository includes a destructive, self-cleaning local gate. It creates
+fresh PostgreSQL 17 source/restore databases and local object directories,
+backs up a 38-byte control object plus a 64 MiB immutable object with a signed
+manifest, kills the packaged restore process during the large object's atomic
+write, resumes and verifies both objects twice, then requires exact failure
+findings for archive tamper, missing/changed objects and changed restored
+database state:
+
+```bash
+MULTICA_RS06_BACKEND_IMAGE='candidate-backend-image' \
+DOCKER_BIN=/usr/local/bin/docker \
+  scripts/validation/rs06-dr-restore.sh
+```
+
+The original corrected 2026-08-15 packaging gate passed three consecutive fresh
+runs plus one final smoke run. The expanded gate then passed three further
+fresh process-kill runs at 1.5–3.2 MiB of partial write, proving the canonical
+object stays absent until atomic commit and a retry reclaims the deterministic
+staging file. It also proved that an invalid `pg_dump` leaves `INCOMPLETE` and
+no manifest. See the
+[local restore-drill review](reviews/RS-06-local-restore-drill-2026-08-15.md).
+This is a local packaging and recovery-contract baseline for two objects and
+64 MiB of bulk data, not a production inventory, RPO/RTO, object-store or KMS
+result.
+
+## Restore drill
+
+1. Fence the target from customer traffic, schedulers, daemons, retention and
+   artifact GC. Restore `database.dump` to a fresh PostgreSQL 17 database using
+   `pg_restore`; do not overwrite a running environment.
+2. Point `DATABASE_URL` and the staging object-storage variables at that
+   isolated target. Restore current and previous role-source secret keys from
+   the approved secret escrow.
+   Supply the trusted backup public key independently:
+
+   ```bash
+   export MULTICA_ROLE_SOURCE_DR_TRUSTED_PUBLIC_KEYS='{"backup-v1":"BASE64_ED25519_PUBLIC_KEY"}'
+   ```
+
+   During rotation, install both old and new public keys in this trust map
+   before switching the backup signer. Keep each old public key for at least the
+   full retention period of every backup it signed. The bounded map accepts up
+   to 128 keys under a 64 KiB total input limit; it never fetches trust from the
+   bundle or from the signing alias.
+3. Rehydrate immutable objects. The command verifies the signed whole-archive
+   digest, every member digest and the database inventory before any upload,
+   holds the exclusive DR lock so a mistakenly running deletion worker cannot
+   race recovery, then streams directly to canonical digest keys without an
+   anonymous plaintext spool. Every upload is immediately read back for exact
+   length/SHA-256; a committed object whose provider response was lost therefore
+   converges as success. Transport/authorization read errors cannot be treated
+   as absence. An interrupted retry skips exact committed bodies and reclaims
+   deterministic local staging files:
+
+   ```bash
+   /app/role_source_dr restore-artifacts \
+     --manifest /private/backup/role-source-2026-08-13/manifest.json \
+     --artifact-archive /private/backup/role-source-2026-08-13/artifacts.tar
+   ```
+
+4. Run the full verifier. Supplying the original files proves the copied bundle
+   itself was not changed:
+
+   ```bash
+   /app/role_source_dr verify \
+     --manifest /private/backup/role-source-2026-08-13/manifest.json \
+     --database-dump /private/backup/role-source-2026-08-13/database.dump \
+     --artifact-archive /private/backup/role-source-2026-08-13/artifacts.tar \
+     --report /private/evidence/role-source-restore-report.json
+   ```
+
+5. Require `status=passed`. The verifier recomputes every table commitment;
+   canonical snapshot/plan/receipt digests; complete audit chains; current,
+   pin, mapping, capability, plan, apply, hold, retention and artifact edges;
+   every artifact's exact byte length/SHA-256; and every unexpired transfer's
+   claims, envelope digest and decryptable private key. It also recomputes every
+   artifact-purge receipt commitment for both the legacy v1 contract and the
+   ambiguity-aware v2 contract. It rejects unsupported versions, an invalid
+   shape, changed provider mode, unverified absence, logical-byte mismatch or
+   a v2 completeness flag inconsistent with its ambiguity count. A passing v2
+   receipt with `provider_evidence_complete=false` still proves exact-key
+   absence, but its provider-operation counts are lower bounds and must remain
+   labelled that way in the restore report and any external reconciliation.
+6. Start the server with retention and artifact GC still disabled. Start one
+   reviewed daemon, wait for fresh loaded attestation, perform a read-only scan,
+   then execute a controlled no-op plan. Re-enable traffic only after the drill
+   owner signs the evidence record. Re-enable deletion workers last.
+
+## Signing-key rotation and emergency revocation
+
+1. Create a new immutable KMS Ed25519 signing key and least-privilege workload
+   role. Record its key ARN, protection configuration and audit-log destination.
+2. Retrieve its public key through an independently approved operator path and
+   add a new unique signer ID/public key to every recovery trust configuration.
+   Keep the old signer entry present.
+3. Deploy the backup Job with the new signer ID, immutable key ARN and pinned
+   public key. Produce a backup and restore it into an isolated target.
+4. Prove the manifest verifies with the overlap trust set, KMS audit records
+   show only the expected Job identity and the old backup still verifies.
+5. Remove `kms:Sign` from the old workload path or disable the old key according
+   to policy. Never delete its public key from recovery trust while a retained
+   backup still depends on it.
+
+Emergency disable/revocation must make backup fail non-zero and leave
+`INCOMPLETE`; operators must not switch to `private_key` or
+`--allow-unsigned-manifest` to clear the incident. Re-enablement requires the
+named security approver and a new isolated restore drill.
+
+For a full Multica database recovery, preserve `channel_delivery` together with
+its evidence JSON, evidence digest and `ambiguous_at`. Before starting Slack or
+DingTalk outbound consumers, run the channel-delivery reconciler with provider
+traffic still fenced. Restored expired `pending` rows must become
+`ambiguous/lease_expired`; they must never become retryable merely because the
+backup predates their send outcome. Validate every delivered, readback and
+ambiguous row through the application evidence validator. If validation fails,
+keep outbound connectors disabled and restore a known-good database copy rather
+than editing evidence or status fields.
+
+Expired, consumed, cancelled and failed secret transfers deliberately keep no
+recoverable private key. If a historical target needs environment/MCP values,
+rescan and create a fresh one-time transfer; a database restore never revives
+old credentials.

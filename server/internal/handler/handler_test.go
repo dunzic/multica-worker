@@ -18,6 +18,10 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/rolesource"
+	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
+	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
+	"github.com/multica-ai/multica/server/internal/rolesource/signedremote"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -59,6 +63,20 @@ func TestMain(m *testing.M) {
 	bus := events.New()
 	emailSvc := service.NewEmailService()
 	testHandler = New(queries, pool, hub, bus, emailSvc, nil, nil, analytics.NoopClient{}, Config{AllowSignup: true})
+	roleSourceCatalog, err := rolesource.NewCatalog(agentwaker.Descriptor(), manifestdir.Descriptor(), signedremote.Descriptor())
+	if err != nil {
+		fmt.Printf("Failed to build role-source adapter catalog: %v\n", err)
+		pool.Close()
+		os.Exit(1)
+	}
+	roleSourceControlPlane, err := rolesource.NewControlPlane(pool, roleSourceCatalog)
+	if err != nil {
+		fmt.Printf("Failed to build role-source control plane: %v\n", err)
+		pool.Close()
+		os.Exit(1)
+	}
+	testHandler.RoleSourceCatalog = roleSourceCatalog
+	testHandler.RoleSources = roleSourceControlPlane
 	// httptest.NewRequest defaults RemoteAddr to 192.0.2.1, so every webhook
 	// test in the suite shares one IP bucket. With the production default
 	// (30/min) the budget runs out partway through the suite and unrelated

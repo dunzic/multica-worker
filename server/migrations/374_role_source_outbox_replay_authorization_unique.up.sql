@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_outbox_replay_authorization_unique ON role_source_outbox_replay (authorization_id);

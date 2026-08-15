@@ -69,6 +69,48 @@ INSERT INTO agent (
 )
 RETURNING *;
 
+-- name: CreateRoleSourceAgent :one
+INSERT INTO agent (
+    workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
+    visibility, permission_mode, max_concurrent_tasks, owner_id, instructions,
+    custom_env, custom_args, mcp_config
+) VALUES (
+    @workspace_id, @name, @description, @runtime_mode, '{}'::jsonb, @runtime_id,
+    'private', 'private', 1, @owner_id, @instructions,
+    '{}'::jsonb, '[]'::jsonb, NULL
+)
+RETURNING *;
+
+-- name: UpdateRoleSourceAgent :one
+-- Only source-owned fields are changed. Owner, permission, secrets, MCP,
+-- model, service tier, status and user lifecycle are preserved.
+UPDATE agent
+SET name = @name,
+    description = @description,
+    runtime_mode = @runtime_mode,
+    runtime_id = @runtime_id,
+    instructions = @instructions,
+    updated_at = now()
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND kind = 'user'
+  AND archived_at IS NULL
+RETURNING *;
+
+-- name: UpdateRoleSourceAgentSecrets :one
+-- The caller holds the role-source workspace mutation lock and the mapped
+-- agent row lock, merges only source-owned keys, and supplies the complete
+-- post-merge values. This query cannot cross workspace or system-agent scope.
+UPDATE agent
+SET custom_env = @custom_env,
+    mcp_config = @mcp_config,
+    updated_at = now()
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND kind = 'user'
+  AND archived_at IS NULL
+RETURNING *;
+
 -- name: CreateAgentBuilder :one
 -- One hidden builder agent per creation session. Keeping the execution carrier
 -- session-scoped freezes its model/runtime configuration when multiple builder
@@ -716,6 +758,18 @@ WHERE id = @task_id
          )
   )
 RETURNING delivered_comment_ids;
+
+-- name: LockAgentTaskClaim :one
+-- Final claim construction may perform several writes (task token, delivery
+-- receipt, and source-provenance validation). Lock the exact dispatch
+-- generation first so cancellation/reclaim cannot cross that transaction.
+SELECT * FROM agent_task_queue
+WHERE id = @task_id
+  AND runtime_id = @runtime_id
+  AND status = 'dispatched'
+  AND started_at IS NULL
+  AND dispatched_at = @dispatched_at
+FOR UPDATE;
 
 -- name: RequeueAgentTaskAfterClaimFailure :one
 -- Claim finalization (task token + optional comment receipt) failed before any

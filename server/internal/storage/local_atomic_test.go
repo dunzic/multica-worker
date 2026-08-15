@@ -110,6 +110,35 @@ func TestLocalStorageDeleteObjectReclaimsCrashLeftoverTemp(t *testing.T) {
 	}
 }
 
+func TestLocalStoragePermanentPurgeReturnsVerifiedEvidence(t *testing.T) {
+	dir := t.TempDir()
+	store := &LocalStorage{uploadDir: dir}
+	const key = "role-source-artifacts/workspace/digest"
+	const body = "immutable artifact"
+	if _, err := store.Upload(context.Background(), key, []byte(body), "application/octet-stream", "artifact.bin"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.PurgeObjectWithResult(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Backend != PermanentPurgeBackendLocal || result.Mode != PermanentPurgeModeCurrent ||
+		result.VersionsDeleted != 1 || result.DeleteMarkersDeleted != 0 ||
+		result.ObservedBytesDeleted != int64(len(body)) || !result.VerifiedAbsent {
+		t.Fatalf("local purge result = %+v", result)
+	}
+	for _, path := range []string{filepath.Join(dir, key), filepath.Join(dir, key) + metaSuffix, tempPath(filepath.Join(dir, key))} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("local purge left %s: %v", path, err)
+		}
+	}
+
+	retry, err := store.PurgeObjectWithResult(context.Background(), key)
+	if err != nil || !retry.VerifiedAbsent || retry.VersionsDeleted != 0 || retry.ObservedBytesDeleted != 0 {
+		t.Fatalf("idempotent local purge result = %+v err=%v", retry, err)
+	}
+}
+
 // The staging file must not be readable through the object read paths: keys
 // come straight from the request URL, so a half-written body would otherwise
 // be exposed under a guessable name.

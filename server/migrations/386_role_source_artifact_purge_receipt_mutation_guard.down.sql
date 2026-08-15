@@ -1,0 +1,2 @@
+DROP TRIGGER IF EXISTS trg_guard_role_source_artifact_purge_receipt_mutation ON role_source_artifact_purge_receipt;
+DROP FUNCTION IF EXISTS guard_role_source_artifact_purge_receipt_mutation();

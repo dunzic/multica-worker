@@ -208,12 +208,74 @@ func (q *Queries) CountUndrainedTasksByRuntimeOrAgent(ctx context.Context, arg C
 }
 
 const deleteAgentRuntime = `-- name: DeleteAgentRuntime :exec
+WITH deleted_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation WHERE runtime_id = $1
+), deleted_attestation AS (
+    DELETE FROM role_source_runtime_attestation WHERE runtime_id = $1
+)
 DELETE FROM agent_runtime WHERE id = $1
 `
 
 func (q *Queries) DeleteAgentRuntime(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteAgentRuntime, id)
 	return err
+}
+
+const deleteStaleOfflineRuntimes = `-- name: DeleteStaleOfflineRuntimes :many
+WITH candidates AS MATERIALIZED (
+    SELECT id, workspace_id
+    FROM agent_runtime
+    WHERE status = 'offline'
+      AND last_seen_at < now() - make_interval(secs => $1::double precision)
+      AND NOT EXISTS (
+        SELECT 1 FROM agent WHERE agent.runtime_id = agent_runtime.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM role_source
+        WHERE role_source.runtime_id = agent_runtime.id
+          AND role_source.state <> 'detached'
+      )
+    FOR UPDATE
+), deleted_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation observation
+    USING candidates WHERE observation.runtime_id = candidates.id
+), deleted_attestations AS (
+    DELETE FROM role_source_runtime_attestation attestation
+    USING candidates WHERE attestation.runtime_id = candidates.id
+), deleted_runtimes AS (
+    DELETE FROM agent_runtime runtime
+    USING candidates WHERE runtime.id = candidates.id
+    RETURNING runtime.id, runtime.workspace_id
+)
+SELECT id, workspace_id FROM deleted_runtimes
+`
+
+type DeleteStaleOfflineRuntimesRow struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Deletes runtimes that have been offline for longer than the TTL and have
+// no agents bound (active or archived). The FK constraint on agent.runtime_id
+// is ON DELETE RESTRICT, so we must exclude all agent references.
+func (q *Queries) DeleteStaleOfflineRuntimes(ctx context.Context, staleSeconds float64) ([]DeleteStaleOfflineRuntimesRow, error) {
+	rows, err := q.db.Query(ctx, deleteStaleOfflineRuntimes, staleSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeleteStaleOfflineRuntimesRow{}
+	for rows.Next() {
+		var i DeleteStaleOfflineRuntimesRow
+		if err := rows.Scan(&i.ID, &i.WorkspaceID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const deleteSystemAgentsByRuntime = `-- name: DeleteSystemAgentsByRuntime :exec

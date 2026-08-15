@@ -19,6 +19,7 @@ import {
   Blocks,
   CreditCard,
   Server,
+  Network,
 } from "lucide-react";
 import { GitHubMark } from "./github-mark";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@multica/ui/components/ui/tabs";
@@ -49,6 +50,7 @@ import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
 import { PluginsTab } from "./plugins-tab";
 import { McpTab } from "./mcp-tab";
 import { BillingTab } from "./billing-tab";
+import { RoleSourcesTab } from "./role-sources-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -76,6 +78,7 @@ const WORKSPACE_TAB_KEYS = [
   "quick_actions",
   "mcp",
   "plugins",
+  "role_sources",
 ] as const;
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
@@ -90,6 +93,7 @@ const WORKSPACE_TAB_VALUES = {
   quick_actions: "quick-actions",
   mcp: "mcp",
   plugins: "plugins",
+  role_sources: "role-sources",
 } as const;
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
@@ -104,6 +108,7 @@ const WORKSPACE_TAB_ICONS = {
   quick_actions: Zap,
   mcp: Server,
   plugins: Blocks,
+  role_sources: Network,
 } as const;
 
 const DEFAULT_TAB = "profile";
@@ -142,15 +147,19 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
     BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
     false,
   );
+  const roleSourceSyncEnabled = useFeatureEnabled("role_source_sync", false);
+  const roleSourceScanEnabled = useFeatureEnabled("role_source_scan", false);
+  const roleSourcesEnabled = roleSourceSyncEnabled && roleSourceScanEnabled;
 
   const visibleWorkspaceTabKeys = React.useMemo(
     () =>
       WORKSPACE_TAB_KEYS.filter(
         (key) =>
           (key !== "plugins" || pluginsEnabled) &&
-          (key !== "billing" || billingEnabled),
+          (key !== "billing" || billingEnabled) &&
+          (key !== "role_sources" || roleSourcesEnabled),
       ),
-    [billingEnabled, pluginsEnabled],
+    [billingEnabled, pluginsEnabled, roleSourcesEnabled],
   );
 
   // Whitelist of valid tab values; unknown ?tab=… values silently fall back to
@@ -283,6 +292,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="quick-actions"><QuickActionsTab /></TabsContent>
           <TabsContent value="mcp"><McpTab /></TabsContent>
           {pluginsEnabled ? <TabsContent value="plugins"><PluginsTab /></TabsContent> : null}
+          {roleSourcesEnabled ? <TabsContent value="role-sources"><RoleSourcesTab /></TabsContent> : null}
           {extraAccountTabs?.map((tab) => (
             <TabsContent key={tab.value} value={tab.value}>{tab.content}</TabsContent>
           ))}

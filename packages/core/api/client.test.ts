@@ -5,6 +5,709 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient role-source runtime evidence", () => {
+  const scan = {
+    id: "scan-1",
+    source_id: "source-1",
+    workspace_id: "workspace-1",
+    status: "queued",
+    expected_adapter_version: "1.0.0",
+    snapshot_digest: null,
+    error_code: null,
+    requested_at: "2026-08-13T00:00:00Z",
+    claimed_at: null,
+    completed_at: null,
+  };
+
+  it("reads the server's sources key and requests bounded runtime attestation history", async () => {
+    const source = { id: "source-1" };
+    const attestation = { attestation_id: "sha256:evidence" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ sources: [source] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ attestations: [attestation] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listRoleSources("workspace-1")).resolves.toEqual([source]);
+    await expect(
+      client.listRoleSourceRuntimeAttestations("workspace-1", "source-1"),
+    ).resolves.toEqual([attestation]);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/runtime-attestations",
+    );
+  });
+
+  it("lists trusted adapters and registers only a daemon-local config handle", async () => {
+    const descriptor = {
+      kind: "agentwaker",
+      display_name: "AgentWaker",
+      adapter_version: "1.0.0",
+      contract_version: "1.0",
+      capabilities: { change_hints: true, secret_transfer: true, binary_artifacts: false, provenance: true },
+    };
+    const source = {
+      id: "source-1", workspace_id: "workspace-1", runtime_id: "runtime-1", name: "Production roles",
+      kind: "agentwaker", adapter_version: "1.0.0", config_summary: { configured: true, attributes: [] },
+      policy: {}, state: "registered", current_snapshot_digest: null, version: 1,
+      created_at: "2026-08-13T00:00:00Z", updated_at: "2026-08-13T00:00:00Z",
+      runtime_config: {
+        status: "unattested", attestation_status: "unattested", runtime_status: "online",
+        attestation_id: null, revision: null, observed_at: null, changed_at: null,
+      },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ adapters: [descriptor] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(source), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listRoleSourceAdapters("workspace-1")).resolves.toEqual([descriptor]);
+    await expect(client.createRoleSource("workspace-1", {
+      runtime_id: "runtime-1", name: "Production roles", kind: "agentwaker", adapter_version: "1.0.0",
+      daemon_config_id: "agentwaker-production", config_summary: { configured: true, attributes: [] }, policy: {},
+    })).resolves.toEqual(source);
+    const request = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(request.body).toBe(JSON.stringify({
+      runtime_id: "runtime-1", name: "Production roles", kind: "agentwaker", adapter_version: "1.0.0",
+      daemon_config_id: "agentwaker-production", config_summary: { configured: true, attributes: [] }, policy: {},
+    }));
+    expect(String(request.body)).not.toMatch(/root_path|credential|token|signing_key/);
+  });
+
+  it("fails closed for malformed adapter and registration responses", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ adapters: [{ kind: "agentwaker", root_path: "/private" }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "source-1", daemon_config_id: "secret" }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listRoleSourceAdapters("workspace-1")).resolves.toEqual([]);
+    await expect(client.createRoleSource("workspace-1", {
+      runtime_id: "runtime-1", name: "Production roles", kind: "agentwaker", adapter_version: "1.0.0",
+      daemon_config_id: "agentwaker-production", config_summary: { configured: true, attributes: [] }, policy: {},
+    })).resolves.toBeNull();
+  });
+
+  it("sends lifecycle changes as a versioned PATCH", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test").updateRoleSourceLifecycle(
+      "workspace-1",
+      "source-1",
+      { action: "pause", expected_version: 3 },
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ action: "pause", expected_version: 3 }),
+      }),
+    );
+  });
+
+  it("reads and requests redacted role-source scan status", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(scan), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(scan), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.getLatestRoleSourceScan("workspace-1", "source-1")).resolves.toEqual(scan);
+    await expect(client.requestRoleSourceScan("workspace-1", "source-1", "scan-request-1")).resolves.toEqual(scan);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/scans/latest",
+    );
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/scans",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ request_key: "scan-request-1" }),
+      }),
+    ]);
+  });
+
+  it("lists redacted scan history and fails closed on malformed rows", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ scans: [scan] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ scans: [{ id: 42 }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listRoleSourceScans("workspace-1", "source-1")).resolves.toEqual([scan]);
+    await expect(client.listRoleSourceScans("workspace-1", "source-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/scans",
+    );
+  });
+
+  it("lists safe lifecycle history and fails closed on a malformed event digest", async () => {
+    const event = {
+      sequence: 7,
+      event_type: "source_rebound",
+      actor_type: "user",
+      actor_id: "user-1",
+      previous_state: "detached",
+      state: "paused",
+      previous_runtime_id: "runtime-1",
+      runtime_id: "runtime-2",
+      cancelled_scan_count: 0,
+      cancelled_transfer_count: 0,
+      event_digest: `sha256:${"e".repeat(64)}`,
+      occurred_at: "2026-08-13T05:00:00Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ events: [event] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ events: [{ ...event, event_digest: "raw" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listRoleSourceLifecycleEvents("workspace-1", "source-1")).resolves.toEqual([event]);
+    await expect(client.listRoleSourceLifecycleEvents("workspace-1", "source-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/lifecycle-events",
+    );
+  });
+
+  it("lists bounded snapshot summaries and verifies snapshot comparison identity", async () => {
+    const fromDigest = `sha256:${"a".repeat(64)}`;
+    const toDigest = `sha256:${"b".repeat(64)}`;
+    const summary = {
+      snapshot_digest: fromDigest,
+      manifest_digest: `sha256:${"c".repeat(64)}`,
+      kind: "agentwaker",
+      adapter_version: "1.0.0",
+      revision: "commit-123",
+      tree_digest: `sha256:${"d".repeat(64)}`,
+      role_count: 2,
+      capability_count: 1,
+      diagnostic_count: 0,
+      created_at: "2026-08-13T06:00:00Z",
+    };
+    const comparison = {
+      from_snapshot_digest: fromDigest,
+      to_snapshot_digest: toDigest,
+      total_changes: 1,
+      offset: 0,
+      limit: 100,
+      changes: [{ object_kind: "role", object_id: "writer", display_name: "Writer", operation: "changed" }],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshots: [summary] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(comparison), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...comparison, to_snapshot_digest: fromDigest }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshots: [{ ...summary, instructions: "leak" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listRoleSourceSnapshotSummaries("workspace-1", "source-1")).resolves.toEqual([summary]);
+    await expect(client.compareRoleSourceSnapshots("workspace-1", "source-1", fromDigest, toDigest, 0)).resolves.toEqual(comparison);
+    await expect(client.compareRoleSourceSnapshots("workspace-1", "source-1", fromDigest, toDigest, 0)).resolves.toBeNull();
+    await expect(client.listRoleSourceSnapshotSummaries("workspace-1", "source-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/snapshot-comparison?from=${encodeURIComponent(fromDigest)}&to=${encodeURIComponent(toDigest)}&offset=0&limit=100`,
+    );
+  });
+
+  it("loads a plan-bound redacted configuration review and rejects extra fields", async () => {
+    const planDigest = `sha256:${"a".repeat(64)}`;
+    const review = {
+      plan_digest: planDigest,
+      total_changes: 2,
+      environment_count: 1,
+      mcp_count: 1,
+      offset: 0,
+      limit: 100,
+      changes: [
+        { object_kind: "environment", role_id: "writer", object_id: "OPENAI_API_KEY", operation: "update" },
+        { object_kind: "mcp", role_id: "writer", object_id: "browser", operation: "create" },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(review), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...review, changes: [{ ...review.changes[0], value_digest: "leak" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.getRoleSourceConfigurationReview("workspace-1", "source-1", planDigest)).resolves.toEqual(review);
+    await expect(client.getRoleSourceConfigurationReview("workspace-1", "source-1", planDigest)).resolves.toBeNull();
+  });
+
+  it("lists verified channel delivery evidence and fails closed on mismatched terminal rows", async () => {
+    const delivery = {
+      id: "delivery-1",
+      workspace_id: "workspace-1",
+      task_id: "task-1",
+      chat_session_id: "chat-1",
+      channel_type: "slack",
+      channel_chat_id: "channel-1",
+      operation_kind: "chat_reply",
+      correlation_id: "correlation-1",
+      payload_digest: `sha256:${"a".repeat(64)}`,
+      status: "readback",
+      attempt_count: 1,
+      reconciliation_count: 0,
+      external_message_id: "provider-message-1",
+      evidence_digest: `sha256:${"b".repeat(64)}`,
+      evidence: {
+        contract_version: "1.0",
+        delivery_id: "delivery-1",
+        correlation_id: "correlation-1",
+        workspace_id: "workspace-1",
+        task_id: "task-1",
+        chat_session_id: "chat-1",
+        channel_type: "slack",
+        channel_chat_id: "channel-1",
+        operation_kind: "chat_reply",
+        payload_digest: `sha256:${"a".repeat(64)}`,
+        status: "readback",
+        attempt_count: 1,
+        external_message_id: "provider-message-1",
+        delivered_at: "2026-08-13T06:00:00Z",
+        readback_message_id: "reply-1",
+        readback_at: "2026-08-13T06:01:00Z",
+      },
+      created_at: "2026-08-13T06:00:00Z",
+      updated_at: "2026-08-13T06:01:00Z",
+    };
+    const failed = {
+      ...delivery,
+      id: "delivery-2",
+      status: "failed",
+      installation_id: null,
+      external_message_id: null,
+      evidence_digest: null,
+      evidence: null,
+      last_error_code: "rate_limited",
+    };
+    const ambiguous = {
+      ...delivery,
+      id: "delivery-3",
+      status: "ambiguous",
+      external_message_id: "provider-message-maybe",
+      last_error_code: "partial_delivery",
+      ambiguous_at: "2026-08-13T06:02:00Z",
+      evidence: {
+        ...delivery.evidence,
+        contract_version: "2.0",
+        delivery_id: "delivery-3",
+        status: "ambiguous",
+        external_message_id: "provider-message-maybe",
+        delivered_at: "",
+        readback_message_id: undefined,
+        readback_at: undefined,
+        ambiguity_reason: "partial_delivery",
+        ambiguous_at: "2026-08-13T06:02:00Z",
+      },
+    };
+    const reconciled = {
+      ...ambiguous,
+      id: "delivery-4",
+      status: "reconciled",
+      reconciliation_count: 1,
+      last_reconciled_at: "2026-08-13T06:04:00Z",
+      reconciliation: {
+        generation: 1,
+        outcome: "confirmed_delivered",
+        reason_code: "provider_delivery_confirmed",
+        external_evidence_digest: `sha256:${"c".repeat(64)}`,
+        expected_ambiguity_evidence_digest: ambiguous.evidence_digest,
+        reconciliation_digest: `sha256:${"d".repeat(64)}`,
+        created_at: "2026-08-13T06:04:00Z",
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [delivery, failed, ambiguous, reconciled] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
+        ...delivery,
+        evidence: { ...delivery.evidence, task_id: "other-task" },
+      }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
+        ...ambiguous,
+        last_error_code: "lease_expired",
+      }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
+        ...reconciled,
+        status: "retry_authorized",
+        reconciliation: { ...reconciled.reconciliation, outcome: "confirmed_delivered" },
+      }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([
+      delivery,
+      {
+        ...failed,
+        installation_id: undefined,
+        external_message_id: undefined,
+        evidence_digest: undefined,
+        evidence: undefined,
+      },
+      ambiguous,
+      reconciled,
+    ]);
+    await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
+    await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
+    await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/channel-deliveries?limit=100",
+    );
+  });
+
+  it("treats empty scan history as null and malformed scan responses as unavailable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "scan not found" }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, status: "queued" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.getLatestRoleSourceScan("workspace-1", "source-1")).resolves.toBeNull();
+    await expect(client.getLatestRoleSourceScan("workspace-1", "source-1")).resolves.toBeNull();
+  });
+
+  it("lists, creates, and releases owner-only legal holds", async () => {
+    const hold = { id: "hold-1", status: "active" };
+    const released = { ...hold, status: "released" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ legal_holds: [hold] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(hold), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(released), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listRoleSourceLegalHolds("workspace-1", "source-1")).resolves.toEqual([hold]);
+    await client.createRoleSourceLegalHold("workspace-1", "source-1", {
+      request_key: "hold-request-1",
+      scope: "source",
+      reason_code: "regulatory",
+      reference_digest: `sha256:${"a".repeat(64)}`,
+    });
+    await client.releaseRoleSourceLegalHold("workspace-1", "source-1", "hold-1", {
+      request_key: "release-request-1",
+      reason_code: "court_order",
+    });
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/legal-holds",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "POST" }));
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/legal-holds/hold-1/release",
+    );
+  });
+
+  it("previews and updates owner-only role-source retention", async () => {
+    const preview = {
+      policy: {
+        workspace_id: "workspace-1", source_id: "source-1", version: 0, enabled: false,
+        minimum_age_days: 90, keep_successful_snapshots: 10,
+      },
+      eligible_count: 2,
+      estimated_bytes: 4096,
+      truncated: false,
+      candidates: [],
+    };
+    const policy = { version: 1, enabled: true, minimum_age_days: 90, keep_successful_snapshots: 10 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(policy), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.getRoleSourceRetentionPreview("workspace-1", "source-1")).resolves.toEqual({
+      ...preview,
+      uniquely_reclaimable_bytes: 0,
+    });
+    await client.updateRoleSourceRetentionPolicy("workspace-1", "source-1", {
+      request_key: "retention-policy-1",
+      expected_version: 0,
+      enabled: true,
+      minimum_age_days: 90,
+      keep_successful_snapshots: 10,
+    });
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/retention",
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "PATCH" }));
+  });
+
+  it("fails a malformed role-source retention preview closed", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      policy: {
+        workspace_id: "workspace-1", source_id: "source-1", version: 1, enabled: true,
+        minimum_age_days: 90, keep_successful_snapshots: 10,
+      },
+      eligible_count: 1,
+      estimated_bytes: 4096,
+      uniquely_reclaimable_bytes: "4096",
+      truncated: false,
+      candidates: [],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.getRoleSourceRetentionPreview("workspace-1", "source-1")).resolves.toEqual(
+      expect.objectContaining({
+        eligible_count: 0,
+        estimated_bytes: 0,
+        uniquely_reclaimable_bytes: 0,
+        candidates: [],
+      }),
+    );
+  });
+
+  it("parses receipt-backed artifact purge evidence and fails malformed totals closed", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const summary = {
+      receipt_count: 1,
+      logical_bytes_confirmed_absent: 4096,
+      observed_deleted_bytes: 8192,
+      deleted_versions: 2,
+      deleted_delete_markers: 1,
+      ambiguous_attempts: 0,
+      incomplete_provider_evidence_receipts: 0,
+      truncated: false,
+      receipts: [{
+        contract_version: "role-source-artifact-purge-receipt-v2",
+        artifact_digest: digest,
+        size_bytes: 4096,
+        reason: "unreachable",
+        storage_backend: "s3",
+        purge_mode: "all_versions",
+        successful_passes: 5,
+        deleted_versions: 2,
+        deleted_delete_markers: 1,
+        observed_deleted_bytes: 8192,
+        logical_bytes_confirmed_absent: 4096,
+        ambiguous_attempts: 0,
+        provider_evidence_complete: true,
+        completed_at: "2026-08-15T11:12:13Z",
+        receipt_digest: digest,
+      }],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(summary), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...summary,
+        logical_bytes_confirmed_absent: "4096",
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...summary,
+        observed_deleted_bytes: Number.MAX_SAFE_INTEGER + 1,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...summary,
+        receipts: [{ ...summary.receipts[0], ambiguous_attempts: 1, provider_evidence_complete: true }],
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.getWorkspaceRoleSourceArtifactPurgeReceipts("workspace-1")).resolves.toEqual(summary);
+    await expect(client.getWorkspaceRoleSourceArtifactPurgeReceipts("workspace-1")).resolves.toEqual(
+      expect.objectContaining({
+        receipt_count: 0,
+        logical_bytes_confirmed_absent: 0,
+        receipts: [],
+      }),
+    );
+    await expect(client.getWorkspaceRoleSourceArtifactPurgeReceipts("workspace-1")).resolves.toEqual(
+      expect.objectContaining({
+        receipt_count: 0,
+        observed_deleted_bytes: 0,
+        receipts: [],
+      }),
+    );
+    await expect(client.getWorkspaceRoleSourceArtifactPurgeReceipts("workspace-1")).resolves.toEqual(
+      expect.objectContaining({
+        receipt_count: 0,
+        ambiguous_attempts: 0,
+        receipts: [],
+      }),
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/workspace-1/role-source-purge-receipts");
+  });
+
+  it("creates, approves, applies, and lists verified role-source operations", async () => {
+    const plan = {
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      plan: {
+        contract_version: "role-source-plan/v1",
+        source_id: "source-1",
+        to_snapshot_digest: `sha256:${"a".repeat(64)}`,
+        plan_digest: `sha256:${"b".repeat(64)}`,
+        applyable: true,
+        summary: { create: 1, update: 0, unchanged: 0, archive_candidate: 0, blocked: 0 },
+        actions: [],
+        blockers: [],
+      },
+      created_by: "user-1",
+      created_at: "2026-08-13T00:00:00Z",
+    };
+    const approval = {
+      id: "approval-1",
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      plan_digest: plan.plan.plan_digest,
+      decision: "approved",
+      decisions: { contract_version: "role-source-plan/v1", archives: [], adoptions: [] },
+      actor_user_id: "user-1",
+      created_at: "2026-08-13T00:01:00Z",
+    };
+    const apply = {
+      id: "apply-1",
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      status: "succeeded",
+      mode: "apply",
+      actor_user_id: "user-1",
+      receipt: {
+        contract_version: "role-source-apply-receipt/v1",
+        apply_id: "apply-1",
+        source_id: "source-1",
+        workspace_id: "workspace-1",
+        snapshot_digest: plan.plan.to_snapshot_digest,
+        plan_digest: plan.plan.plan_digest,
+        approval_id: "approval-1",
+        counts: { created: 1, updated: 0, adopted: 0, unchanged: 0, archived: 0, retained: 0 },
+        receipt_digest: `sha256:${"c".repeat(64)}`,
+      },
+      completed_at: "2026-08-13T00:02:00Z",
+    };
+    const transfer = {
+      id: "transfer-1",
+      role_id: "writer",
+      status: "pending",
+      expires_at: "2026-08-13T00:16:00Z",
+      created_at: "2026-08-13T00:01:00Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(plan), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approval), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(apply), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ applies: [apply] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(transfer), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ secret_transfers: [transfer] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.createRoleSourcePlan("workspace-1", "source-1", {
+      target_snapshot_digest: plan.plan.to_snapshot_digest,
+    })).resolves.toEqual(plan);
+    await expect(client.createRoleSourcePlanApproval("workspace-1", "source-1", plan.plan.plan_digest, {
+      request_key: "approval-request-1",
+      decision: "approved",
+      decisions: { contract_version: "role-source-plan/v1", archives: [], adoptions: [] },
+    })).resolves.toEqual(approval);
+    await expect(client.applyRoleSourcePlan("workspace-1", "source-1", plan.plan.plan_digest, {
+      request_key: "apply-request-1",
+      approval_id: approval.id,
+    })).resolves.toEqual(apply);
+    await expect(client.listRoleSourceApplyHistory("workspace-1", "source-1")).resolves.toEqual([apply]);
+    await expect(client.requestRoleSourceSecretTransfer("workspace-1", "source-1", plan.plan.plan_digest, {
+      request_key: "transfer-request-1", approval_id: approval.id, role_id: "writer",
+    })).resolves.toEqual(transfer);
+    await expect(client.listRoleSourceSecretTransfers("workspace-1", "source-1", plan.plan.plan_digest, approval.id)).resolves.toEqual([transfer]);
+
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: expect.stringContaining('"decision":"approved"'),
+    }));
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ request_key: "apply-request-1", approval_id: "approval-1" }),
+    }));
+  });
+
+  it("fails closed when role-source operation responses are malformed", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ plan: { applyable: true } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, decision: "approved" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "succeeded" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ applies: [{ status: "succeeded" }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, status: "pending" }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ secret_transfers: [{ id: 42 }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.createRoleSourcePlan("workspace-1", "source-1", { target_snapshot_digest: "bad" })).resolves.toBeNull();
+    await expect(client.createRoleSourcePlanApproval("workspace-1", "source-1", "plan", {
+      request_key: "approval-request-1", decision: "approved",
+    })).resolves.toBeNull();
+    await expect(client.applyRoleSourcePlan("workspace-1", "source-1", "plan", {
+      request_key: "apply-request-1", approval_id: "approval-1",
+    })).resolves.toBeNull();
+    await expect(client.listRoleSourceApplyHistory("workspace-1", "source-1")).resolves.toEqual([]);
+    await expect(client.requestRoleSourceSecretTransfer("workspace-1", "source-1", "plan", {
+      request_key: "transfer-request-1", approval_id: "approval-1", role_id: "writer",
+    })).resolves.toBeNull();
+    await expect(client.listRoleSourceSecretTransfers("workspace-1", "source-1", "plan", "approval-1")).resolves.toEqual([]);
+  });
+
+  it("creates a forward rollback plan through the dedicated endpoint and fails closed on malformed evidence", async () => {
+    const rollbackPlan = {
+      source_id: "source-1",
+      workspace_id: "workspace-1",
+      created_by: "user-1",
+      created_at: "2026-08-13T01:00:00Z",
+      plan: {
+        contract_version: "role-source-plan/v1",
+        mode: "rollback",
+        source_id: "source-1",
+        from_snapshot_digest: `sha256:${"b".repeat(64)}`,
+        to_snapshot_digest: `sha256:${"a".repeat(64)}`,
+        plan_digest: `sha256:${"c".repeat(64)}`,
+        applyable: true,
+        summary: { create: 0, update: 1, unchanged: 0, archive_candidate: 0, blocked: 0 },
+        actions: [],
+        blockers: [],
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(rollbackPlan), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ plan: { mode: "rollback" } }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.createRoleSourceRollbackPlan("workspace-1", "source-1", {
+      target_snapshot_digest: rollbackPlan.plan.to_snapshot_digest,
+    })).resolves.toEqual(rollbackPlan);
+    await expect(client.createRoleSourceRollbackPlan("workspace-1", "source-1", {
+      target_snapshot_digest: "bad",
+    })).resolves.toBeNull();
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/rollback-plans");
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ target_snapshot_digest: rollbackPlan.plan.to_snapshot_digest }),
+    }));
+  });
+});
+
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",

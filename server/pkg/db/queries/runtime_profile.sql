@@ -77,9 +77,20 @@ WHERE id = $1 AND workspace_id = $2;
 -- the profile-delete path must remove the profile's registered runtime
 -- instances itself. Returns the deleted rows so the caller can broadcast /
 -- audit. Runs inside the same transaction as DeleteRuntimeProfile.
-DELETE FROM agent_runtime
-WHERE profile_id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, owner_id, daemon_id, provider;
+WITH candidates AS MATERIALIZED (
+    SELECT runtime.id FROM agent_runtime runtime WHERE runtime.profile_id = $1 AND runtime.workspace_id = $2 FOR UPDATE
+), deleted_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation observation
+    USING candidates WHERE observation.runtime_id = candidates.id
+), deleted_attestations AS (
+    DELETE FROM role_source_runtime_attestation attestation
+    USING candidates WHERE attestation.runtime_id = candidates.id
+), deleted_runtimes AS (
+    DELETE FROM agent_runtime runtime
+    USING candidates WHERE runtime.id = candidates.id
+    RETURNING runtime.id, runtime.workspace_id, runtime.owner_id, runtime.daemon_id, runtime.provider
+)
+SELECT * FROM deleted_runtimes;
 
 -- name: CountAgentsByProfile :one
 -- Counts active (non-archived) agents bound to any runtime instance of this

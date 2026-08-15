@@ -549,6 +549,20 @@ func (d *DualWriteBroadcaster) Broadcast(message []byte) {
 	_ = d.relay.PublishWithID("global", "all", "", message, id)
 }
 
+// PublishDurable returns the Redis result to the database outbox worker. Local
+// fanout follows successful cross-node acceptance; a retry reuses eventID and
+// is therefore suppressed by both local and relayed client deduplication.
+func (d *DualWriteBroadcaster) PublishDurable(scopeType, scopeID, exclude string, message []byte, eventID string) error {
+	// Publish cross-node first. If Redis rejects the event, leave it wholly
+	// pending so another replica cannot render a committed change locally while
+	// every other replica stays stale. A successful XADD then unlocks the local
+	// fast path; retry after an ambiguous acknowledgement reuses eventID.
+	if err := d.relay.PublishWithID(scopeType, scopeID, exclude, message, eventID); err != nil {
+		return err
+	}
+	return d.local.PublishDurable(scopeType, scopeID, exclude, message, eventID)
+}
+
 // PublishWithID is like publish but uses a caller-supplied event id so the
 // dual-write path can dedup.
 func (r *RedisRelay) PublishWithID(scopeType, scopeID, exclude string, frame []byte, id string) error {
@@ -573,6 +587,12 @@ func (r *RedisRelay) PublishWithID(scopeType, scopeID, exclude string, frame []b
 	return nil
 }
 
+func (r *RedisRelay) PublishDurable(scopeType, scopeID, exclude string, frame []byte, id string) error {
+	return r.PublishWithID(scopeType, scopeID, exclude, frame, id)
+}
+
 var _ Broadcaster = (*RedisRelay)(nil)
 var _ Broadcaster = (*DualWriteBroadcaster)(nil)
 var _ RelayPublisher = (*RedisRelay)(nil)
+var _ DurableBroadcaster = (*DualWriteBroadcaster)(nil)
+var _ DurableBroadcaster = (*RedisRelay)(nil)

@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
@@ -33,6 +34,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -171,6 +173,8 @@ type Handler struct {
 	LocalSkillListStore    LocalSkillListStore
 	LocalSkillImportStore  LocalSkillImportStore
 	FeatureFlags           *featureflag.Service
+	RoleSources            RoleSourceControlPlane
+	RoleSourceCatalog      *rolesource.Catalog
 	LivenessStore          LivenessStore
 	HeartbeatScheduler     HeartbeatScheduler
 	Storage                storage.Storage
@@ -191,6 +195,7 @@ type Handler struct {
 	// every Record* method is nil-safe and obsmetrics.RecordEvent treats a
 	// nil Metrics as "PostHog only".
 	Metrics                      *obsmetrics.BusinessMetrics
+	RoleSourceMetrics            *obsmetrics.RoleSourceMetrics
 	PATCache                     *auth.PATCache
 	DaemonTokenCache             *auth.DaemonTokenCache
 	MembershipCache              *auth.MembershipCache
@@ -244,11 +249,30 @@ type Handler struct {
 	// delivering events, to flush debounced run triggers and join in-flight
 	// reply goroutines. Built unconditionally (even without Lark).
 	ChannelRouter *engine.Router
+	// ChannelDeliveries exposes verified, content-free outbound delivery
+	// evidence to workspace members. The same ledger is shared by connector
+	// subscribers and the inbound readback recorder.
+	ChannelDeliveries         *delivery.Ledger
+	ChannelDeliveryReconciler *delivery.Reconciler
 	// ChannelMediaReconciler settles the channel-media intent ledger
 	// (uploaded-but-unbound object reclaim). Built in cmd/server/router.go
 	// where the storage backend exists; main.go starts it as an independent
 	// worker goroutine. Nil when no storage backend is configured.
 	ChannelMediaReconciler *service.ChannelMediaReconciler
+	// RoleSourceArtifactReconciler reclaims unreachable content-addressed
+	// bodies and workspace-deletion leftovers through a durable tombstone tail.
+	RoleSourceArtifactReconciler *service.RoleSourceArtifactReconciler
+	// RoleSourceArtifactIntegrityReconciler performs bounded storage readback
+	// verification. It is independently default-off from destructive GC.
+	RoleSourceArtifactIntegrityReconciler *service.RoleSourceArtifactIntegrityReconciler
+	// RoleSourceRetentionReconciler applies owner-approved historical snapshot
+	// policies. It remains independently default-off and is wired only when
+	// permanent artifact GC is also available.
+	RoleSourceRetentionReconciler *service.RoleSourceRetentionReconciler
+	// RoleSourceOutboxDispatcher delivers transactionally recorded apply and
+	// rollback invalidations. It is always wired; the process owner runs it
+	// alongside the other bounded background workers.
+	RoleSourceOutboxDispatcher *service.RoleSourceOutboxDispatcher
 	// SlackInstall owns the bring-your-own-app Slack install lifecycle (register
 	// pasted tokens / list / revoke) and the at-rest encryption of each app's bot
 	// + app tokens (MUL-3666). Nil unless MULTICA_SLACK_SECRET_KEY is set.

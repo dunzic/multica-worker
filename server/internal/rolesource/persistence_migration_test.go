@@ -1,0 +1,958 @@
+package rolesource
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+)
+
+func TestRoleSourceMigrationsRespectRepositorySafetyRules(t *testing.T) {
+	matches, err := filepath.Glob(filepath.Join("..", "..", "migrations", "[0-9]*_role_source_*.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(matches)
+	if len(matches) < 20 {
+		t.Fatalf("found %d role-source up migrations, want control-plane migration plus isolated indexes", len(matches))
+	}
+	indexPattern := regexp.MustCompile(`(?is)^CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY\b.*;\s*$`)
+	containsIndexPattern := regexp.MustCompile(`(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\b`)
+	for _, name := range matches {
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		statements := []string{}
+		for _, line := range strings.Split(string(body), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+				statements = append(statements, line)
+			}
+		}
+		statementBody := strings.Join(statements, "\n")
+		upper := strings.ToUpper(statementBody)
+		if strings.Contains(upper, "REFERENCES ") || strings.Contains(upper, "FOREIGN KEY") || strings.Contains(upper, " ON DELETE ") {
+			t.Fatalf("%s introduces a forbidden database relationship", name)
+		}
+		if !containsIndexPattern.MatchString(statementBody) {
+			if strings.Contains(upper, "PRIMARY KEY") || regexp.MustCompile(`(?i)\bUNIQUE\b`).MatchString(statementBody) {
+				t.Fatalf("%s creates an inline/non-concurrent index", name)
+			}
+			continue
+		}
+		if !indexPattern.MatchString(statementBody) || strings.Count(statementBody, ";") != 1 {
+			t.Fatalf("%s must contain exactly one CREATE INDEX CONCURRENTLY statement", name)
+		}
+	}
+}
+
+func TestRoleSourceSecretTransferPersistenceIsCiphertextOnlyAndSelfClearing(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "304_role_source_secret_transfer.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"environment_value", "secret_value", "mcp_definition", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("secret transfer schema contains plaintext field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"private_key_ciphertext", "key_id", "envelope", "envelope_digest", "expires_at", "consumed_at"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("secret transfer schema is missing %q", required)
+		}
+	}
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	for _, query := range []string{"ConsumeRoleSourceSecretTransfer", "ExpireRoleSourceSecretTransfers"} {
+		start := strings.Index(queryText, "-- name: "+query+" ")
+		if start < 0 {
+			t.Fatalf("query %s is missing", query)
+		}
+		section := queryText[start:]
+		if next := strings.Index(section[1:], "\n-- name: "); next >= 0 {
+			section = section[:next+1]
+		}
+		if !strings.Contains(section, "envelope = NULL") || !strings.Contains(section, "private_key_ciphertext = decode(repeat('00', 60), 'hex')") {
+			t.Fatalf("query %s does not clear recoverable ciphertext: %s", query, section)
+		}
+	}
+}
+
+func TestRoleSourceMaterializedTargetUniquenessAllowsOwnedAgentFields(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	replacement, err := os.ReadFile(filepath.Join(root, "379_role_source_materialized_target_unique.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(replacement)
+	for _, required := range []string{
+		"CREATE UNIQUE INDEX CONCURRENTLY role_source_mapping_materialized_target_unique",
+		"workspace_id, target_kind, target_id",
+		"source_kind IN ('role', 'skill', 'automation')",
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("materialized target index is missing %q", required)
+		}
+	}
+	if strings.Contains(body, "environment") || strings.Contains(body, "mcp") || strings.Contains(body, "capability_binding") {
+		t.Fatal("subordinate field mappings must be allowed to share their parent Agent or Skill target")
+	}
+	relax, err := os.ReadFile(filepath.Join(root, "380_role_source_mapping_target_unique_relax.up.sql"))
+	if err != nil || strings.TrimSpace(string(relax)) != "DROP INDEX CONCURRENTLY IF EXISTS role_source_mapping_target_unique;" {
+		t.Fatalf("legacy over-broad mapping index is not dropped safely: %v", err)
+	}
+}
+
+func TestRoleSourceSecretTransferPlanStatusLookupHasConcurrentIndex(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	index, err := os.ReadFile(filepath.Join(root, "360_role_source_secret_transfer_plan_index.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(index)
+	if !strings.Contains(body, "CREATE INDEX CONCURRENTLY") ||
+		!strings.Contains(body, "workspace_id, source_id, plan_digest, approval_id, role_id, created_at DESC, id DESC") {
+		t.Fatal("secret-transfer status lookup requires a tenant/plan/approval/role concurrent index")
+	}
+}
+
+func TestRoleSourceScanRequestKeysAreDigestOnlyAndConcurrentlyUnique(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	column, err := os.ReadFile(filepath.Join(root, "358_role_source_scan_request_key.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := os.ReadFile(filepath.Join(root, "359_role_source_scan_request_unique.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(column), "request_key_digest") || strings.Contains(string(column), "request_key TEXT") {
+		t.Fatal("scan request idempotency must persist only a digest")
+	}
+	if !strings.Contains(string(index), "CREATE UNIQUE INDEX CONCURRENTLY") ||
+		!strings.Contains(string(index), "source_id, request_key_digest") {
+		t.Fatal("scan request idempotency requires a source-scoped concurrent unique index")
+	}
+}
+
+func TestRoleSourcePersistenceNeverStoresRawSourceConfig(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "273_role_source_control_plane.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"root_path", "config_raw", "config_plaintext", "secret_value", "credential_value"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("control-plane schema contains forbidden raw source field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"daemon_config_id", "config_redacted", "snapshot_digest", "plan_digest", "event_digest", "lease_token"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("control-plane schema is missing safety field %q", required)
+		}
+	}
+}
+
+func TestRoleSourceSnapshotArtifactReachabilityIsTransactionalAndBackfilled(t *testing.T) {
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	lockStart := strings.Index(queryText, "-- name: ListRoleSourceArtifactsForSnapshotByDigests ")
+	if lockStart < 0 {
+		t.Fatal("snapshot artifact locking query is missing")
+	}
+	lockSection := queryText[lockStart:]
+	if next := strings.Index(lockSection[1:], "\n-- name: "); next >= 0 {
+		lockSection = lockSection[:next+1]
+	}
+	if !strings.Contains(lockSection, "FOR SHARE") {
+		t.Fatalf("snapshot artifact query does not fence GC: %s", lockSection)
+	}
+	for _, required := range []string{"InsertRoleSourceSnapshotArtifacts", "ON CONFLICT (source_id, snapshot_digest, artifact_digest) DO NOTHING", "ListRoleSourceSnapshotArtifacts"} {
+		if !strings.Contains(queryText, required) {
+			t.Fatalf("reachability query contract is missing %q", required)
+		}
+	}
+
+	controlBody, err := os.ReadFile("controlplane.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := string(controlBody)
+	verifyAt := strings.Index(control, "verifySnapshotArtifacts(ctx")
+	insertSnapshotAt := strings.Index(control, "qtx.InsertRoleSourceSnapshot(ctx")
+	insertEdgesAt := strings.Index(control, "persistSnapshotArtifactEdges(ctx")
+	completeAt := strings.Index(control, "qtx.CompleteRoleSourceScanSuccess(ctx")
+	if verifyAt < 0 || insertSnapshotAt < 0 || insertEdgesAt < 0 || completeAt < 0 ||
+		!(verifyAt < insertSnapshotAt && insertSnapshotAt < insertEdgesAt && insertEdgesAt < completeAt) {
+		t.Fatal("scan success must lock bodies, insert snapshot, persist edges, then complete the request")
+	}
+
+	backfillBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "330_role_source_snapshot_artifact_backfill.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backfill := string(backfillBody)
+	for _, path := range []string{
+		"$.capabilities[*].entrypoint", "$.capabilities[*].artifacts[*]", "$.roles[*].instructions",
+		"$.roles[*].profile", "$.roles[*].skills[*].entrypoint", "$.roles[*].skills[*].artifacts[*]",
+		"$.roles[*].automations[*].prompt",
+	} {
+		if !strings.Contains(backfill, path) {
+			t.Fatalf("reachability backfill is missing manifest path %q", path)
+		}
+	}
+}
+
+func TestRoleSourceApplyFailurePersistenceIsContentFree(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "324_role_source_apply_failure.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"request_key text", "raw_error", "error_message", "payload", "manifest", "artifact_body", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("apply failure schema contains sensitive field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"request_key_digest", "failure_stage", "failure_code", "occurred_at"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("apply failure schema is missing %q", required)
+		}
+	}
+}
+
+func TestRoleSourceOutboxIsBoundedLeasedAndTransactionallyInserted(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	schemaBody, err := os.ReadFile(filepath.Join(root, "362_role_source_outbox.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(schemaBody))
+	for _, forbidden := range []string{"payload", "jsonb", "request_key", "manifest", "artifact_body", "secret", "credential", "plaintext", "error_message"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("role-source outbox retains forbidden content %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"create table role_source_outbox", "apply_id uuid", "mode text", "snapshot_digest text", "plan_digest text", "receipt_digest text",
+		"lease_token", "lease_expires_at", "next_attempt_at", "attempt between 0 and 20",
+		"status in ('pending', 'publishing', 'published', 'dead')",
+	} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("role-source outbox schema is missing %q", required)
+		}
+	}
+	for name, fragment := range map[string]string{
+		"363_role_source_outbox_id_unique.up.sql":               "CREATE UNIQUE INDEX CONCURRENTLY",
+		"364_role_source_outbox_due_index.up.sql":               "WHERE status IN ('pending', 'publishing')",
+		"365_role_source_outbox_status_index.up.sql":            "CREATE INDEX CONCURRENTLY",
+		"366_role_source_outbox_published_cleanup_index.up.sql": "WHERE status = 'published'",
+		"367_role_source_outbox_dead_cleanup_index.up.sql":      "WHERE status = 'dead'",
+		"368_role_source_outbox_workspace_index.up.sql":         "workspace_id, id",
+	} {
+		body, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil || !strings.Contains(string(body), fragment) {
+			t.Fatalf("%s must contain %q: %v", name, fragment, readErr)
+		}
+	}
+	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queryBody)
+	for _, required := range []string{
+		"InsertRoleSourceOutboxEvent", "ClaimNextRoleSourceOutboxEvent", "FOR UPDATE SKIP LOCKED",
+		"MarkRoleSourceOutboxPublished", "ReleaseRoleSourceOutboxEvent", "MarkExhaustedRoleSourceOutboxEventsDead",
+		"DeletePublishedRoleSourceOutboxEvents",
+		"DeleteDeadRoleSourceOutboxEvents",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("role-source outbox query contract is missing %q", required)
+		}
+	}
+	applyBody, err := os.ReadFile("apply.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := string(applyBody)
+	insertAt := strings.Index(apply, "qtx.InsertRoleSourceOutboxEvent(ctx")
+	commitAt := strings.Index(apply[insertAt:], "tx.Commit(ctx)")
+	if insertAt < 0 || commitAt < 0 {
+		t.Fatal("successful apply must insert its durable event before committing")
+	}
+	for _, required := range []string{
+		"DeletePublishedRoleSourceOutboxEvents", "DeleteDeadRoleSourceOutboxEvents", "NOT EXISTS (", "FROM role_source_outbox_replay replay",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("settled cleanup must preserve replay evidence: missing %q", required)
+		}
+	}
+	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
+		cleanup, readErr := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if readErr != nil || !strings.Contains(string(cleanup), "DELETE FROM role_source_outbox") {
+			t.Fatalf("%s must explicitly delete role-source outbox rows: %v", name, readErr)
+		}
+	}
+	legacyWorkspace, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "workspace.sql"))
+	if err != nil || !strings.Contains(string(legacyWorkspace), "DELETE FROM role_source_outbox_replay\n    WHERE role_source_outbox_replay.workspace_id = $1\n      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)") {
+		t.Fatal("legacy workspace delete must execute teardown mode before replay receipt deletion")
+	}
+}
+
+func TestRoleSourceOutboxReplayIsDualControlledImmutableAndExplicitlyDeleted(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	schemaBody, err := os.ReadFile(filepath.Join(root, "369_role_source_outbox_replay.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(schemaBody))
+	for _, forbidden := range []string{"payload", "manifest", "artifact_body", "incident_reference text", "operator_name", "email", "signature bytea"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("replay receipt retains forbidden content %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"authorization_id uuid", "generation smallint", "generation between 1 and 3", "requester_key_id", "approver_key_id",
+		"requester_key_id <> approver_key_id", "authorization_digest", "requester_signature_digest", "approver_signature_digest",
+		"incident_reference_digest", "previous_replay_digest", "replay_digest", "replay_count between 0 and 3",
+		"role_source_outbox_replay_count_check", "not valid",
+		"role_source_outbox_dead_attempt_check", "status <> 'dead' or attempt = 20",
+	} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("replay schema is missing %q", required)
+		}
+	}
+	for name, fragment := range map[string]string{
+		"370_role_source_outbox_replay_id_unique.up.sql":            "CREATE UNIQUE INDEX CONCURRENTLY",
+		"371_role_source_outbox_replay_generation_unique.up.sql":    "outbox_id, generation",
+		"372_role_source_outbox_replay_listing_index.up.sql":        "workspace_id, created_at DESC, id DESC",
+		"373_role_source_outbox_replay_mutation_guard.up.sql":       "workspace_teardown",
+		"374_role_source_outbox_replay_authorization_unique.up.sql": "authorization_id",
+		"375_role_source_outbox_dead_attempt_validate.up.sql":       "VALIDATE CONSTRAINT role_source_outbox_replay_count_check",
+	} {
+		body, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil || !strings.Contains(string(body), fragment) {
+			t.Fatalf("%s must contain %q: %v", name, fragment, readErr)
+		}
+	}
+	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queryBody)
+	for _, required := range []string{
+		"GetRoleSourceOutboxForReplay", "FOR UPDATE", "GetRoleSourceApplyForOutboxReplay", "ListRoleSourceAuditChainForOutboxReplay",
+		"InsertRoleSourceOutboxReplay", "RequeueDeadRoleSourceOutboxEvent", "status = 'dead'", "replay_count = @expected_replay_count", "replay_count < 3",
+		"NOT EXISTS (", "role_source_outbox_replay replay",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("replay query contract is missing %q", required)
+		}
+	}
+	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
+		body, readErr := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if readErr != nil || !strings.Contains(string(body), "DELETE FROM role_source_outbox_replay") {
+			t.Fatalf("%s must explicitly delete replay receipts: %v", name, readErr)
+		}
+	}
+}
+
+func TestRoleSourceArtifactDeleteIntentSurvivesTenantTeardownWithoutContent(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "331_role_source_artifact_delete_intent.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"workspace_id uuid", "source_id uuid", "artifact_body", "manifest jsonb", "prompt", "credential", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("artifact delete intent retains forbidden tenant/content field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"storage_key", "artifact_digest", "lease_token", "lease_expires_at", "tombstone_pass", "next_attempt_at"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("artifact delete intent is missing lifecycle field %q", required)
+		}
+	}
+}
+
+func TestRoleSourceArtifactPurgeReceiptIsBoundedImmutableAndContentFree(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	evidenceBody, err := os.ReadFile(filepath.Join(root, "381_role_source_artifact_purge_evidence.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := strings.ToLower(string(evidenceBody))
+	for _, required := range []string{
+		"workspace_id uuid", "purge_backend", "purge_mode", "purge_passes",
+		"deleted_versions", "deleted_delete_markers", "observed_deleted_bytes",
+		"absence_verified", "last_purged_at",
+	} {
+		if !strings.Contains(evidence, required) {
+			t.Fatalf("artifact purge evidence migration is missing %q", required)
+		}
+	}
+	receiptBody, err := os.ReadFile(filepath.Join(root, "383_role_source_artifact_purge_receipt.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := strings.ToLower(string(receiptBody))
+	for _, forbidden := range []string{"storage_key text", "manifest jsonb", "artifact_body", "prompt", "credential", "error_message"} {
+		if strings.Contains(receipt, forbidden) {
+			t.Fatalf("artifact purge receipt retains forbidden content %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"storage_key_digest", "artifact_digest", "logical_bytes_confirmed_absent",
+		"observed_deleted_bytes", "successful_passes", "receipt_digest",
+		"absence_verified boolean not null check (absence_verified)",
+	} {
+		if !strings.Contains(receipt, required) {
+			t.Fatalf("artifact purge receipt schema is missing %q", required)
+		}
+	}
+	for name, fragment := range map[string]string{
+		"382_role_source_artifact_delete_intent_id_unique.up.sql":       "CREATE UNIQUE INDEX CONCURRENTLY",
+		"384_role_source_artifact_purge_receipt_intent_unique.up.sql":   "intent_id",
+		"385_role_source_artifact_purge_receipt_workspace_index.up.sql": "workspace_id, completed_at DESC, intent_id DESC",
+		"386_role_source_artifact_purge_receipt_mutation_guard.up.sql":  "purge receipts are immutable",
+	} {
+		body, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil || !strings.Contains(string(body), fragment) {
+			t.Fatalf("%s must contain %q: %v", name, fragment, readErr)
+		}
+	}
+	ambiguityBody, err := os.ReadFile(filepath.Join(root, "387_role_source_artifact_purge_ambiguity.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguity := strings.ToLower(string(ambiguityBody))
+	for _, required := range []string{
+		"purge_ambiguous_attempts", "contract_version", "ambiguous_attempts",
+		"provider_evidence_complete", "role-source-artifact-purge-receipt-v1",
+		"role-source-artifact-purge-receipt-v2",
+	} {
+		if !strings.Contains(ambiguity, required) {
+			t.Fatalf("artifact purge ambiguity migration is missing %q", required)
+		}
+	}
+	downBody, err := os.ReadFile(filepath.Join(root, "387_role_source_artifact_purge_ambiguity.down.sql"))
+	if err != nil || !strings.Contains(string(downBody), "cannot remove artifact purge ambiguity fields while v2 receipts exist") {
+		t.Fatalf("artifact purge ambiguity rollback must reject v2 evidence loss: %v", err)
+	}
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	for _, required := range []string{
+		"CompleteRoleSourceArtifactDeleteIntent", "INSERT INTO role_source_artifact_purge_receipt",
+		"logical_bytes_confirmed_absent", "ON CONFLICT (intent_id) DO NOTHING",
+		"intent.purge_passes + 1",
+		"intent.deleted_versions + @purged_version_count",
+		"intent.deleted_delete_markers + @purged_delete_marker_count",
+		"intent.observed_deleted_bytes + @purged_observed_bytes",
+		"@purge_evidence_ambiguous::boolean",
+		"intent.state = 'deleting' AND intent.lease_expires_at < now()",
+		"@ambiguous_attempts::integer = intent.purge_ambiguous_attempts",
+		"@provider_evidence_complete::boolean = (intent.purge_ambiguous_attempts = 0)",
+		"incomplete_provider_evidence_receipts",
+		"ListWorkspaceRoleSourceArtifactPurgeReceipts", "GetWorkspaceRoleSourceArtifactPurgeReceiptTotals",
+	} {
+		if !strings.Contains(queryText, required) {
+			t.Fatalf("artifact purge receipt query contract is missing %q", required)
+		}
+	}
+}
+
+func TestRoleSourceArtifactIntegrityMigrationContract(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	for _, required := range []struct {
+		name string
+		text []string
+	}{
+		{"354_role_source_artifact_integrity.up.sql", []string{"CREATE TABLE role_source_artifact_integrity", "quarantined", "lease_token", "CHECK"}},
+		{"355_role_source_artifact_integrity_unique.up.sql", []string{"CREATE UNIQUE INDEX CONCURRENTLY", "workspace_id, artifact_digest"}},
+		{"356_role_source_artifact_integrity_due_index.up.sql", []string{"CREATE INDEX CONCURRENTLY", "WHERE state IN"}},
+		{"357_role_source_artifact_integrity_backfill.up.sql", []string{"FROM role_source_artifact", "ON CONFLICT"}},
+	} {
+		body, err := os.ReadFile(filepath.Join(root, required.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fragment := range required.text {
+			if !strings.Contains(string(body), fragment) {
+				t.Errorf("%s missing %q", required.name, fragment)
+			}
+		}
+	}
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(queries)
+	for _, fragment := range []string{
+		"MarkRoleSourceArtifactUploadedForIntegrity", "ClaimNextRoleSourceArtifactIntegrity",
+		"QuarantineRoleSourceArtifactIntegrity", "ReleaseRoleSourceArtifactIntegrity",
+		"integrity.state IN ('pending', 'healthy')", "FOR SHARE OF artifact, integrity", "removed_integrity",
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("role-source SQL missing integrity contract %q", fragment)
+		}
+	}
+}
+
+func TestRoleSourceRuntimeAttestationIsBoundedRedactedAndExplicitlyDeleted(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "334_role_source_runtime_attestation.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(body))
+	for _, forbidden := range []string{"root_path", "allowed_roots jsonb", "config_raw", "config_plaintext", "digest_key", "secret_value", "credential_value"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("runtime attestation schema contains private field %q", forbidden)
+		}
+	}
+	for _, required := range []string{"attestation_id", "config_revision", "sources jsonb", "observed_at", "changed_at", "observation_count", "jsonb_array_length(sources) between 1 and 512"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("runtime attestation schema is missing %q", required)
+		}
+	}
+
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	for _, required := range []string{"RecordRoleSourceRuntimeAttestation", "ON CONFLICT (runtime_id)", "ON CONFLICT (runtime_id, attestation_id)", "observation_count + 1"} {
+		if !strings.Contains(queryText, required) {
+			t.Fatalf("runtime attestation persistence is missing %q", required)
+		}
+	}
+	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
+		cleanup, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, table := range []string{"role_source_runtime_attestation_observation", "role_source_runtime_attestation"} {
+			if !strings.Contains(string(cleanup), "DELETE FROM "+table) {
+				t.Fatalf("%s does not explicitly delete %s", name, table)
+			}
+		}
+	}
+	for _, name := range []string{"runtime.sql", "runtime_profile.sql"} {
+		cleanup, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, table := range []string{"role_source_runtime_attestation_observation", "role_source_runtime_attestation"} {
+			if !strings.Contains(string(cleanup), "DELETE FROM "+table) {
+				t.Fatalf("%s does not explicitly delete %s on runtime teardown", name, table)
+			}
+		}
+	}
+	runtimeQueries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "runtime.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runtimeQueries), "role_source.runtime_id = agent_runtime.id") {
+		t.Fatal("stale runtime GC does not preserve role-source-bound runtimes")
+	}
+	roleSourceQueries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"CountRoleSourcesByRuntime", "CountRoleSourcesByRuntimes", "ReassignRoleSourcesToRuntime", "LockRoleSourceRuntimeForRegistration", "FOR KEY SHARE"} {
+		if !strings.Contains(string(roleSourceQueries), required) {
+			t.Fatalf("runtime relationship guard is missing %q", required)
+		}
+	}
+	controlBody, err := os.ReadFile("controlplane.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := string(controlBody)
+	lockAt := strings.Index(control, "qtx.LockRoleSourceRuntimeForRegistration(ctx")
+	createAt := strings.Index(control, "qtx.CreateRoleSource(ctx")
+	if lockAt < 0 || createAt < 0 || lockAt > createAt {
+		t.Fatal("role-source registration must lock its runtime before creating the source")
+	}
+	handlerBody, err := os.ReadFile(filepath.Join("..", "handler", "daemon.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := string(handlerBody)
+	attestationStart := strings.Index(handler, "func (h *Handler) recordRoleSourceRuntimeAttestation(")
+	if attestationStart < 0 {
+		t.Fatal("runtime attestation persistence handler is missing")
+	}
+	attestation := handler[attestationStart:]
+	workspaceLockAt := strings.Index(attestation, "qtx.LockWorkspaceForRoleSourceMutation(ctx")
+	runtimeLockAt := strings.Index(attestation, "qtx.LockRoleSourceRuntimeForRegistration(ctx")
+	recordAt := strings.Index(attestation, "qtx.RecordRoleSourceRuntimeAttestation(ctx")
+	commitAt := strings.Index(attestation, "tx.Commit(ctx)")
+	if workspaceLockAt < 0 || runtimeLockAt < 0 || recordAt < 0 || commitAt < 0 ||
+		!(workspaceLockAt < runtimeLockAt && runtimeLockAt < recordAt && recordAt < commitAt) {
+		t.Fatal("runtime attestation must lock workspace and runtime before writing and acknowledging durable evidence")
+	}
+}
+
+func TestRoleSourceRuntimeAttestationShapeMigrationFailsClosedWithoutFunctionErrors(t *testing.T) {
+	guardBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "376_role_source_runtime_attestation_shape_guard.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := strings.ToLower(string(guardBody))
+	for _, required := range []string{
+		"role_source_runtime_attestation_shape_check",
+		"role_source_runtime_attestation_observation_shape_check",
+		"case",
+		"when jsonb_typeof(sources) = 'array'",
+		"else false",
+		"not valid",
+	} {
+		if !strings.Contains(guard, required) {
+			t.Fatalf("runtime attestation shape guard is missing %q", required)
+		}
+	}
+
+	validateBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "377_role_source_runtime_attestation_shape_validate.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validate := strings.ToLower(string(validateBody))
+	for _, constraint := range []string{
+		"role_source_runtime_attestation_shape_check",
+		"role_source_runtime_attestation_observation_shape_check",
+	} {
+		if !strings.Contains(validate, "validate constraint "+constraint) {
+			t.Fatalf("runtime attestation shape validation is missing %q", constraint)
+		}
+	}
+
+	replaceBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "378_role_source_runtime_attestation_shape_replace.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replace := strings.ToLower(string(replaceBody))
+	for _, constraint := range []string{
+		"role_source_runtime_attestation_check",
+		"role_source_runtime_attestation_observation_check",
+	} {
+		if !strings.Contains(replace, "drop constraint "+constraint) {
+			t.Fatalf("runtime attestation unsafe constraint replacement is missing %q", constraint)
+		}
+	}
+}
+
+func TestRoleSourceLegalHoldIsAppendOnlyContentFreeAndFencesWorkspaceDeletion(t *testing.T) {
+	migrationBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "339_role_source_legal_hold.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(migrationBody))
+	for _, forbidden := range []string{"request_key text", "case_number", "case_reference text", "reason text", "description", "notes", "payload", "manifest", "artifact_body", "credential", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("legal-hold schema contains sensitive/free-text field %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"create table role_source_legal_hold", "create table role_source_legal_hold_release",
+		"request_key_digest", "scope text", "snapshot_digest", "reason_code", "reference_digest", "released_by", "released_at",
+	} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("legal-hold schema is missing %q", required)
+		}
+	}
+
+	queriesBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queriesBody)
+	for _, required := range []string{
+		"GetRoleSourceLegalHoldForUpdate", "FOR UPDATE", "CountActiveRoleSourceLegalHoldsInWorkspace",
+		"NOT EXISTS", "role_source_legal_hold_release",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("legal-hold persistence is missing %q", required)
+		}
+	}
+	for _, name := range []string{"workspace.sql", "workspace_delete.sql"} {
+		cleanup, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(cleanup)
+		holdAt := strings.Index(text, "DELETE FROM role_source_legal_hold WHERE")
+		releaseAt := strings.Index(text, "DELETE FROM role_source_legal_hold_release")
+		sourceAt := strings.LastIndex(text, "DELETE FROM role_source ")
+		if releaseAt < 0 || holdAt < 0 || sourceAt < 0 || !(holdAt < releaseAt && releaseAt < sourceAt) ||
+			!strings.Contains(text[releaseAt:sourceAt], "SELECT id FROM") {
+			t.Fatalf("%s must delete released holds before their releases and before sources", name)
+		}
+	}
+
+	guardBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "344_role_source_legal_hold_mutation_guard.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := strings.ToLower(string(guardBody))
+	for _, required := range []string{
+		"before update or delete on role_source_legal_hold",
+		"active role source legal hold cannot be deleted",
+		"before update on role_source_legal_hold_release",
+		"role source legal hold releases are immutable",
+	} {
+		if !strings.Contains(guard, required) {
+			t.Fatalf("legal-hold database mutation guard is missing %q", required)
+		}
+	}
+
+	handlerBody, err := os.ReadFile(filepath.Join("..", "handler", "workspace.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := string(handlerBody)
+	lockAt := strings.Index(handler, "qtx.LockWorkspaceForDelete")
+	holdAt := strings.Index(handler, "qtx.CountActiveRoleSourceLegalHoldsInWorkspace")
+	deleteAt := strings.Index(handler, `name: "delete leaf data"`)
+	if lockAt < 0 || holdAt < 0 || deleteAt < 0 || !(lockAt < holdAt && holdAt < deleteAt) {
+		t.Fatal("workspace deletion must check legal hold after its workspace lock and before any teardown mutation")
+	}
+}
+
+func TestRoleSourceRetentionIsPolicyBoundHoldAwareAndRaceFenced(t *testing.T) {
+	schemaBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "345_role_source_retention.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(schemaBody))
+	for _, forbidden := range []string{"request_key text", "case_number", "description", "notes", "manifest jsonb", "artifact_body", "credential", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("retention schema contains content/free-text field %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"create table role_source_retention_policy", "request_key_digest", "minimum_age_days",
+		"keep_successful_snapshots", "create table role_source_retention_candidate", "lease_token",
+		"estimated_bytes", "next_attempt_at", "result_code",
+	} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("retention schema is missing %q", required)
+		}
+	}
+
+	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queryBody)
+	for _, required := range []string{
+		"QueueEligibleRoleSourceRetentionCandidates", "@candidate_limit", "gen_random_uuid()", "ClaimNextRoleSourceRetentionCandidate",
+		"FOR UPDATE SKIP LOCKED", "GetRoleSourceSnapshotForUpdate", "GetRoleSourceRetentionBlocker",
+		"policy_age", "current_snapshot", "legal_hold", "task_pin", "object_mapping", "active_transfer", "active_apply",
+		"recent_plan", "rollback_reserve", "DeleteRoleSourceSnapshotArtifacts",
+		"DeleteRoleSourceSnapshotForRetention", "DeleteUnreachableRoleSourceCapabilityVersions",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("retention query contract is missing %q", required)
+		}
+	}
+
+	guardBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "352_role_source_snapshot_retention_guard.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := strings.ToLower(string(guardBody))
+	for _, required := range []string{
+		"before insert on role_source_task_pin", "for key share of snapshot",
+		"before update or delete on role_source_snapshot", "multica.role_source_retention_prune",
+		"multica.workspace_teardown", "role_source_legal_hold_release",
+	} {
+		if !strings.Contains(guard, required) {
+			t.Fatalf("snapshot retention guard is missing %q", required)
+		}
+	}
+	policyGuardBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "353_role_source_retention_policy_mutation_guard.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyGuard := strings.ToLower(string(policyGuardBody))
+	for _, required := range []string{
+		"before update or delete on role_source_retention_policy",
+		"multica.workspace_teardown", "append-only",
+	} {
+		if !strings.Contains(policyGuard, required) {
+			t.Fatalf("retention policy mutation guard is missing %q", required)
+		}
+	}
+
+	routerBody, err := os.ReadFile(filepath.Join("..", "..", "cmd", "server", "router.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := string(routerBody)
+	gcAt := strings.Index(router, "MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED")
+	retentionAt := strings.Index(router, "MULTICA_ROLE_SOURCE_RETENTION_ENABLED")
+	if gcAt < 0 || retentionAt < 0 || retentionAt < gcAt {
+		t.Fatal("historical retention must be independently default-off and nested behind permanent artifact GC")
+	}
+	controlBody, err := os.ReadFile("retention.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := string(controlBody)
+	pruneStart := strings.Index(control, "func (c *ControlPlane) PruneRetentionCandidate(")
+	if pruneStart < 0 {
+		t.Fatal("retention prune control-plane method is missing")
+	}
+	control = control[pruneStart:]
+	if next := strings.Index(control[1:], "\nfunc "); next >= 0 {
+		control = control[:next+1]
+	}
+	workspaceLockAt := strings.Index(control, "qtx.LockWorkspaceForRoleSourceMutation")
+	sourceLockAt := strings.Index(control, "qtx.GetRoleSourceForUpdate")
+	candidateLockAt := strings.Index(control, "qtx.GetRoleSourceRetentionCandidateForUpdate")
+	snapshotLockAt := strings.Index(control, "qtx.GetRoleSourceSnapshotForUpdate")
+	if workspaceLockAt < 0 || sourceLockAt < 0 || candidateLockAt < 0 || snapshotLockAt < 0 ||
+		!(workspaceLockAt < sourceLockAt && sourceLockAt < candidateLockAt && candidateLockAt < snapshotLockAt) {
+		t.Fatal("retention prune must lock workspace, source, candidate and snapshot in one order")
+	}
+}
+
+func TestRoleSourceLifecycleUsesOneLockOrderAndClearsPendingSecrets(t *testing.T) {
+	queryBody, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycleBody, err := os.ReadFile("lifecycle.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretBody, err := os.ReadFile("secret_controlplane.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := string(queryBody)
+	lifecycle := string(lifecycleBody)
+	secret := string(secretBody)
+	for _, required := range []string{
+		"-- name: CancelActiveRoleSourceScans :execrows",
+		"status IN ('queued', 'claimed')",
+		"-- name: CancelActiveRoleSourceSecretTransfers :execrows",
+		"private_key_ciphertext = decode(repeat('00', 60), 'hex')",
+		"envelope = NULL",
+		"-- name: RebindDetachedRoleSource :one",
+		"config_redacted = @config_redacted",
+		"AND state = 'detached'",
+		"source.state IN ('registered', 'active', 'error')",
+	} {
+		if !strings.Contains(queries, required) {
+			t.Fatalf("role-source lifecycle persistence is missing %q", required)
+		}
+	}
+	workspaceAt := strings.Index(lifecycle, "qtx.LockWorkspaceForRoleSourceMutation")
+	sourceAt := strings.Index(lifecycle, "qtx.GetRoleSourceForUpdate")
+	cancelScanAt := strings.Index(lifecycle, "qtx.CancelActiveRoleSourceScans")
+	cancelTransferAt := strings.Index(lifecycle, "qtx.CancelActiveRoleSourceSecretTransfers")
+	if workspaceAt < 0 || sourceAt <= workspaceAt || cancelScanAt <= sourceAt || cancelTransferAt <= cancelScanAt {
+		t.Fatalf("lifecycle lock/cancel order is unsafe: workspace=%d source=%d scan=%d transfer=%d", workspaceAt, sourceAt, cancelScanAt, cancelTransferAt)
+	}
+	reportStart := strings.Index(secret, "func (c *ControlPlane) ReportSecretTransfer(")
+	if reportStart < 0 {
+		t.Fatal("ReportSecretTransfer is missing")
+	}
+	report := secret[reportStart:]
+	reportSourceAt := strings.Index(report, "qtx.GetRoleSourceForUpdate")
+	reportTransferAt := strings.Index(report, "qtx.GetRoleSourceSecretTransferForUpdate")
+	if reportSourceAt < 0 || reportTransferAt <= reportSourceAt {
+		t.Fatalf("secret transfer report does not lock source before transfer: source=%d transfer=%d", reportSourceAt, reportTransferAt)
+	}
+}
+
+func TestRoleSourceTaskPinsAreContentFreeAndRetryStable(t *testing.T) {
+	schemaBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "316_role_source_task_pin.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := strings.ToLower(string(schemaBody))
+	for _, forbidden := range []string{"instructions", "custom_env", "mcp_config", "secret_value", "artifact_body", "plaintext"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("task pin schema contains forbidden runtime content %q", forbidden)
+		}
+	}
+	for _, required := range []string{"snapshot_digest", "role_object_digest", "target_state_digest", "capability_pins", "inherited_from_task_id"} {
+		if !strings.Contains(schema, required) {
+			t.Fatalf("task pin schema is missing %q", required)
+		}
+	}
+
+	triggerBody, err := os.ReadFile(filepath.Join("..", "..", "migrations", "319_role_source_task_pin_trigger.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger := string(triggerBody)
+	for _, required := range []string{
+		"WHERE parent.task_id = NEW.parent_task_id",
+		"parent.snapshot_digest",
+		"parent.capability_pins",
+		"mapping.last_snapshot_digest",
+		"role_source_agent_state_digest",
+		"role_source_capability_version",
+		"'target_skill_id', skill_mapping.target_id",
+		"'fallback', COALESCE(binding->>'fallback', '')",
+		"skill_mapping.last_snapshot_digest = snapshot.snapshot_digest",
+		"binding_mapping.source_kind = 'capability_binding'",
+		"binding_mapping.target_id = skill_mapping.target_id",
+		"unresolved capability provenance",
+		"role source task pins are immutable",
+		"role_source_version_stale",
+		"task.status IN ('queued', 'deferred', 'dispatched')",
+	} {
+		if !strings.Contains(trigger, required) {
+			t.Fatalf("task pin trigger is missing contract %q", required)
+		}
+	}
+}
+
+func TestRoleSourceClaimFinalizationUsesConsistentLockOrder(t *testing.T) {
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleSourceQuery := string(queries)
+	start := strings.Index(roleSourceQuery, "-- name: IsRoleSourceTaskPinCurrent ")
+	if start < 0 {
+		t.Fatal("role source claim validation query is missing")
+	}
+	section := roleSourceQuery[start:]
+	if next := strings.Index(section[1:], "\n-- name: "); next >= 0 {
+		section = section[:next+1]
+	}
+	for _, required := range []string{"WITH locked_mapping AS MATERIALIZED", "FOR UPDATE OF mapping", "role_source_agent_state_digest"} {
+		if !strings.Contains(section, required) {
+			t.Fatalf("role source claim validation does not contain %q", required)
+		}
+	}
+
+	serviceBody, err := os.ReadFile(filepath.Join("..", "service", "task.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := string(serviceBody)
+	validateAt := strings.Index(service, "qtx.IsRoleSourceTaskPinCurrent")
+	lockTaskAt := strings.Index(service, "qtx.LockAgentTaskClaim")
+	createTokenAt := strings.Index(service, "qtx.CreateTaskToken")
+	if validateAt < 0 || lockTaskAt < 0 || createTokenAt < 0 || !(validateAt < lockTaskAt && lockTaskAt < createTokenAt) {
+		t.Fatal("claim finalization must lock role mapping, then exact task generation, before creating a token")
+	}
+}

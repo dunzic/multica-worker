@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 type S3Storage struct {
@@ -28,6 +30,8 @@ type S3Storage struct {
 	usePathStyle bool   // controls path-style S3 addressing
 }
 
+const maxS3ObjectVersionsPerPurge = 10_000
+
 // NewS3StorageFromEnv creates an S3Storage from environment variables.
 // Returns nil if S3_BUCKET is not set.
 //
@@ -35,8 +39,9 @@ type S3Storage struct {
 //   - S3_BUCKET (required)
 //   - S3_REGION (default: us-west-2)
 //   - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (optional; falls back to default credential chain)
-//   - AWS_ENDPOINT_URL (optional S3-compatible endpoint)
-//   - S3_USE_PATH_STYLE (optional; defaults to true when AWS_ENDPOINT_URL is set)
+//   - S3_ENDPOINT_URL (preferred optional S3-compatible endpoint)
+//   - AWS_ENDPOINT_URL (legacy endpoint alias; do not use in KMS-enabled jobs)
+//   - S3_USE_PATH_STYLE (optional; defaults to true when a custom endpoint is set)
 func NewS3StorageFromEnv() *S3Storage {
 	bucket := os.Getenv("S3_BUCKET")
 	if bucket == "" {
@@ -53,6 +58,12 @@ func NewS3StorageFromEnv() *S3Storage {
 	region := os.Getenv("S3_REGION")
 	if region == "" {
 		region = "us-west-2"
+	}
+
+	endpointURL, err := s3EndpointURLFromEnv()
+	if err != nil {
+		slog.Error("invalid S3 endpoint configuration", "error", err)
+		return nil
 	}
 
 	opts := []func(*config.LoadOptions) error{
@@ -75,7 +86,6 @@ func NewS3StorageFromEnv() *S3Storage {
 
 	cdnDomain := os.Getenv("CLOUDFRONT_DOMAIN")
 
-	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
 	usePathStyle := s3UsePathStyleFromEnv(endpointURL)
 	s3Opts := []func(*s3.Options){}
 	if endpointURL != "" || usePathStyle {
@@ -96,6 +106,18 @@ func NewS3StorageFromEnv() *S3Storage {
 		endpointURL:  endpointURL,
 		usePathStyle: usePathStyle,
 	}
+}
+
+func s3EndpointURLFromEnv() (string, error) {
+	preferred := strings.TrimSpace(os.Getenv("S3_ENDPOINT_URL"))
+	legacy := strings.TrimSpace(os.Getenv("AWS_ENDPOINT_URL"))
+	if preferred != "" && legacy != "" && preferred != legacy {
+		return "", errors.New("S3_ENDPOINT_URL and legacy AWS_ENDPOINT_URL conflict")
+	}
+	if preferred != "" {
+		return preferred, nil
+	}
+	return legacy, nil
 }
 
 func (s *S3Storage) CdnDomain() string {
@@ -270,6 +292,24 @@ func (s *S3Storage) GetReader(ctx context.Context, key string) (io.ReadCloser, e
 	return out.Body, nil
 }
 
+// IsObjectNotFound lets background integrity workers distinguish an absent
+// object from a transport or authorization failure without depending on AWS
+// SDK types. Only a confirmed absence may quarantine readiness automatically.
+func (s *S3Storage) IsObjectNotFound(err error) bool {
+	var noSuchKey *types.NoSuchKey
+	if errors.As(err, &noSuchKey) {
+		return true
+	}
+	var apiError smithy.APIError
+	if errors.As(err, &apiError) {
+		switch apiError.ErrorCode() {
+		case "NoSuchKey", "NotFound", "404":
+			return true
+		}
+	}
+	return false
+}
+
 func (s *S3Storage) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	return s.PresignGetWithContentDisposition(ctx, key, ttl, "")
 }
@@ -315,6 +355,121 @@ func (s *S3Storage) DeleteObject(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	return err
+}
+
+// PurgeObject removes the current object and every retained version/delete
+// marker for exactly one key. Role-source artifact GC uses this stronger
+// contract because DeleteObject alone only creates a delete marker in a
+// versioned bucket and would leave source content recoverable indefinitely.
+//
+// Deployments enabling role-source GC must grant s3:ListBucketVersions,
+// s3:DeleteObject and s3:DeleteObjectVersion. Object Lock/legal holds fail
+// closed: the reconciler keeps its durable intent and retries/alerts.
+func (s *S3Storage) PurgeObject(ctx context.Context, key string) error {
+	_, err := s.PurgeObjectWithResult(ctx, key)
+	return err
+}
+
+// PurgeObjectWithResult performs an exact-key, all-version purge and verifies
+// the final version inventory is empty. Its result is provider operation
+// evidence; it must not be presented as a cloud billing adjustment.
+func (s *S3Storage) PurgeObjectWithResult(ctx context.Context, key string) (PermanentPurgeResult, error) {
+	result := PermanentPurgeResult{Backend: PermanentPurgeBackendS3, Mode: PermanentPurgeModeVersions}
+	if key == "" {
+		result.VerifiedAbsent = true
+		return result, nil
+	}
+	if _, err := s.listObjectVersionsForPurge(ctx, key, maxS3ObjectVersionsPerPurge); err != nil {
+		return result, permanentPurgeFailure("preflight inventory", false, err)
+	}
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key),
+	})
+	if err != nil {
+		return result, permanentPurgeFailure("current object delete", true, err)
+	}
+	// Re-list after deleting current so the batch includes the new delete
+	// marker and any PUT that raced the preflight inventory. The extra slot is
+	// only for the marker created by DeleteObject; a larger inventory fails and
+	// leaves the durable intent retryable without adding markers on every retry.
+	objects, err := s.listObjectVersionsForPurge(ctx, key, maxS3ObjectVersionsPerPurge+1)
+	if err != nil {
+		return result, permanentPurgeFailure("post-delete inventory", true, err)
+	}
+	for start := 0; start < len(objects); start += 1000 {
+		end := min(start+1000, len(objects))
+		identifiers := make([]types.ObjectIdentifier, 0, end-start)
+		for _, object := range objects[start:end] {
+			identifiers = append(identifiers, object.Identifier)
+			if object.DeleteMarker {
+				result.DeleteMarkersDeleted++
+			} else {
+				result.VersionsDeleted++
+				result.ObservedBytesDeleted += object.SizeBytes
+			}
+		}
+		output, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(s.bucket),
+			Delete: &types.Delete{Objects: identifiers, Quiet: aws.Bool(true)},
+		})
+		if err != nil {
+			return result, permanentPurgeFailure("retained-version delete", true, err)
+		}
+		if len(output.Errors) > 0 {
+			first := output.Errors[0]
+			return result, permanentPurgeFailure("retained-version delete", true,
+				fmt.Errorf("provider failure: code=%s key=%s", aws.ToString(first.Code), aws.ToString(first.Key)))
+		}
+	}
+	remaining, err := s.listObjectVersionsForPurge(ctx, key, 1)
+	if err != nil {
+		return result, permanentPurgeFailure("absence inventory", true, err)
+	}
+	if len(remaining) != 0 {
+		return result, permanentPurgeFailure("absence verification", true,
+			fmt.Errorf("exact key still has retained versions"))
+	}
+	result.VerifiedAbsent = true
+	return result, nil
+}
+
+type purgeObjectVersion struct {
+	Identifier   types.ObjectIdentifier
+	DeleteMarker bool
+	SizeBytes    int64
+}
+
+func (s *S3Storage) listObjectVersionsForPurge(ctx context.Context, key string, limit int) ([]purgeObjectVersion, error) {
+	paginator := s3.NewListObjectVersionsPaginator(s.client, &s3.ListObjectVersionsInput{
+		Bucket: aws.String(s.bucket), Prefix: aws.String(key),
+	})
+	objects := make([]purgeObjectVersion, 0, 16)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("s3 list object versions for purge: %w", err)
+		}
+		for _, version := range page.Versions {
+			if aws.ToString(version.Key) == key {
+				objects = append(objects, purgeObjectVersion{
+					Identifier: types.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId},
+					SizeBytes:  aws.ToInt64(version.Size),
+				})
+			}
+		}
+		for _, marker := range page.DeleteMarkers {
+			if aws.ToString(marker.Key) == key {
+				objects = append(objects, purgeObjectVersion{
+					Identifier:   types.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId},
+					DeleteMarker: true,
+				})
+			}
+		}
+		if len(objects) > limit {
+			return nil, fmt.Errorf("s3 purge refused: key has more than %d retained versions", maxS3ObjectVersionsPerPurge)
+		}
+	}
+	return objects, nil
 }
 
 // ObjectURL returns the URL a successful Upload/UploadStream of key would

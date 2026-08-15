@@ -532,6 +532,95 @@ func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID p
 	return err
 }
 
+const deleteWorkspaceRoleSources = `-- name: DeleteWorkspaceRoleSources :exec
+WITH
+deleted_channel_delivery_reconciliations AS (
+    DELETE FROM channel_delivery_reconciliation WHERE channel_delivery_reconciliation.workspace_id = $1
+),
+deleted_runtime_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation WHERE role_source_runtime_attestation_observation.workspace_id = $1
+),
+deleted_runtime_attestations AS (
+    DELETE FROM role_source_runtime_attestation WHERE role_source_runtime_attestation.workspace_id = $1
+),
+deleted_outbox_replays AS (
+    DELETE FROM role_source_outbox_replay WHERE role_source_outbox_replay.workspace_id = $1
+),
+deleted_outbox_events AS (
+    DELETE FROM role_source_outbox WHERE role_source_outbox.workspace_id = $1
+),
+deleted_audit_events AS (
+    DELETE FROM role_source_audit_event WHERE role_source_audit_event.workspace_id = $1
+),
+deleted_approvals AS (
+    DELETE FROM role_source_plan_approval WHERE role_source_plan_approval.workspace_id = $1
+),
+deleted_apply_failures AS (
+    DELETE FROM role_source_apply_failure WHERE role_source_apply_failure.workspace_id = $1
+),
+deleted_applies AS (
+    DELETE FROM role_source_apply WHERE role_source_apply.workspace_id = $1
+),
+deleted_plans AS (
+    DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
+),
+deleted_secret_transfers AS (
+    DELETE FROM role_source_secret_transfer WHERE role_source_secret_transfer.workspace_id = $1
+),
+deleted_capability_versions AS (
+    DELETE FROM role_source_capability_version WHERE role_source_capability_version.workspace_id = $1
+),
+deleted_retention_candidates AS (
+    DELETE FROM role_source_retention_candidate WHERE role_source_retention_candidate.workspace_id = $1
+),
+deleted_retention_policies AS (
+    DELETE FROM role_source_retention_policy WHERE role_source_retention_policy.workspace_id = $1
+),
+deleted_task_pins AS (
+    DELETE FROM role_source_task_pin WHERE role_source_task_pin.workspace_id = $1
+),
+deleted_object_mappings AS (
+    DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
+),
+queued_role_source_artifact_deletes AS (
+    INSERT INTO role_source_artifact_delete_intent (workspace_id, storage_key, artifact_digest, size_bytes, reason)
+    SELECT workspace_id, storage_key, digest, size_bytes, 'workspace_deleted'
+    FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
+    ON CONFLICT (storage_key) DO NOTHING
+),
+deleted_role_source_artifact_integrity AS (
+    DELETE FROM role_source_artifact_integrity
+    WHERE role_source_artifact_integrity.workspace_id = $1
+),
+deleted_artifacts AS (
+    DELETE FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
+),
+deleted_snapshot_artifacts AS (
+    DELETE FROM role_source_snapshot_artifact WHERE role_source_snapshot_artifact.workspace_id = $1
+),
+deleted_legal_holds AS (
+    DELETE FROM role_source_legal_hold WHERE role_source_legal_hold.workspace_id = $1
+    RETURNING id
+),
+deleted_legal_hold_releases AS (
+    DELETE FROM role_source_legal_hold_release
+    WHERE role_source_legal_hold_release.workspace_id = $1
+      AND role_source_legal_hold_release.hold_id IN (SELECT id FROM deleted_legal_holds)
+),
+deleted_snapshots AS (
+    DELETE FROM role_source_snapshot WHERE role_source_snapshot.workspace_id = $1
+),
+deleted_scans AS (
+    DELETE FROM role_source_scan_request WHERE role_source_scan_request.workspace_id = $1
+)
+DELETE FROM role_source WHERE role_source.workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceRoleSources(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceRoleSources, workspaceID)
+	return err
+}
+
 const deleteWorkspaceRuntimesAndProjects = `-- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
 deleted_runtimes AS (

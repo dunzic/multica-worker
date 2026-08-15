@@ -1,0 +1,106 @@
+# RS-01 controlled role-source lifecycle review
+
+Date: 2026-08-13
+
+Final decision: **GO for merge behind `role_source_sync` and `role_source_scan`; NO-GO for broad production until the live PostgreSQL lock/failure exercises and daemon restart runbook pass**
+
+## Architecture expert
+
+- The explicit state machine is narrow: `registered|active|error -> paused`,
+  `paused -> active|registered`, `paused -> detached`, and `detached ->
+  paused` through rebind. There is no force flag and no direct active-to-detached
+  or detached-to-active edge.
+- Every mutation is one transaction with workspace lock, source row lock,
+  expected-version compare-and-swap, dependent-work cancellation, state/binding
+  update and hash-chained audit event.
+- Pause atomically cancels queued/claimed scans and fails pending/claimed/
+  submitted secret transfers. Stored envelope bytes are removed and the
+  encrypted private key is overwritten before commit.
+- Scan and secret-transfer claims now lock the source before the child work
+  row. Secret-transfer reporting follows the same source-before-transfer order,
+  eliminating the inverse lock order that lifecycle cleanup would otherwise
+  introduce.
+- Detached sources retain immutable snapshots, mappings, task pins, receipts
+  and audit history. They no longer pin the old runtime against cleanup; the
+  last runtime ID remains audit context until an explicit rebind.
+- Rebind takes the destination runtime's shared registration lock, verifies
+  workspace ownership, changes only runtime/config binding and leaves the
+  source paused. The old binding's redacted attributes are cleared so the UI
+  cannot present stale source labels. No role materialization occurs.
+
+Open objections: the runtime availability check for resume uses the durable
+database heartbeat rather than Redis. This is deliberately fail-closed and the
+150-second threshold is shared with the sweeper, but failover timing needs a
+real cluster exercise.
+
+## Product expert
+
+- The settings surface exposes only transitions valid for the current state.
+  An administrator cannot skip pause before detach.
+- Confirmation copy explains that pause cancels scans and destroys unconsumed
+  secret transfers while preserving materialized workers and history.
+- Rebind offers the registered runtimes returned for the current workspace,
+  using their shared alias/provider label and showing online/offline status;
+  the operator still supplies the daemon-local config handle. The server remains
+  authoritative for workspace ownership, and the source visibly remains paused
+  until a separate evidence-gated resume.
+- Members retain the read-only audit view; only workspace owners/admins see
+  lifecycle controls, matching server authorization.
+- The same settings card now renders the newest 100 lifecycle events with the
+  transition, actor type/identifier, time, sequence, event commitment,
+  cancellation counts and rebind runtime change. It does not return or render
+  the generic audit payload, adapter metadata, plan/receipt data or secrets.
+- Unknown future lifecycle event types use a neutral fallback label instead of
+  inventing semantics or breaking an older installed client.
+
+Open objection: the generic runtime list does not prove that the destination
+daemon has already loaded the entered config handle. Rebind deliberately permits
+that maintenance sequence while paused; resume remains the fail-closed proof
+gate, so the picker must not label a runtime as ready before attestation exists.
+
+## Test expert
+
+- Handler tests cover strict unknown-field rejection, expected-version input,
+  safe conflict mapping and response redaction.
+- Contract tests cover the shared strict attestation evaluator, tampering,
+  cross-runtime evidence, missing/kind/version drift and unloaded evidence.
+- Persistence tests assert source-before-child lock ordering, scan cancellation,
+  ciphertext clearing, detached-only rebind and claim state filtering.
+- Core typecheck, API client PATCH test, settings lifecycle state tests, focused
+  Go tests, race tests and vet form the local gate.
+- The history endpoint is tenant/source scoped and bounded by 100. Before any
+  event reaches the closed response DTO, the server decodes the closed audit
+  payload and recomputes that event's commitment. This validates each returned
+  event, but the filtered lifecycle-only list is not presented as proof of
+  contiguous full-chain history when other event families may occur between
+  rows.
+- A lifecycle-only partial listing index preserves newest-first bounded query
+  cost without inflating the general audit index with another full copy.
+- Handler tests prove the safe projection excludes the generic payload and
+  plan/receipt fields; the client rejects malformed event commitments; the
+  settings test covers actor, transition, runtime change and cancellation
+  display.
+- An opt-in live PostgreSQL test performs pause, evidence-gated resume, pause,
+  detach, runtime-release verification, rebind and rejection of resume without
+  destination evidence.
+
+Open objections: the live test is skipped on this workstation because no
+PostgreSQL is available. Staging must additionally inject concurrent claim,
+report, pause, runtime deletion and workspace deletion transactions under
+timeouts and primary failover.
+
+## CEO / rollout owner
+
+- Value: planned maintenance and daemon replacement no longer require unsafe
+  database edits or leaving an intentionally retired source in a permanent
+  alert state.
+- Risk containment: lifecycle operations cannot apply role changes, erase
+  historical evidence, silently overwrite a concurrent admin or auto-resume a
+  moved source.
+- Operating cost: fixed state transitions and one bounded transaction per
+  human action are negligible at 10,000-user scale; no tenant-labelled metric
+  series are added.
+
+Decision: merge behind the existing disabled role-source rollout. Permit an
+engineering cohort only after the live PostgreSQL lifecycle test, alert pipeline
+and restart/rebind runbook are captured. Keep `role_source_apply` disabled.

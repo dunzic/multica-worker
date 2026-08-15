@@ -195,6 +195,10 @@ func (r *ShardedStreamRelay) PublishWithID(scopeType, scopeID, exclude string, f
 	return nil
 }
 
+func (r *ShardedStreamRelay) PublishDurable(scopeType, scopeID, exclude string, frame []byte, id string) error {
+	return r.PublishWithID(scopeType, scopeID, exclude, frame, id)
+}
+
 func (r *ShardedStreamRelay) shardFor(scopeType, scopeID string) int {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(scopeType))
@@ -309,3 +313,4 @@ func (r *ShardedStreamRelay) isStopping() bool {
 
 var _ Broadcaster = (*ShardedStreamRelay)(nil)
 var _ RelayPublisher = (*ShardedStreamRelay)(nil)
+var _ DurableBroadcaster = (*ShardedStreamRelay)(nil)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/runtimehealth"
 )
 
 // SQL bodies for BusinessSamplerCollector. Kept in a separate file so the
@@ -332,4 +333,55 @@ func (c *BusinessSamplerCollector) queryWorkspaceTotal(
 	snap.workspaceTotal = float64(n)
 	snap.workspaceTotalKnown = true
 	return nil
+}
+
+// queryRoleSourceRuntimeAvailability returns two bounded fleet-level buckets.
+// It intentionally excludes paused and detached sources: those states do not
+// promise an active sync loop and would otherwise page operators by design.
+//
+// The database heartbeat is the conservative telemetry authority. Redis can
+// keep an individual read response live during a short DB flush delay, but a
+// sustained DB-stale result is itself an operational risk because Redis loss
+// would immediately make the runtime unavailable. The alert's hold period
+// filters transient flush lag.
+func (c *BusinessSamplerCollector) queryRoleSourceRuntimeAvailability(
+	ctx context.Context, tx pgx.Tx, snap *samplerSnapshot,
+) error {
+	const stmt = `
+SELECT
+  CASE
+    WHEN runtime.id IS NOT NULL
+      AND runtime.workspace_id = source.workspace_id
+      AND runtime.status = 'online'
+      AND runtime.last_seen_at IS NOT NULL
+      AND runtime.last_seen_at > now() - ($1::int * interval '1 second')
+    THEN 'available'
+    ELSE 'runtime_unavailable'
+  END AS availability,
+  count(*) AS n
+FROM role_source source
+LEFT JOIN agent_runtime runtime ON runtime.id = source.runtime_id
+WHERE source.state IN ('registered', 'active', 'error')
+GROUP BY 1
+LIMIT 2
+`
+	rows, err := tx.Query(ctx, stmt, runtimehealth.StaleThresholdSeconds)
+	if err != nil {
+		return fmt.Errorf("role_source_runtime_availability: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var n int64
+		if err := rows.Scan(&status, &n); err != nil {
+			return fmt.Errorf("role_source_runtime_availability scan: %w", err)
+		}
+		switch status {
+		case "available", "runtime_unavailable":
+			snap.roleSourceRuntimeAvailability[status] += float64(n)
+		default:
+			return fmt.Errorf("role_source_runtime_availability: unexpected status %q", status)
+		}
+	}
+	return rows.Err()
 }

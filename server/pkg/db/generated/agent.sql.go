@@ -2572,6 +2572,73 @@ func (q *Queries) CreateRetryTask(ctx context.Context, arg CreateRetryTaskParams
 	return i, err
 }
 
+const createRoleSourceAgent = `-- name: CreateRoleSourceAgent :one
+INSERT INTO agent (
+    workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
+    visibility, permission_mode, max_concurrent_tasks, owner_id, instructions,
+    custom_env, custom_args, mcp_config
+) VALUES (
+    $1, $2, $3, $4, '{}'::jsonb, $5,
+    'private', 'private', 1, $6, $7,
+    '{}'::jsonb, '[]'::jsonb, NULL
+)
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+type CreateRoleSourceAgentParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	Name         string      `json:"name"`
+	Description  string      `json:"description"`
+	RuntimeMode  string      `json:"runtime_mode"`
+	RuntimeID    pgtype.UUID `json:"runtime_id"`
+	OwnerID      pgtype.UUID `json:"owner_id"`
+	Instructions string      `json:"instructions"`
+}
+
+func (q *Queries) CreateRoleSourceAgent(ctx context.Context, arg CreateRoleSourceAgentParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, createRoleSourceAgent,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Description,
+		arg.RuntimeMode,
+		arg.RuntimeID,
+		arg.OwnerID,
+		arg.Instructions,
+	)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+	)
+	return i, err
+}
+
 const createSystemUserAgent = `-- name: CreateSystemUserAgent :one
 INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode, runtime_config,
@@ -5429,6 +5496,84 @@ func (q *Queries) LockAgentForAutopilotAssignment(ctx context.Context, arg LockA
 	return i, err
 }
 
+const lockAgentTaskClaim = `-- name: LockAgentTaskClaim :one
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for FROM agent_task_queue
+WHERE id = $1
+  AND runtime_id = $2
+  AND status = 'dispatched'
+  AND started_at IS NULL
+  AND dispatched_at = $3
+FOR UPDATE
+`
+
+type LockAgentTaskClaimParams struct {
+	TaskID       pgtype.UUID        `json:"task_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	DispatchedAt pgtype.Timestamptz `json:"dispatched_at"`
+}
+
+// Final claim construction may perform several writes (task token, delivery
+// receipt, and source-provenance validation). Lock the exact dispatch
+// generation first so cancellation/reclaim cannot cross that transaction.
+func (q *Queries) LockAgentTaskClaim(ctx context.Context, arg LockAgentTaskClaimParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, lockAgentTaskClaim, arg.TaskID, arg.RuntimeID, arg.DispatchedAt)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+	)
+	return i, err
+}
+
 const markAgentTaskWaitingLocalDirectory = `-- name: MarkAgentTaskWaitingLocalDirectory :one
 UPDATE agent_task_queue
 SET status = 'waiting_local_directory',
@@ -7078,4 +7223,138 @@ type UpdateAgentTaskSessionParams struct {
 func (q *Queries) UpdateAgentTaskSession(ctx context.Context, arg UpdateAgentTaskSessionParams) error {
 	_, err := q.db.Exec(ctx, updateAgentTaskSession, arg.ID, arg.SessionID, arg.WorkDir)
 	return err
+}
+
+const updateRoleSourceAgent = `-- name: UpdateRoleSourceAgent :one
+UPDATE agent
+SET name = $1,
+    description = $2,
+    runtime_mode = $3,
+    runtime_id = $4,
+    instructions = $5,
+    updated_at = now()
+WHERE id = $6
+  AND workspace_id = $7
+  AND kind = 'user'
+  AND archived_at IS NULL
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+type UpdateRoleSourceAgentParams struct {
+	Name         string      `json:"name"`
+	Description  string      `json:"description"`
+	RuntimeMode  string      `json:"runtime_mode"`
+	RuntimeID    pgtype.UUID `json:"runtime_id"`
+	Instructions string      `json:"instructions"`
+	ID           pgtype.UUID `json:"id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+}
+
+// Only source-owned fields are changed. Owner, permission, secrets, MCP,
+// model, service tier, status and user lifecycle are preserved.
+func (q *Queries) UpdateRoleSourceAgent(ctx context.Context, arg UpdateRoleSourceAgentParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, updateRoleSourceAgent,
+		arg.Name,
+		arg.Description,
+		arg.RuntimeMode,
+		arg.RuntimeID,
+		arg.Instructions,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+	)
+	return i, err
+}
+
+const updateRoleSourceAgentSecrets = `-- name: UpdateRoleSourceAgentSecrets :one
+UPDATE agent
+SET custom_env = $1,
+    mcp_config = $2,
+    updated_at = now()
+WHERE id = $3
+  AND workspace_id = $4
+  AND kind = 'user'
+  AND archived_at IS NULL
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+type UpdateRoleSourceAgentSecretsParams struct {
+	CustomEnv   []byte      `json:"custom_env"`
+	McpConfig   []byte      `json:"mcp_config"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The caller holds the role-source workspace mutation lock and the mapped
+// agent row lock, merges only source-owned keys, and supplies the complete
+// post-merge values. This query cannot cross workspace or system-agent scope.
+func (q *Queries) UpdateRoleSourceAgentSecrets(ctx context.Context, arg UpdateRoleSourceAgentSecretsParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, updateRoleSourceAgentSecrets,
+		arg.CustomEnv,
+		arg.McpConfig,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+	)
+	return i, err
 }

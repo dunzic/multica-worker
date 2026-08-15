@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -110,6 +112,10 @@ func (s *LocalStorage) GetReader(ctx context.Context, key string) (io.ReadCloser
 	return f, nil
 }
 
+// IsObjectNotFound reports only filesystem absence. Permission, traversal and
+// other read failures remain transient integrity-check failures.
+func (s *LocalStorage) IsObjectNotFound(err error) bool { return errors.Is(err, fs.ErrNotExist) }
+
 func (s *LocalStorage) Delete(ctx context.Context, key string) {
 	if err := s.DeleteObject(ctx, key); err != nil {
 		slog.Error("local storage Delete failed", "key", key, "error", err)
@@ -133,6 +139,49 @@ func (s *LocalStorage) DeleteObject(_ context.Context, key string) error {
 		}
 	}
 	return nil
+}
+
+// PurgeObject matches the stronger role-source GC contract. Local storage has
+// no hidden version layer, so deleting the current key is a complete purge.
+func (s *LocalStorage) PurgeObject(ctx context.Context, key string) error {
+	_, err := s.PurgeObjectWithResult(ctx, key)
+	return err
+}
+
+// PurgeObjectWithResult permanently removes the exact local object and then
+// verifies that its body, metadata sidecar and abandoned staging file are all
+// absent. The observed byte count covers the immutable artifact body only.
+func (s *LocalStorage) PurgeObjectWithResult(ctx context.Context, key string) (PermanentPurgeResult, error) {
+	result := PermanentPurgeResult{Backend: PermanentPurgeBackendLocal, Mode: PermanentPurgeModeCurrent}
+	if err := ctx.Err(); err != nil {
+		return result, permanentPurgeFailure("preflight context", false, err)
+	}
+	if key == "" {
+		result.VerifiedAbsent = true
+		return result, nil
+	}
+	filePath := filepath.Join(s.uploadDir, key)
+	if info, err := os.Stat(filePath); err == nil {
+		result.VersionsDeleted = 1
+		result.ObservedBytesDeleted = info.Size()
+	} else if !os.IsNotExist(err) {
+		return result, permanentPurgeFailure("preflight inventory", false, err)
+	}
+	if err := s.DeleteObject(ctx, key); err != nil {
+		return result, permanentPurgeFailure("current object delete", true, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return result, permanentPurgeFailure("post-delete context", true, err)
+	}
+	for _, path := range []string{filePath, filePath + metaSuffix, tempPath(filePath)} {
+		if _, err := os.Stat(path); err == nil {
+			return result, permanentPurgeFailure("absence verification", true, fmt.Errorf("object still exists"))
+		} else if !os.IsNotExist(err) {
+			return result, permanentPurgeFailure("absence verification", true, err)
+		}
+	}
+	result.VerifiedAbsent = true
+	return result, nil
 }
 
 // ObjectURL returns the URL a successful Upload/UploadStream of key would

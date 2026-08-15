@@ -27,11 +27,16 @@ type RegistryOptions struct {
 }
 
 type Registry struct {
-	Gatherer     prometheus.Gatherer
-	HTTP         *HTTPMetrics
-	Business     *BusinessMetrics
-	ChannelMedia *ChannelMediaReconcilerMetrics
-	Wecom        *WecomMetrics
+	Gatherer                    prometheus.Gatherer
+	HTTP                        *HTTPMetrics
+	Business                    *BusinessMetrics
+	ChannelMedia                *ChannelMediaReconcilerMetrics
+	ChannelDelivery             *ChannelDeliveryMetrics
+	Wecom                       *WecomMetrics
+	RoleSource                  *RoleSourceMetrics
+	RoleSourceArtifactGC        *RoleSourceArtifactGCMetrics
+	RoleSourceArtifactIntegrity *RoleSourceArtifactIntegrityMetrics
+	RoleSourceRetention         *RoleSourceRetentionMetrics
 	// Sampler is non-nil only when RegistryOptions.BusinessSampler was
 	// supplied with a valid Pool. Exposed so the cmd/server entrypoint
 	// can plumb the same instance into health checks if it ever wants to.
@@ -58,9 +63,20 @@ func NewRegistry(opts RegistryOptions) *Registry {
 
 	channelMedia := NewChannelMediaReconcilerMetrics()
 	reg.MustRegister(channelMedia.Collectors()...)
+	channelDelivery := NewChannelDeliveryMetrics()
+	reg.MustRegister(channelDelivery.Collectors()...)
 
 	wecomMetrics := NewWecomMetrics()
 	reg.MustRegister(wecomMetrics.Collectors()...)
+
+	roleSourceMetrics := NewRoleSourceMetrics()
+	reg.MustRegister(roleSourceMetrics.Collectors()...)
+	roleSourceArtifactGC := NewRoleSourceArtifactGCMetrics()
+	reg.MustRegister(roleSourceArtifactGC.Collectors()...)
+	roleSourceArtifactIntegrity := NewRoleSourceArtifactIntegrityMetrics()
+	reg.MustRegister(roleSourceArtifactIntegrity.Collectors()...)
+	roleSourceRetention := NewRoleSourceRetentionMetrics()
+	reg.MustRegister(roleSourceRetention.Collectors()...)
 
 	if opts.Pool != nil {
 		reg.MustRegister(NewDBCollector(opts.Pool))
@@ -78,12 +94,17 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	}
 
 	return &Registry{
-		Gatherer:     reg,
-		HTTP:         httpMetrics,
-		Business:     businessMetrics,
-		ChannelMedia: channelMedia,
-		Wecom:        wecomMetrics,
-		Sampler:      sampler,
+		Gatherer:                    reg,
+		HTTP:                        httpMetrics,
+		Business:                    businessMetrics,
+		ChannelMedia:                channelMedia,
+		ChannelDelivery:             channelDelivery,
+		Wecom:                       wecomMetrics,
+		RoleSource:                  roleSourceMetrics,
+		RoleSourceArtifactGC:        roleSourceArtifactGC,
+		RoleSourceArtifactIntegrity: roleSourceArtifactIntegrity,
+		RoleSourceRetention:         roleSourceRetention,
+		Sampler:                     sampler,
 	}
 }
 

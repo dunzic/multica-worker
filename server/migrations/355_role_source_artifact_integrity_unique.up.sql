@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_artifact_integrity_unique ON role_source_artifact_integrity (workspace_id, artifact_digest);

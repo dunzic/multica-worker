@@ -314,6 +314,10 @@ type AgentTaskResponse struct {
 	IssueID                 string                               `json:"issue_id"`
 	WorkspaceID             string                               `json:"workspace_id"`
 	PluginExecutionManifest *service.PluginExecutionManifestData `json:"plugin_execution_manifest,omitempty"`
+	// RoleSourcePin is immutable execution provenance for source-managed
+	// agents. Daemon claims populate it; ordinary agents omit it. The pin
+	// contains no secret values or artifact bodies.
+	RoleSourcePin *protocol.RoleSourceTaskPin `json:"role_source_pin,omitempty"`
 	// WorkspaceContext is the workspace-level system prompt set in workspace
 	// settings (`workspace.context` DB column). Injected into the agent brief
 	// as `## Workspace Context` so every agent running in this workspace —

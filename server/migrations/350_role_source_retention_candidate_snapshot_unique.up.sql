@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_retention_candidate_snapshot_unique ON role_source_retention_candidate (source_id, snapshot_digest);

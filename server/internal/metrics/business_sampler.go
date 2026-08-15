@@ -44,6 +44,10 @@ const (
 	// A running task is considered "stuck" once started_at is older
 	// than this. Matches the Grafana board threshold from MUL-2328.
 	stuckRunningInterval = "30 minutes"
+
+	// refreshQueryCount must match the fixed runQuery calls in refreshFromDB.
+	// It bounds the outer scrape context without starving the last query.
+	refreshQueryCount = 9
 )
 
 // samplerWindows is the canonical list emitted on every scrape. The slice
@@ -110,14 +114,15 @@ type BusinessSamplerCollector struct {
 	// the values are computed once per scrape from a fresh DB read; we
 	// never want stale series sticking around because a label has stopped
 	// appearing in the result set.
-	descActiveUsers      *prometheus.Desc
-	descActiveWorkspaces *prometheus.Desc
-	descTaskQueued       *prometheus.Desc
-	descTaskRunning      *prometheus.Desc
-	descTaskStuck        *prometheus.Desc
-	descRuntimeOnline    *prometheus.Desc
-	descHeartbeatAgeHist *prometheus.Desc
-	descWorkspaceTotal   *prometheus.Desc
+	descActiveUsers                   *prometheus.Desc
+	descActiveWorkspaces              *prometheus.Desc
+	descTaskQueued                    *prometheus.Desc
+	descTaskRunning                   *prometheus.Desc
+	descTaskStuck                     *prometheus.Desc
+	descRuntimeOnline                 *prometheus.Desc
+	descHeartbeatAgeHist              *prometheus.Desc
+	descWorkspaceTotal                *prometheus.Desc
+	descRoleSourceRuntimeAvailability *prometheus.Desc
 
 	mu       sync.Mutex
 	snapshot *samplerSnapshot
@@ -191,6 +196,10 @@ func NewBusinessSamplerCollector(opts *BusinessSamplerOptions) *BusinessSamplerC
 			"multica_workspace_total",
 			"Lifetime workspace row count. Useful for sizing alerts and dashboards.",
 			nil, nil),
+		descRoleSourceRuntimeAvailability: prometheus.NewDesc(
+			"multica_role_source_runtime_availability",
+			"Managed role sources grouped by DB-backed runtime availability. Excludes intentionally paused or detached sources and uses the control plane stale threshold.",
+			[]string{"status"}, nil),
 	}
 	c.refreshFn = c.refreshFromDB
 	return c
@@ -220,6 +229,7 @@ func (c *BusinessSamplerCollector) Describe(ch chan<- *prometheus.Desc) {
 		c.descRuntimeOnline,
 		c.descHeartbeatAgeHist,
 		c.descWorkspaceTotal,
+		c.descRoleSourceRuntimeAvailability,
 	} {
 		ch <- d
 	}
@@ -253,7 +263,7 @@ func (c *BusinessSamplerCollector) maybeRefresh() *samplerSnapshot {
 	// Bound the entire refresh to N×queryTimeout so an in-flight scrape
 	// can never block forever even if SET LOCAL is somehow ignored by a
 	// misconfigured Postgres.
-	ctx, cancel := context.WithTimeout(context.Background(), 8*c.queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), refreshQueryCount*c.queryTimeout)
 	defer cancel()
 
 	next := c.refreshFn(ctx, now)
@@ -310,6 +320,14 @@ func (c *BusinessSamplerCollector) emit(ch chan<- prometheus.Metric, snap *sampl
 		ch <- prometheus.MustNewConstMetric(
 			c.descWorkspaceTotal, prometheus.GaugeValue, snap.workspaceTotal)
 	}
+	for _, status := range knownRoleSourceRuntimeAvailabilityLabels() {
+		ch <- prometheus.MustNewConstMetric(
+			c.descRoleSourceRuntimeAvailability,
+			prometheus.GaugeValue,
+			snap.roleSourceRuntimeAvailability[status],
+			status,
+		)
+	}
 }
 
 // knownSourceLabels enumerates the source values we always emit a zero for.
@@ -321,6 +339,10 @@ func knownSourceLabels() []string {
 
 func knownRuntimeModeLabels() []string {
 	return []string{"local", "cloud", "unknown"}
+}
+
+func knownRoleSourceRuntimeAvailabilityLabels() []string {
+	return []string{"available", "runtime_unavailable"}
 }
 
 // heartbeatAgeBuckets matches the Grafana board's runtime-health view: a few
@@ -366,18 +388,21 @@ type samplerSnapshot struct {
 
 	workspaceTotal      float64
 	workspaceTotalKnown bool
+
+	roleSourceRuntimeAvailability map[string]float64
 }
 
 func newSamplerSnapshot(t time.Time) *samplerSnapshot {
 	return &samplerSnapshot{
-		takenAt:          t,
-		activeUsers:      map[string]float64{},
-		activeWorkspaces: map[string]float64{},
-		taskQueued:       map[string]float64{},
-		taskRunning:      map[taskRunningKey]float64{},
-		taskStuck:        map[string]float64{},
-		runtimeOnline:    map[runtimeOnlineKey]float64{},
-		heartbeatAge:     map[string]samplerHistogram{},
+		takenAt:                       t,
+		activeUsers:                   map[string]float64{},
+		activeWorkspaces:              map[string]float64{},
+		taskQueued:                    map[string]float64{},
+		taskRunning:                   map[taskRunningKey]float64{},
+		taskStuck:                     map[string]float64{},
+		runtimeOnline:                 map[runtimeOnlineKey]float64{},
+		heartbeatAge:                  map[string]samplerHistogram{},
+		roleSourceRuntimeAvailability: map[string]float64{},
 	}
 }
 
@@ -421,6 +446,9 @@ func (c *BusinessSamplerCollector) refreshFromDB(ctx context.Context, now time.T
 	})
 	c.runQuery(ctx, conn, "workspace_total", func(ctx context.Context, tx pgx.Tx) error {
 		return c.queryWorkspaceTotal(ctx, tx, snap)
+	})
+	c.runQuery(ctx, conn, "role_source_runtime_availability", func(ctx context.Context, tx pgx.Tx) error {
+		return c.queryRoleSourceRuntimeAvailability(ctx, tx, snap)
 	})
 
 	return snap

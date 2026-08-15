@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY role_source_runtime_attestation_workspace_index ON role_source_runtime_attestation (workspace_id, runtime_id);

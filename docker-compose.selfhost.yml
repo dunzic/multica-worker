@@ -83,6 +83,7 @@ services:
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:3000/auth/callback}
       S3_BUCKET: ${S3_BUCKET:-}
       S3_REGION: ${S3_REGION:-us-west-2}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-}
       S3_USE_PATH_STYLE: ${S3_USE_PATH_STYLE:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}

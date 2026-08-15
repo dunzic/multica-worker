@@ -304,9 +304,17 @@ func (d *Daemon) sendWSHeartbeats(ctx context.Context, runtimeIDs []string, writ
 		if ctx.Err() != nil {
 			return
 		}
+		scanner := d.currentRoleSourceScanner()
+		supportsRoleSourceScan := scanner != nil
+		attestation := d.pendingRoleSourceConfigAttestationForScanner(rid, scanner)
 		frame, err := json.Marshal(protocol.Message{
-			Type:    protocol.EventDaemonHeartbeat,
-			Payload: marshalRaw(protocol.DaemonHeartbeatRequestPayload{RuntimeID: rid, SupportsBatchImport: true}),
+			Type: protocol.EventDaemonHeartbeat,
+			Payload: marshalRaw(protocol.DaemonHeartbeatRequestPayload{
+				RuntimeID: rid, SupportsBatchImport: true, SupportsRoleSourceScan: supportsRoleSourceScan,
+				SupportsRoleSourceSecretTransfer:    supportsRoleSourceScan,
+				SupportsRoleSourceConfigAttestation: true,
+				RoleSourceConfigAttestation:         attestation,
+			}),
 		})
 		if err != nil {
 			d.logger.Debug("ws heartbeat marshal failed", "error", err, "runtime_id", rid)

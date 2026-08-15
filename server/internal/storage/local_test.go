@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -503,7 +504,8 @@ func TestLocalStorage_GetReader_RejectsSidecarSuffix(t *testing.T) {
 	}
 }
 
-// Missing key surfaces as a plain error — the handler maps it to 404.
+// Missing key remains typed through wrapping so the integrity worker can
+// quarantine confirmed absence without treating permissions as absence.
 func TestLocalStorage_GetReader_MissingKey(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LOCAL_UPLOAD_DIR", tmpDir)
@@ -516,5 +518,10 @@ func TestLocalStorage_GetReader_MissingKey(t *testing.T) {
 	if rc, err := store.GetReader(context.Background(), "nonexistent.txt"); err == nil {
 		rc.Close()
 		t.Fatal("GetReader should error on missing key")
+	} else if !store.IsObjectNotFound(err) {
+		t.Fatalf("missing key was not classified as not found: %v", err)
+	}
+	if store.IsObjectNotFound(errors.New("permission denied")) {
+		t.Fatal("permission failure must not be classified as missing")
 	}
 }

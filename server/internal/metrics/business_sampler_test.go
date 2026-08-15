@@ -68,6 +68,8 @@ func filledSnapshot(now time.Time) *samplerSnapshot {
 
 	snap.workspaceTotal = 250
 	snap.workspaceTotalKnown = true
+	snap.roleSourceRuntimeAvailability["available"] = 8
+	snap.roleSourceRuntimeAvailability["runtime_unavailable"] = 2
 	return snap
 }
 
@@ -120,6 +122,8 @@ func TestBusinessSamplerCollectorEmitsExpectedMetrics(t *testing.T) {
 		`multica_runtime_heartbeat_age_seconds_count{runtime_mode="local"} 3`,
 		`multica_runtime_heartbeat_age_seconds_sum{runtime_mode="local"} 45`,
 		`multica_workspace_total 250`,
+		`multica_role_source_runtime_availability{status="available"} 8`,
+		`multica_role_source_runtime_availability{status="runtime_unavailable"} 2`,
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(body, want) {
@@ -233,6 +237,9 @@ func TestBusinessSamplerCollectorBoundedCardinality(t *testing.T) {
 	if got := testutil.CollectAndCount(c, "multica_runtime_online"); got != 1 {
 		t.Fatalf("runtime_online series = %d, want 1 (collapsed by normalizers)", got)
 	}
+	if got := testutil.CollectAndCount(c, "multica_role_source_runtime_availability"); got != len(knownRoleSourceRuntimeAvailabilityLabels()) {
+		t.Fatalf("role_source_runtime_availability series = %d, want %d", got, len(knownRoleSourceRuntimeAvailabilityLabels()))
+	}
 }
 
 // TestBusinessSamplerCollectorDisabledWithoutOptions exercises the opt-in
@@ -250,6 +257,7 @@ func TestBusinessSamplerCollectorDisabledWithoutOptions(t *testing.T) {
 		"multica_active_users",
 		"multica_agent_task_queued",
 		"multica_runtime_online",
+		"multica_role_source_runtime_availability",
 		"multica_business_sampler_query_seconds",
 	} {
 		if strings.Contains(body, forbidden) {

@@ -73,8 +73,9 @@ type HealthResponse struct {
 	// version change on disk but hasn't restarted into it yet — it was busy at
 	// the last barrier check and will retry when idle. Omitted when empty, so
 	// older consumers see no change. Diagnostic only: nothing keys off it.
-	ReloadPendingReason string            `json:"reload_pending_reason,omitempty"`
-	Workspaces          []healthWorkspace `json:"workspaces"`
+	ReloadPendingReason string                  `json:"reload_pending_reason,omitempty"`
+	RoleSourceConfig    *RoleSourceConfigHealth `json:"role_source_config,omitempty"`
+	Workspaces          []healthWorkspace       `json:"workspaces"`
 }
 
 type healthWorkspace struct {
@@ -162,6 +163,7 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			SkippedAgents:         d.skippedAgentsSnapshot(),
 
 			ReloadPendingReason: d.reloadPending(),
+			RoleSourceConfig:    d.roleSourceConfigHealth(),
 			Workspaces:          wsList,
 		}
 		if reporter, ok := d.repoCache.(interface{ Activity() repocache.Activity }); ok {

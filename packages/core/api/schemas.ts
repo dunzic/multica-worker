@@ -63,6 +63,20 @@ import type {
   PluginInstallationListResponse,
   ResourceLabelsResponse,
   RuntimeModelListRequest,
+  RoleSourceScan,
+  RoleSource,
+  RoleSourceAdapterDescriptor,
+  RoleSourceLifecycleEvent,
+  RoleSourceSnapshotSummary,
+  RoleSourceSnapshotComparison,
+  RoleSourceConfigurationReview,
+  RoleSourceRetentionPreview,
+  RoleSourceArtifactPurgeReceiptSummary,
+  ChannelDelivery,
+  RoleSourcePlanRecord,
+  RoleSourcePlanApproval,
+  RoleSourceApplyResult,
+  RoleSourceSecretTransferStatus,
   SearchIssuesResponse,
   SearchProjectsResponse,
   Skill,
@@ -200,6 +214,523 @@ export const EMPTY_PLUGIN_CATALOG: PluginCatalogResponse = {
   diagnostics: [],
   supported: false,
 };
+
+export const RoleSourceScanSchema = z.object({
+  id: z.string(),
+  source_id: z.string(),
+  workspace_id: z.string(),
+  status: z.string(),
+  expected_adapter_version: z.string().default(""),
+  snapshot_digest: z.string().nullable().optional().default(null),
+  error_code: z.string().nullable().optional().default(null),
+  requested_at: z.string(),
+  claimed_at: z.string().nullable().optional().default(null),
+  completed_at: z.string().nullable().optional().default(null),
+}).loose();
+
+export const RoleSourceAdapterDescriptorSchema: z.ZodType<RoleSourceAdapterDescriptor> = z.object({
+  kind: z.string().min(1),
+  display_name: z.string().min(1),
+  adapter_version: z.string().min(1),
+  contract_version: z.string().min(1),
+  capabilities: z.object({
+    change_hints: z.boolean(),
+    secret_transfer: z.boolean(),
+    binary_artifacts: z.boolean(),
+    provenance: z.boolean(),
+  }).strict(),
+}).strict();
+
+export const RoleSourceAdapterDescriptorListSchema = z.object({
+  adapters: z.array(RoleSourceAdapterDescriptorSchema).max(64),
+}).strict();
+
+export const RoleSourceSchema: z.ZodType<RoleSource> = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  runtime_id: z.string(),
+  name: z.string(),
+  kind: z.string(),
+  adapter_version: z.string(),
+  config_summary: z.object({
+    configured: z.boolean(),
+    attributes: z.array(z.object({ name: z.string(), value: z.string() }).strict()).max(64),
+  }).strict(),
+  policy: z.record(z.string(), z.unknown()),
+  state: z.string(),
+  current_snapshot_digest: z.string().nullable(),
+  version: z.number().int().nonnegative(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  runtime_config: z.object({
+    status: z.enum(["unattested", "not_loaded", "config_missing", "kind_mismatch", "adapter_version_mismatch", "invalid_attestation", "loaded", "runtime_unavailable"]),
+    attestation_status: z.enum(["unattested", "not_loaded", "config_missing", "kind_mismatch", "adapter_version_mismatch", "invalid_attestation", "loaded"]),
+    runtime_status: z.enum(["online", "offline", "unknown"]),
+    attestation_id: z.string().nullable(),
+    revision: z.string().nullable(),
+    observed_at: z.string().nullable(),
+    changed_at: z.string().nullable(),
+  }).strict(),
+}).strict();
+
+export const RoleSourceScanListSchema = z.object({
+  scans: z.array(RoleSourceScanSchema),
+}).loose();
+
+export const RoleSourceLifecycleEventSchema: z.ZodType<RoleSourceLifecycleEvent> = z.object({
+  sequence: z.number().int().positive(),
+  event_type: z.string(),
+  actor_type: z.string(),
+  actor_id: z.string().optional(),
+  previous_state: z.string(),
+  state: z.string(),
+  previous_runtime_id: z.string().optional(),
+  runtime_id: z.string().optional(),
+  cancelled_scan_count: z.number().int().nonnegative(),
+  cancelled_transfer_count: z.number().int().nonnegative(),
+  event_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  occurred_at: z.string(),
+}).loose();
+
+export const RoleSourceLifecycleEventListSchema = z.object({
+  events: z.array(RoleSourceLifecycleEventSchema),
+}).loose();
+
+const Sha256DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+const RoleSourceRetentionPolicySchema = z.object({
+  workspace_id: z.string(),
+  source_id: z.string(),
+  version: z.number().int().nonnegative(),
+  enabled: z.boolean(),
+  minimum_age_days: z.number().int().min(30).max(3650),
+  keep_successful_snapshots: z.number().int().min(2).max(100),
+  created_by: z.string().optional(),
+  created_at: z.string().optional(),
+}).strict();
+
+const RoleSourceRetentionCandidateSchema = z.object({
+  snapshot_digest: Sha256DigestSchema,
+  created_at: z.string(),
+  estimated_bytes: z.number().int().nonnegative(),
+}).strict();
+
+export const RoleSourceRetentionPreviewSchema: z.ZodType<RoleSourceRetentionPreview> = z.object({
+  policy: RoleSourceRetentionPolicySchema,
+  eligible_count: z.number().int().nonnegative(),
+  estimated_bytes: z.number().int().nonnegative(),
+  // Newer frontends may talk to an older installed backend. Missing projected
+  // reclaim therefore degrades to zero instead of making the settings page
+  // unusable or overstating savings.
+  uniquely_reclaimable_bytes: z.number().int().nonnegative().default(0),
+  truncated: z.boolean(),
+  candidates: z.array(RoleSourceRetentionCandidateSchema).max(200),
+}).strict();
+
+export const EMPTY_ROLE_SOURCE_RETENTION_PREVIEW: RoleSourceRetentionPreview = {
+  policy: {
+    workspace_id: "",
+    source_id: "",
+    version: 0,
+    enabled: false,
+    minimum_age_days: 90,
+    keep_successful_snapshots: 10,
+  },
+  eligible_count: 0,
+  estimated_bytes: 0,
+  uniquely_reclaimable_bytes: 0,
+  truncated: false,
+  candidates: [],
+};
+
+const JSONSafeNonnegativeIntegerSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+
+const RoleSourceArtifactPurgeReceiptSchema = z.object({
+  contract_version: z.enum(["role-source-artifact-purge-receipt-v1", "role-source-artifact-purge-receipt-v2"]),
+  artifact_digest: Sha256DigestSchema,
+  size_bytes: JSONSafeNonnegativeIntegerSchema,
+  reason: z.enum(["unreachable", "workspace_deleted"]),
+  storage_backend: z.enum(["local", "s3"]),
+  purge_mode: z.enum(["current_object", "all_versions"]),
+  successful_passes: z.number().int().min(1).max(100),
+  deleted_versions: JSONSafeNonnegativeIntegerSchema,
+  deleted_delete_markers: JSONSafeNonnegativeIntegerSchema,
+  observed_deleted_bytes: JSONSafeNonnegativeIntegerSchema,
+  logical_bytes_confirmed_absent: JSONSafeNonnegativeIntegerSchema,
+  ambiguous_attempts: JSONSafeNonnegativeIntegerSchema,
+  provider_evidence_complete: z.boolean(),
+  completed_at: z.string(),
+  receipt_digest: Sha256DigestSchema,
+}).strict().superRefine((receipt, ctx) => {
+  if (receipt.provider_evidence_complete !== (receipt.ambiguous_attempts === 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "purge receipt evidence completeness is inconsistent" });
+  }
+  if (receipt.contract_version === "role-source-artifact-purge-receipt-v1" && receipt.ambiguous_attempts !== 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "v1 purge receipt cannot contain ambiguity evidence" });
+  }
+});
+
+export const RoleSourceArtifactPurgeReceiptSummarySchema: z.ZodType<RoleSourceArtifactPurgeReceiptSummary> = z.object({
+  receipt_count: JSONSafeNonnegativeIntegerSchema,
+  logical_bytes_confirmed_absent: JSONSafeNonnegativeIntegerSchema,
+  observed_deleted_bytes: JSONSafeNonnegativeIntegerSchema,
+  deleted_versions: JSONSafeNonnegativeIntegerSchema,
+  deleted_delete_markers: JSONSafeNonnegativeIntegerSchema,
+  ambiguous_attempts: JSONSafeNonnegativeIntegerSchema,
+  incomplete_provider_evidence_receipts: JSONSafeNonnegativeIntegerSchema,
+  truncated: z.boolean(),
+  receipts: z.array(RoleSourceArtifactPurgeReceiptSchema).max(50),
+}).strict().superRefine((summary, ctx) => {
+  if (summary.incomplete_provider_evidence_receipts > summary.receipt_count ||
+      summary.ambiguous_attempts < summary.incomplete_provider_evidence_receipts) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "purge receipt ambiguity totals are inconsistent" });
+  }
+});
+
+export const EMPTY_ROLE_SOURCE_ARTIFACT_PURGE_RECEIPT_SUMMARY: RoleSourceArtifactPurgeReceiptSummary = {
+  receipt_count: 0,
+  logical_bytes_confirmed_absent: 0,
+  observed_deleted_bytes: 0,
+  deleted_versions: 0,
+  deleted_delete_markers: 0,
+  ambiguous_attempts: 0,
+  incomplete_provider_evidence_receipts: 0,
+  truncated: false,
+  receipts: [],
+};
+
+export const RoleSourceSnapshotSummarySchema: z.ZodType<RoleSourceSnapshotSummary> = z.object({
+  snapshot_digest: Sha256DigestSchema,
+  manifest_digest: Sha256DigestSchema,
+  kind: z.string().min(1),
+  adapter_version: z.string().min(1),
+  revision: z.string().optional(),
+  tree_digest: Sha256DigestSchema,
+  role_count: z.number().int().nonnegative(),
+  capability_count: z.number().int().nonnegative(),
+  diagnostic_count: z.number().int().nonnegative(),
+  created_at: z.string().min(1),
+}).strict();
+
+export const RoleSourceSnapshotSummaryListSchema = z.object({
+  snapshots: z.array(RoleSourceSnapshotSummarySchema).max(50),
+}).strict();
+
+export const RoleSourceSnapshotComparisonSchema: z.ZodType<RoleSourceSnapshotComparison> = z.object({
+  from_snapshot_digest: Sha256DigestSchema,
+  to_snapshot_digest: Sha256DigestSchema,
+  total_changes: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(100),
+  changes: z.array(z.object({
+    object_kind: z.string().min(1),
+    object_id: z.string().min(1),
+    parent_id: z.string().optional(),
+    display_name: z.string(),
+    operation: z.enum(["added", "changed", "removed"]),
+  }).strict()).max(100),
+}).strict();
+
+export const RoleSourceConfigurationReviewSchema: z.ZodType<RoleSourceConfigurationReview> = z.object({
+  plan_digest: Sha256DigestSchema,
+  total_changes: z.number().int().nonnegative(),
+  environment_count: z.number().int().nonnegative(),
+  mcp_count: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(100),
+  changes: z.array(z.object({
+    object_kind: z.enum(["environment", "mcp"]),
+    role_id: z.string().min(1),
+    object_id: z.string().min(1),
+    operation: z.enum(["create", "update", "archive_candidate", "blocked"]),
+  }).strict()).max(100),
+}).strict();
+
+const ChannelDeliveryAmbiguityReasonSchema = z.enum([
+  "response_unknown",
+  "partial_delivery",
+  "receipt_persist_failed",
+  "lease_expired",
+  "missing_provider_id",
+]);
+
+const ChannelDeliveryEvidenceSchema = z.object({
+  contract_version: z.string(),
+  delivery_id: z.string(),
+  correlation_id: z.string(),
+  workspace_id: z.string(),
+  task_id: z.string(),
+  chat_session_id: z.string(),
+  channel_type: z.string(),
+  channel_chat_id: z.string(),
+  operation_kind: z.string(),
+  payload_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  status: z.string(),
+  attempt_count: z.number().int().positive(),
+  external_message_id: z.string(),
+  delivered_at: z.string(),
+  readback_message_id: z.string().optional(),
+  readback_at: z.string().optional(),
+  ambiguity_reason: ChannelDeliveryAmbiguityReasonSchema.optional(),
+  ambiguous_at: z.string().optional(),
+}).loose();
+
+const ChannelDeliveryReconciliationSchema = z.object({
+  generation: z.number().int().min(1).max(3),
+  outcome: z.string(),
+  reason_code: z.string(),
+  external_evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  expected_ambiguity_evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  reconciliation_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  created_at: z.string(),
+}).loose();
+
+const ChannelDeliverySchema: z.ZodType<ChannelDelivery> = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  installation_id: z.string().nullish().transform((value) => value ?? undefined),
+  task_id: z.string(),
+  chat_session_id: z.string(),
+  channel_type: z.string(),
+  channel_chat_id: z.string(),
+  operation_kind: z.string(),
+  correlation_id: z.string(),
+  payload_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  status: z.string(),
+  attempt_count: z.number().int().positive(),
+  external_message_id: z.string().nullish().transform((value) => value ?? undefined),
+  evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullish().transform((value) => value ?? undefined),
+  evidence: ChannelDeliveryEvidenceSchema.nullish().transform((value) => value ?? undefined),
+  last_error_code: z.string().nullish().transform((value) => value ?? undefined),
+  ambiguous_at: z.string().nullish().transform((value) => value ?? undefined),
+  reconciliation_count: z.number().int().min(0).max(3).catch(0),
+  last_reconciled_at: z.string().nullish().transform((value) => value ?? undefined),
+  reconciliation: ChannelDeliveryReconciliationSchema.nullish().transform((value) => value ?? undefined),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose().superRefine((delivery, ctx) => {
+  if (delivery.reconciliation_count > 0 &&
+      (!delivery.reconciliation || delivery.reconciliation.generation !== delivery.reconciliation_count)) {
+    ctx.addIssue({ code: "custom", message: "delivery reconciliation does not match its evidence chain" });
+  }
+  if ((delivery.status === "retry_authorized" || delivery.status === "reconciled") &&
+      (!delivery.last_reconciled_at || !delivery.reconciliation ||
+       delivery.reconciliation.expected_ambiguity_evidence_digest !== delivery.evidence_digest)) {
+    ctx.addIssue({ code: "custom", message: "resolved delivery requires an authorized reconciliation receipt" });
+  }
+  if (delivery.status === "retry_authorized" && delivery.reconciliation?.outcome !== "confirmed_not_delivered") {
+    ctx.addIssue({ code: "custom", message: "authorized retry requires confirmed non-delivery" });
+  }
+  if (delivery.status === "reconciled" && delivery.reconciliation?.outcome === "confirmed_not_delivered") {
+    ctx.addIssue({ code: "custom", message: "terminal reconciliation has a retry outcome" });
+  }
+  if (delivery.reconciliation && !(
+      (delivery.reconciliation.outcome === "confirmed_delivered" && delivery.reconciliation.reason_code === "provider_delivery_confirmed") ||
+      (delivery.reconciliation.outcome === "confirmed_not_delivered" && delivery.reconciliation.reason_code === "provider_non_delivery_confirmed") ||
+      (delivery.reconciliation.outcome === "closed_no_retry" &&
+       (delivery.reconciliation.reason_code === "business_superseded" || delivery.reconciliation.reason_code === "risk_accepted")))) {
+    ctx.addIssue({ code: "custom", message: "delivery reconciliation outcome and reason are incompatible" });
+  }
+  if (delivery.status !== "delivered" && delivery.status !== "readback" && delivery.status !== "ambiguous") return;
+  if (!delivery.evidence_digest || !delivery.evidence ||
+      delivery.evidence.delivery_id !== delivery.id ||
+      delivery.evidence.correlation_id !== delivery.correlation_id ||
+      delivery.evidence.workspace_id !== delivery.workspace_id ||
+      delivery.evidence.task_id !== delivery.task_id ||
+      delivery.evidence.chat_session_id !== delivery.chat_session_id ||
+      delivery.evidence.channel_type !== delivery.channel_type ||
+      delivery.evidence.channel_chat_id !== delivery.channel_chat_id ||
+      delivery.evidence.operation_kind !== delivery.operation_kind ||
+      delivery.evidence.status !== delivery.status ||
+      delivery.evidence.payload_digest !== delivery.payload_digest ||
+      delivery.evidence.attempt_count !== delivery.attempt_count) {
+    ctx.addIssue({ code: "custom", message: "terminal delivery evidence does not match its row" });
+  }
+  if (delivery.status === "ambiguous") {
+    if (!delivery.ambiguous_at || !delivery.last_error_code ||
+        delivery.evidence?.contract_version !== "2.0" ||
+        delivery.evidence.ambiguous_at !== delivery.ambiguous_at ||
+        delivery.evidence.ambiguity_reason !== delivery.last_error_code ||
+        delivery.evidence.delivered_at !== "" || delivery.evidence.readback_at ||
+        delivery.evidence.readback_message_id ||
+        (delivery.external_message_id ?? "") !== delivery.evidence.external_message_id) {
+      ctx.addIssue({ code: "custom", message: "ambiguous delivery requires frozen ambiguity evidence" });
+    }
+    return;
+  }
+  if (delivery.evidence?.contract_version !== "1.0" || !delivery.external_message_id ||
+      delivery.evidence.external_message_id !== delivery.external_message_id || !delivery.evidence.delivered_at ||
+      delivery.ambiguous_at || delivery.evidence.ambiguous_at || delivery.evidence.ambiguity_reason) {
+    ctx.addIssue({ code: "custom", message: "delivered state requires provider receipt evidence" });
+  }
+  if (delivery.status === "readback" &&
+      (!delivery.evidence?.readback_at || !delivery.evidence.readback_message_id)) {
+    ctx.addIssue({ code: "custom", message: "readback delivery requires explicit reply evidence" });
+  }
+});
+
+export const ChannelDeliveryListSchema = z.object({
+  deliveries: z.array(ChannelDeliverySchema),
+}).loose();
+
+export const EMPTY_ROLE_SOURCE_SCAN: RoleSourceScan = {
+  id: "",
+  source_id: "",
+  workspace_id: "",
+  status: "failed",
+  expected_adapter_version: "",
+  snapshot_digest: null,
+  error_code: null,
+  requested_at: "",
+  claimed_at: null,
+  completed_at: null,
+};
+
+const RoleSourceObjectRefSchema = z.object({
+  kind: z.string(),
+  parent_id: z.string().optional(),
+  id: z.string(),
+}).loose();
+
+const RoleSourcePlanActionSchema = z.object({
+  ref: RoleSourceObjectRefSchema,
+  display_name: z.string(),
+  needs_secret_transfer: z.boolean().optional(),
+  operation: z.string(),
+  proposed_operation: z.string().optional(),
+  risk: z.string(),
+  before_digest: z.string().optional(),
+  after_digest: z.string().optional(),
+  reason: z.string(),
+  blocking_diagnostics: z.array(z.string()).optional(),
+  adoption_candidate: z.object({
+    target_kind: z.enum(["agent", "skill", "autopilot"]),
+    target_id: z.string(),
+    version_commitment: z.string(),
+  }).optional(),
+}).loose();
+
+const RoleSourcePlanSchema = z.object({
+  contract_version: z.string(),
+  mode: z.string().optional(),
+  source_id: z.string(),
+  from_snapshot_digest: z.string().optional(),
+  to_snapshot_digest: z.string(),
+  plan_digest: z.string(),
+  applyable: z.boolean(),
+  summary: z.object({
+    create: z.number(),
+    update: z.number(),
+    unchanged: z.number(),
+    archive_candidate: z.number(),
+    blocked: z.number(),
+  }).loose(),
+  actions: z.array(RoleSourcePlanActionSchema),
+  blockers: z.array(z.object({
+    code: z.string(),
+    message: z.string(),
+    global: z.boolean(),
+    object: RoleSourceObjectRefSchema.optional(),
+  }).loose()),
+}).loose();
+
+export const RoleSourcePlanRecordSchema = z.object({
+  source_id: z.string(),
+  workspace_id: z.string(),
+  plan: RoleSourcePlanSchema,
+  created_by: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const RoleSourcePlanRecordListSchema = z.object({
+  plans: z.array(RoleSourcePlanRecordSchema).default([]),
+}).loose();
+
+const RoleSourceApprovalDecisionsSchema = z.object({
+  contract_version: z.string(),
+  archives: z.array(z.object({
+    ref: RoleSourceObjectRefSchema,
+    decision: z.string(),
+  }).loose()),
+  adoptions: z.array(z.object({
+    ref: RoleSourceObjectRefSchema,
+    target_kind: z.enum(["agent", "skill", "autopilot"]),
+    target_id: z.string(),
+    version_commitment: z.string(),
+  }).loose()).default([]),
+}).loose();
+
+export const RoleSourcePlanApprovalSchema = z.object({
+  id: z.string(),
+  source_id: z.string(),
+  workspace_id: z.string(),
+  plan_digest: z.string(),
+  decision: z.string(),
+  decisions: RoleSourceApprovalDecisionsSchema.optional(),
+  actor_user_id: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const RoleSourcePlanApprovalListSchema = z.object({
+  approvals: z.array(RoleSourcePlanApprovalSchema).default([]),
+}).loose();
+
+const RoleSourceApplyReceiptSchema = z.object({
+  contract_version: z.string(),
+  mode: z.string().optional(),
+  apply_id: z.string(),
+  source_id: z.string(),
+  workspace_id: z.string(),
+  snapshot_digest: z.string(),
+  from_snapshot_digest: z.string().optional(),
+  plan_digest: z.string(),
+  approval_id: z.string(),
+  counts: z.object({
+    created: z.number(),
+    updated: z.number(),
+    adopted: z.number().default(0),
+    unchanged: z.number(),
+    archived: z.number(),
+    retained: z.number(),
+  }).loose(),
+  receipt_digest: z.string(),
+}).loose();
+
+export const RoleSourceApplyResultSchema = z.object({
+  id: z.string(),
+  source_id: z.string(),
+  workspace_id: z.string(),
+  status: z.string(),
+  mode: z.string(),
+  actor_user_id: z.string(),
+  receipt: RoleSourceApplyReceiptSchema,
+  completed_at: z.string().nullable(),
+}).loose();
+
+export const RoleSourceApplyResultListSchema = z.object({
+  applies: z.array(RoleSourceApplyResultSchema).default([]),
+}).loose();
+
+export const EMPTY_ROLE_SOURCE_PLANS: { plans: RoleSourcePlanRecord[] } = { plans: [] };
+export const EMPTY_ROLE_SOURCE_APPROVALS: { approvals: RoleSourcePlanApproval[] } = { approvals: [] };
+export const EMPTY_ROLE_SOURCE_APPLIES: { applies: RoleSourceApplyResult[] } = { applies: [] };
+
+export const RoleSourceSecretTransferStatusSchema = z.object({
+  id: z.string(),
+  role_id: z.string(),
+  status: z.string(),
+  expires_at: z.string(),
+  created_at: z.string(),
+  submitted_at: z.string().optional(),
+  consumed_at: z.string().optional(),
+  error_code: z.string().optional(),
+}).loose();
+
+export const RoleSourceSecretTransferStatusListSchema = z.object({
+  secret_transfers: z.array(RoleSourceSecretTransferStatusSchema).default([]),
+}).loose();
+
+export const EMPTY_ROLE_SOURCE_SECRET_TRANSFERS: { secret_transfers: RoleSourceSecretTransferStatus[] } = { secret_transfers: [] };
 
 export const GitHubInstallationSchema = z.object({
   id: z.string(),

@@ -28,6 +28,7 @@ import { larkKeys } from "../lark/queries";
 import { slackKeys } from "../slack/queries";
 import { dingtalkKeys } from "../dingtalk/queries";
 import { wecomKeys } from "../wecom/queries";
+import { roleSourceKeys } from "../role-sources/queries";
 import {
   onIssueCreated,
   onIssueUpdated,
@@ -631,6 +632,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: autopilotKeys.all(wsId) });
+    qc.invalidateQueries({ queryKey: roleSourceKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: workspaceWorkingAgentsKeys.all(wsId) });
     qc.invalidateQueries({ queryKey: agentActivityKeys.all(wsId) });
@@ -763,6 +765,18 @@ export function useRealtimeSync(
       skill: () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: workspaceKeys.skills(wsId) });
+      },
+      role_source: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) {
+          // One committed apply may create, update, archive, restore or adopt
+          // any combination of these projections. The durable event is a
+          // single workspace invalidation, avoiding one WS frame per object.
+          qc.invalidateQueries({ queryKey: roleSourceKeys.all(wsId) });
+          qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+          qc.invalidateQueries({ queryKey: workspaceKeys.skills(wsId) });
+          qc.invalidateQueries({ queryKey: autopilotKeys.all(wsId) });
+        }
       },
       project: () => {
         const wsId = getCurrentWsId();

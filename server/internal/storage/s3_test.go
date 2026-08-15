@@ -2,18 +2,45 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
+
+func TestS3StorageObjectNotFoundClassificationIsNarrow(t *testing.T) {
+	store := &S3Storage{}
+	for _, err := range []error{
+		&types.NoSuchKey{},
+		&smithy.GenericAPIError{Code: "NoSuchKey"},
+		fmt.Errorf("wrapped: %w", &smithy.GenericAPIError{Code: "NotFound"}),
+	} {
+		if !store.IsObjectNotFound(err) {
+			t.Fatalf("confirmed absence was not classified: %T %v", err, err)
+		}
+	}
+	for _, err := range []error{
+		errors.New("connection reset"),
+		&smithy.GenericAPIError{Code: "AccessDenied"},
+		&smithy.GenericAPIError{Code: "SlowDown"},
+	} {
+		if store.IsObjectNotFound(err) {
+			t.Fatalf("transient/authorization failure classified as missing: %T %v", err, err)
+		}
+	}
+}
 
 func TestS3StorageUploadStreamUsesFixedLengthRequest(t *testing.T) {
 	type observedRequest struct {
@@ -73,6 +100,231 @@ func TestS3StorageUploadStreamRejectsUnknownLength(t *testing.T) {
 	store := &S3Storage{}
 	if _, err := store.UploadStream(context.Background(), "uploads/media.bin", strings.NewReader("payload"), 0, "application/octet-stream", "media.bin"); err == nil {
 		t.Fatal("UploadStream accepted an unknown content length")
+	}
+}
+
+func TestS3StoragePurgeObjectDeletesEveryExactKeyVersion(t *testing.T) {
+	const key = "role-source/artifact"
+	deletedVersions := make(chan string, 1)
+	var deleteCurrentCalls atomic.Int32
+	var versionListCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			deleteCurrentCalls.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Query().Has("versions"):
+			listCall := versionListCalls.Add(1)
+			w.Header().Set("Content-Type", "application/xml")
+			if listCall > 2 {
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>role-source/artifact</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+</ListVersionsResult>`)
+				return
+			}
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>role-source/artifact</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Version><Key>role-source/artifact</Key><VersionId>v1</VersionId><IsLatest>false</IsLatest><Size>7</Size></Version>
+  <DeleteMarker><Key>role-source/artifact</Key><VersionId>d1</VersionId><IsLatest>true</IsLatest></DeleteMarker>
+  <Version><Key>role-source/artifact-suffix</Key><VersionId>other</VersionId><IsLatest>true</IsLatest><Size>7</Size></Version>
+</ListVersionsResult>`)
+		case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read version delete body: %v", err)
+			}
+			deletedVersions <- string(body)
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>`)
+		default:
+			t.Errorf("unexpected purge request: %s %s", r.Method, r.URL.String())
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+	store := &S3Storage{
+		client: s3.New(s3.Options{
+			Region:       "us-east-1",
+			Credentials:  aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
+			BaseEndpoint: aws.String(server.URL),
+			UsePathStyle: true,
+		}),
+		bucket: "test-bucket", region: "us-east-1", endpointURL: server.URL, usePathStyle: true,
+	}
+	result, err := store.PurgeObjectWithResult(context.Background(), key)
+	if err != nil {
+		t.Fatalf("PurgeObjectWithResult: %v", err)
+	}
+	if result.Backend != PermanentPurgeBackendS3 || result.Mode != PermanentPurgeModeVersions ||
+		result.VersionsDeleted != 1 || result.DeleteMarkersDeleted != 1 ||
+		result.ObservedBytesDeleted != 7 || !result.VerifiedAbsent {
+		t.Fatalf("purge result = %+v", result)
+	}
+	if calls := deleteCurrentCalls.Load(); calls != 1 {
+		t.Fatalf("current-object delete calls = %d, want 1", calls)
+	}
+	if calls := versionListCalls.Load(); calls != 3 {
+		t.Fatalf("version inventory calls = %d, want preflight, delete inventory and absence verification", calls)
+	}
+	body := <-deletedVersions
+	for _, required := range []string{"<Key>" + key + "</Key>", "<VersionId>v1</VersionId>", "<VersionId>d1</VersionId>"} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("version delete body omitted %q: %s", required, body)
+		}
+	}
+	if strings.Contains(body, "artifact-suffix") || strings.Contains(body, "other") {
+		t.Fatalf("purge crossed the exact-key boundary: %s", body)
+	}
+}
+
+func TestS3StoragePurgeObjectRefusesUnboundedHistoryBeforeMutation(t *testing.T) {
+	const key = "role-source/unbounded"
+	var unexpectedMutations atomic.Int32
+	var inventory strings.Builder
+	inventory.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>test-bucket</Name><Prefix>role-source/unbounded</Prefix><MaxKeys>20000</MaxKeys><IsTruncated>false</IsTruncated>`)
+	for index := 0; index <= maxS3ObjectVersionsPerPurge; index++ {
+		_, _ = fmt.Fprintf(&inventory, "<Version><Key>%s</Key><VersionId>v%d</VersionId><IsLatest>false</IsLatest><Size>1</Size></Version>", key, index)
+	}
+	inventory.WriteString(`</ListVersionsResult>`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Query().Has("versions") {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = io.WriteString(w, inventory.String())
+			return
+		}
+		unexpectedMutations.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	store := &S3Storage{
+		client: s3.New(s3.Options{
+			Region:       "us-east-1",
+			Credentials:  aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
+			BaseEndpoint: aws.String(server.URL),
+			UsePathStyle: true,
+		}),
+		bucket: "test-bucket", region: "us-east-1", endpointURL: server.URL, usePathStyle: true,
+	}
+	if err := store.PurgeObject(context.Background(), key); err == nil || !strings.Contains(err.Error(), "more than 10000 retained versions") {
+		t.Fatalf("unbounded purge error = %v, want bounded refusal", err)
+	}
+	if calls := unexpectedMutations.Load(); calls != 0 {
+		t.Fatalf("unbounded purge mutated storage %d times before refusing", calls)
+	}
+}
+
+func TestS3StoragePurgeErrorClassifiesPreflightAndPartialMutation(t *testing.T) {
+	t.Run("preflight failure did not mutate", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>denied</Message></Error>`)
+		}))
+		t.Cleanup(server.Close)
+		store := newPurgeTestS3Storage(server.URL)
+		_, err := store.PurgeObjectWithResult(context.Background(), "role-source/preflight-denied")
+		if err == nil || PermanentPurgeMayHaveMutated(err) {
+			t.Fatalf("preflight error=%v may_have_mutated=%v", err, PermanentPurgeMayHaveMutated(err))
+		}
+	})
+
+	t.Run("partial batch may have mutated", func(t *testing.T) {
+		const key = "role-source/partial-delete"
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodDelete:
+				w.WriteHeader(http.StatusNoContent)
+			case r.Method == http.MethodGet && r.URL.Query().Has("versions"):
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>`+key+`</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Version><Key>`+key+`</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest><Size>7</Size></Version>
+</ListVersionsResult>`)
+			case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Error><Key>`+key+`</Key><VersionId>v1</VersionId><Code>AccessDenied</Code><Message>denied</Message></Error>
+</DeleteResult>`)
+			default:
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		}))
+		t.Cleanup(server.Close)
+		store := newPurgeTestS3Storage(server.URL)
+		result, err := store.PurgeObjectWithResult(context.Background(), key)
+		if err == nil || !PermanentPurgeMayHaveMutated(err) || !strings.Contains(err.Error(), "AccessDenied") {
+			t.Fatalf("partial-delete result=%+v error=%v may_have_mutated=%v", result, err, PermanentPurgeMayHaveMutated(err))
+		}
+		if result.VersionsDeleted != 1 || result.ObservedBytesDeleted != 7 || result.VerifiedAbsent {
+			t.Fatalf("partial-delete result=%+v", result)
+		}
+	})
+}
+
+func TestS3StoragePurgeTimeoutAfterProviderMutationConvergesWithAmbiguousEvidence(t *testing.T) {
+	const key = "role-source/timeout-after-delete"
+	var retained atomic.Bool
+	retained.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Query().Has("versions"):
+			w.Header().Set("Content-Type", "application/xml")
+			if retained.Load() {
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>`+key+`</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Version><Key>`+key+`</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest><Size>11</Size></Version>
+</ListVersionsResult>`)
+				return
+			}
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>`+key+`</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+</ListVersionsResult>`)
+		case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
+			retained.Store(false)
+			select {
+			case <-r.Context().Done():
+			case <-time.After(250 * time.Millisecond):
+			}
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+	store := newPurgeTestS3Storage(server.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	result, err := store.PurgeObjectWithResult(ctx, key)
+	cancel()
+	if err == nil || !PermanentPurgeMayHaveMutated(err) || retained.Load() {
+		t.Fatalf("timeout result=%+v error=%v retained=%v may_have_mutated=%v", result, err, retained.Load(), PermanentPurgeMayHaveMutated(err))
+	}
+	if result.VersionsDeleted != 1 || result.ObservedBytesDeleted != 11 || result.VerifiedAbsent {
+		t.Fatalf("timeout result=%+v", result)
+	}
+
+	retry, err := store.PurgeObjectWithResult(context.Background(), key)
+	if err != nil || !retry.VerifiedAbsent || retry.VersionsDeleted != 0 || retry.ObservedBytesDeleted != 0 {
+		t.Fatalf("retry result=%+v error=%v", retry, err)
+	}
+}
+
+func newPurgeTestS3Storage(endpoint string) *S3Storage {
+	return &S3Storage{
+		client: s3.New(s3.Options{
+			Region:       "us-east-1",
+			Credentials:  aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
+			BaseEndpoint: aws.String(endpoint),
+			UsePathStyle: true,
+			Retryer:      aws.NopRetryer{},
+		}),
+		bucket: "test-bucket", region: "us-east-1", endpointURL: endpoint, usePathStyle: true,
 	}
 }
 
@@ -449,13 +701,43 @@ func TestS3UsePathStyleFromEnv(t *testing.T) {
 	})
 }
 
+func TestS3EndpointURLFromEnv(t *testing.T) {
+	tests := []struct {
+		name      string
+		preferred string
+		legacy    string
+		want      string
+		wantError bool
+	}{
+		{name: "none"},
+		{name: "preferred", preferred: " https://preferred.example.com ", want: "https://preferred.example.com"},
+		{name: "legacy", legacy: " https://legacy.example.com ", want: "https://legacy.example.com"},
+		{name: "matching aliases", preferred: "https://objects.example.com", legacy: "https://objects.example.com", want: "https://objects.example.com"},
+		{name: "conflicting aliases", preferred: "https://preferred.example.com", legacy: "https://legacy.example.com", wantError: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("S3_ENDPOINT_URL", tc.preferred)
+			t.Setenv("AWS_ENDPOINT_URL", tc.legacy)
+			got, err := s3EndpointURLFromEnv()
+			if (err != nil) != tc.wantError {
+				t.Fatalf("s3EndpointURLFromEnv() error = %v, wantError = %v", err, tc.wantError)
+			}
+			if got != tc.want {
+				t.Fatalf("s3EndpointURLFromEnv() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewS3StorageFromEnv_ConfiguresEndpointPathStyle(t *testing.T) {
 	t.Run("defaults custom endpoints to path style", func(t *testing.T) {
 		t.Setenv("S3_BUCKET", "test-bucket")
 		t.Setenv("S3_REGION", "us-east-1")
 		t.Setenv("AWS_ACCESS_KEY_ID", "AKID")
 		t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRET")
-		t.Setenv("AWS_ENDPOINT_URL", "https://objects.example.com")
+		t.Setenv("S3_ENDPOINT_URL", "https://objects.example.com")
+		t.Setenv("AWS_ENDPOINT_URL", "")
 		t.Setenv("S3_USE_PATH_STYLE", "")
 
 		store := NewS3StorageFromEnv()
@@ -475,7 +757,8 @@ func TestNewS3StorageFromEnv_ConfiguresEndpointPathStyle(t *testing.T) {
 		t.Setenv("S3_REGION", "us-east-1")
 		t.Setenv("AWS_ACCESS_KEY_ID", "AKID")
 		t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRET")
-		t.Setenv("AWS_ENDPOINT_URL", "https://objects.example.com")
+		t.Setenv("S3_ENDPOINT_URL", "https://objects.example.com")
+		t.Setenv("AWS_ENDPOINT_URL", "")
 		t.Setenv("S3_USE_PATH_STYLE", "false")
 
 		store := NewS3StorageFromEnv()
@@ -490,6 +773,16 @@ func TestNewS3StorageFromEnv_ConfiguresEndpointPathStyle(t *testing.T) {
 		}
 		if got, want := store.uploadedURL("uploads/file.txt"), "https://test-bucket.objects.example.com/uploads/file.txt"; got != want {
 			t.Fatalf("uploadedURL() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("rejects conflicting preferred and legacy endpoints", func(t *testing.T) {
+		t.Setenv("S3_BUCKET", "test-bucket")
+		t.Setenv("S3_ENDPOINT_URL", "https://preferred.example.com")
+		t.Setenv("AWS_ENDPOINT_URL", "https://legacy.example.com")
+
+		if store := NewS3StorageFromEnv(); store != nil {
+			t.Fatal("NewS3StorageFromEnv() accepted conflicting endpoint variables")
 		}
 	})
 }

@@ -85,7 +85,7 @@ func (c *dingtalkChannel) Send(ctx context.Context, out channel.OutboundMessage)
 	s := &sender{client: c.client, robotCode: c.robotCode, appKey: c.appKey, appSecret: c.appSecret}
 	key, err := s.send(ctx, sendTarget{ConversationType: convTypeGroup, ConversationID: out.ChatID}, out.Text)
 	if err != nil {
-		return channel.SendResult{}, err
+		return channel.SendResult{MessageID: key}, err
 	}
 	return channel.SendResult{MessageID: key}, nil
 }

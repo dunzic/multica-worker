@@ -115,7 +115,8 @@ allowlist의 정확한 판단 순서는 [로그인과 가입](/auth-setup#가입
 | `S3_REGION` | `us-west-2` | Bucket region |
 | `AWS_ACCESS_KEY_ID` | SDK 기본 자격 증명 chain | 정적 access key |
 | `AWS_SECRET_ACCESS_KEY` | SDK 기본 자격 증명 chain | 정적 secret key |
-| `AWS_ENDPOINT_URL` | 비어 있음 | MinIO 같은 S3 호환 endpoint |
+| `S3_ENDPOINT_URL` | 비어 있음 | MinIO 같은 S3 호환 endpoint의 권장 설정. S3에만 적용 |
+| `AWS_ENDPOINT_URL` | 비어 있음 | `S3_ENDPOINT_URL`의 이전 호환 alias. KMS 기반 DR job에서는 금지 |
 | `S3_USE_PATH_STYLE` | 사용자 지정 endpoint에서는 `true` | path-style 주소 사용 여부 |
 | `ATTACHMENT_DOWNLOAD_MODE` | `auto` | `auto`, `cloudfront`, `presign`, `proxy` 중 하나 |
 | `ATTACHMENT_DOWNLOAD_URL_TTL` | `30m` | 서명된 다운로드 주소의 유효 기간 |

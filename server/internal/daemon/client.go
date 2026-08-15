@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -191,6 +193,7 @@ func daemonClientCapabilities() string {
 		protocol.DaemonCapabilityExecutionManifestV1,
 		protocol.DaemonCapabilityAgentSkillV1,
 		protocol.DaemonCapabilityLocalWorktreeV1,
+		protocol.DaemonCapabilityRoleSourceCapabilitiesV1,
 		protocol.DaemonCapabilityRPCV1,
 	}, ",")
 }
@@ -500,22 +503,123 @@ func (c *Client) GetTaskStatus(ctx context.Context, taskID string) (string, erro
 // heartbeat paths share a single type and a single decoder shape. Aliases
 // (rather than wrappers) keep call sites unchanged.
 type (
-	HeartbeatResponse       = protocol.DaemonHeartbeatAckPayload
-	PendingUpdate           = protocol.DaemonHeartbeatPendingUpdate
-	PendingModelList        = protocol.DaemonHeartbeatPendingModelList
-	PendingLocalSkills      = protocol.DaemonHeartbeatPendingLocalSkills
-	PendingLocalSkillImport = protocol.DaemonHeartbeatPendingLocalSkillImport
+	HeartbeatResponse               = protocol.DaemonHeartbeatAckPayload
+	PendingUpdate                   = protocol.DaemonHeartbeatPendingUpdate
+	PendingModelList                = protocol.DaemonHeartbeatPendingModelList
+	PendingLocalSkills              = protocol.DaemonHeartbeatPendingLocalSkills
+	PendingLocalSkillImport         = protocol.DaemonHeartbeatPendingLocalSkillImport
+	PendingRoleSourceScan           = protocol.DaemonHeartbeatPendingRoleSourceScan
+	PendingRoleSourceSecretTransfer = protocol.DaemonHeartbeatPendingRoleSourceSecretTransfer
 )
 
-func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string) (*HeartbeatResponse, error) {
+type HeartbeatOptions struct {
+	SupportsRoleSourceScan              bool
+	PollRoleSourceScan                  bool
+	SupportsRoleSourceSecretTransfer    bool
+	PollRoleSourceSecretTransfer        bool
+	SupportsRoleSourceConfigAttestation bool
+	RoleSourceConfigAttestation         *protocol.RoleSourceConfigAttestation
+	// roleSourceScanner pins the exact local configuration generation used to
+	// negotiate this heartbeat. It is never serialized.
+	roleSourceScanner *roleSourceScanner
+}
+
+func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, options ...HeartbeatOptions) (*HeartbeatResponse, error) {
+	var option HeartbeatOptions
+	if len(options) > 0 {
+		option = options[0]
+	}
 	var resp HeartbeatResponse
-	if err := c.postJSON(ctx, "/api/daemon/heartbeat", map[string]any{
-		"runtime_id":            runtimeID,
-		"supports_batch_import": true,
-	}, &resp); err != nil {
+	request := protocol.DaemonHeartbeatRequestPayload{
+		RuntimeID: runtimeID, SupportsBatchImport: true,
+		SupportsRoleSourceScan: option.SupportsRoleSourceScan, PollRoleSourceScan: option.PollRoleSourceScan,
+		SupportsRoleSourceSecretTransfer: option.SupportsRoleSourceSecretTransfer, PollRoleSourceSecretTransfer: option.PollRoleSourceSecretTransfer,
+		SupportsRoleSourceConfigAttestation: option.SupportsRoleSourceConfigAttestation,
+		RoleSourceConfigAttestation:         option.RoleSourceConfigAttestation,
+	}
+	if err := c.postJSON(ctx, "/api/daemon/heartbeat", request, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+type RoleSourceSecretTransferResult struct {
+	Status     string                     `json:"status"`
+	LeaseToken string                     `json:"lease_token"`
+	Envelope   *rolesource.SecretEnvelope `json:"envelope,omitempty"`
+	ErrorCode  string                     `json:"error_code,omitempty"`
+}
+
+func (c *Client) ReportRoleSourceSecretTransferResult(ctx context.Context, runtimeID string, pending PendingRoleSourceSecretTransfer, result RoleSourceSecretTransferResult) error {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/secret-transfers/%s/result", runtimeID, pending.SourceID, pending.TransferID)
+	return c.postJSONWithRetry(ctx, path, result, nil, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second})
+}
+
+type RoleSourceScanResult struct {
+	Status     string               `json:"status"`
+	LeaseToken string               `json:"lease_token"`
+	Snapshot   *rolesource.Snapshot `json:"snapshot,omitempty"`
+	ErrorCode  string               `json:"error_code,omitempty"`
+}
+
+// ReportRoleSourceScanResult retries the idempotent terminal report while the
+// caller's lease-bounded context remains alive.
+func (c *Client) ReportRoleSourceScanResult(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, result RoleSourceScanResult) error {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/scans/%s/result", runtimeID, pending.SourceID, pending.RequestID)
+	return c.postJSONWithRetry(ctx, path, result, nil, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second})
+}
+
+type RoleSourceScanLeaseResponse struct {
+	LeaseExpiresAt string `json:"lease_expires_at"`
+}
+
+func (c *Client) RenewRoleSourceScanLease(ctx context.Context, runtimeID string, pending PendingRoleSourceScan) (*RoleSourceScanLeaseResponse, error) {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/scans/%s/lease", runtimeID, pending.SourceID, pending.RequestID)
+	var response RoleSourceScanLeaseResponse
+	if err := c.postJSONWithRetry(ctx, path, map[string]string{"lease_token": pending.LeaseToken}, &response, []time.Duration{time.Second, 2 * time.Second}); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+type roleSourceArtifactCheckResponse struct {
+	Missing []rolesource.ArtifactRef `json:"missing"`
+}
+
+func (c *Client) CheckRoleSourceArtifacts(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, refs []rolesource.ArtifactRef) ([]rolesource.ArtifactRef, error) {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/scans/%s/artifacts/check", runtimeID, pending.SourceID, pending.RequestID)
+	var response roleSourceArtifactCheckResponse
+	if err := c.postJSONWithRetry(ctx, path, map[string]any{"lease_token": pending.LeaseToken, "artifacts": refs}, &response, []time.Duration{time.Second, 2 * time.Second}); err != nil {
+		return nil, err
+	}
+	return response.Missing, nil
+}
+
+func (c *Client) UploadRoleSourceArtifact(ctx context.Context, runtimeID string, pending PendingRoleSourceScan, ref rolesource.ArtifactRef, body io.Reader) error {
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/role-sources/%s/scans/%s/artifacts/%s",
+		runtimeID, pending.SourceID, pending.RequestID, url.PathEscape(ref.Digest))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+path, body)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = ref.SizeBytes
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Role-Source-Lease-Token", pending.LeaseToken)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	c.setIdentityHeaders(req)
+	resp, err := c.bundleClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &requestError{Method: http.MethodPut, Path: path, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(data))}
+	}
+	_, err = io.Copy(io.Discard, resp.Body)
+	return err
 }
 
 // ReportUpdateResult sends the CLI update result back to the server.

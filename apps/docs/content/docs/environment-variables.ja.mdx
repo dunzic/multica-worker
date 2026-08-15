@@ -115,7 +115,8 @@ allowlist の正確な判定順序は[ログインとサインアップ](/auth-s
 | `S3_REGION` | `us-west-2` | バケットのあるリージョン |
 | `AWS_ACCESS_KEY_ID` | SDK デフォルトの資格情報チェーン | 静的な access key |
 | `AWS_SECRET_ACCESS_KEY` | SDK デフォルトの資格情報チェーン | 静的な secret key |
-| `AWS_ENDPOINT_URL` | 空 | MinIO などの S3 互換 endpoint |
+| `S3_ENDPOINT_URL` | 空 | MinIO などの S3 互換 endpoint の推奨設定。S3 のみに適用 |
+| `AWS_ENDPOINT_URL` | 空 | `S3_ENDPOINT_URL` の旧互換 alias。KMS を使う DR job では禁止 |
 | `S3_USE_PATH_STYLE` | カスタム endpoint 時は `true` | path-style アドレスを使うか |
 | `ATTACHMENT_DOWNLOAD_MODE` | `auto` | `auto`、`cloudfront`、`presign`、`proxy` |
 | `ATTACHMENT_DOWNLOAD_URL_TTL` | `30m` | 署名付きダウンロード URL の有効期間 |

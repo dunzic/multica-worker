@@ -32,7 +32,7 @@ const (
 	// 150s leaves a 45s buffer above the 105s worst-case DB age, and keeps
 	// detection latency for a genuinely-dead runtime under staleThreshold +
 	// sweepInterval = 180s (~3 minutes).
-	staleThresholdSeconds = 150.0
+	staleThresholdSeconds = handler.RuntimeStaleThresholdSeconds
 	// offlineRuntimeTTLSeconds deletes offline runtimes with no active agents
 	// after this duration. 7 days gives users plenty of time to restart daemons.
 	offlineRuntimeTTLSeconds = 7 * 24 * 3600.0
@@ -124,7 +124,19 @@ func runRuntimeSweeper(ctx context.Context, txStarter runtimeGCTxStarter, querie
 			sweepExpiredQueuedTasks(ctx, queries, taskSvc)
 			sweepDeferredChatFinalizations(ctx, queries, taskSvc)
 			gcRuntimes(ctx, txStarter, queries, taskSvc.Metrics, bus)
+			sweepExpiredRoleSourceSecretTransfers(ctx, queries)
 		}
+	}
+}
+
+func sweepExpiredRoleSourceSecretTransfers(ctx context.Context, queries *db.Queries) {
+	rows, err := queries.ExpireRoleSourceSecretTransfers(ctx, 1_000)
+	if err != nil {
+		slog.Warn("role source secret transfer sweeper failed", "error", err)
+		return
+	}
+	if len(rows) > 0 {
+		slog.Info("role source secret transfer sweeper cleared expired ciphertext", "count", len(rows))
 	}
 }
 

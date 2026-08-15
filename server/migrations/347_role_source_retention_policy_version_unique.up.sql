@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_retention_policy_version_unique ON role_source_retention_policy (source_id, version);

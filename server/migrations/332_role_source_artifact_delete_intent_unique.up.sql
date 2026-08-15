@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_artifact_delete_intent_unique ON role_source_artifact_delete_intent (storage_key);

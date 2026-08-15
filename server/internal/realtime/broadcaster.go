@@ -41,6 +41,14 @@ type Broadcaster interface {
 	Broadcast(message []byte)
 }
 
+// DurableBroadcaster is used by database-backed outbox dispatchers. The
+// caller supplies the durable event ID so local delivery and every Redis relay
+// attempt share one deduplication key. Implementations must return relay
+// failures; an outbox row is acknowledged only after this call succeeds.
+type DurableBroadcaster interface {
+	PublishDurable(scopeType, scopeID, exclude string, message []byte, eventID string) error
+}
+
 // DaemonRuntimeDeliverer consumes daemon-runtime scoped relay frames.
 type DaemonRuntimeDeliverer interface {
 	DeliverDaemonRuntime(scopeID string, frame []byte, eventID string)
@@ -48,3 +56,4 @@ type DaemonRuntimeDeliverer interface {
 
 // Compile-time assertion that *Hub continues to satisfy Broadcaster.
 var _ Broadcaster = (*Hub)(nil)
+var _ DurableBroadcaster = (*Hub)(nil)

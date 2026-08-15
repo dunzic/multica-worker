@@ -252,6 +252,7 @@ func main() {
 	// operations.
 	relayCtx, relayCancel := context.WithCancel(context.Background())
 	var broadcaster realtime.Broadcaster = hub
+	var durableBroadcaster realtime.DurableBroadcaster = hub
 	var storeRedis *redis.Client
 	var relayWriteRedis *redis.Client
 	var relayReadRedis *redis.Client
@@ -306,7 +307,9 @@ func main() {
 				daemonWakeup = daemonws.NewRelayNotifier(daemonHub, sharded)
 			}
 			relay.Start(relayCtx)
-			broadcaster = realtime.NewDualWriteBroadcaster(hub, relay)
+			dualWrite := realtime.NewDualWriteBroadcaster(hub, relay)
+			broadcaster = dualWrite
+			durableBroadcaster = dualWrite
 			slog.Info(
 				"realtime: Redis relay enabled",
 				"node_id", relay.NodeID(),
@@ -343,7 +346,12 @@ func main() {
 	var businessMetrics *obsmetrics.BusinessMetrics
 	var samplerPool *pgxpool.Pool
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
+	var channelDeliveryMetrics *obsmetrics.ChannelDeliveryMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
+	var roleSourceMetrics *obsmetrics.RoleSourceMetrics
+	var roleSourceArtifactGCMetrics *obsmetrics.RoleSourceArtifactGCMetrics
+	var roleSourceArtifactIntegrityMetrics *obsmetrics.RoleSourceArtifactIntegrityMetrics
+	var roleSourceRetentionMetrics *obsmetrics.RoleSourceRetentionMetrics
 	if metricsConfig.Enabled() {
 		// Build a dedicated tiny pool for the BusinessSamplerCollector
 		// so a stalled scrape can never starve business traffic. If the
@@ -372,7 +380,12 @@ func main() {
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
 		channelMediaMetrics = metricsRegistry.ChannelMedia
+		channelDeliveryMetrics = metricsRegistry.ChannelDelivery
 		wecomMetrics = metricsRegistry.Wecom
+		roleSourceMetrics = metricsRegistry.RoleSource
+		roleSourceArtifactGCMetrics = metricsRegistry.RoleSourceArtifactGC
+		roleSourceArtifactIntegrityMetrics = metricsRegistry.RoleSourceArtifactIntegrity
+		roleSourceRetentionMetrics = metricsRegistry.RoleSourceRetention
 		// Forward inbound daemon WS frames into the per-kind counter so
 		// dashboards can split heartbeat / unknown / invalid traffic.
 		if daemonHub != nil {
@@ -397,13 +410,16 @@ func main() {
 	heartbeatScheduler := handler.NewBatchedHeartbeatScheduler(queries, handler.DefaultHeartbeatBatchInterval)
 
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
-		HTTPMetrics:        httpMetrics,
-		BusinessMetrics:    businessMetrics,
-		WecomMetrics:       wecomMetrics,
-		DaemonHub:          daemonHub,
-		DaemonWakeup:       daemonWakeup,
-		FeatureFlags:       flags,
-		HeartbeatScheduler: heartbeatScheduler,
+		HTTPMetrics:            httpMetrics,
+		BusinessMetrics:        businessMetrics,
+		WecomMetrics:           wecomMetrics,
+		RoleSourceMetrics:      roleSourceMetrics,
+		ChannelDeliveryMetrics: channelDeliveryMetrics,
+		DaemonHub:              daemonHub,
+		DaemonWakeup:           daemonWakeup,
+		FeatureFlags:           flags,
+		HeartbeatScheduler:     heartbeatScheduler,
+		DurableBroadcaster:     durableBroadcaster,
 	})
 
 	srv := &http.Server{
@@ -460,6 +476,24 @@ func main() {
 	if h.ChannelMediaReconciler != nil {
 		h.ChannelMediaReconciler.Metrics = channelMediaMetrics
 		go h.ChannelMediaReconciler.Run(sweepCtx)
+	}
+	if h.RoleSourceArtifactReconciler != nil {
+		h.RoleSourceArtifactReconciler.Metrics = roleSourceArtifactGCMetrics
+		go h.RoleSourceArtifactReconciler.Run(sweepCtx)
+	}
+	if h.RoleSourceArtifactIntegrityReconciler != nil {
+		h.RoleSourceArtifactIntegrityReconciler.Metrics = roleSourceArtifactIntegrityMetrics
+		go h.RoleSourceArtifactIntegrityReconciler.Run(sweepCtx)
+	}
+	if h.RoleSourceRetentionReconciler != nil {
+		h.RoleSourceRetentionReconciler.Metrics = roleSourceRetentionMetrics
+		go h.RoleSourceRetentionReconciler.Run(sweepCtx)
+	}
+	if h.RoleSourceOutboxDispatcher != nil {
+		go h.RoleSourceOutboxDispatcher.Run(sweepCtx)
+	}
+	if h.ChannelDeliveryReconciler != nil {
+		go h.ChannelDeliveryReconciler.Run(sweepCtx)
 	}
 
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the

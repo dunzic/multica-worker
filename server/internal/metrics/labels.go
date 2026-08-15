@@ -32,6 +32,13 @@ const (
 	labelResult       = "result"
 	labelOp           = "op"
 	labelGate         = "gate"
+	labelMode         = "mode"
+	labelConnector    = "connector"
+	labelOperation    = "operation"
+	labelErrorCode    = "error_code"
+	labelStage        = "stage"
+	labelCode         = "code"
+	labelOutcome      = "outcome"
 )
 
 var businessMetricLabels = map[string][]string{
@@ -86,6 +93,26 @@ var businessMetricLabels = map[string][]string{
 	"multica_feedback_submitted_total":                 {labelKind, labelPlatform},
 	"multica_contact_sales_submitted_total":            {labelSource},
 	"multica_chat_output_local_path_total":             {labelKind},
+}
+
+// operationalMetricLabels covers production-control metrics that do not flow
+// through BusinessMetrics. Keeping the registry separate prevents product
+// event tests from requiring these collectors while retaining the same global
+// label-cardinality policy.
+var operationalMetricLabels = map[string][]string{
+	"multica_channel_delivery_transitions_total":             {labelConnector, labelOperation, labelStatus, labelErrorCode},
+	"multica_channel_delivery_reconciliations_total":         {labelOutcome},
+	"multica_role_source_apply_errors_total":                 {labelMode, labelStage, labelCode},
+	"multica_role_source_apply_failure_audit_writes_total":   {labelMode, labelStage, labelCode, labelOutcome},
+	"multica_role_source_apply_commit_reconciliations_total": {labelOutcome},
+	"multica_role_source_runtime_config_attestations_total":  {labelOutcome},
+	"multica_role_source_outbox_dispatches_total":            {labelOutcome},
+	"multica_role_source_outbox_active":                      {},
+	"multica_role_source_outbox_dead":                        {},
+	"multica_role_source_outbox_oldest_active_seconds":       {},
+	"multica_role_source_runtime_availability":               {labelStatus},
+	"multica_role_source_artifact_integrity_outcomes_total":  {labelOutcome},
+	"multica_role_source_artifact_integrity_failures_total":  {labelStage},
 }
 
 var forbiddenMetricLabels = map[string]struct{}{

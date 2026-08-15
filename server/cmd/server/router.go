@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,12 +25,14 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/drlock"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composiointeg "github.com/multica-ai/multica/server/internal/integrations/composio"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
@@ -34,6 +40,10 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/rolesource"
+	"github.com/multica-ai/multica/server/internal/rolesource/agentwaker"
+	"github.com/multica-ai/multica/server/internal/rolesource/manifestdir"
+	"github.com/multica-ai/multica/server/internal/rolesource/signedremote"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -178,14 +188,22 @@ type RouterOptions struct {
 	// WecomMetrics is the WeCom adapter's health sink. Nil discards every
 	// counter, which is what a deployment with /metrics turned off gets.
 	WecomMetrics *obsmetrics.WecomMetrics
-	DaemonHub    *daemonws.Hub
-	DaemonWakeup service.TaskWakeupNotifier
-	FeatureFlags *featureflag.Service
+	// RoleSourceMetrics contains bounded protocol-state labels only. Nil keeps
+	// metrics disabled without changing role-source behavior.
+	RoleSourceMetrics      *obsmetrics.RoleSourceMetrics
+	ChannelDeliveryMetrics *obsmetrics.ChannelDeliveryMetrics
+	DaemonHub              *daemonws.Hub
+	DaemonWakeup           service.TaskWakeupNotifier
+	FeatureFlags           *featureflag.Service
 	// HeartbeatScheduler, when non-nil, replaces the default synchronous
 	// passthrough scheduler on the constructed Handler. main.go injects a
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
 	// tests leave this nil and get the legacy synchronous behavior.
 	HeartbeatScheduler handler.HeartbeatScheduler
+	// DurableBroadcaster is the failure-reporting realtime path used by the
+	// role-source transactional outbox. Tests may leave it nil; main always
+	// supplies the selected single-node or Redis-backed broadcaster.
+	DurableBroadcaster realtime.DurableBroadcaster
 }
 
 // NewRouterWithOptions builds the fully-configured Chi router and
@@ -238,7 +256,73 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
+	h.RoleSourceMetrics = opts.RoleSourceMetrics
 	h.FeatureFlags = opts.FeatureFlags
+	roleSourceCatalog, err := newRoleSourceAdapterCatalog()
+	if err != nil {
+		panic("build role source adapter catalog: " + err.Error())
+	}
+	materializationConcurrency, err := roleSourceMaterializationConcurrencyFromEnv()
+	if err != nil {
+		panic("configure role source materialization concurrency: " + err.Error())
+	}
+	roleSourceControlPlane, err := rolesource.NewControlPlaneWithOptions(pool, roleSourceCatalog, rolesource.ControlPlaneOptions{
+		MaterializationConcurrency: materializationConcurrency,
+	})
+	if err != nil {
+		panic("build role source control plane: " + err.Error())
+	}
+	roleSourceControlPlane.SetArtifactReader(store)
+	roleSourceControlPlane.SetApplyMetrics(opts.RoleSourceMetrics)
+	roleSourceSecretKeyConfigured := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_SECRET_KEY")) != ""
+	if roleSourceSecretKey, keyErr := secretbox.LoadKey("MULTICA_ROLE_SOURCE_SECRET_KEY"); keyErr == nil {
+		box, boxErr := secretbox.New(roleSourceSecretKey)
+		clear(roleSourceSecretKey)
+		if boxErr != nil {
+			panic("build role source secret store: " + boxErr.Error())
+		} else {
+			keyID := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_SECRET_KEY_ID"))
+			if keyID == "" {
+				keyID = "v1"
+			}
+			if setErr := roleSourceControlPlane.SetSecretBox(box, keyID); setErr != nil {
+				panic("configure role source secret store: " + setErr.Error())
+			}
+			previousRaw := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS"))
+			if previousRaw != "" {
+				var previous map[string]string
+				if decodeErr := json.Unmarshal([]byte(previousRaw), &previous); decodeErr != nil {
+					panic("decode MULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS: " + decodeErr.Error())
+				}
+				for previousID, encoded := range previous {
+					key, decodeErr := base64.StdEncoding.DecodeString(encoded)
+					if decodeErr != nil || len(key) != secretbox.KeySize {
+						clear(key)
+						panic("decode previous role source secret key " + previousID)
+					}
+					previousBox, newErr := secretbox.New(key)
+					clear(key)
+					if newErr != nil {
+						panic("build previous role source secret key " + previousID + ": " + newErr.Error())
+					}
+					if addErr := roleSourceControlPlane.AddSecretDecryptionBox(previousBox, previousID); addErr != nil {
+						panic("configure previous role source secret key " + previousID + ": " + addErr.Error())
+					}
+				}
+			}
+		}
+	} else if roleSourceSecretKeyConfigured {
+		panic("load role source secret store key: " + keyErr.Error())
+	} else {
+		slog.Info("role source secret transfer disabled (MULTICA_ROLE_SOURCE_SECRET_KEY not set)")
+	}
+	h.RoleSourceCatalog = roleSourceCatalog
+	h.RoleSources = roleSourceControlPlane
+	if opts.DurableBroadcaster != nil {
+		h.RoleSourceOutboxDispatcher = &service.RoleSourceOutboxDispatcher{
+			Queries: queries, Broadcaster: opts.DurableBroadcaster, Logger: slog.Default(), Metrics: opts.RoleSourceMetrics,
+		}
+	}
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
@@ -286,7 +370,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// connection of its own outside the per-installation supervisor. The Router
 	// is the single shared inbound handler injected into every Channel.
 	channelRegistry := channel.NewRegistry()
-	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{Logger: slog.Default()})
+	deliveryLedger := delivery.NewLedger(queries)
+	deliveryLedger.SetMetrics(opts.ChannelDeliveryMetrics)
+	h.ChannelDeliveries = deliveryLedger
+	h.ChannelDeliveryReconciler = &delivery.Reconciler{
+		Ledger: deliveryLedger, RetryPublisher: delivery.NewRetryEventPublisher(queries, bus),
+		Logger: slog.Default(), Metrics: opts.ChannelDeliveryMetrics,
+	}
+	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{Logger: slog.Default(), Readbacks: deliveryLedger})
 	// Debounce the per-session run trigger so a burst of messages collapses
 	// into one agent run instead of one per message (MUL-2968).
 	channelRouter.EnableRunBatching(engine.DefaultChatRunBatchWindow)
@@ -304,6 +395,24 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			Queries: queries,
 			Storage: store,
 			Logger:  slog.Default(),
+		}
+		if enabled := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED")); enabled == "true" || enabled == "1" {
+			h.RoleSourceArtifactReconciler = &service.RoleSourceArtifactReconciler{
+				Queries: queries,
+				Storage: store,
+				DRGuard: drlock.NewGuard(pool),
+				Logger:  slog.Default(),
+			}
+			if retentionEnabled := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_RETENTION_ENABLED")); retentionEnabled == "true" || retentionEnabled == "1" {
+				h.RoleSourceRetentionReconciler = &service.RoleSourceRetentionReconciler{
+					Queries: queries, Control: roleSourceControlPlane, Logger: slog.Default(),
+				}
+			}
+		}
+		if enabled := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_ARTIFACT_INTEGRITY_ENABLED")); enabled == "true" || enabled == "1" {
+			h.RoleSourceArtifactIntegrityReconciler = &service.RoleSourceArtifactIntegrityReconciler{
+				Queries: queries, Storage: store, Logger: slog.Default(),
+			}
 		}
 	}
 	h.ChannelSupervisor = engine.NewSupervisor(
@@ -548,7 +657,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			slackTyping := slack.NewTypingIndicatorManager(queries, box.Open, slog.Default())
 			slackTyping.Register(bus)
 			channelRouter.Register(slack.TypeSlack, slack.NewSlackResolverSet(queries, pool, slackReplier, slackTyping))
-			slack.NewOutbound(queries, box.Open, slog.Default()).Register(bus)
+			slack.NewOutbound(queries, box.Open, slog.Default()).WithDeliveryRecorder(deliveryLedger).Register(bus)
 
 			// On-demand history reader behind the unified `multica chat history`
 			// command (MUL-3871): pull the session's Slack conversation when the
@@ -621,7 +730,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				)
 			}
 			channelRouter.Register(dingtalk.TypeDingTalk, dingtalk.NewDingTalkResolverSet(queries, pool, replier, ack, media))
-			dingtalk.NewOutbound(queries, box.Open, dingtalkClient, slog.Default()).Register(bus)
+			dingtalk.NewOutbound(queries, box.Open, dingtalkClient, slog.Default()).WithDeliveryRecorder(deliveryLedger).Register(bus)
 			dingtalk.RegisterDingTalk(channelRegistry, dingtalk.ChannelDeps{
 				Decrypt: box.Open,
 				Client:  dingtalkClient,
@@ -1069,6 +1178,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/runtimes/{runtimeId}/models/{requestId}/result", h.ReportModelListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/{requestId}/result", h.ReportLocalSkillListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/import/{requestId}/result", h.ReportLocalSkillImportResult)
+		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/result", h.ReportRoleSourceScanResult)
+		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/lease", h.RenewRoleSourceScanLease)
+		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/artifacts/check", h.CheckRoleSourceArtifacts)
+		r.Put("/runtimes/{runtimeId}/role-sources/{sourceId}/scans/{requestId}/artifacts/{artifactDigest}", h.UploadRoleSourceArtifact)
+		r.Post("/runtimes/{runtimeId}/role-sources/{sourceId}/secret-transfers/{transferId}/result", h.ReportRoleSourceSecretTransferResult)
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
@@ -1170,6 +1284,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/plugins/private/{pluginRef}", h.GetPrivatePluginStatus)
 					r.Get("/plugins/catalog", h.ListPluginCatalog)
 					r.Get("/plugins/catalog/{pluginKey}", h.GetPluginCatalogRelease)
+					r.Get("/role-source-adapters", h.ListRoleSourceAdapters)
+					r.Get("/role-sources", h.ListRoleSources)
+					r.Get("/role-sources/{sourceId}/runtime-attestations", h.ListRoleSourceRuntimeAttestations)
+					r.Get("/role-sources/{sourceId}/scans/latest", h.GetLatestRoleSourceScan)
+					r.Get("/role-sources/{sourceId}/scans", h.ListRoleSourceScans)
+					r.Get("/role-sources/{sourceId}/lifecycle-events", h.ListRoleSourceLifecycleEvents)
+					r.Get("/role-sources/{sourceId}/scans/{scanId}", h.GetRoleSourceScan)
+					r.Get("/role-sources/{sourceId}/snapshots", h.ListRoleSourceSnapshots)
+					r.Get("/role-sources/{sourceId}/snapshot-summaries", h.ListRoleSourceSnapshotSummaries)
+					r.Get("/role-sources/{sourceId}/snapshot-comparison", h.CompareRoleSourceSnapshots)
+					r.Get("/role-sources/{sourceId}/plans", h.ListRoleSourcePlans)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}", h.GetRoleSourcePlan)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}/impact", h.GetRoleSourcePlanImpact)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}/configuration-review", h.GetRoleSourcePlanConfigurationReview)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.ListRoleSourcePlanApprovals)
+					r.Get("/role-sources/{sourceId}/applies", h.ListRoleSourceApplyHistory)
+					r.Get("/role-sources/{sourceId}/apply-failures", h.ListRoleSourceApplyFailures)
+					r.Get("/role-sources/{sourceId}/task-pins", h.ListRoleSourceTaskPins)
+					r.Get("/channel-deliveries", h.ListChannelDeliveries)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -1200,8 +1333,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/plugins/{installationId}/disable", h.DisablePlugin)
 					r.Post("/plugins/{installationId}/rollback", h.RollbackPlugin)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
+					r.Post("/role-sources", h.CreateRoleSource)
+					r.Patch("/role-sources/{sourceId}", h.UpdateRoleSourceLifecycle)
+					r.Post("/role-sources/{sourceId}/scans", h.RequestRoleSourceScan)
+					r.Post("/role-sources/{sourceId}/plans", h.CreateRoleSourcePlan)
+					r.Post("/role-sources/{sourceId}/rollback-plans", h.CreateRoleSourceRollbackPlan)
+					r.Post("/role-sources/{sourceId}/plans/{planDigest}/approvals", h.RecordRoleSourcePlanApproval)
+					r.Post("/role-sources/{sourceId}/plans/{planDigest}/apply", h.ApplyRoleSourcePlan)
+					r.Post("/role-sources/{sourceId}/plans/{planDigest}/secret-transfers", h.RequestRoleSourceSecretTransfer)
+					r.Get("/role-sources/{sourceId}/plans/{planDigest}/secret-transfers", h.ListRoleSourceSecretTransfers)
 				})
 				// Owner-only access
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Get("/role-sources/{sourceId}/legal-holds", h.ListRoleSourceLegalHolds)
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Post("/role-sources/{sourceId}/legal-holds", h.CreateRoleSourceLegalHold)
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Post("/role-sources/{sourceId}/legal-holds/{holdId}/release", h.ReleaseRoleSourceLegalHold)
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Get("/role-sources/{sourceId}/retention", h.GetRoleSourceRetentionPreview)
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Patch("/role-sources/{sourceId}/retention", h.UpdateRoleSourceRetentionPolicy)
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Get("/role-source-purge-receipts", h.GetWorkspaceRoleSourceArtifactPurgeReceipts)
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
 				// GitHub integration — connect / disconnect remain admin-only;
@@ -1812,6 +1960,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	return r, h
+}
+
+func roleSourceMaterializationConcurrencyFromEnv() (int, error) {
+	raw := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_APPLY_CONCURRENCY"))
+	if raw == "" {
+		return rolesource.DefaultMaterializationConcurrency, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > rolesource.MaxMaterializationConcurrency {
+		return 0, fmt.Errorf("MULTICA_ROLE_SOURCE_APPLY_CONCURRENCY must be an integer between 1 and %d", rolesource.MaxMaterializationConcurrency)
+	}
+	return value, nil
+}
+
+func newRoleSourceAdapterCatalog() (*rolesource.Catalog, error) {
+	return rolesource.NewCatalog(agentwaker.Descriptor(), manifestdir.Descriptor(), signedremote.Descriptor())
 }
 
 // buildLarkConnector wires the real WS long-conn connector that talks

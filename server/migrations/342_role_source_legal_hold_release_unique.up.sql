@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_legal_hold_release_unique ON role_source_legal_hold_release (hold_id);

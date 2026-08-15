@@ -32,6 +32,7 @@ vi.mock("./quick-actions-tab", stub("QuickActionsTab"));
 vi.mock("./keyboard-shortcuts-tab", stub("KeyboardShortcutsTab"));
 vi.mock("./plugins-tab", stub("PluginsTab"));
 vi.mock("./billing-tab", stub("BillingTab"));
+vi.mock("./role-sources-tab", stub("RoleSourcesTab"));
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ name: "Acme" }),
@@ -161,5 +162,30 @@ describe("SettingsPage workspace subscription feature flag", () => {
 
     expect(screen.getByRole("tab", { name: "Billing" })).toBeInTheDocument();
     expect(screen.getByText("BillingTab")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage role-source gate", () => {
+  it("does not expose the audit tab by default", () => {
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.queryByRole("tab", { name: "Role Sources" })).not.toBeInTheDocument();
+  });
+
+  it("does not expose the audit tab when scan remains disabled", () => {
+    configStore.getState().setFeatureFlags({ role_source_sync: true });
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.queryByRole("tab", { name: "Role Sources" })).not.toBeInTheDocument();
+  });
+
+  it("exposes the audit tab only when both server gates are enabled", () => {
+    configStore.getState().setFeatureFlags({
+      role_source_sync: true,
+      role_source_scan: true,
+    });
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.getByRole("tab", { name: "Role Sources" })).toBeInTheDocument();
   });
 });

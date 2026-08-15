@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // AgentEntry describes a single available agent CLI.
@@ -76,6 +77,7 @@ type Task struct {
 	IssueID                 string                       `json:"issue_id"`
 	WorkspaceID             string                       `json:"workspace_id"`
 	PluginExecutionManifest *PluginExecutionManifestData `json:"plugin_execution_manifest,omitempty"`
+	RoleSourcePin           *protocol.RoleSourceTaskPin  `json:"role_source_pin,omitempty"`
 	// WorkspaceContext mirrors workspace.context (the per-workspace system
 	// prompt set in Settings → General). Server populates this on every claim
 	// regardless of task kind so the daemon can inject `## Workspace Context`

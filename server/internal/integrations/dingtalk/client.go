@@ -92,10 +92,7 @@ func fetchAccessToken(ctx context.Context, httpClient *http.Client, baseURL, app
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var apiErr apiError
 		_ = json.Unmarshal(body, &apiErr)
-		if apiErr.Message != "" {
-			return "", 0, fmt.Errorf("dingtalk: access token: code=%q message=%q", apiErr.Code, apiErr.Message)
-		}
-		return "", 0, fmt.Errorf("dingtalk: access token: http %d", resp.StatusCode)
+		return "", 0, &apiHTTPError{Path: "access token", StatusCode: resp.StatusCode, Code: apiErr.Code, Message: apiErr.Message}
 	}
 
 	var tok accessTokenResponse

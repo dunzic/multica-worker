@@ -3,10 +3,14 @@ package metrics
 import "testing"
 
 func TestBusinessMetricLabelsRejectHighCardinalityNames(t *testing.T) {
-	for metric, labels := range businessMetricLabels {
-		for _, label := range labels {
-			if _, forbidden := forbiddenMetricLabels[label]; forbidden {
-				t.Fatalf("metric %s uses forbidden label %s", metric, label)
+	for registryName, registry := range map[string]map[string][]string{
+		"business": businessMetricLabels, "operational": operationalMetricLabels,
+	} {
+		for metric, labels := range registry {
+			for _, label := range labels {
+				if _, forbidden := forbiddenMetricLabels[label]; forbidden {
+					t.Fatalf("%s metric %s uses forbidden label %s", registryName, metric, label)
+				}
 			}
 		}
 	}

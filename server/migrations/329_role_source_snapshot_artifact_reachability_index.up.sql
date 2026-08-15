@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY role_source_snapshot_artifact_reachability_idx ON role_source_snapshot_artifact (workspace_id, artifact_digest, source_id, snapshot_digest);

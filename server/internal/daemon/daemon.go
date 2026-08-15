@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -339,11 +340,18 @@ type repoCacheBackend interface {
 
 // Daemon is the local agent runtime that polls for and executes tasks.
 type Daemon struct {
-	cfg        Config
-	client     *Client
-	repoCache  repoCacheBackend
-	skillCache *SkillBundleCache
-	logger     *slog.Logger
+	cfg                           Config
+	client                        *Client
+	repoCache                     repoCacheBackend
+	skillCache                    *SkillBundleCache
+	logger                        *slog.Logger
+	roleSources                   atomic.Pointer[roleSourceScanner]
+	roleSourcePollMu              sync.Mutex
+	roleSourceLastPoll            map[string]time.Time
+	roleSourceAttestationMu       sync.Mutex
+	roleSourceAttestationAccepted map[string]string
+	roleSourceReloadMu            sync.RWMutex
+	roleSourceReload              roleSourceConfigReloadState
 
 	mu           sync.Mutex
 	workspaces   map[string]*workspaceState
@@ -595,37 +603,49 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	// server can split logs/metrics by client version (parallel to the CLI).
 	client.SetVersion(cfg.CLIVersion)
 	d := &Daemon{
-		cfg:                       cfg,
-		client:                    client,
-		repoCache:                 repocache.New(cacheRoot, logger),
-		skillCache:                NewSkillBundleCache(skillCacheRoot),
-		logger:                    logger,
-		workspaces:                make(map[string]*workspaceState),
-		runtimeIndex:              make(map[string]Runtime),
-		profileLaunchSpecs:        make(map[string]profileLaunchSpec),
-		runtimeSet:                newRuntimeSetWatcher(),
-		agentVersions:             make(map[string]string),
-		skippedAgents:             make(map[string]string),
-		resolvedPaths:             make(map[string]healedAgent),
-		wsHBLastAck:               make(map[string]time.Time),
-		activeEnvRoots:            make(map[string]int),
-		deletingEnvRoots:          make(map[string]bool),
-		activeStores:              make(map[string]int),
-		deletingStores:            make(map[string]bool),
-		localPathLocks:            NewLocalPathLocker(),
-		runtimeGoneInflight:       make(map[string]struct{}),
-		pendingWorkInflight:       make(map[string]struct{}),
-		pendingWorkLastRun:        make(map[string]time.Time),
-		reregisterNextAttempt:     make(map[string]time.Time),
-		reregisterLastCompletedAt: make(map[string]time.Time),
-		cancelPollInterval:        5 * time.Second,
-		taskPrepareTimeout:        defaultTaskPrepareTimeout,
-		reconcile:                 newReconcileBroadcaster(),
-		workspaceChanges:          newWorkspaceChangeSignal(),
-		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
+		cfg:                           cfg,
+		client:                        client,
+		repoCache:                     repocache.New(cacheRoot, logger),
+		skillCache:                    NewSkillBundleCache(skillCacheRoot),
+		roleSourceLastPoll:            make(map[string]time.Time),
+		roleSourceAttestationAccepted: make(map[string]string),
+		logger:                        logger,
+		workspaces:                    make(map[string]*workspaceState),
+		runtimeIndex:                  make(map[string]Runtime),
+		profileLaunchSpecs:            make(map[string]profileLaunchSpec),
+		runtimeSet:                    newRuntimeSetWatcher(),
+		agentVersions:                 make(map[string]string),
+		skippedAgents:                 make(map[string]string),
+		resolvedPaths:                 make(map[string]healedAgent),
+		wsHBLastAck:                   make(map[string]time.Time),
+		activeEnvRoots:                make(map[string]int),
+		deletingEnvRoots:              make(map[string]bool),
+		activeStores:                  make(map[string]int),
+		deletingStores:                make(map[string]bool),
+		localPathLocks:                NewLocalPathLocker(),
+		runtimeGoneInflight:           make(map[string]struct{}),
+		pendingWorkInflight:           make(map[string]struct{}),
+		pendingWorkLastRun:            make(map[string]time.Time),
+		reregisterNextAttempt:         make(map[string]time.Time),
+		reregisterLastCompletedAt:     make(map[string]time.Time),
+		cancelPollInterval:            5 * time.Second,
+		taskPrepareTimeout:            defaultTaskPrepareTimeout,
+		reconcile:                     newReconcileBroadcaster(),
+		workspaceChanges:              newWorkspaceChangeSignal(),
+		wsRPC:                         newWSRPCClient(wsRPCResponseGrace),
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
+	if cfg.roleSourceScanner != nil {
+		loadedAt := time.Now()
+		d.roleSources.Store(cfg.roleSourceScanner)
+		d.roleSourceReload.Status = roleSourceConfigReloadStatusLoaded
+		d.roleSourceReload.Revision = cfg.roleSourceScanner.configRevision
+		d.roleSourceReload.LastAttemptAt = loadedAt
+		d.roleSourceReload.LastSuccessfulAt = loadedAt
+	} else {
+		d.roleSourceReload.Status = roleSourceConfigReloadStatusUnloaded
+	}
 	// Seed the copy-on-write availability set from the startup probe. Callers
 	// must go through d.agents() from here on; cfg.Agents is the initial value
 	// only and does not track later refreshes.
@@ -1997,6 +2017,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
+	go d.roleSourceConfigReloadLoop(ctx)
 
 	// Preflight succeeded and the background loops are up: the daemon has
 	// registered its runtimes and can now claim and run tasks. Flip /health
@@ -2004,7 +2025,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// readiness wait blocks on, so success is reported only after startup
 	// actually completed, not merely because the health port came up.
 	d.ready.Store(true)
-	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal); health now reporting ready")
+	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal, role-source-config-reload); health now reporting ready")
 	err = d.pollLoop(ctx, taskWakeups)
 	d.logger.Debug("daemon main loop returning", "error", err)
 	return err
@@ -3851,19 +3872,24 @@ func (d *Daemon) runRuntimeHeartbeat(ctx context.Context, rid string) {
 // runHeartbeatTick returns true when the HTTP heartbeat hit a transient
 // failure that should count toward stale idle-connection cleanup.
 func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
+	roleSourceOptions := d.roleSourceHeartbeatOptions(rid, false)
 	// Skip HTTP heartbeat for runtimes that successfully acked a recent
 	// WebSocket heartbeat. The WS path keeps last_seen_at fresh and delivers
 	// actions, so the HTTP write would be a duplicate DB update. If the WS
 	// heartbeat goes silent the freshness window expires and HTTP resumes
 	// automatically on the next tick — that is the fallback the WS path
 	// relies on.
-	if d.wsHeartbeatRecentlyAcked(rid) {
+	if d.wsHeartbeatRecentlyAcked(rid) && !roleSourceOptions.PollRoleSourceScan && !roleSourceOptions.PollRoleSourceSecretTransfer {
 		d.logger.Debug("heartbeat: skipping HTTP tick, WS recently acked", "runtime_id", rid)
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid)
+	resp, err := d.client.SendHeartbeat(ctx, rid, roleSourceOptions)
 	if err != nil {
+		d.releaseRoleSourcePollReservation(roleSourceOptions)
+		if roleSourceOptions.PollRoleSourceScan || roleSourceOptions.PollRoleSourceSecretTransfer {
+			d.resetRoleSourceRecoveryPoll(rid)
+		}
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
 				// Server says this runtime is gone — recover instead of
@@ -3879,13 +3905,14 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return ctx.Err() == nil && isTransientError(err)
 	}
 	if resp != nil && resp.RuntimeGone {
+		d.releaseRoleSourcePollReservation(roleSourceOptions)
 		// The WS path returns a successful ack with RuntimeGone=true for the
 		// same scenario; treat it the same way here in case HTTP starts
 		// surfacing this signal too.
 		go d.handleRuntimeGone(rid)
 		return false
 	}
-	d.handleHeartbeatActions(ctx, rid, resp)
+	d.handleHeartbeatActions(ctx, rid, resp, roleSourceOptions)
 	return false
 }
 
@@ -3893,18 +3920,40 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 // transport (HTTP POST /api/daemon/heartbeat or WS daemon:heartbeat_ack).
 // Each action is dispatched in its own goroutine so a slow handler cannot
 // block subsequent heartbeats.
-func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse) {
+func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse, roleSourceOptions ...HeartbeatOptions) {
+	var option HeartbeatOptions
+	if len(roleSourceOptions) > 0 {
+		option = roleSourceOptions[0]
+	}
+	reserved := option.PollRoleSourceScan || option.PollRoleSourceSecretTransfer
 	if resp == nil {
+		if reserved && option.roleSourceScanner != nil {
+			option.roleSourceScanner.release()
+		}
 		return
 	}
-	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
+	d.acceptRoleSourceConfigAttestation(runtimeID, resp.AcceptedRoleSourceConfigAttestationID)
+	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil || resp.PendingRoleSourceScan != nil || resp.PendingRoleSourceSecretTransfer != nil {
 		d.logger.Debug("heartbeat: pending actions",
 			"runtime_id", runtimeID,
 			"update", resp.PendingUpdate != nil,
 			"model_list", resp.PendingModelList != nil,
 			"local_skills", resp.PendingLocalSkills != nil,
 			"local_skill_import", resp.PendingLocalSkillImport != nil,
+			"role_source_scan", resp.PendingRoleSourceScan != nil,
+			"role_source_secret_transfer", resp.PendingRoleSourceSecretTransfer != nil,
 		)
+	}
+	if resp.PendingRoleSourceScan != nil {
+		go d.handleRoleSourceScan(ctx, runtimeID, *resp.PendingRoleSourceScan, option.roleSourceScanner, reserved)
+		reserved = false
+	}
+	if resp.PendingRoleSourceSecretTransfer != nil {
+		go d.handleRoleSourceSecretTransfer(ctx, runtimeID, *resp.PendingRoleSourceSecretTransfer, option.roleSourceScanner, reserved)
+		reserved = false
+	}
+	if reserved && option.roleSourceScanner != nil {
+		option.roleSourceScanner.release()
 	}
 	if resp.PendingUpdate != nil {
 		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate)
@@ -4004,9 +4053,15 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID)
+	forceRoleSourcePoll := kind == protocol.PendingWorkKindRoleSourceScan || kind == protocol.PendingWorkKindRoleSourceSecretTransfer
+	roleSourceOptions := d.roleSourceHeartbeatOptions(runtimeID, forceRoleSourcePoll)
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, roleSourceOptions)
 	cancel()
 	if err != nil {
+		d.releaseRoleSourcePollReservation(roleSourceOptions)
+		if roleSourceOptions.PollRoleSourceScan || roleSourceOptions.PollRoleSourceSecretTransfer {
+			d.resetRoleSourceRecoveryPoll(runtimeID)
+		}
 		if isRuntimeNotFoundError(err) {
 			go d.handleRuntimeGone(runtimeID)
 			return
@@ -4015,14 +4070,16 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	if resp == nil {
+		d.releaseRoleSourcePollReservation(roleSourceOptions)
 		return
 	}
 	if resp.RuntimeGone {
+		d.releaseRoleSourcePollReservation(roleSourceOptions)
 		go d.handleRuntimeGone(runtimeID)
 		return
 	}
 	d.logger.Debug("pending work hint served", "runtime_id", runtimeID, "kind", kind)
-	d.handleHeartbeatActions(ctx, runtimeID, resp)
+	d.handleHeartbeatActions(ctx, runtimeID, resp, roleSourceOptions)
 }
 
 // handleModelList resolves the provider's supported models (via static
@@ -6155,6 +6212,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	defer stopPrepareLease()
 
 	if err := d.ensureTaskSkillBundles(prepareCtx, &task); err != nil {
+		return TaskResult{}, err
+	}
+	if err := applyRoleSourceCapabilityContract(&task); err != nil {
 		return TaskResult{}, err
 	}
 

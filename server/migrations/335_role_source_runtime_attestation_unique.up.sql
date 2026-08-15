@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_runtime_attestation_runtime_unique ON role_source_runtime_attestation (runtime_id);

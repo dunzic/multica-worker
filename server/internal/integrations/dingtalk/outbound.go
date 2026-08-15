@@ -11,7 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -33,10 +35,11 @@ type outboundQueries interface {
 // subscribers on the shared event bus. Registered only when DingTalk is
 // configured.
 type Outbound struct {
-	q       outboundQueries
-	decrypt Decrypter
-	client  *Client
-	logger  *slog.Logger
+	q        outboundQueries
+	decrypt  Decrypter
+	client   *Client
+	logger   *slog.Logger
+	delivery delivery.Recorder
 }
 
 // NewOutbound builds the DingTalk outbound subscriber over the generated queries,
@@ -49,6 +52,13 @@ func NewOutbound(q outboundQueries, decrypt Decrypter, client *Client, logger *s
 		client = NewClient(nil, "")
 	}
 	return &Outbound{q: q, decrypt: decrypt, client: client, logger: logger}
+}
+
+// WithDeliveryRecorder enables the shared delivery claim and evidence
+// contract without coupling the DingTalk transport to database details.
+func (o *Outbound) WithDeliveryRecorder(recorder delivery.Recorder) *Outbound {
+	o.delivery = recorder
+	return o
 }
 
 // Register subscribes to chat-done and task-failed. Task-failed keeps the DingTalk
@@ -116,7 +126,18 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		return fmt.Errorf("decode dingtalk credentials: %w", err)
 	}
 	s := &sender{client: o.client, robotCode: creds.RobotCode, appKey: creds.AppKey, appSecret: creds.AppSecret}
-	if _, err := s.send(ctx, outboundTarget(binding), content); err != nil {
+	operation := delivery.OperationChatReply
+	if e.Type == protocol.EventTaskFailed {
+		operation = delivery.OperationFailureNotice
+	}
+	_, err = delivery.Send(ctx, o.delivery, delivery.ClaimInput{
+		WorkspaceID: inst.WorkspaceID, InstallationID: inst.ID, TaskID: taskID, ChatSessionID: sessionID,
+		ChannelType: TypeDingTalk, ChannelChatID: binding.ChannelChatID, OperationKind: operation, Payload: content,
+	}, func(sendCtx context.Context) (channel.SendResult, error) {
+		key, sendErr := s.send(sendCtx, outboundTarget(binding), content)
+		return channel.SendResult{MessageID: key}, sendErr
+	})
+	if err != nil {
 		return fmt.Errorf("post dingtalk reply: %w", err)
 	}
 	return nil

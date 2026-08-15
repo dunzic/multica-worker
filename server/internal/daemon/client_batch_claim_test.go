@@ -27,7 +27,7 @@ func TestClient_ClaimTasks_PostsRuntimeSetAndParsesTasks(t *testing.T) {
 		_ = json.Unmarshal(body, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"tasks":[
-			{"id":"t1","runtime_id":"rt-a","agent":{"name":"a"}},
+			{"id":"t1","runtime_id":"rt-a","role_source_pin":{"source_id":"source-1","source_role_id":"writer","snapshot_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role_object_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","capability_pins":[]},"agent":{"name":"a"}},
 			{"id":"t2","runtime_id":"rt-b","agent":{"name":"b"}}
 		]}`))
 	}))
@@ -55,6 +55,9 @@ func TestClient_ClaimTasks_PostsRuntimeSetAndParsesTasks(t *testing.T) {
 	}
 	if tasks[0].ID != "t1" || tasks[0].RuntimeID != "rt-a" {
 		t.Errorf("task[0] = %+v, want id=t1 runtime_id=rt-a", tasks[0])
+	}
+	if tasks[0].RoleSourcePin == nil || tasks[0].RoleSourcePin.SourceRoleID != "writer" || len(tasks[0].RoleSourcePin.CapabilityPins) != 0 {
+		t.Errorf("task[0] role source pin = %+v, want writer with authoritative empty capabilities", tasks[0].RoleSourcePin)
 	}
 	if tasks[1].ID != "t2" || tasks[1].RuntimeID != "rt-b" {
 		t.Errorf("task[1] = %+v, want id=t2 runtime_id=rt-b", tasks[1])

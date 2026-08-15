@@ -53,7 +53,10 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 }
 
 const deleteWorkspace = `-- name: DeleteWorkspace :exec
-WITH ws_installations AS (
+WITH role_source_teardown_mode AS MATERIALIZED (
+    SELECT set_config('multica.workspace_teardown', 'on', true)
+),
+ws_installations AS (
     SELECT id FROM channel_installation WHERE workspace_id = $1
 ),
 ws_agents AS (
@@ -110,6 +113,14 @@ cleared_user_bindings AS (
 cleared_binding_tokens AS (
     DELETE FROM channel_binding_token WHERE workspace_id = $1
 ),
+cleared_channel_delivery_reconciliations AS (
+    DELETE FROM channel_delivery_reconciliation
+    WHERE workspace_id = $1
+      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)
+),
+cleared_channel_deliveries AS (
+    DELETE FROM channel_delivery WHERE workspace_id = $1
+),
 cleared_installations AS (
     DELETE FROM channel_installation WHERE workspace_id = $1
 ),
@@ -164,6 +175,87 @@ cleared_vcs_prs AS (
 ),
 cleared_vcs_connections AS (
     DELETE FROM vcs_connection WHERE workspace_id = $1
+),
+cleared_role_source_outbox_replays AS (
+    DELETE FROM role_source_outbox_replay
+    WHERE role_source_outbox_replay.workspace_id = $1
+      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)
+),
+cleared_role_source_outbox AS (
+    DELETE FROM role_source_outbox WHERE role_source_outbox.workspace_id = $1
+),
+cleared_role_source_audit AS (
+    DELETE FROM role_source_audit_event WHERE role_source_audit_event.workspace_id = $1
+),
+cleared_role_source_secret_transfers AS (
+    DELETE FROM role_source_secret_transfer WHERE role_source_secret_transfer.workspace_id = $1
+),
+cleared_role_source_approvals AS (
+    DELETE FROM role_source_plan_approval WHERE role_source_plan_approval.workspace_id = $1
+),
+cleared_role_source_apply_failures AS (
+    DELETE FROM role_source_apply_failure WHERE role_source_apply_failure.workspace_id = $1
+),
+cleared_role_source_applies AS (
+    DELETE FROM role_source_apply WHERE role_source_apply.workspace_id = $1
+),
+cleared_role_source_plans AS (
+    DELETE FROM role_source_plan WHERE role_source_plan.workspace_id = $1
+),
+cleared_role_source_retention_candidates AS (
+    DELETE FROM role_source_retention_candidate WHERE role_source_retention_candidate.workspace_id = $1
+),
+cleared_role_source_retention_policies AS (
+    DELETE FROM role_source_retention_policy
+    WHERE role_source_retention_policy.workspace_id = $1
+      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)
+),
+cleared_role_source_legal_holds AS (
+    DELETE FROM role_source_legal_hold WHERE role_source_legal_hold.workspace_id = $1
+    RETURNING id
+),
+cleared_role_source_legal_hold_releases AS (
+    DELETE FROM role_source_legal_hold_release
+    WHERE role_source_legal_hold_release.workspace_id = $1
+      AND role_source_legal_hold_release.hold_id IN (SELECT id FROM cleared_role_source_legal_holds)
+),
+cleared_role_source_snapshot_artifacts AS (
+    DELETE FROM role_source_snapshot_artifact WHERE role_source_snapshot_artifact.workspace_id = $1
+),
+cleared_role_source_runtime_attestation_observations AS (
+    DELETE FROM role_source_runtime_attestation_observation WHERE role_source_runtime_attestation_observation.workspace_id = $1
+),
+cleared_role_source_runtime_attestations AS (
+    DELETE FROM role_source_runtime_attestation WHERE role_source_runtime_attestation.workspace_id = $1
+),
+cleared_role_source_snapshots AS (
+    DELETE FROM role_source_snapshot
+    WHERE role_source_snapshot.workspace_id = $1
+      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)
+),
+cleared_role_source_scans AS (
+    DELETE FROM role_source_scan_request WHERE role_source_scan_request.workspace_id = $1
+),
+cleared_role_source_task_pins AS (
+    DELETE FROM role_source_task_pin WHERE role_source_task_pin.workspace_id = $1
+),
+cleared_role_source_mappings AS (
+    DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
+),
+cleared_role_source_capabilities AS (
+    DELETE FROM role_source_capability_version WHERE role_source_capability_version.workspace_id = $1
+),
+queued_role_source_artifact_deletes AS (
+    INSERT INTO role_source_artifact_delete_intent (workspace_id, storage_key, artifact_digest, size_bytes, reason)
+    SELECT workspace_id, storage_key, digest, size_bytes, 'workspace_deleted'
+    FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
+    ON CONFLICT (storage_key) DO NOTHING
+),
+cleared_role_source_artifacts AS (
+    DELETE FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
+),
+cleared_role_sources AS (
+    DELETE FROM role_source WHERE role_source.workspace_id = $1
 ),
 cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1

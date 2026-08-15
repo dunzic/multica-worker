@@ -7,8 +7,15 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/runtimehealth"
 	"github.com/redis/go-redis/v9"
 )
+
+// RuntimeStaleThresholdSeconds is the shared DB-heartbeat age at which an
+// online runtime is no longer considered available when Redis liveness cannot
+// answer. The sweeper and read-side health classifications must use the same
+// value so UI health never contradicts the transition worker.
+const RuntimeStaleThresholdSeconds = float64(runtimehealth.StaleThresholdSeconds)
 
 // LivenessStore tracks short-lived "this runtime heartbeated recently" records.
 // It exists so the heartbeat hot path can write a TTL'd Redis key instead of

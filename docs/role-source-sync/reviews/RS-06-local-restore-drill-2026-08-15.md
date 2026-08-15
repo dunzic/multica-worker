@@ -1,0 +1,274 @@
+# RS-06 local signed backup/restore drill review
+
+Feature: versioning, provenance, retention and disaster recovery
+
+Date: 2026-08-15
+
+Decision: **GO for the repeatable local PostgreSQL 17 signed restore baseline;
+NO-GO for production Gate F until the same matrix passes against the candidate
+multi-AZ database, versioned object store and production KMS/HSM with measured
+RPO/RTO and named operator approval.**
+
+## Exercised recovery chain
+
+Each run creates and removes a new isolated Docker network, PostgreSQL 17
+volume, source database, restore database and private work directory. It then:
+
+1. applies every migration to the source database;
+2. creates one workspace and two immutable content-addressed artifact ledger
+   rows with matching healthy integrity rows: one 38-byte control object and
+   one 64 MiB process-kill object (67,108,902 bytes total);
+3. generates an Ed25519 signing key pair, keeping private and public material in
+   separate environment contracts for backup and verification;
+4. runs the packaged `role_source_dr backup`, which exports one PostgreSQL
+   snapshot and writes a signed manifest, custom dump and deterministic tar;
+5. restores the dump into a newly created database, starts artifact restore at
+   a constrained CPU share, waits until the 64 MiB body is partially written
+   behind the local store's hidden atomic staging path, freezes the container
+   and kills it with `SIGKILL`;
+6. proves the partial body never became visible at the canonical object key,
+   resumes restoration, requires the deterministic staging file to be
+   reclaimed, runs restoration again for idempotency, then runs the full signed
+   verifier over all 25 role-source tables and both exact object bodies;
+7. independently checks the restored digest and PostgreSQL ledger state;
+8. proves that a failed `pg_dump` leaves `INCOMPLETE` and no manifest;
+9. injects changed archive bytes, a missing object, changed object bytes and a
+   changed restored database row, requiring a non-zero command plus the exact
+   redacted finding class for each;
+10. restores the valid state and requires a final passing verification.
+
+The script uses the packaged backend image, not a test double. Database and
+signing passwords are generated per run and are not printed. Cleanup is limited
+to the run-scoped `multica-rs06-dr-<pid>` resources and its `mktemp` directory.
+
+## Defects found and closed by the drill
+
+The first real execution found that `role_source_dr` discarded `pg_dump`'s
+captured output and exposed only `exit status 1`. The command now includes a
+trimmed, 2 KiB maximum diagnostic when the subprocess fails.
+
+That diagnostic then exposed a second issue: `pg_dump` tried to resolve the
+container's arbitrary numeric UID as a local user even though `DATABASE_URL`
+already contained a database identity. The command now:
+
+- parses the authoritative URL;
+- passes the database username explicitly;
+- passes a password-free PostgreSQL URL in the process arguments;
+- removes pgx-only `pool_*` query settings before invoking libpq; and
+- supplies the password only through a deduplicated `PGPASSWORD` environment
+  entry.
+
+Unit tests require the username, snapshot and output file arguments, preserve
+`sslmode`, reject password or pool-setting leakage into process arguments and
+prove stale `PGPASSWORD` replacement. The packaged command then completed the
+real backup under host UID 501, which has no `/etc/passwd` entry in the image.
+
+Two additional failures were confined to the original harness: `pg_restore` needed
+the same password-free URL/`PGPASSWORD` split, and object fault injection had
+to occur inside the Docker filesystem view rather than through a desktop bind-
+mount cache. Neither is counted as a passing production feature until the
+corrected end-to-end runs below.
+
+The expanded process-kill review then found a recovery-design issue rather than
+a harness issue: each archive member was copied to an anonymous plaintext file
+in the container's system temporary directory before upload. `SIGKILL` could
+leave that body behind with no deterministic cleanup owner, and the command
+reported success after upload without immediate provider readback. Restoration
+now makes one complete signed archive/member preflight before any mutation,
+rewinds the same open archive, streams each verified member directly into the
+storage provider through a context-aware reader, and reads the canonical object
+back for exact length/SHA-256 verification. It fails closed when an existence
+read cannot distinguish absence from transport/authorization failure. An exact
+readback also resolves the case where the provider committed the body but its
+response was lost. Zero-length ledger-valid objects use the ordinary upload
+path because fixed-length S3 streaming rejects an unknown/zero stream length.
+
+Unit tests prove: a corrupt later member causes zero earlier uploads; response
+loss after commit converges through exact readback; cancellation after one of
+three bodies resumes without re-uploading the committed body or creating a
+plaintext spool; a short-consuming provider fails; an unclassified read error
+cannot trigger overwrite; empty bodies restore; and existing idempotent and
+tamper behavior remains intact.
+
+## Original packaging baseline
+
+Three consecutive corrected runs created independent databases and bundles:
+
+| Measure | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Role-source tables verified | 25 | 25 | 25 |
+| Artifact ledger/body count | 1 / 1 | 1 / 1 | 1 / 1 |
+| Database dump | 429,441 B | 429,509 B | 429,463 B |
+| Artifact archive | 3,072 B | 3,072 B | 3,072 B |
+| Signed manifest | 5,263 B | 5,263 B | 5,263 B |
+| Total bundle | 437,776 B | 437,844 B | 437,798 B |
+| Coarse backup wall time | <1 s | <1 s | 1 s |
+| Restore + first full verify | 2 s | 2 s | 2 s |
+| Complete gate including faults | 9 s | 10 s | 9 s |
+
+Every run reported idempotent restore and refused all four corruption classes.
+A final post-adjustment smoke run also passed with a 437,806-byte bundle and a
+10-second complete gate.
+
+## Three-run process-kill evidence
+
+Three further fresh packaged runs used two artifacts and killed the restore
+container while the 64 MiB object's hidden atomic file was incomplete:
+
+| Measure | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Role-source tables verified | 25 | 25 | 25 |
+| Artifact ledger/body count | 2 / 2 | 2 / 2 | 2 / 2 |
+| Verified artifact bytes | 67,108,902 | 67,108,902 | 67,108,902 |
+| Bytes written at `SIGKILL` | 1,605,632 | 3,276,800 | 1,703,936 |
+| Database dump | 429,626 B | 429,671 B | 429,814 B |
+| Artifact archive | 67,113,472 B | 67,113,472 B | 67,113,472 B |
+| Signed manifest | 5,269 B | 5,269 B | 5,269 B |
+| Total bundle | 67,548,367 B | 67,548,412 B | 67,548,555 B |
+| Coarse backup wall time | 1 s | 1 s | 1 s |
+| Restore + first full verify | 6 s | 7 s | 11 s |
+| Complete gate including faults | 14 s | 21 s | 30 s |
+
+All three runs observed no canonical object at the kill point, retained an
+incomplete deterministic staging file, reclaimed it on retry, restored both
+objects exactly, passed a second idempotent restore and removed all run-scoped
+Docker/filesystem residue. The original four corruption classes and failed-
+backup `INCOMPLETE` behavior also passed in every expanded run.
+
+A final post-guard smoke after adding nil-storage refusal and provider-error
+redaction killed at 4,030,464 bytes and passed the same matrix in 12 seconds
+with a 67,548,340-byte bundle.
+
+## Versioned signature protocol regression
+
+After introducing the AWS-KMS-compatible
+`ed25519-sha512-commitment-v2` scheme, three further fresh packaged runs and one
+explicit scheme-assertion smoke passed the same matrix:
+
+| Measure | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Role-source tables verified | 25 | 25 | 25 |
+| Artifact ledger/body count | 2 / 2 | 2 / 2 | 2 / 2 |
+| Verified artifact bytes | 67,108,902 | 67,108,902 | 67,108,902 |
+| Bytes written at `SIGKILL` | 393,216 | 1,998,848 | 425,984 |
+| Database dump | 429,634 B | 429,617 B | 429,639 B |
+| Artifact archive | 67,113,472 B | 67,113,472 B | 67,113,472 B |
+| Signed v2 manifest | 5,323 B | 5,323 B | 5,323 B |
+| Total bundle | 67,548,429 B | 67,548,412 B | 67,548,434 B |
+| Restore + first full verify | 4 s | 5 s | 5 s |
+| Complete gate including faults | 12 s | 13 s | 12 s |
+
+The assertion smoke found the packaged `signature_scheme` field, killed at
+3,342,336 bytes and completed the same matrix in 13 seconds with a
+67,548,429-byte bundle. These runs use the local private-key compatibility path;
+they prove packaged v2 serialization/backward recovery behavior, not AWS KMS,
+workload identity, CloudTrail or HSM custody.
+
+After adding signing-configuration preflight and isolating custom object
+storage behind `S3_ENDPOINT_URL`, the candidate image was rebuilt from the
+final worktree and the complete packaged gate passed again. It killed restore
+at 2,129,920 bytes, verified 25 tables and 67,108,902 artifact bytes, produced a
+429,634-byte dump, 67,113,472-byte archive, 5,323-byte v2 manifest and
+67,548,429-byte bundle, completed restore plus first verification in 5 seconds
+and the entire fault matrix in 14 seconds. This confirms the new preflight did
+not regress the private-key compatibility recovery path; it is still not a
+real KMS or candidate object-store result.
+
+After the interruption-safe implementation and evidence were committed, the
+packaged backend was rebuilt at exact commit
+`f9bc54aa877d030ae54153e286814c99f60a0aea` and installed into the standard
+self-host Compose environment. Independent inspection of the running binary
+found that embedded commit rather than the previous `6fa6c7235` image,
+migration 398 remained applied with
+`idx_channel_delivery_retry_publish_due` present, and `/health`, `/readyz` and
+the existing frontend `/login` each returned 200. This proves local packaging
+and deployment continuity only; it does not turn the single-node self-host
+environment into candidate production evidence.
+
+The workload-identity KMS and endpoint-isolation implementation was then
+committed as `13f91ea42fb015e2bda9b0de88cb7ab7a22237e6`. The standard
+`multica-backend:dev` image was rebuilt from that commit and the backend alone
+was force-recreated through the self-host Compose file. The running container
+and tag both resolved to
+`sha256:d65d78cc0b67630457ae8a698c9465bc8af5efe20b561a4e97a346bcbdcf2179`;
+independent binary inspection found the complete embedded commit. Host-network
+checks returned 200 for `/health`, `/readyz` and the existing frontend `/login`.
+Migration `398_channel_delivery_retry_publish_due_index` and
+`idx_channel_delivery_retry_publish_due` remained present, and the post-start
+log contained no panic, fatal or error entry. This is deployment continuity for
+the exact local code commit, not real KMS, multi-AZ or 10,000-user evidence.
+
+These are coarse local timings for two objects and 64 MiB of bulk data. They
+establish packaging, interruption and retry behavior only; they are not
+inventory-scale evidence, an RTO commitment or an RPO measurement. PostgreSQL's
+exported snapshot provides the local consistency boundary, but no customer
+write stream or point-in-time recovery was measured.
+
+## Four-perspective review
+
+### Architecture expert
+
+Score: **3/3 for the local recovery contract; 2/3 for target topology**
+
+The database snapshot, artifact inventory, manifest signature and verifier now
+survive an actual dump/restore boundary and a mid-object `SIGKILL` in packaged
+binaries. Recovery creates no anonymous plaintext spool, reconciles committed-
+but-response-lost uploads by exact readback, passwords do not enter subprocess
+arguments, arbitrary runtime UIDs work, and changed state fails closed. Still
+open are managed-primary fencing, object version/delete-
+marker restoration, KMS-backed signing, secret-key escrow and concurrent
+retention/GC behavior in the candidate topology.
+
+### Product expert
+
+Score: **2/3**
+
+The operator workflow now has executable evidence rather than documentation
+alone, and its failures are diagnosable without exposing backup contents. A
+production offer still needs named ownership, scheduled drill policy,
+retention/escrow terms, customer recovery communication and approved RPO/RTO.
+
+### Test expert
+
+Score: **3/3 for the local gate; 2/3 for production evidence**
+
+The test crosses real process, database dump, database restore and filesystem
+boundaries, kills the packaged restore process at three different partial byte
+counts, validates a non-empty 64 MiB-plus inventory and uses exact negative
+findings. It also records the failures discovered while making the gate real.
+Missing are candidate-provider process kills and response-loss injection,
+primary failover, large/versioned object inventories, key loss/rotation,
+concurrent mutations and candidate-environment alert evidence.
+
+### CEO
+
+Score: **2/3 for production launch; 3/3 for funding the candidate Gate F drill**
+
+This closes the risk that the DR design only worked in unit tests and removes a
+plaintext-residue/support incident before a customer drill. It does not price
+recovery labor or prove an enterprise SLA. Production and destructive-worker
+rollout remain NO-GO.
+
+## Reproduction
+
+Build the intended backend image, then run from the repository root:
+
+```bash
+MULTICA_RS06_BACKEND_IMAGE='candidate-backend-image' \
+DOCKER_BIN=/usr/local/bin/docker \
+  scripts/validation/rs06-dr-restore.sh
+```
+
+## Remaining production blockers
+
+- repeat with the candidate managed PostgreSQL topology and force primary
+  failover before, during and after `pg_dump` snapshot import;
+- use the candidate versioned object store, repeat process kill and response
+  loss at the provider boundary, and inject object-version/delete-marker faults;
+- use production KMS/HSM sign/verify and secret-transfer current/previous key
+  escrow, then remove and rotate each required key deliberately;
+- run realistic inventory and concurrent scan/apply/retention/delete traffic,
+  measuring lock waits, WAL, bundle size, RPO and RTO;
+- restore immediately before and after a legal hold, verify provider inventory
+  and billing reconciliation, deliver alerts and obtain named SRE, security,
+  product and CEO sign-off.

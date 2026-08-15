@@ -148,6 +148,101 @@ backend:
   tolerations: []
 
 # -----------------------------------------------------------------------------
+# Role-source rollout and explicit validation/recovery jobs
+# -----------------------------------------------------------------------------
+roleSource:
+  # Product/API flags are independently default-off. Apply stays separate so a
+  # read-only cohort cannot accidentally acquire mutation authority.
+  syncEnabled: false
+  scanEnabled: false
+  applyEnabled: false
+  # Per-backend apply admission limit. A 1,000-role/10,000-skill local PG17
+  # run peaked near 276 MiB Go heap, so the 1 GiB backend default admits two
+  # large applies with headroom. Raise only with candidate-image memory proof.
+  applyConcurrency: 2
+  # Destructive background workers remain independently default-off even when
+  # product flags are enabled. Gate B3/F must pass before changing these.
+  artifactGCEnabled: false
+  # Continuously reads content-addressed bodies back and quarantines confirmed
+  # missing/corrupt objects. Independent from destructive GC and default-off.
+  artifactIntegrityEnabled: false
+  retentionEnabled: false
+
+  # The backend already imports existingSecret. Add these keys there only when
+  # one-time secret transfer is approved:
+  #   MULTICA_ROLE_SOURCE_SECRET_KEY
+  #   MULTICA_ROLE_SOURCE_SECRET_KEY_ID
+  #   MULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS (optional JSON key map)
+
+  jobs:
+    # Optional identity for IRSA/workload identity. Empty uses the namespace's
+    # default ServiceAccount; the chart never creates broad cloud permissions.
+    serviceAccountName: ""
+    affinity: {}
+    tolerations: []
+
+  capacityEvidence:
+    # Explicit one-shot read-only Gate E job. Enabling requires every scope and
+    # a separate evidence PVC; the report is never written to the app uploads.
+    enabled: false
+    existingClaim: ""
+    runName: ""
+    reportFile: role-source-capacity-read.json
+    workspaceId: ""
+    runtimeId: ""
+    samples: 500
+    concurrency: 32
+    minimumUsers: 10000
+    minimumWorkspaceMembers: 0
+    minimumWorkspaceRuntimes: 0
+    minimumWorkspaceSources: 0
+    minimumAttestationHistory: 0
+    activeDeadlineSeconds: 1800
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+
+  disasterRecovery:
+    backup:
+      # Explicit one-shot Gate F backup job. The output directory below the
+      # separate backup PVC must not already exist. Use a unique runName for
+      # every exercise so Kubernetes and the backup tool both refuse overwrite.
+      enabled: false
+      runName: ""
+      existingClaim: ""
+      outputDirectory: ""
+      # private_key preserves self-hosted compatibility. Production clusters
+      # should use aws_kms so private signing material never enters the Job.
+      signingProvider: private_key
+      signingSecretName: ""
+      # AWS KMS mode requires an immutable key ARN, a stable manifest signer
+      # identity and a pinned raw Ed25519 public key (standard base64).
+      signerKeyId: ""
+      awsKmsKeyId: ""
+      signingPublicKey: ""
+      # Optional narrowly scoped S3 credentials for private_key mode. Must be
+      # empty for aws_kms so S3 and KMS use the reviewed workload identity.
+      storageSecretName: ""
+      # Non-secret object-store settings. Prefer these with workload identity;
+      # storageEndpointUrl is scoped to S3 and cannot redirect STS or KMS.
+      storageBucket: ""
+      storageRegion: ""
+      storageEndpointUrl: ""
+      storageUsePathStyle: false
+      activeDeadlineSeconds: 14400
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          cpu: 2000m
+          memory: 1Gi
+
+# -----------------------------------------------------------------------------
 # Frontend (Next.js standalone)
 # -----------------------------------------------------------------------------
 frontend:
@@ -209,3 +304,13 @@ monitoring:
     samplerQueryErrorsFor: 5m
     samplerQueryLatencyFor: 10m
     severity: warning
+    # Any missing failed-apply evidence is an audit-control violation. Keep the
+    # delay short and severity separate from sampler health.
+    roleSourceAuditWriteFailureFor: 1m
+    roleSourceCommitReconciliationFailureFor: 1m
+    roleSourceOutboxFailureFor: 1m
+    roleSourceOutboxBacklogFor: 5m
+    # DB-stale role-source runtimes are held long enough to absorb heartbeat
+    # flush lag before paging. The metric itself uses the shared 150s cutoff.
+    roleSourceRuntimeUnavailableFor: 10m
+    roleSourceSeverity: critical

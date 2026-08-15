@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_legal_hold_request_unique ON role_source_legal_hold (source_id, request_key_digest);
