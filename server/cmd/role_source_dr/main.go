@@ -137,7 +137,7 @@ func runRestoreArtifacts(ctx context.Context, args []string) error {
 	if !rolesourcedr.SameArtifactInventory(manifest, actual) {
 		return errors.New("restored database does not match backup manifest; refusing object restore")
 	}
-	if err := rolesourcedr.RestoreArtifactArchive(ctx, *archivePath, records, rolesourcedr.StorageFromEnv()); err != nil {
+	if err := rolesourcedr.RestoreArtifactArchive(ctx, *archivePath, manifest.ArtifactArchiveDigest, records, rolesourcedr.StorageFromEnv()); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

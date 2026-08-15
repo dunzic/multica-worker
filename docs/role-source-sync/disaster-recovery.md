@@ -87,9 +87,11 @@ put key bytes beside the bundle.
 
 The repository includes a destructive, self-cleaning local gate. It creates
 fresh PostgreSQL 17 source/restore databases and local object directories,
-backs up one real immutable artifact with a signed manifest, restores and
-verifies it twice, then requires exact failure findings for archive tamper,
-missing/changed objects and changed restored database state:
+backs up a 38-byte control object plus a 64 MiB immutable object with a signed
+manifest, kills the packaged restore process during the large object's atomic
+write, resumes and verifies both objects twice, then requires exact failure
+findings for archive tamper, missing/changed objects and changed restored
+database state:
 
 ```bash
 MULTICA_RS06_BACKEND_IMAGE='candidate-backend-image' \
@@ -97,12 +99,16 @@ DOCKER_BIN=/usr/local/bin/docker \
   scripts/validation/rs06-dr-restore.sh
 ```
 
-The corrected 2026-08-15 gate passed three consecutive fresh runs plus one
-final smoke run. It also proved that an invalid `pg_dump` leaves `INCOMPLETE`
-and no manifest. See the
+The original corrected 2026-08-15 packaging gate passed three consecutive fresh
+runs plus one final smoke run. The expanded gate then passed three further
+fresh process-kill runs at 1.5–3.2 MiB of partial write, proving the canonical
+object stays absent until atomic commit and a retry reclaims the deterministic
+staging file. It also proved that an invalid `pg_dump` leaves `INCOMPLETE` and
+no manifest. See the
 [local restore-drill review](reviews/RS-06-local-restore-drill-2026-08-15.md).
-This is a packaging and recovery-contract baseline for one 38-byte object, not
-a production RPO/RTO, object-store or KMS result.
+This is a local packaging and recovery-contract baseline for two objects and
+64 MiB of bulk data, not a production inventory, RPO/RTO, object-store or KMS
+result.
 
 ## Restore drill
 
@@ -117,10 +123,15 @@ a production RPO/RTO, object-store or KMS result.
    ```bash
    export MULTICA_ROLE_SOURCE_DR_TRUSTED_PUBLIC_KEYS='{"backup-v1":"BASE64_ED25519_PUBLIC_KEY"}'
    ```
-3. Rehydrate immutable objects. The command verifies archive and database
-   inventory commitments before any upload, holds the exclusive DR lock so a
-   mistakenly running deletion worker cannot race recovery, then uploads by
-   canonical digest key and is safe to retry:
+3. Rehydrate immutable objects. The command verifies the signed whole-archive
+   digest, every member digest and the database inventory before any upload,
+   holds the exclusive DR lock so a mistakenly running deletion worker cannot
+   race recovery, then streams directly to canonical digest keys without an
+   anonymous plaintext spool. Every upload is immediately read back for exact
+   length/SHA-256; a committed object whose provider response was lost therefore
+   converges as success. Transport/authorization read errors cannot be treated
+   as absence. An interrupted retry skips exact committed bodies and reclaims
+   deterministic local staging files:
 
    ```bash
    /app/role_source_dr restore-artifacts \

@@ -1,7 +1,9 @@
 package rolesourcedr
 
 import (
+	"archive/tar"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +13,65 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/storage"
 )
+
+type faultRestoreStorage struct {
+	storage.Storage
+	uploadCalls       map[string]int
+	responseLossOnce  bool
+	responseLost      bool
+	cancelAfterUpload int
+	cancel            context.CancelFunc
+	shortConsume      bool
+	uploadFailure     error
+	readFailure       error
+}
+
+func (s *faultRestoreStorage) UploadStream(ctx context.Context, key string, data io.Reader, size int64, contentType, filename string) (string, error) {
+	if s.uploadCalls == nil {
+		s.uploadCalls = map[string]int{}
+	}
+	s.uploadCalls[key]++
+	if s.shortConsume {
+		_, _ = io.CopyN(io.Discard, data, max(1, size/2))
+		return "", nil
+	}
+	if s.uploadFailure != nil {
+		_, _ = io.Copy(io.Discard, data)
+		return "", s.uploadFailure
+	}
+	result, err := s.Storage.(streamUploader).UploadStream(ctx, key, data, size, contentType, filename)
+	if err != nil {
+		return result, err
+	}
+	if s.cancelAfterUpload > 0 && totalCalls(s.uploadCalls) == s.cancelAfterUpload {
+		s.cancel()
+	}
+	if s.responseLossOnce && !s.responseLost {
+		s.responseLost = true
+		return "", errors.New("simulated response loss")
+	}
+	return result, nil
+}
+
+func (s *faultRestoreStorage) GetReader(ctx context.Context, key string) (io.ReadCloser, error) {
+	if s.readFailure != nil {
+		return nil, s.readFailure
+	}
+	return s.Storage.GetReader(ctx, key)
+}
+
+func (s *faultRestoreStorage) IsObjectNotFound(err error) bool {
+	classifier, ok := s.Storage.(objectNotFoundClassifier)
+	return ok && classifier.IsObjectNotFound(err)
+}
+
+func totalCalls(calls map[string]int) int {
+	total := 0
+	for _, count := range calls {
+		total += count
+	}
+	return total
+}
 
 func TestArtifactArchiveRoundTripAndTamperDetection(t *testing.T) {
 	sourceDir := filepath.Join(t.TempDir(), "source")
@@ -32,10 +93,14 @@ func TestArtifactArchiveRoundTripAndTamperDetection(t *testing.T) {
 	restoreDir := filepath.Join(t.TempDir(), "restore")
 	t.Setenv("LOCAL_UPLOAD_DIR", restoreDir)
 	restore := storage.NewLocalStorageFromEnv()
-	if err := RestoreArtifactArchive(context.Background(), archive, []ArtifactRecord{record}, restore); err != nil {
+	archiveDigest, err := FileDigest(archive)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RestoreArtifactArchive(context.Background(), archive, []ArtifactRecord{record}, restore); err != nil {
+	if err := RestoreArtifactArchive(context.Background(), archive, archiveDigest, []ArtifactRecord{record}, restore); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreArtifactArchive(context.Background(), archive, archiveDigest, []ArtifactRecord{record}, restore); err != nil {
 		t.Fatalf("idempotent retry failed: %v", err)
 	}
 	reader, err := restore.GetReader(context.Background(), record.StorageKey)
@@ -55,6 +120,183 @@ func TestArtifactArchiveRoundTripAndTamperDetection(t *testing.T) {
 	}
 	if _, err := WriteArtifactArchive(context.Background(), filepath.Join(t.TempDir(), "bad.tar"), []ArtifactRecord{record}, source, time.Unix(1, 0)); err == nil {
 		t.Fatal("tampered object was accepted into backup archive")
+	}
+}
+
+func TestRestoreArtifactArchivePreflightsEveryMemberBeforeMutation(t *testing.T) {
+	records, bodies := archiveRecords(t, [][]byte{[]byte("first-valid-body"), []byte("second-valid-body")})
+	archive := filepath.Join(t.TempDir(), "malformed.tar")
+	file, err := os.OpenFile(archive, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := tar.NewWriter(file)
+	for index, record := range records {
+		body := bodies[index]
+		if index == 1 {
+			body = []byte("second-broken-body")
+		}
+		name := record.WorkspaceID + "/" + strings.TrimPrefix(record.Digest, "sha256:")
+		if err := w.WriteHeader(&tar.Header{Name: name, Mode: 0o400, Size: int64(len(body)), Format: tar.FormatPAX}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := FileDigest(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := newLocalRestore(t)
+	err = RestoreArtifactArchive(context.Background(), archive, digest, records, restore)
+	if err == nil || !strings.Contains(err.Error(), "inventory") && !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("malformed later member error = %v", err)
+	}
+	if reader, readErr := restore.GetReader(context.Background(), records[0].StorageKey); readErr == nil {
+		reader.Close()
+		t.Fatal("preflight failure uploaded an earlier valid member")
+	}
+}
+
+func TestRestoreArtifactArchiveResolvesResponseLossByExactReadback(t *testing.T) {
+	archive, digest, records, _ := buildArchiveFixture(t, [][]byte{[]byte("committed-before-response-loss")})
+	base := newLocalRestore(t)
+	fault := &faultRestoreStorage{Storage: base, responseLossOnce: true}
+	if err := RestoreArtifactArchive(context.Background(), archive, digest, records, fault); err != nil {
+		t.Fatalf("response-loss reconciliation failed: %v", err)
+	}
+	if totalCalls(fault.uploadCalls) != 1 || !fault.responseLost {
+		t.Fatalf("upload calls=%v response_lost=%v", fault.uploadCalls, fault.responseLost)
+	}
+	assertStoredBodies(t, base, records, [][]byte{[]byte("committed-before-response-loss")})
+}
+
+func TestRestoreArtifactArchiveInterruptedRunResumesWithoutPlaintextSpool(t *testing.T) {
+	bodies := [][]byte{[]byte("body-one"), []byte("body-two"), []byte("body-three")}
+	archive, digest, records, _ := buildArchiveFixture(t, bodies)
+	spoolDir := t.TempDir()
+	t.Setenv("TMPDIR", spoolDir)
+	base := newLocalRestore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	first := &faultRestoreStorage{Storage: base, cancelAfterUpload: 1, cancel: cancel}
+	err := RestoreArtifactArchive(ctx, archive, digest, records, first)
+	if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("interrupted restore error = %v", err)
+	}
+	if totalCalls(first.uploadCalls) != 1 {
+		t.Fatalf("first run uploads = %v", first.uploadCalls)
+	}
+	if entries, err := os.ReadDir(spoolDir); err != nil || len(entries) != 0 {
+		t.Fatalf("plaintext restore spool residue = %v, err=%v", entries, err)
+	}
+	retry := &faultRestoreStorage{Storage: base}
+	if err := RestoreArtifactArchive(context.Background(), archive, digest, records, retry); err != nil {
+		t.Fatalf("resume restore: %v", err)
+	}
+	if totalCalls(retry.uploadCalls) != len(records)-1 {
+		t.Fatalf("retry re-uploaded committed body or missed work: %v", retry.uploadCalls)
+	}
+	assertStoredBodies(t, base, records, bodies)
+}
+
+func TestRestoreArtifactArchiveRejectsShortConsumerAndReadFailure(t *testing.T) {
+	archive, digest, records, _ := buildArchiveFixture(t, [][]byte{[]byte("fixed-length-body")})
+	base := newLocalRestore(t)
+	short := &faultRestoreStorage{Storage: base, shortConsume: true}
+	if err := RestoreArtifactArchive(context.Background(), archive, digest, records, short); err == nil || !strings.Contains(err.Error(), "did not consume") {
+		t.Fatalf("short consumer error = %v", err)
+	}
+
+	readFailure := &faultRestoreStorage{Storage: base, readFailure: errors.New("provider unavailable")}
+	if err := RestoreArtifactArchive(context.Background(), archive, digest, records, readFailure); err == nil || !strings.Contains(err.Error(), "read existing artifact") || strings.Contains(err.Error(), "provider unavailable") {
+		t.Fatalf("read failure error = %v", err)
+	}
+	if totalCalls(readFailure.uploadCalls) != 0 {
+		t.Fatalf("read failure triggered overwrite: %v", readFailure.uploadCalls)
+	}
+
+	uploadFailure := &faultRestoreStorage{Storage: base, uploadFailure: errors.New("provider response contains sensitive details")}
+	if err := RestoreArtifactArchive(context.Background(), archive, digest, records, uploadFailure); err == nil || !strings.Contains(err.Error(), "upload failed") || strings.Contains(err.Error(), "sensitive") {
+		t.Fatalf("upload failure error = %v", err)
+	}
+	if err := RestoreArtifactArchive(context.Background(), archive, digest, records, nil); err == nil || !strings.Contains(err.Error(), "storage is unavailable") {
+		t.Fatalf("nil storage error = %v", err)
+	}
+}
+
+func TestRestoreArtifactArchiveSupportsLedgerValidEmptyBody(t *testing.T) {
+	archive, digest, records, bodies := buildArchiveFixture(t, [][]byte{{}})
+	restore := newLocalRestore(t)
+	if err := RestoreArtifactArchive(context.Background(), archive, digest, records, restore); err != nil {
+		t.Fatalf("restore empty artifact: %v", err)
+	}
+	assertStoredBodies(t, restore, records, bodies)
+}
+
+func buildArchiveFixture(t *testing.T, bodies [][]byte) (string, string, []ArtifactRecord, [][]byte) {
+	t.Helper()
+	records, copiedBodies := archiveRecords(t, bodies)
+	sourceDir := filepath.Join(t.TempDir(), "source")
+	t.Setenv("LOCAL_UPLOAD_DIR", sourceDir)
+	source := storage.NewLocalStorageFromEnv()
+	for index, record := range records {
+		body := copiedBodies[index]
+		if _, err := source.UploadStream(context.Background(), record.StorageKey, strings.NewReader(string(body)), int64(len(body)), "application/octet-stream", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive := filepath.Join(t.TempDir(), "artifacts.tar")
+	digest, err := WriteArtifactArchive(context.Background(), archive, records, source, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return archive, digest, records, copiedBodies
+}
+
+func archiveRecords(t *testing.T, bodies [][]byte) ([]ArtifactRecord, [][]byte) {
+	t.Helper()
+	workspaceID := "00000000-0000-4000-8000-000000000001"
+	records := make([]ArtifactRecord, 0, len(bodies))
+	copied := make([][]byte, 0, len(bodies))
+	for _, original := range bodies {
+		body := append([]byte(nil), original...)
+		digest := sha256Text(body)
+		records = append(records, ArtifactRecord{
+			WorkspaceID: workspaceID,
+			Digest:      digest,
+			SizeBytes:   int64(len(body)),
+			StorageKey:  "role-source-artifacts/" + workspaceID + "/" + strings.TrimPrefix(digest, "sha256:"),
+		})
+		copied = append(copied, body)
+	}
+	return records, copied
+}
+
+func newLocalRestore(t *testing.T) *storage.LocalStorage {
+	t.Helper()
+	t.Setenv("LOCAL_UPLOAD_DIR", filepath.Join(t.TempDir(), "restore"))
+	return storage.NewLocalStorageFromEnv()
+}
+
+func assertStoredBodies(t *testing.T, store storage.Storage, records []ArtifactRecord, bodies [][]byte) {
+	t.Helper()
+	for index, record := range records {
+		reader, err := store.GetReader(context.Background(), record.StorageKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil || string(body) != string(bodies[index]) {
+			t.Fatalf("stored body %d = %q, err=%v", index, body, err)
+		}
 	}
 }
 

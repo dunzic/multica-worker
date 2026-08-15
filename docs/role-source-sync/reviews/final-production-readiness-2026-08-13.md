@@ -20,7 +20,7 @@ tests or a local single-primary container.
 | --- | ---: | --- |
 | Architecture expert | 2/3 | The server is source-neutral; AgentWaker remains an adapter; source lifecycle, generation-isolated reload, artifact reachability, apply receipts, task pins, holds, retention and DR share explicit lock and provenance contracts. The local versioned-provider purge/late-write/Object-Lock/IAM gate and RS-07 synchronous physical-primary failover now pass; a 3 still requires candidate-provider receipt correlation, managed multi-AZ failover/fencing and cross-runtime evidence. |
 | Product expert | 2/3 | Owners and members have a bounded read-only audit surface, drift/freshness evidence, referenced versus uniquely reclaimable retention previews and deliberate lifecycle operations; owners now see immutable logical-absence purge totals and the newest 50 verified receipts, while the UI explicitly refuses to call projection, observed bytes or logical absence realized/billed savings. Mutation controls remain intentionally absent from broad UI; receipt export/retention terms, guided configuration, approval/apply/recovery and version-timeline UX still need controlled cohort validation. |
-| Test expert | 2/3 | Role-source unit, race, fuzz, redaction, capacity, DR and Helm gates pass; current focused Core/Views tests, focused ESLint and role-source Go vet pass. Current Core/Views package typecheck is still blocked by three pre-existing Chat Quick Actions errors in unmodified files, so it is not counted as a green release gate. The 2026-08-14/15 update adds role-source migrations through 386 plus channel-delivery migration 398, a 13-case atomic apply/commit-ambiguity matrix, a three-case two-control-plane concurrency gate, live adoption target/mapping and Agent/Skill name-claim races, a six-case Autopilot advisory-title-lock matrix, a real two-runtime unloaded-attestation incident recovery, local PostgreSQL 17.10 create/update runs for 1,000 roles plus 10,000 skills, a real AES-GCM secret/MCP lifecycle with after-consume rollback/retry/expiry/redaction, a six-case legal-hold/policy/task-pin versus prune matrix passing three consecutive runs with real `transactionid`/tuple waits and fail-closed loser states, a three-run shared-artifact projection/prune/audit matrix, a three-run exact-SQL PostgreSQL gate that queues 10,000 eligible snapshots with 10,000 artifacts/edges across 100 sources in 2.150–2.213 seconds end-to-end with 23.232–23.649 ms p95, a three-run real PostgreSQL five-pass purge-receipt state machine with immutable-row guards and post-round-trip digest verification, a real isolated versioned-provider suite passing exact multi-version purge, late-write convergence, legal-hold refusal and explicit version-delete-deny refusal under a prefix-scoped application identity, six-run real OS-process channel-delivery kill plus local 10,000-receipt audit/retry-backlog gates across two independent invocations, and three fresh two-backend/shared-Redis/synchronous-standby RS-07 primary-failover runs. 10,000-user database/S3/secret burst load, candidate-provider receipt correlation, Kubernetes Jobs, candidate-container/provider-bound process kill, KMS rotation, exfiltration, managed failover and restore exercises remain mandatory. |
+| Test expert | 2/3 | Role-source unit, race, fuzz, redaction, capacity, DR and Helm gates pass; current focused Core/Views tests, focused ESLint and role-source Go vet pass. Current Core/Views package typecheck is still blocked by three pre-existing Chat Quick Actions errors in unmodified files, so it is not counted as a green release gate. The 2026-08-14/15 update adds role-source migrations through 386 plus channel-delivery migration 398, a 13-case atomic apply/commit-ambiguity matrix, a three-case two-control-plane concurrency gate, live adoption target/mapping and Agent/Skill name-claim races, a six-case Autopilot advisory-title-lock matrix, a real two-runtime unloaded-attestation incident recovery, local PostgreSQL 17.10 create/update runs for 1,000 roles plus 10,000 skills, a real AES-GCM secret/MCP lifecycle with after-consume rollback/retry/expiry/redaction, a six-case legal-hold/policy/task-pin versus prune matrix passing three consecutive runs with real `transactionid`/tuple waits and fail-closed loser states, a three-run shared-artifact projection/prune/audit matrix, a three-run exact-SQL PostgreSQL gate that queues 10,000 eligible snapshots with 10,000 artifacts/edges across 100 sources in 2.150–2.213 seconds end-to-end with 23.232–23.649 ms p95, a three-run real PostgreSQL five-pass purge-receipt state machine with immutable-row guards and post-round-trip digest verification, a real isolated versioned-provider suite passing exact multi-version purge, late-write convergence, legal-hold refusal and explicit version-delete-deny refusal under a prefix-scoped application identity, six-run real OS-process channel-delivery kill plus local 10,000-receipt audit/retry-backlog gates across two independent invocations, three fresh two-backend/shared-Redis/synchronous-standby RS-07 primary-failover runs, and three packaged RS-06 mid-object `SIGKILL`/resume runs over 64 MiB without canonical partial exposure or plaintext spool. 10,000-user database/S3/secret burst load, candidate-provider receipt correlation, Kubernetes Jobs, candidate-provider-bound process kill/response loss, KMS rotation, exfiltration, managed failover and restore exercises remain mandatory. |
 | CEO | 2/3 | The design creates a defensible multi-source control plane without binding the product to AgentWaker and keeps all customer/destructive exposure default-off. A production ROI/SLA decision would be unsupported until capacity, recovery time, support labor, failure rate and operator ownership are measured. |
 
 No perspective can be raised to 3 by document review alone.
@@ -46,16 +46,19 @@ objection only. Managed multi-AZ fencing, real provider boundaries, KMS/HSM,
 alerts and mixed 10,000-user traffic remain production blockers, so the overall
 2/3 and NO-GO decision do not change.
 
-2026-08-15 RS-06 local restore addendum: three fresh packaged PostgreSQL 17
-signed backup/restore runs plus one final smoke run now pass with all 25 role-
-source tables and one exact artifact. Dump restoration into a new database,
-double object rehydration, final verification, failed-backup `INCOMPLETE` and
-four archive/object/database corruption refusals are executable. The drill also
-closed discarded `pg_dump` diagnostics and arbitrary-container-UID failure
-without exposing the database password in process arguments. This is a tiny
-local packaging baseline, not candidate versioned-store, KMS, managed failover,
-concurrent load or RPO/RTO evidence; Architecture/Test and overall production
-scores remain 2/3 and the NO-GO decision does not change.
+2026-08-15 RS-06 local restore addendum: after the original three packaged
+PostgreSQL 17 runs and smoke, three expanded fresh runs now sign and restore all
+25 role-source tables plus two exact artifacts totaling 67,108,902 bytes. Each
+run kills the packaged restore container at a different partial byte count,
+keeps the canonical object absent, reclaims deterministic staging on retry and
+passes idempotent restore, failed-backup `INCOMPLETE` and four corruption
+refusals. Restoration now preflights the full signed archive before mutation,
+streams without an anonymous plaintext spool, verifies exact provider readback
+and reconciles a committed-but-response-lost upload. This closes the local
+filesystem/process-interruption objection only, not candidate versioned-store
+response loss, KMS, managed failover, concurrent load or RPO/RTO evidence;
+Architecture/Test and overall production scores remain 2/3 and the NO-GO
+decision does not change.
 
 ## Feature disposition
 
@@ -66,7 +69,7 @@ scores remain 2/3 and the NO-GO decision does not change.
 | RS-03 plan, approval and safe apply | GO for controlled default-off cohort after the 2026-08-14 live atomicity and two-control-plane concurrency matrices | NO-GO pending database-outage/failover, real process-kill and recorded operator recovery evidence |
 | RS-04 materialization | GO for controlled default-off cohort after local 1,000-role/10,000-skill create/update evidence | NO-GO pending candidate-image two-replica/S3/contention/failover SLO and cross-runtime execution |
 | RS-05 secret and MCP transfer | GO for a controlled default-off cohort after the local B11 lifecycle gate | NO-GO pending candidate-image KMS/HSM key rotation, process restart/lease reclaim, failover, burst-load and exfiltration exercises |
-| RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local hold/policy/pin/prune matrix, 10,000-snapshot exact-SQL scale gate, v2 ambiguity-aware immutable purge receipts, real versioned-provider fail-closed suite and packaged local signed restore baseline | NO-GO pending candidate-topology process-kill/primary-failover race and scale repeat, candidate-provider receipt/inventory/accounting reconciliation, production KMS, retention RACI and recorded restore with approved RPO/RTO |
+| RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local hold/policy/pin/prune matrix, 10,000-snapshot exact-SQL scale gate, v2 ambiguity-aware immutable purge receipts, real versioned-provider fail-closed suite and packaged local signed restore plus mid-object process-kill/resume baseline | NO-GO pending candidate-provider process-kill/response-loss and primary-failover race and scale repeat, candidate-provider receipt/inventory/accounting reconciliation, production KMS, retention RACI and recorded restore with approved RPO/RTO |
 | RS-07 delivery receipts | GO as a two-connector controlled pilot with signed ambiguity resolution, a three-process kill chain, a local 10,000-receipt backlog gate and a three-run local physical-primary failover gate | NO-GO pending remaining connectors, attachments, real-provider candidate replicas, managed multi-AZ failover/fencing, KMS/HSM and approved 10,000-user mixed-load evidence |
 
 ## Local evidence retained
@@ -90,9 +93,11 @@ scores remain 2/3 and the NO-GO decision does not change.
   DR and capacity commands passed in the full Go run;
 - the current Go 1.26 Alpine `go build ./...` passed; the delivery package plus
   its process-kill and 10k scale gates also passed under Go's race detector.
-  The attempted all-package test passed every package except pre-existing
-  environment-sensitive failures in unmodified `pkg/agent` and `pkg/redact`,
-  so it is not counted as a green release gate;
+  A fresh non-root, source-read-only Go 1.26 all-package test passed every
+  package except unmodified `pkg/agent`; 15 process-reap/timeout assertions
+  missed their 5–30-second test windows in the container, so the run exited 1
+  and is not counted as a green release gate. The DR command/packages passed
+  ordinary and race runs independently;
 - focused role-source race, fuzz, cross-build, migration-contract and Helm
   tests are recorded in `implementation-status.md` and the per-feature reviews.
 - the RS-07 PostgreSQL 17 gate passed six real OS-process kill chains across two
@@ -148,14 +153,19 @@ scores remain 2/3 and the NO-GO decision does not change.
   version byte-readable. Final independent listings contained no validation
   versions or markers. This is real local protocol evidence, not a candidate
   vendor, topology, durability, receipt-correlation or billing result.
-- the RS-06 packaged DR gate passed three formal fresh runs plus one final smoke
-  run: a signed 25-table manifest and one real artifact were dumped, restored to
-  a new database/storage directory, rehydrated twice and fully verified. An
-  invalid dump kept `INCOMPLETE`; archive tamper, missing/changed object and a
-  changed restored row all failed with exact redacted findings. Formal bundles
-  were 437,776–437,844 bytes, coarse restore plus first verification was 2
-  seconds, and the full local fault matrix was 9–10 seconds. These tiny local
-  timings are not production capacity, RPO/RTO, provider or KMS evidence.
+- the original RS-06 packaged DR gate passed three formal fresh runs plus one
+  smoke. The expanded gate then passed three more fresh runs with a signed
+  25-table manifest and two artifacts totaling 67,108,902 bytes. The packaged
+  restore container was killed at 1,605,632/3,276,800/1,703,936 partial bytes;
+  no canonical partial object appeared, retry reclaimed deterministic staging,
+  restored both bodies and a second restore was idempotent. An invalid dump
+  kept `INCOMPLETE`; archive tamper, missing/changed object and a changed row
+  failed with exact redacted findings. Bundles were
+  67,548,367–67,548,555 bytes and the full local matrices took 14–30 seconds.
+  A final post-guard smoke killed at 4,030,464 bytes and passed in 12 seconds
+  with a 67,548,340-byte bundle. These local two-object timings are not
+  inventory capacity, RPO/RTO, candidate-provider, response-loss or KMS
+  evidence.
 
 The latest full run did not reproduce the historical `pkg/agent` instability;
 that does not erase prior evidence, so it remains release-environment debt

@@ -15,16 +15,21 @@ Each run creates and removes a new isolated Docker network, PostgreSQL 17
 volume, source database, restore database and private work directory. It then:
 
 1. applies every migration to the source database;
-2. creates one workspace, one immutable content-addressed artifact ledger row,
-   its matching healthy integrity row and the exact 38-byte object body;
+2. creates one workspace and two immutable content-addressed artifact ledger
+   rows with matching healthy integrity rows: one 38-byte control object and
+   one 64 MiB process-kill object (67,108,902 bytes total);
 3. generates an Ed25519 signing key pair, keeping private and public material in
    separate environment contracts for backup and verification;
 4. runs the packaged `role_source_dr backup`, which exports one PostgreSQL
    snapshot and writes a signed manifest, custom dump and deterministic tar;
-5. restores the dump into a newly created database and the object into a newly
-   created storage directory;
-6. runs artifact restoration twice to prove idempotency, then runs the full
-   signed verifier over all 25 role-source tables and the exact object bytes;
+5. restores the dump into a newly created database, starts artifact restore at
+   a constrained CPU share, waits until the 64 MiB body is partially written
+   behind the local store's hidden atomic staging path, freezes the container
+   and kills it with `SIGKILL`;
+6. proves the partial body never became visible at the canonical object key,
+   resumes restoration, requires the deterministic staging file to be
+   reclaimed, runs restoration again for idempotency, then runs the full signed
+   verifier over all 25 role-source tables and both exact object bodies;
 7. independently checks the restored digest and PostgreSQL ledger state;
 8. proves that a failed `pg_dump` leaves `INCOMPLETE` and no manifest;
 9. injects changed archive bytes, a missing object, changed object bytes and a
@@ -58,13 +63,34 @@ Unit tests require the username, snapshot and output file arguments, preserve
 prove stale `PGPASSWORD` replacement. The packaged command then completed the
 real backup under host UID 501, which has no `/etc/passwd` entry in the image.
 
-Two additional failures were confined to the new harness: `pg_restore` needed
+Two additional failures were confined to the original harness: `pg_restore` needed
 the same password-free URL/`PGPASSWORD` split, and object fault injection had
 to occur inside the Docker filesystem view rather than through a desktop bind-
 mount cache. Neither is counted as a passing production feature until the
 corrected end-to-end runs below.
 
-## Three-run evidence
+The expanded process-kill review then found a recovery-design issue rather than
+a harness issue: each archive member was copied to an anonymous plaintext file
+in the container's system temporary directory before upload. `SIGKILL` could
+leave that body behind with no deterministic cleanup owner, and the command
+reported success after upload without immediate provider readback. Restoration
+now makes one complete signed archive/member preflight before any mutation,
+rewinds the same open archive, streams each verified member directly into the
+storage provider through a context-aware reader, and reads the canonical object
+back for exact length/SHA-256 verification. It fails closed when an existence
+read cannot distinguish absence from transport/authorization failure. An exact
+readback also resolves the case where the provider committed the body but its
+response was lost. Zero-length ledger-valid objects use the ordinary upload
+path because fixed-length S3 streaming rejects an unknown/zero stream length.
+
+Unit tests prove: a corrupt later member causes zero earlier uploads; response
+loss after commit converges through exact readback; cancellation after one of
+three bodies resumes without re-uploading the committed body or creating a
+plaintext spool; a short-consuming provider fails; an unclassified read error
+cannot trigger overwrite; empty bodies restore; and existing idempotent and
+tamper behavior remains intact.
+
+## Original packaging baseline
 
 Three consecutive corrected runs created independent databases and bundles:
 
@@ -84,6 +110,35 @@ Every run reported idempotent restore and refused all four corruption classes.
 A final post-adjustment smoke run also passed with a 437,806-byte bundle and a
 10-second complete gate.
 
+## Three-run process-kill evidence
+
+Three further fresh packaged runs used two artifacts and killed the restore
+container while the 64 MiB object's hidden atomic file was incomplete:
+
+| Measure | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Role-source tables verified | 25 | 25 | 25 |
+| Artifact ledger/body count | 2 / 2 | 2 / 2 | 2 / 2 |
+| Verified artifact bytes | 67,108,902 | 67,108,902 | 67,108,902 |
+| Bytes written at `SIGKILL` | 1,605,632 | 3,276,800 | 1,703,936 |
+| Database dump | 429,626 B | 429,671 B | 429,814 B |
+| Artifact archive | 67,113,472 B | 67,113,472 B | 67,113,472 B |
+| Signed manifest | 5,269 B | 5,269 B | 5,269 B |
+| Total bundle | 67,548,367 B | 67,548,412 B | 67,548,555 B |
+| Coarse backup wall time | 1 s | 1 s | 1 s |
+| Restore + first full verify | 6 s | 7 s | 11 s |
+| Complete gate including faults | 14 s | 21 s | 30 s |
+
+All three runs observed no canonical object at the kill point, retained an
+incomplete deterministic staging file, reclaimed it on retry, restored both
+objects exactly, passed a second idempotent restore and removed all run-scoped
+Docker/filesystem residue. The original four corruption classes and failed-
+backup `INCOMPLETE` behavior also passed in every expanded run.
+
+A final post-guard smoke after adding nil-storage refusal and provider-error
+redaction killed at 4,030,464 bytes and passed the same matrix in 12 seconds
+with a 67,548,340-byte bundle.
+
 The same packaged backend was then rebuilt at commit
 `6fa6c7235bdefea937c70b573fd6e6fddf124a95` and installed into the standard
 self-host Compose environment. Independent inspection of the running binary
@@ -93,10 +148,11 @@ and `/health`, `/readyz` and the existing frontend `/login` each returned 200.
 This proves local packaging and deployment continuity only; it does not turn
 the single-node self-host environment into candidate production evidence.
 
-These are coarse local timings for one 38-byte object. They establish behavior
-and packaging only; they are not capacity evidence, an RTO commitment or an RPO
-measurement. PostgreSQL's exported snapshot provides the local consistency
-boundary, but no customer write stream or point-in-time recovery was measured.
+These are coarse local timings for two objects and 64 MiB of bulk data. They
+establish packaging, interruption and retry behavior only; they are not
+inventory-scale evidence, an RTO commitment or an RPO measurement. PostgreSQL's
+exported snapshot provides the local consistency boundary, but no customer
+write stream or point-in-time recovery was measured.
 
 ## Four-perspective review
 
@@ -105,9 +161,11 @@ boundary, but no customer write stream or point-in-time recovery was measured.
 Score: **3/3 for the local recovery contract; 2/3 for target topology**
 
 The database snapshot, artifact inventory, manifest signature and verifier now
-survive an actual dump/restore boundary in packaged binaries. Passwords do not
-enter subprocess arguments, arbitrary runtime UIDs work, and changed state
-fails closed. Still open are managed-primary fencing, object version/delete-
+survive an actual dump/restore boundary and a mid-object `SIGKILL` in packaged
+binaries. Recovery creates no anonymous plaintext spool, reconciles committed-
+but-response-lost uploads by exact readback, passwords do not enter subprocess
+arguments, arbitrary runtime UIDs work, and changed state fails closed. Still
+open are managed-primary fencing, object version/delete-
 marker restoration, KMS-backed signing, secret-key escrow and concurrent
 retention/GC behavior in the candidate topology.
 
@@ -125,20 +183,21 @@ retention/escrow terms, customer recovery communication and approved RPO/RTO.
 Score: **3/3 for the local gate; 2/3 for production evidence**
 
 The test crosses real process, database dump, database restore and filesystem
-boundaries, validates a non-empty artifact inventory and uses exact negative
+boundaries, kills the packaged restore process at three different partial byte
+counts, validates a non-empty 64 MiB-plus inventory and uses exact negative
 findings. It also records the failures discovered while making the gate real.
-Missing are process kills during object copy and restore, primary failover,
-large/versioned object inventories, key loss/rotation, concurrent mutations and
-candidate-environment alert evidence.
+Missing are candidate-provider process kills and response-loss injection,
+primary failover, large/versioned object inventories, key loss/rotation,
+concurrent mutations and candidate-environment alert evidence.
 
 ### CEO
 
 Score: **2/3 for production launch; 3/3 for funding the candidate Gate F drill**
 
-This closes the risk that the DR design only worked in unit tests and finds two
-packaging defects before a customer drill. It does not price recovery labor or
-prove an enterprise SLA. Production and destructive-worker rollout remain
-NO-GO.
+This closes the risk that the DR design only worked in unit tests and removes a
+plaintext-residue/support incident before a customer drill. It does not price
+recovery labor or prove an enterprise SLA. Production and destructive-worker
+rollout remain NO-GO.
 
 ## Reproduction
 
@@ -154,8 +213,8 @@ DOCKER_BIN=/usr/local/bin/docker \
 
 - repeat with the candidate managed PostgreSQL topology and force primary
   failover before, during and after `pg_dump` snapshot import;
-- use the candidate versioned object store, inject partial copy, response loss,
-  restore interruption and object-version/delete-marker faults;
+- use the candidate versioned object store, repeat process kill and response
+  loss at the provider boundary, and inject object-version/delete-marker faults;
 - use production KMS/HSM sign/verify and secret-transfer current/previous key
   escrow, then remove and rotate each required key deliberately;
 - run realistic inventory and concurrent scan/apply/retention/delete traffic,
