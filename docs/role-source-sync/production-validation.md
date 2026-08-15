@@ -638,17 +638,39 @@ Local pass criteria:
 - migration 398 remains one standalone `CREATE INDEX CONCURRENTLY` statement
   and its down/up rehearsal succeeds without changing receipt rows.
 
-This is a single-primary database and real-OS-process baseline, not a provider
-exactly-once or 10,000-user claim. Before cohort expansion, repeat with two
-candidate backend images and a controllable provider sandbox. Kill the owning
-container after request write, after provider acceptance, and before/after
-receipt commit; fail over PostgreSQL during authorization commit and both lease
-claims; exercise KMS/HSM rotation/revocation; deliver the alert to the named
-support owner; and run the signed 10,000-user mixed traffic model while
-recording provider throttling, pool saturation, CPU, WAL, lock waits, p50/p95/
-p99, duplicate/ambiguous rates and operator RTO. Any silent loss, automatic
-retry of an ambiguous send, duplicate application owner, invalid receipt chain
-or missing alert is an immediate NO-GO.
+Run the repeatable local topology gate from the repository root. It creates a
+new PostgreSQL 17 synchronous physical primary/standby pair, HAProxy, shared
+Redis and two backend containers, then removes only its own run-scoped Docker
+resources:
+
+```bash
+DOCKER_BIN=/usr/local/bin/docker \
+  scripts/validation/rs07-postgres-failover.sh
+```
+
+Additional local topology pass criteria:
+
+- the primary is hard-killed and a client database error is observed before
+  standby promotion;
+- eight concurrent reconciliation callers recover through the unchanged
+  database endpoint and return one identical generation-1 receipt;
+- promoted PostgreSQL reports version 17 and no longer reports recovery mode;
+- both backends return ready, Redis responds, the delivery is
+  `retry_authorized` with reconciliation count 1 and next generation 2, and
+  fixture plus run-scoped Docker residue is zero.
+
+The first two commands remain single-primary database/process and synthetic
+backlog baselines. The third command proves local physical failover, not
+provider exactly once, a 10,000-user claim or managed multi-AZ fencing. Before
+cohort expansion, repeat with two candidate backend images and a controllable
+provider sandbox. Kill the owning container after request write, after provider
+acceptance, and before/after receipt commit; run the same fault against managed
+PostgreSQL and prove old-primary fencing; exercise KMS/HSM rotation/revocation;
+deliver the alert to the named support owner; and run the signed 10,000-user
+mixed traffic model while recording provider throttling, pool saturation, CPU,
+WAL, lock waits, p50/p95/p99, duplicate/ambiguous rates and operator RTO. Any
+silent loss, automatic retry of an ambiguous send, duplicate application owner,
+invalid receipt chain or missing alert is an immediate NO-GO.
 
 ## Gate F — database/object-store disaster recovery
 

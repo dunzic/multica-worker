@@ -5,8 +5,8 @@ Feature: controlled channel-delivery ambiguity resolution
 Date: 2026-08-15
 
 Decision: **GO for the local PostgreSQL 17 and controlled-pilot gate; NO-GO for
-10,000-user GA until candidate-image replicas, PostgreSQL failover, real
-providers, KMS/HSM and alert delivery pass.**
+10,000-user GA until candidate multi-AZ failover, real providers, KMS/HSM,
+mixed traffic and alert delivery pass.**
 
 This increment closes two local evidence gaps without changing the business
 contract. It does not claim provider-level exactly once and it does not treat a
@@ -83,6 +83,18 @@ These numbers are a local single-primary baseline. They exclude provider API
 latency, message reconstruction, Redis/realtime fanout, TLS, multi-AZ network,
 connection-pool sharing with normal traffic and 10,000-user arrival patterns.
 
+### Local physical-primary failover follow-on
+
+The next local topology gate now also passes three consecutive fresh runs with
+PostgreSQL 17 synchronous physical replication, HAProxy, shared Redis and two
+backend containers. The primary is hard-killed before eight reconciliation
+workers start; promotion is withheld until a real database error is observed.
+All workers converge on one generation-1 receipt after 17 total attempts and 9
+transient errors per run. First success follows the first error in 5.118–5.129
+seconds, end-to-end orchestration reports 5–6 seconds, both backends return
+ready, and each run leaves zero fixture rows. See the
+[PostgreSQL primary-failover review](./RS-07-postgres-failover-2026-08-15.md).
+
 ## Architecture expert review
 
 Score: **3/3 for local lease/index architecture; 2/3 for target topology**
@@ -106,7 +118,8 @@ Open objections:
 - repeat with two candidate backend images and a controllable Slack/DingTalk
   sandbox transport, killing the owning container after request write, provider
   acceptance and receipt commit independently;
-- fail over PostgreSQL during authorization commit and both lease claims;
+- repeat the now-passing local physical-failover contract against managed
+  multi-AZ PostgreSQL and prove old-primary fencing, pool recovery and alerts;
 - measure pool, CPU, WAL, lock waits and alert delay while normal chat, audit and
   role-source traffic run concurrently;
 - verify the in-process event bus/connector registration behavior under the
@@ -135,6 +148,9 @@ Accepted:
   PostgreSQL before termination;
 - six consecutive process-kill chains and six consecutive 10k scale runs pass
   across two independent invocations;
+- three consecutive independently created PostgreSQL 17 synchronous-standby
+  topologies pass hard primary loss, observed client outage, promotion, eight-
+  worker receipt convergence, dual-backend readiness and zero-residue cleanup;
 - every audit sample runs production digest and identity validation;
 - query plans, exact unique claims, final lease state and cleanup are asserted;
 - migration 398 follows the repository's concurrent-index rule and has an
@@ -150,7 +166,8 @@ Accepted:
 Missing:
 
 - candidate-container kill points around a real provider request;
-- primary/standby PostgreSQL failover and retry under lost commit responses;
+- candidate managed-primary failover, old-primary fencing and retry under lost
+  commit responses;
 - real KMS/HSM signing, key rotation/revocation and signature audit export;
 - mixed 10,000-user workload, provider throttling and alert delivery;
 - the complete green CI operating-system/service matrix and repository-wide
@@ -168,10 +185,10 @@ pilot should reach. It also proves that process death after authorization does
 not force support to choose between duplication and data editing.
 
 It does not yet price or prove a 10,000-user service. Commercial launch remains
-NO-GO until real provider behavior, multi-AZ database failure, key custody,
+NO-GO until real provider behavior, managed multi-AZ database failure, key custody,
 support labor and alert/RTO evidence are measured in the candidate topology.
 
 Strategy decision: merge and deploy migration 398 with the controlled-pilot
 build. Keep broad connector claims disabled. Make the next paid infrastructure
-exercise a two-backend, PostgreSQL-primary-failover and real-provider fault
-matrix, not another synthetic unit benchmark.
+exercise a candidate managed-PostgreSQL and real-provider fault matrix, using
+the local two-backend physical-failover gate as its acceptance baseline.

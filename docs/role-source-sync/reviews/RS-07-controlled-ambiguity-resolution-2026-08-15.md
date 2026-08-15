@@ -104,14 +104,15 @@ Accepted:
   DESC)` index and the audit receipt lookup is page-ID bounded, so both recovery
   and operator reads have bounded database work at large workspace history.
 
-Follow-on evidence: [RS-07 process-kill and 10k-backlog review](./RS-07-process-kill-10k-scale-2026-08-15.md).
+Follow-on evidence: [RS-07 process-kill and 10k-backlog review](./RS-07-process-kill-10k-scale-2026-08-15.md)
+and [RS-07 PostgreSQL primary-failover review](./RS-07-postgres-failover-2026-08-15.md).
 
 Open architecture gates:
 
 - repeat the now-passing three-process lease-kill chain with two complete
   candidate backend images and real provider transport/acceptance kill points;
-- run PostgreSQL primary failover during the serializable receipt transaction and
-  publish-lease consumption;
+- repeat the now-passing local PostgreSQL 17 physical-failover transaction in
+  the candidate managed multi-AZ topology and prove fencing/pool recovery;
 - provision the production KMS/HSM keyring, rotation, revocation and audit export;
 - add provider-native read/query adapters where a verified contract exists;
 - extend the same ledger to Feishu, WeCom, attachments and per-chunk evidence.
@@ -198,8 +199,8 @@ Passing evidence on 2026-08-15:
 
 Missing evidence:
 
-- two candidate-backend replicas with real provider kill points and PostgreSQL
-  failover fault injection;
+- two candidate-backend replicas with real provider kill points and managed
+  PostgreSQL failover/fencing fault injection;
 - real Slack/DingTalk sandbox sends plus provider audit-export reconciliation;
 - KMS/HSM signing, rotation and emergency revocation drill;
 - 10,000-user mixed connector traffic and alert delivery under the candidate
@@ -208,8 +209,8 @@ Missing evidence:
 - a green complete CI operating-system/service and repository-wide race matrix;
   the Alpine all-package attempt is not a release green because unmodified
   `pkg/agent` process-cleanup/tight-timeout cases and `pkg/redact`'s synthetic
-  HOME assertion failed; it also does not provision real Redis/provider/KMS/
-  failover dependencies.
+  HOME assertion failed; that all-package attempt also does not provision the
+  separate Redis/provider/KMS/failover service matrix.
 
 ## CEO review
 
@@ -253,6 +254,9 @@ existing frontend were preserved while the backend was recreated.
   and PostgreSQL database, skipped already-applied migration 398 and returned
   `/readyz` with both database and migrations `ok`; it was then removed to
   restore the standard single-backend local environment;
-- connectors, Redis/shared realtime and PostgreSQL failover were not exercised.
-  This proves packaging, migration locking and local two-image coexistence, not
-  provider delivery, cross-replica event routing or the candidate topology.
+- a separate isolated gate then exercised two backend containers, shared Redis,
+  HAProxy and a synchronous PostgreSQL 17 physical standby. Three fresh runs
+  hard-killed the primary, withheld promotion until a client error, converged
+  eight reconciliation workers to one receipt in 5–6 seconds, kept both
+  backends ready and left zero fixture residue. This remains local evidence,
+  not provider delivery, cross-replica event routing or managed multi-AZ proof.
