@@ -20,7 +20,7 @@ tests or a local single-primary container.
 | --- | ---: | --- |
 | Architecture expert | 2/3 | The server is source-neutral; AgentWaker remains an adapter; source lifecycle, generation-isolated reload, artifact reachability, apply receipts, task pins, holds, retention and DR share explicit lock and provenance contracts. A 3 requires live PostgreSQL lock/failover, versioned-object-store and cross-runtime evidence. |
 | Product expert | 2/3 | Owners and members have a bounded read-only audit surface, drift/freshness evidence, retention preview and deliberate lifecycle operations. Mutation controls remain intentionally absent from broad UI; guided configuration, approval/apply/recovery and version-timeline UX still need controlled cohort validation. |
-| Test expert | 2/3 | Role-source unit, race, fuzz, redaction, capacity, DR and Helm gates pass; repository frontend typecheck/tests and Go vet pass. The 2026-08-14/15 update adds every migration through 380, a 13-case atomic apply/commit-ambiguity matrix, a three-case two-control-plane concurrency gate, live adoption target/mapping and Agent/Skill name-claim races, a six-case Autopilot advisory-title-lock matrix, a real two-runtime unloaded-attestation incident recovery, local PostgreSQL 17.10 create/update runs for 1,000 roles plus 10,000 skills, a real AES-GCM secret/MCP lifecycle with after-consume rollback/retry/expiry/redaction, and a six-case legal-hold/policy/task-pin versus prune matrix passing three consecutive runs with real `transactionid`/tuple waits and fail-closed loser states. 10,000-user database/S3/secret burst load, Kubernetes Jobs, real process kill, KMS rotation, exfiltration, failover and restore exercises remain mandatory. |
+| Test expert | 2/3 | Role-source unit, race, fuzz, redaction, capacity, DR and Helm gates pass; repository frontend typecheck/tests and Go vet pass. The 2026-08-14/15 update adds every migration through 380, a 13-case atomic apply/commit-ambiguity matrix, a three-case two-control-plane concurrency gate, live adoption target/mapping and Agent/Skill name-claim races, a six-case Autopilot advisory-title-lock matrix, a real two-runtime unloaded-attestation incident recovery, local PostgreSQL 17.10 create/update runs for 1,000 roles plus 10,000 skills, a real AES-GCM secret/MCP lifecycle with after-consume rollback/retry/expiry/redaction, a six-case legal-hold/policy/task-pin versus prune matrix passing three consecutive runs with real `transactionid`/tuple waits and fail-closed loser states, and a three-run exact-SQL PostgreSQL gate that queues 10,000 eligible snapshots across 100 sources in 2.099–2.181 seconds end-to-end with 23.522–23.890 ms p95. 10,000-user database/S3/secret burst load, Kubernetes Jobs, real process kill, KMS rotation, exfiltration, failover and restore exercises remain mandatory. |
 | CEO | 2/3 | The design creates a defensible multi-source control plane without binding the product to AgentWaker and keeps all customer/destructive exposure default-off. A production ROI/SLA decision would be unsupported until capacity, recovery time, support labor, failure rate and operator ownership are measured. |
 
 No perspective can be raised to 3 by document review alone.
@@ -34,7 +34,7 @@ No perspective can be raised to 3 by document review alone.
 | RS-03 plan, approval and safe apply | GO for controlled default-off cohort after the 2026-08-14 live atomicity and two-control-plane concurrency matrices | NO-GO pending database-outage/failover, real process-kill and recorded operator recovery evidence |
 | RS-04 materialization | GO for controlled default-off cohort after local 1,000-role/10,000-skill create/update evidence | NO-GO pending candidate-image two-replica/S3/contention/failover SLO and cross-runtime execution |
 | RS-05 secret and MCP transfer | GO for a controlled default-off cohort after the local B11 lifecycle gate | NO-GO pending candidate-image KMS/HSM key rotation, process restart/lease reclaim, failover, burst-load and exfiltration exercises |
-| RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local six-case hold/policy/pin/prune matrix | NO-GO pending candidate-topology primary-failover races, retention RACI, versioned-object purge and recorded restore with RPO/RTO |
+| RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local six-case hold/policy/pin/prune matrix and 10,000-snapshot exact-SQL scale gate | NO-GO pending candidate-topology primary-failover race/scale repeat, retention RACI, versioned-object purge and recorded restore with RPO/RTO |
 | RS-07 delivery receipts | GO as two-connector backend pilot | NO-GO pending ambiguous-send handling, operator retry, callbacks and production telemetry |
 
 ## Local evidence retained
@@ -54,6 +54,11 @@ No perspective can be raised to 3 by document review alone.
   DR and capacity commands passed in the full Go run;
 - focused role-source race, fuzz, cross-build, migration-contract and Helm
   tests are recorded in `implementation-status.md` and the per-feature reviews.
+- the RS-06 local PostgreSQL 17 scale gate ran the exact generated retention
+  candidate query three times over 100 sources and 10,000 eligible immutable
+  snapshots, drained 100 bounded batches with exact uniqueness and cleanup,
+  and measured 2.099–2.181 seconds end-to-end with 23.522–23.890 ms p95; this is not
+  a 10,000-user, two-replica or failover result.
 
 The latest full run did not reproduce the historical `pkg/agent` instability;
 that does not erase prior evidence, so it remains release-environment debt
@@ -66,9 +71,11 @@ rather than a role-source regression.
    failover and two-replica API behavior.
 2. Gate E: candidate-image run with the approved 10,000-user cardinality model,
    two-replica 1,000-role/10,000-skill create/update/adoption contention,
-   attestation restart burst, API/S3 percentiles, WAL/CPU/pool/lock metrics and
-   alert-series cardinality. The local single-primary baseline is retained in
-   `RS-04-production-scale-apply-2026-08-14.md` and is not the production SLO.
+   10,000-snapshot retention candidate race/scale repeat, attestation restart
+   burst, API/S3 percentiles, WAL/CPU/pool/lock metrics and alert-series
+   cardinality. The local single-primary baselines are retained in
+   `RS-04-production-scale-apply-2026-08-14.md` and the RS-06 review and are not
+   the production SLO.
 3. Gate F: versioned S3-compatible backup, interrupted transfer, isolated
    PostgreSQL restore, artifact rehydration, semantic verifier, key
    decryptability, RPO/RTO and signed evidence record.

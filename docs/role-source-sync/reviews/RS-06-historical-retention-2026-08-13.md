@@ -26,8 +26,14 @@ evidence are recorded**
   permanent-purge state machine.
 - A disposable PostgreSQL 17 database now proves the destructive lock protocol
   in both legal-hold/prune and task-pin/prune commit orders. Open objections are
-  EXPLAIN/large-inventory SLO, candidate-topology failover races, and independent
-  retention policy for plan, apply and scan metadata.
+  candidate-topology failover races, candidate-hardware SLO repeat, and
+  independent retention policy for plan, apply and scan metadata.
+- A separate opt-in gate runs JSON `EXPLAIN ANALYZE/BUFFERS/WAL` over the exact
+  generated candidate query, then drains 10,000 eligible snapshots across 100
+  sources through the public 100-row batch boundary. Three consecutive local
+  runs completed in 2.099–2.181 seconds with 23.522–23.890 ms p95 and no
+  duplicate candidate or fixture residue. This validates one single-primary
+  inventory shape, not 10,000 users or a failover topology.
 
 ## Product expert — 2/3
 
@@ -56,8 +62,12 @@ evidence are recorded**
   policy-disable-first and pin-first defer prune; prune-first makes a later hold
   invalid, permits only the later append-only policy revision, and rejects a
   later pin with SQLSTATE `23000`; no orphan pin/snapshot state remains.
-- Open objections: replica competition during primary failover, large
-  inventories, versioned-object purge and restore are not measured.
+- The 10,000-snapshot scale matrix passed three consecutive runs with exact
+  candidate count/distinctness, 2.465–2.487 ms planning,
+  22.267–25.461 ms first execution, 20.536–21.640 ms p50,
+  23.522–23.890 ms p95, 24.147–25.461 ms p99 and 2.099–2.181 seconds total.
+- Open objections: replica competition during primary failover, the same load
+  on candidate hardware, versioned-object purge and restore are not measured.
 
 ## CEO / rollout owner — 2/3
 
@@ -73,7 +83,8 @@ evidence are recorded**
 
 ## Required next evidence
 
-Repeat Gate B3 on the candidate two-replica PostgreSQL topology with failover
-and versioned S3-compatible storage, approve retention RACI, then perform a
-recorded restore drill before enabling the first customer policy. The local
-single-primary race pass is not authorization to delete production history.
+Repeat both Gate B3 race and 10,000-snapshot scale cases on the candidate
+two-replica PostgreSQL topology with failover and versioned S3-compatible
+storage, approve retention RACI, then perform a recorded restore drill before
+enabling the first customer policy. The local single-primary race/scale pass is
+not authorization to delete production history.

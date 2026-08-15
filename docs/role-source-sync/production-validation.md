@@ -104,6 +104,8 @@ go -C server test -count=1 -run '^TestRoleSourceLegalHoldCreateReleaseAndAudit$|
 go -C server test -race -count=10 -run '^TestDeleteWorkspace_ActiveRoleSourceLegalHoldIsHardFence$' ./internal/handler
 MULTICA_LIVE_ROLE_SOURCE_RETENTION_RACE_TEST=1 \
 go -C server test -count=3 -run '^TestRoleSourceRetentionProtectionRacesPostgres$' ./internal/rolesource
+MULTICA_LIVE_ROLE_SOURCE_RETENTION_SCALE_TEST=1 \
+go -C server test -count=3 -run '^TestRoleSourceRetentionCandidateScalePostgres$' ./internal/rolesource
 ```
 
 In staging, hold the workspace deletion transaction after its workspace lock;
@@ -143,6 +145,24 @@ revision; pin-first retains and defers with `task_pin`; prune-first deletes and
 makes the later pin fail with PostgreSQL integrity SQLSTATE `23000`. This closes
 the single-primary row-lock/trigger TOCTOU gate but does not replace the
 two-replica primary-failover and object-store exercise below.
+
+The scale gate must use a disposable database migrated through the current
+schema. It creates 100 sources with 100 eligible immutable snapshots each,
+runs `EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON)` over the exact generated
+production candidate `INSERT`, and then drains all 10,000 snapshots through
+100 calls bounded to 100 rows. It fails if planning exceeds 1 second, the first
+execution exceeds 5 seconds, p95 exceeds 2 seconds, p99 exceeds 5 seconds, the
+full drain exceeds 30 seconds, any candidate is missing/duplicated, or fixture
+cleanup leaves residue. These deliberately conservative thresholds are a
+repeatable local safety gate, not the production cohort SLO.
+
+The 2026-08-15 local PostgreSQL 17 evidence passed three consecutive runs:
+planning 2.465–2.487 ms, first execution 22.267–25.461 ms, end-to-end drain
+2.099–2.181 s, p50 20.536–21.640 ms, p95 23.522–23.890 ms and p99
+24.147–25.461 ms. The first production-query batch reported 111,981–142,513
+shared-hit blocks, zero shared-read blocks and 502–508 WAL records. This is a
+10,000-snapshot inventory result across 100 sources; it does not represent
+10,000 users and must be repeated on candidate hardware and topology.
 
 Then run two server replicas with both retention and permanent artifact-GC gates
 enabled against a disposable PostgreSQL 17 dataset containing current, recent,
