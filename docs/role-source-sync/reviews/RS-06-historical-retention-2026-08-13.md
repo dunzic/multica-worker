@@ -2,6 +2,8 @@
 
 Date: 2026-08-13
 
+Evidence update: 2026-08-15
+
 Final decision: **GO for merge with both worker gates disabled; NO-GO for a
 production retention cohort until Gate B3, permanent storage purge and restore
 evidence are recorded**
@@ -22,8 +24,10 @@ evidence are recorded**
   audit completion. Capability definitions are removed only when no exact
   retained manifest references them; artifact deletion remains a separate
   permanent-purge state machine.
-- Open objections: no live PostgreSQL EXPLAIN/lock/failover evidence, and plan,
-  apply and scan metadata have independent retention policies still to define.
+- A disposable PostgreSQL 17 database now proves the destructive lock protocol
+  in both legal-hold/prune and task-pin/prune commit orders. Open objections are
+  EXPLAIN/large-inventory SLO, policy-change/failover races, and independent
+  retention policy for plan, apply and scan metadata.
 
 ## Product expert — 2/3
 
@@ -46,10 +50,14 @@ evidence are recorded**
 - API/core/settings tests cover strict owner-only requests, safe response shapes,
   exact preview totals, persistent request identity during retry and no manual
   delete affordance.
-- An opt-in PostgreSQL test encodes direct-delete rejection, legal-hold fencing,
-  release, candidate claim, transactional prune and one audit event.
-- Open objections: PostgreSQL is unavailable locally; task-pin/delete races,
-  replica competition, failover, large plans and restore are not measured.
+- The PostgreSQL end-to-end test executes direct-delete rejection, legal-hold
+  fencing, release, candidate claim, transactional prune and one audit event.
+- The four-case deterministic matrix passed three consecutive runs: hold-first
+  and pin-first defer prune, while prune-first makes a later hold invalid and a
+  later pin fail with SQLSTATE `23000`; no orphan pin/snapshot state remains.
+- Open objections: replica competition during primary failover, concurrent
+  stricter-policy changes, large inventories, versioned-object purge and restore
+  are not measured.
 
 ## CEO / rollout owner — 2/3
 
@@ -65,7 +73,7 @@ evidence are recorded**
 
 ## Required next evidence
 
-Run Gate B3 on PostgreSQL 17 and versioned S3-compatible storage, record all
-four review scores at 3/3, then perform a restore drill before enabling the first
-customer policy. A unit-test pass is not authorization to delete production
-history.
+Repeat Gate B3 on the candidate two-replica PostgreSQL topology with failover
+and versioned S3-compatible storage, approve retention RACI, then perform a
+recorded restore drill before enabling the first customer policy. The local
+single-primary race pass is not authorization to delete production history.

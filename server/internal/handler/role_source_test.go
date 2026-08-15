@@ -511,7 +511,7 @@ func TestCreateRoleSource_ResponseDoesNotExposeDaemonConfiguration(t *testing.T)
 			t.Fatalf("response exposed %q: %s", forbidden, body)
 		}
 	}
-	if !strings.Contains(body, `"root_name":"roles"`) {
+	if !strings.Contains(body, `"name":"root_name","value":"roles"`) {
 		t.Fatalf("response omitted safe config summary: %s", body)
 	}
 	if !strings.Contains(body, `"runtime_config":{"status":"unattested"`) {
@@ -863,7 +863,7 @@ func TestListRoleSourceScansIsBoundedAndRedacted(t *testing.T) {
 			t.Fatalf("scan history exposed %q: %s", forbidden, w.Body.String())
 		}
 	}
-	if !strings.Contains(w.Body.String(), `"scans"`) || !strings.Contains(w.Body.String(), `"status":"succeeded"`) {
+	if !strings.Contains(w.Body.String(), `"scans"`) || !strings.Contains(w.Body.String(), `"status":"claimed"`) {
 		t.Fatalf("scan history missing safe status: %s", w.Body.String())
 	}
 }
@@ -1473,7 +1473,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 		if artifactStorageKey != "" {
 			_, _ = testPool.Exec(context.Background(), "DELETE FROM role_source_artifact_delete_intent WHERE storage_key = $1", artifactStorageKey)
 		}
-		for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_snapshot_artifact", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+		for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_task_pin", "role_source_snapshot_artifact", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 			_, _ = testPool.Exec(context.Background(), "DELETE FROM "+table+" WHERE workspace_id = $1", workspaceID)
 		}
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, workspaceID)
@@ -1523,6 +1523,15 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 			contract_version, manifest, diagnostics, source_evidence, reported_by_runtime_id
 		) VALUES ($1, $2, $3, $4, 'agentwaker_directory', '0.1.0', '1.0', '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, $5)
 	`, sourceID, workspaceID, digestA, digestB, runtimeID)
+	execFixture(`
+		INSERT INTO role_source_task_pin (
+			task_id, workspace_id, agent_id, source_id, source_role_id,
+			snapshot_digest, role_object_digest, target_state_digest, capability_pins
+		) VALUES (
+			gen_random_uuid(), $1, gen_random_uuid(), $2, 'delete-role',
+			$3, $3, $3, '[]'::jsonb
+		)
+	`, workspaceID, sourceID, digestA)
 	execFixture(`
 		INSERT INTO role_source_plan (source_id, workspace_id, plan_digest, to_snapshot_digest, plan, created_by)
 		VALUES ($1, $2, $3, $4, '{}'::jsonb, $5)
@@ -1574,7 +1583,7 @@ func TestDeleteWorkspace_RemovesEntireRoleSourceGraph(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("delete workspace: expected 204, got %d: %s", w.Code, w.Body.String())
 	}
-	for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_snapshot_artifact", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
+	for _, table := range []string{"role_source_audit_event", "role_source_secret_transfer", "role_source_plan_approval", "role_source_apply", "role_source_plan", "role_source_capability_version", "role_source_object_mapping", "role_source_task_pin", "role_source_snapshot_artifact", "role_source_artifact", "role_source_snapshot", "role_source_scan_request", "role_source"} {
 		var count int
 		if err := testPool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE workspace_id = $1", workspaceID).Scan(&count); err != nil {
 			t.Fatalf("count %s: %v", table, err)

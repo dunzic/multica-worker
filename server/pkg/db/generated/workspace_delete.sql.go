@@ -470,6 +470,9 @@ deleted_retention_candidates AS (
 deleted_retention_policies AS (
     DELETE FROM role_source_retention_policy WHERE role_source_retention_policy.workspace_id = $1
 ),
+deleted_task_pins AS (
+    DELETE FROM role_source_task_pin WHERE role_source_task_pin.workspace_id = $1
+),
 deleted_object_mappings AS (
     DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
 ),

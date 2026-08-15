@@ -2,11 +2,14 @@
 
 Date: 2026-08-13
 
+Evidence update: 2026-08-15
+
 Gate: architecture, product, test and CEO merge review
 
-Final decision: **GO for merge behind the existing role-source rollout; NO-GO
-for historical snapshot pruning or broad production until live PostgreSQL
-races, retention policy and disaster-recovery evidence pass**
+Final decision: **GO for merge behind the existing role-source rollout with
+destructive workers disabled; the local PostgreSQL hold/prune race gate passes,
+but broad production remains NO-GO pending primary failover, retention RACI,
+versioned-object purge and disaster-recovery evidence**
 
 ## Architecture expert — 2/3
 
@@ -21,10 +24,13 @@ races, retention policy and disaster-recovery evidence pass**
 - Tables and teardown remain explicit and no-FK. The existing
   workspace/source/created-at listing index also serves the bounded active-hold
   query; no redundant per-workspace index was added.
-- Open objections: no historical snapshot candidate/prune transaction consumes
-  this authority yet; database failover and cross-replica lock behavior are not
-  measured; signed external authority is represented by a commitment, not
-  verified by Multica.
+- The historical retention candidate/prune transaction consumes this authority
+  under the shared workspace/source lock order and rechecks it immediately
+  before deletion. A deterministic PostgreSQL 17 matrix now proves hold-first
+  and prune-first linearization with real `transactionid` and tuple waits.
+- Open objections: primary failover and candidate-topology cross-replica lock
+  behavior are not measured; signed external authority is represented by a
+  commitment, not verified by Multica.
 
 ## Product expert — 2/3
 
@@ -35,8 +41,10 @@ races, retention policy and disaster-recovery evidence pass**
   identifiers.
 - The surface distinguishes active/released state and explicitly says a hold
   blocks deletion/pruning but does not pause scan/apply.
-- Open objections: no policy-aware retention preview, projected bytes, legal
-  authority integration, bulk holds, expiry workflow or customer export.
+- The owner surface now includes policy-aware exact-count/referenced-byte
+  preview and append-only policy CAS. Open objections remain for uniquely
+  reclaimable bytes, realized savings, legal-authority integration, bulk holds,
+  expiry workflow and customer export.
 
 ## Test expert — 2/3
 
@@ -45,12 +53,15 @@ races, retention policy and disaster-recovery evidence pass**
   owner/admin UI separation.
 - Migration contracts prove digest-only fields, isolated concurrent indexes,
   mutation triggers and dependency-ordered teardown.
-- Opt-in PostgreSQL tests cover create/list/release/audit, active deletion
-  fencing, direct delete rejection and released teardown cleanup.
+- A disposable fully migrated PostgreSQL 17 database executed
+  create/list/release/audit, active deletion fencing, direct mutation rejection
+  and released teardown cleanup. The four-case hold/task-pin versus prune gate
+  passed three consecutive runs with fail-closed loser states.
 - Core typecheck/client tests, focused settings tests and Go role-source,
   handler and server suites pass locally.
-- Open objections: PostgreSQL is unavailable locally, so real trigger,
-  migration, deadlock, failover and multi-replica results are not recorded.
+- The isolated-schema migration round trip through migration 380 and task-pin
+  triggers pass. Open objections are candidate-topology deadlock/failover,
+  EXPLAIN/SLO, large-inventory and restore evidence.
 
 ## CEO / rollout owner — 2/3
 
@@ -78,10 +89,10 @@ races, retention policy and disaster-recovery evidence pass**
 
 ## Next evidence required
 
-1. Run Gate B2 against PostgreSQL 17 with two server replicas and record lock
-   waits, deadlocks and all winner/loser states.
+1. Repeat Gate B2 on the candidate two-replica topology during PostgreSQL
+   primary failover and record lock waits, deadlocks and winner/loser states.
 2. Approve retention tiers, minimum rollback window and legal authority/RACI.
-3. Implement a leased retention candidate/prune state machine that checks
-   source/snapshot holds and runtime-task reachability in the same transaction.
+3. Run versioned-object permanent purge with Object Lock/hold behavior and
+   reconcile projected versus realized reclaim.
 4. Prove backup restore, point-in-time recovery and storage reconciliation
    preserve active holds before enabling any historical deletion.

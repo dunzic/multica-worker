@@ -15,6 +15,8 @@ const (
 	workspaceDeleteSettle workspaceDeleteAction = "settle"
 )
 
+const rsAttestationObservationTable = "role_source_runtime_attestation_observation"
+
 // workspaceDeletionManifest is the schema coverage contract for workspace
 // teardown. Adding a table requires an explicit ownership decision here; the
 // handler deletion graph must then implement that decision before CI passes.
@@ -92,6 +94,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"role_source_apply_failure":          workspaceDelete,
 	"role_source_artifact":               workspaceDelete,
 	"role_source_artifact_delete_intent": workspaceDeleteKeep,
+	"role_source_artifact_integrity":     workspaceDelete,
 	"role_source_audit_event":            workspaceDelete,
 	"role_source_capability_version":     workspaceDelete,
 	"role_source_legal_hold":             workspaceDelete,
@@ -99,12 +102,17 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"role_source_retention_candidate":    workspaceDelete,
 	"role_source_retention_policy":       workspaceDelete,
 	"role_source_object_mapping":         workspaceDelete,
+	"role_source_outbox":                 workspaceDelete,
+	"role_source_outbox_replay":          workspaceDelete,
 	"role_source_plan":                   workspaceDelete,
 	"role_source_plan_approval":          workspaceDelete,
 	"role_source_scan_request":           workspaceDelete,
 	"role_source_secret_transfer":        workspaceDelete,
+	"role_source_runtime_attestation":    workspaceDelete,
+	rsAttestationObservationTable:        workspaceDelete,
 	"role_source_snapshot":               workspaceDelete,
 	"role_source_snapshot_artifact":      workspaceDelete,
+	"role_source_task_pin":               workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"skill":                              workspaceDelete,
 	"skill_file":                         workspaceDelete,

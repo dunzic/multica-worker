@@ -4,6 +4,8 @@ Feature: Versioning, provenance and rollback — task/runtime pin slice
 
 Date: 2026-08-13
 
+Evidence update: 2026-08-15
+
 Decision: CONDITIONAL — merge behind the existing default-off role-source flags; do not enable for production cohorts until the live PostgreSQL, load and operator/UI gates below pass
 
 ## Decision record
@@ -54,7 +56,8 @@ Objections:
 
 ## Test expert review
 
-Score: 2/3 — static/unit/race evidence passes; database and load evidence is incomplete.
+Score: 2/3 — local PostgreSQL trigger and retention-race evidence passes;
+candidate-topology load, failover and restore evidence is incomplete.
 
 Passing evidence:
 
@@ -64,16 +67,16 @@ Passing evidence:
 - daemon client test proves typed batch-claim decoding with an authoritative empty capability list;
 - execution-environment tests prove nested capability marker/package files survive workspace-native skill materialization across every file-based provider plus Codex and Hermes task homes;
 - role-source/handler/migration race suites and `go vet` pass;
-- the isolated-schema PostgreSQL test now exercises initial capture, retry inheritance, immutable pins and same-transaction stale-task invalidation when PostgreSQL is available;
+- the isolated-schema PostgreSQL 17 round trip through migration 380 exercises initial capture, retry inheritance, immutable pins and same-transaction stale-task invalidation;
+- a deterministic live race gate proves pin-first holds `FOR KEY SHARE` and defers prune, while prune-first deletes then rejects the later pin with SQLSTATE `23000`; all four hold/pin cases pass three consecutive runs;
 - deterministic planning at 10,000 roles completes locally; this is algorithm evidence, not an end-to-end capacity claim.
 
 Missing evidence:
 
-- local PostgreSQL was unavailable (`127.0.0.1:5432` connection refused), so the real trigger/migration round trip did not execute in this environment;
 - inject concurrent claim/apply commits around each statement and prove no stale payload crosses finalization;
 - benchmark pin capture/validation with realistic skill/file sizes, 100 concurrent scans and the target task claim rate;
 - live rolling-upgrade deployment proof; the server-side old-daemon rejection path is covered by the negotiated capability contract;
-- retention/GC and backup-restore tests must retain pin-reachable snapshots and capability versions.
+- candidate-topology retention/GC, primary failover and backup-restore tests must retain pin-reachable snapshots and capability versions.
 
 ## CEO review
 
@@ -96,10 +99,10 @@ Release position:
 
 | Gate | Evidence required | Status |
 | --- | --- | --- |
-| Migration safety | Fresh/full schema up/down plus trigger behavior on supported PostgreSQL versions | Open — test exists, local PostgreSQL unavailable |
+| Migration safety | Fresh/full schema up/down plus trigger behavior on supported PostgreSQL versions | Local PostgreSQL 17 pass through migration 380; candidate managed-version matrix remains open |
 | Claim/apply atomicity | Deterministic concurrency test around dispatched/finalized/running boundaries | Open |
 | Claim SLO | p95 < 500 ms and p99 < 1 s at target profile with realistic role dependencies | Open |
 | Runtime reconstruction | Either versioned old-config execution or explicit cancellation/re-enqueue UX | Partial — safe cancellation only |
 | Capability execution | Materialized binding and exact version pin consumed by runtime | Partial — read-only packages verify marker and file digests; live cross-runtime and write/adapter authority remain open |
 | Audit UX | Source/task/version timeline, affected-task preview and re-enqueue action | Open |
-| Retention/DR | Pin reachability, GC, backup and restore exercise | Open |
+| Retention/DR | Pin reachability, GC, backup and restore exercise | Partial — local pin/prune commit-order race passes; versioned-object GC, failover and restore remain open |

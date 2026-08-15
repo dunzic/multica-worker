@@ -102,6 +102,8 @@ database, then repeat the workspace-delete race from two server replicas:
 ```bash
 go -C server test -count=1 -run '^TestRoleSourceLegalHoldCreateReleaseAndAudit$|^TestDeleteWorkspace_ActiveRoleSourceLegalHoldIsHardFence$' ./internal/handler
 go -C server test -race -count=10 -run '^TestDeleteWorkspace_ActiveRoleSourceLegalHoldIsHardFence$' ./internal/handler
+MULTICA_LIVE_ROLE_SOURCE_RETENTION_RACE_TEST=1 \
+go -C server test -count=3 -run '^TestRoleSourceRetentionProtectionRacesPostgres$' ./internal/rolesource
 ```
 
 In staging, hold the workspace deletion transaction after its workspace lock;
@@ -128,7 +130,17 @@ exercise after the retention worker exists.
 ```bash
 go -C server test -count=1 -run '^TestRoleSourceRetentionPolicyHoldFenceAndPrune$' ./internal/handler
 go -C server test -race -count=10 -run '^TestRoleSourceRetentionPolicyHoldFenceAndPrune$' ./internal/handler
+go -C server test -count=1 -run '^TestRoleSourceMigrationsRoundTripInIsolatedSchema$' ./cmd/migrate
+MULTICA_LIVE_ROLE_SOURCE_RETENTION_RACE_TEST=1 \
+go -C server test -count=3 -run '^TestRoleSourceRetentionProtectionRacesPostgres$' ./internal/rolesource
 ```
+
+The local single-primary gate must record all four deterministic outcomes:
+hold-first retains and defers with `legal_hold`; prune-first deletes and makes
+the later snapshot hold invalid; pin-first retains and defers with `task_pin`;
+prune-first deletes and makes the later pin fail with PostgreSQL integrity
+SQLSTATE `23000`. This closes the row-lock/trigger TOCTOU gate but does not
+replace the two-replica primary-failover and object-store exercise below.
 
 Then run two server replicas with both retention and permanent artifact-GC gates
 enabled against a disposable PostgreSQL 17 dataset containing current, recent,

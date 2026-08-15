@@ -79,6 +79,7 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 	expectedTables := 0
 	expectedIndexes := map[string]struct{}{}
 	indexPattern := regexp.MustCompile(`(?i)\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+([a-z0-9_]+)\b`)
+	dropIndexPattern := regexp.MustCompile(`(?i)\bDROP\s+INDEX\s+CONCURRENTLY\s+(?:IF\s+EXISTS\s+)?([a-z0-9_]+)\b`)
 	for _, name := range upFiles {
 		body, err := os.ReadFile(name)
 		if err != nil {
@@ -88,6 +89,9 @@ func TestRoleSourceMigrationsRoundTripInIsolatedSchema(t *testing.T) {
 			t.Fatalf("apply %s: %v", filepath.Base(name), err)
 		}
 		expectedTables += strings.Count(strings.ToUpper(string(body)), "CREATE TABLE ")
+		for _, match := range dropIndexPattern.FindAllSubmatch(body, -1) {
+			delete(expectedIndexes, string(match[1]))
+		}
 		if match := indexPattern.FindSubmatch(body); len(match) == 2 {
 			expectedIndexes[string(match[1])] = struct{}{}
 		}
