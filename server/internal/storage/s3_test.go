@@ -701,13 +701,43 @@ func TestS3UsePathStyleFromEnv(t *testing.T) {
 	})
 }
 
+func TestS3EndpointURLFromEnv(t *testing.T) {
+	tests := []struct {
+		name      string
+		preferred string
+		legacy    string
+		want      string
+		wantError bool
+	}{
+		{name: "none"},
+		{name: "preferred", preferred: " https://preferred.example.com ", want: "https://preferred.example.com"},
+		{name: "legacy", legacy: " https://legacy.example.com ", want: "https://legacy.example.com"},
+		{name: "matching aliases", preferred: "https://objects.example.com", legacy: "https://objects.example.com", want: "https://objects.example.com"},
+		{name: "conflicting aliases", preferred: "https://preferred.example.com", legacy: "https://legacy.example.com", wantError: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("S3_ENDPOINT_URL", tc.preferred)
+			t.Setenv("AWS_ENDPOINT_URL", tc.legacy)
+			got, err := s3EndpointURLFromEnv()
+			if (err != nil) != tc.wantError {
+				t.Fatalf("s3EndpointURLFromEnv() error = %v, wantError = %v", err, tc.wantError)
+			}
+			if got != tc.want {
+				t.Fatalf("s3EndpointURLFromEnv() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewS3StorageFromEnv_ConfiguresEndpointPathStyle(t *testing.T) {
 	t.Run("defaults custom endpoints to path style", func(t *testing.T) {
 		t.Setenv("S3_BUCKET", "test-bucket")
 		t.Setenv("S3_REGION", "us-east-1")
 		t.Setenv("AWS_ACCESS_KEY_ID", "AKID")
 		t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRET")
-		t.Setenv("AWS_ENDPOINT_URL", "https://objects.example.com")
+		t.Setenv("S3_ENDPOINT_URL", "https://objects.example.com")
+		t.Setenv("AWS_ENDPOINT_URL", "")
 		t.Setenv("S3_USE_PATH_STYLE", "")
 
 		store := NewS3StorageFromEnv()
@@ -727,7 +757,8 @@ func TestNewS3StorageFromEnv_ConfiguresEndpointPathStyle(t *testing.T) {
 		t.Setenv("S3_REGION", "us-east-1")
 		t.Setenv("AWS_ACCESS_KEY_ID", "AKID")
 		t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRET")
-		t.Setenv("AWS_ENDPOINT_URL", "https://objects.example.com")
+		t.Setenv("S3_ENDPOINT_URL", "https://objects.example.com")
+		t.Setenv("AWS_ENDPOINT_URL", "")
 		t.Setenv("S3_USE_PATH_STYLE", "false")
 
 		store := NewS3StorageFromEnv()
@@ -742,6 +773,16 @@ func TestNewS3StorageFromEnv_ConfiguresEndpointPathStyle(t *testing.T) {
 		}
 		if got, want := store.uploadedURL("uploads/file.txt"), "https://test-bucket.objects.example.com/uploads/file.txt"; got != want {
 			t.Fatalf("uploadedURL() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("rejects conflicting preferred and legacy endpoints", func(t *testing.T) {
+		t.Setenv("S3_BUCKET", "test-bucket")
+		t.Setenv("S3_ENDPOINT_URL", "https://preferred.example.com")
+		t.Setenv("AWS_ENDPOINT_URL", "https://legacy.example.com")
+
+		if store := NewS3StorageFromEnv(); store != nil {
+			t.Fatal("NewS3StorageFromEnv() accepted conflicting endpoint variables")
 		}
 	})
 }

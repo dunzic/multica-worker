@@ -139,6 +139,41 @@ A final post-guard smoke after adding nil-storage refusal and provider-error
 redaction killed at 4,030,464 bytes and passed the same matrix in 12 seconds
 with a 67,548,340-byte bundle.
 
+## Versioned signature protocol regression
+
+After introducing the AWS-KMS-compatible
+`ed25519-sha512-commitment-v2` scheme, three further fresh packaged runs and one
+explicit scheme-assertion smoke passed the same matrix:
+
+| Measure | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Role-source tables verified | 25 | 25 | 25 |
+| Artifact ledger/body count | 2 / 2 | 2 / 2 | 2 / 2 |
+| Verified artifact bytes | 67,108,902 | 67,108,902 | 67,108,902 |
+| Bytes written at `SIGKILL` | 393,216 | 1,998,848 | 425,984 |
+| Database dump | 429,634 B | 429,617 B | 429,639 B |
+| Artifact archive | 67,113,472 B | 67,113,472 B | 67,113,472 B |
+| Signed v2 manifest | 5,323 B | 5,323 B | 5,323 B |
+| Total bundle | 67,548,429 B | 67,548,412 B | 67,548,434 B |
+| Restore + first full verify | 4 s | 5 s | 5 s |
+| Complete gate including faults | 12 s | 13 s | 12 s |
+
+The assertion smoke found the packaged `signature_scheme` field, killed at
+3,342,336 bytes and completed the same matrix in 13 seconds with a
+67,548,429-byte bundle. These runs use the local private-key compatibility path;
+they prove packaged v2 serialization/backward recovery behavior, not AWS KMS,
+workload identity, CloudTrail or HSM custody.
+
+After adding signing-configuration preflight and isolating custom object
+storage behind `S3_ENDPOINT_URL`, the candidate image was rebuilt from the
+final worktree and the complete packaged gate passed again. It killed restore
+at 2,129,920 bytes, verified 25 tables and 67,108,902 artifact bytes, produced a
+429,634-byte dump, 67,113,472-byte archive, 5,323-byte v2 manifest and
+67,548,429-byte bundle, completed restore plus first verification in 5 seconds
+and the entire fault matrix in 14 seconds. This confirms the new preflight did
+not regress the private-key compatibility recovery path; it is still not a
+real KMS or candidate object-store result.
+
 After the interruption-safe implementation and evidence were committed, the
 packaged backend was rebuilt at exact commit
 `f9bc54aa877d030ae54153e286814c99f60a0aea` and installed into the standard

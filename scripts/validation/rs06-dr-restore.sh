@@ -161,6 +161,7 @@ trusted_keys="{\"backup-v1\":\"$public_key\"}"
 backup_started=$(date +%s)
 "$docker_bin" run --rm --network "$network" --user "$host_uid:$host_gid" \
     -e DATABASE_URL="$source_url" -e LOCAL_UPLOAD_DIR=/storage \
+    -e MULTICA_ROLE_SOURCE_DR_SIGNING_PROVIDER=private_key \
     -e MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID=backup-v1 \
     -e MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY="$private_key" \
     -v "$work_dir:/dr" -v "$source_storage:/storage:ro" \
@@ -171,6 +172,7 @@ test ! -e "$backup_dir/INCOMPLETE"
 for required in database.dump artifacts.tar manifest.json; do
     test -s "$backup_dir/$required"
 done
+grep -Fq '"signature_scheme": "ed25519-sha512-commitment-v2"' "$backup_dir/manifest.json"
 # The stat substitutions expand inside the validation container.
 # shellcheck disable=SC2016
 "$docker_bin" run --rm -v "$work_dir:/dr:ro" --entrypoint /bin/sh "$backend_image" -c \
@@ -179,6 +181,7 @@ done
 stage "prove failed backup remains visibly incomplete"
 if "$docker_bin" run --rm --network "$network" --user "$host_uid:$host_gid" \
     -e DATABASE_URL="$source_url" -e LOCAL_UPLOAD_DIR=/storage \
+    -e MULTICA_ROLE_SOURCE_DR_SIGNING_PROVIDER=private_key \
     -e MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID=backup-v1 \
     -e MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY="$private_key" \
     -v "$work_dir:/dr" -v "$source_storage:/storage:ro" \
@@ -317,7 +320,7 @@ manifest_bytes=$(wc -c < "$backup_dir/manifest.json" | tr -d ' ')
 bundle_bytes=$((database_dump_bytes + artifact_archive_bytes + manifest_bytes))
 gate_finished=$(date +%s)
 echo "RS-06 local disaster-recovery gate passed"
-echo "postgres=17 signed_manifest=true artifacts=2 artifact_bytes=$((artifact_size + interrupt_artifact_bytes))"
+echo "postgres=17 signed_manifest=true signature_scheme=ed25519-sha512-commitment-v2 artifacts=2 artifact_bytes=$((artifact_size + interrupt_artifact_bytes))"
 echo "restore_process_kill=true interrupted_bytes=$interrupted_bytes atomic_partial_hidden=true resume=true restore_idempotent=true fixture_rows=2 archive_tamper=refused object_missing=refused object_changed=refused database_changed=refused"
 echo "failed_backup_incomplete_marker=true"
 echo "database_dump_bytes=$database_dump_bytes artifact_archive_bytes=$artifact_archive_bytes manifest_bytes=$manifest_bytes bundle_bytes=$bundle_bytes"

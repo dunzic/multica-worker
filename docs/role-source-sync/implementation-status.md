@@ -25,17 +25,22 @@ two-replica/primary failover, restore RPO/RTO and provider reconciliation remain
 open and supersede the older partial-delete/process-death wording in the RS-06
 table row above.
 
-RS-06 disaster-recovery addendum (2026-08-15): the packaged local PostgreSQL 17
-signed backup/restore gate passes three consecutive fresh runs plus one final
-smoke run. It restores a non-empty artifact inventory twice into a new database
+RS-06 disaster-recovery addendum (2026-08-15): after the original packaged
+PostgreSQL 17 signed backup/restore runs, the versioned v2 signature contract
+passes three consecutive fresh runs plus one assertion smoke. It restores a
+non-empty artifact inventory twice into a new database
 and object directory, verifies all 25 role-source tables, and rejects archive
 tamper, missing/changed objects and changed database state with exact redacted
 findings. A failed dump retains `INCOMPLETE` and no manifest. Real execution
 found and closed discarded `pg_dump` diagnostics plus arbitrary-container-UID
 failure without placing the database password in process arguments. This is a
-local 38-byte-object packaging baseline, not candidate versioned-store, KMS,
-managed-failover, scale or approved RPO/RTO evidence; the Gate F blocker in the
-RS-06 table remains open.
+local two-object/64 MiB packaging baseline. AWS KMS client and Helm contracts
+now fail closed on metadata/pin/response/configuration faults, reject endpoint
+overrides before output or object access, isolate custom storage behind
+`S3_ENDPOINT_URL` and render neither a private signing key nor global endpoint,
+but no real KMS call, workload-identity audit, rotation
+or revocation exercise has run; candidate versioned-store, managed failover,
+scale and approved RPO/RTO evidence remain open.
 
 ## Current branch quality evidence
 
@@ -54,7 +59,32 @@ RS-06 table remains open.
 - artifact-integrity migrations and tests cover transactional upload enrollment, leased bounded readback, exact size/SHA-256 verification, typed missing-object classification, transient retry without quarantine, fail-closed checking/quarantined readiness, exact re-upload repair accounting, workspace/GC cleanup, DR-table invariants, low-cardinality metrics and default-off Helm alerts; live versioned-object mutation, PostgreSQL lock races and fleet repair remain open
 - snapshot artifact reachability migrations cover an explicit no-FK edge table, concurrent uniqueness/lookup indexes and exact-path historical backfill; scan success now locks readiness rows `FOR SHARE`, inserts and re-reads all canonical edges before completing the request, and workspace teardown explicitly removes edges before history disappears; live PostgreSQL lock-race and backfill execution remain open
 - artifact deletion-intent migrations and static contracts cover unreachable atomic move, workspace-delete enqueue-before-row-removal, `SKIP LOCKED` leased claims, retry ownership tokens, cancellable pending/tombstone revive, 24-hour settle delay and four-pass late-PUT re-delete; role-source GC now requires receipt-bearing permanent-purge support, and S3 removes every retained object version/delete marker instead of treating a versioned-bucket delete marker as erasure; migrations through 387 persist stable pass evidence and an immutable content-free v2 receipt whose fifth-pass insert and intent removal are atomic, whose digest is recomputed by API/DR consumers and whose update/delete triggers fail with SQLSTATE `23000`; partial/lost provider responses and expired deleting leases durably make provider operation totals lower bounds without weakening final exact-key absence; local PostgreSQL 17 ordinary/ambiguity/reclaim state machines passed three consecutive runs, while Core/Views tests prove bounded owner-only totals/details and fail-closed parsing; the server starts the worker only with object storage and the independent default-off `MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED` gate, exports receipt/logical-absence metrics without billing language and alerts on ambiguity; the isolated real versioned-provider late-PUT, legal-hold and explicit version-delete-deny probes plus deterministic partial-output/timeout-after-mutation tests pass, while candidate two-replica process kill, receipt correlation, provider accounting, restore and primary-failover races remain open
-- the RS-06 packaged DR gate creates fresh PostgreSQL 17 source/restore databases, signs a 25-table/two-artifact manifest with 67,108,902 exact object bytes, preflights the complete archive before mutation, streams without anonymous plaintext spool, immediately verifies provider readback and fails closed when an existence read cannot prove absence; unit faults prove later-member preflight atomicity, committed-but-response-lost reconciliation, cancellation/resume without re-upload, short-consumer refusal, redacted read/upload errors, nil-storage refusal and zero-length restore; three fresh real-process runs killed the packaged restore container at 1,605,632/3,276,800/1,703,936 partial bytes, kept the canonical object absent, reclaimed deterministic staging on retry, restored twice, retained `INCOMPLETE` on dump failure and refused archive/missing-object/changed-object/database-row faults; 67,548,367–67,548,555-byte bundles completed the full local gate in 14–30 seconds, and a final post-guard smoke killed at 4,030,464 bytes and passed in 12 seconds, while candidate KMS/versioned-store/provider-response-loss/failover/concurrent-load/RPO/RTO remain open
+- the RS-06 packaged DR gate creates fresh PostgreSQL 17 source/restore databases,
+  signs a 25-table/two-artifact manifest with 67,108,902 exact object bytes,
+  preflights the complete archive before mutation, streams without anonymous
+  plaintext spool, immediately verifies provider readback and fails closed when
+  an existence read cannot prove absence; unit faults prove later-member
+  preflight atomicity, committed-but-response-lost reconciliation,
+  cancellation/resume without re-upload, short-consumer refusal, redacted
+  read/upload errors, nil-storage refusal and zero-length restore; three
+  original real-process runs killed the packaged restore container at
+  1,605,632/3,276,800/1,703,936 partial bytes, and the new
+  `ed25519-sha512-commitment-v2` protocol then passed three more at
+  393,216/1,998,848/425,984 bytes plus an assertion smoke at 3,342,336 bytes;
+  every run kept the canonical object absent, reclaimed deterministic staging,
+  restored twice, retained `INCOMPLETE` on dump failure and refused
+  archive/missing-object/changed-object/database-row faults; the new
+  67,548,412–67,548,434-byte bundles completed in 12–13 seconds with exact
+  packaged v2-scheme assertions. KMS fake-client faults cover
+  spec/usage/algorithm/DER/pin drift, disable/revoke/service failure,
+  response-key/algorithm/signature tamper, raw-key ambiguity, endpoint isolation
+  and stable error redaction; invalid provider/key/pin/endpoint settings fail
+  before backup output exists, shared AWS files are disabled and S3 endpoint
+  aliases are conflict-checked; legacy v1 verification, signature downgrade
+  refusal, a bounded KMS message, 64-key retention and 129-key refusal pass
+  ordinary/race tests. Candidate real KMS/CloudTrail/workload identity,
+  versioned-store response loss, managed failover, concurrent load and RPO/RTO
+  remain open
 - legal-hold tests cover strict owner-only APIs, closed scope/reason schemas, digest-only request/external references, exact idempotent create/release, conflicting retries, source/snapshot validation, hash-chain event counts, active workspace-delete rejection, immutable-row database triggers, explicit teardown ordering and a settings surface hidden from admins; a fully migrated disposable PostgreSQL 17 database now passes create/release/audit, direct mutation rejection and workspace-delete fencing, while the deterministic two-contender matrix proves both legal-hold/prune commit orders three consecutive times
 - historical-retention tests cover conservative policy bounds, append-only CAS/idempotency, digest-only request persistence, exact referenced and uniquely reclaimable preview totals with bounded details, every policy/hold/provenance/in-flight/rollback blocker, leased `SKIP LOCKED` candidates, deletion-authority and task-pin snapshot guards, capability reachability cleanup, audit completion, nested default-off worker gates, owner/admin UI separation and bounded telemetry/alerts; the PostgreSQL hold-to-release-to-prune path passes, a six-case row-lock matrix proves both commit orders for legal hold, policy disable and task pin versus prune across three consecutive runs with no orphan snapshot/pin state, and a separate shared-artifact gate proves eligible-only de-duplication, retained/cross-source exclusion, post-prune recomputation and exact hash-chain audit bytes; a companion three-run case proves snapshot publication's shared artifact lock blocks prune's ordered exclusive accounting lock, then a newly retained edge forces the prune audit to zero; the upgraded three-run PostgreSQL 17 scale gate executes the exact generated SQL for 100 sources, 10,000 eligible snapshots, 10,000 artifacts and 10,000 edges in 100 batches, with 3.071–3.143 ms preview, 2.090–2.132 ms planning, 22.919–26.140 ms first-batch execution, 2.150–2.213 s end-to-end, 23.232–23.649 ms p95 and zero fixture residue; this is local single-primary inventory evidence, not a 10,000-user or failover SLO
 - full daemon and daemon WebSocket package tests pass with approved local-loopback access

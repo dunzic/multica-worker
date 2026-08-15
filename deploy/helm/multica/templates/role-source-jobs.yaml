@@ -114,7 +114,59 @@ spec:
 {{- $backupClaim := required "roleSource.disasterRecovery.backup.existingClaim is required when DR backup is enabled" $backup.existingClaim -}}
 {{- $backupDirectory := required "roleSource.disasterRecovery.backup.outputDirectory is required when DR backup is enabled" $backup.outputDirectory -}}
 {{- $backupRun := required "roleSource.disasterRecovery.backup.runName is required when DR backup is enabled" $backup.runName -}}
-{{- $signingSecret := required "roleSource.disasterRecovery.backup.signingSecretName is required when DR backup is enabled" $backup.signingSecretName -}}
+{{- $signingProvider := default "private_key" $backup.signingProvider -}}
+{{- $storageBucket := trim (default "" $backup.storageBucket) -}}
+{{- $storageRegion := trim (default "" $backup.storageRegion) -}}
+{{- $storageEndpointURL := trim (default "" $backup.storageEndpointUrl) -}}
+{{- if not (has $signingProvider (list "private_key" "aws_kms")) -}}
+{{- fail "roleSource.disasterRecovery.backup.signingProvider must be private_key or aws_kms" -}}
+{{- end -}}
+{{- if and $backup.storageSecretName $storageBucket -}}
+{{- fail "roleSource.disasterRecovery.backup.storageSecretName and explicit storage values are mutually exclusive" -}}
+{{- end -}}
+{{- if and (not $storageBucket) (or $storageRegion $storageEndpointURL $backup.storageUsePathStyle) -}}
+{{- fail "roleSource.disasterRecovery.backup.storageBucket is required when explicit storage values are set" -}}
+{{- end -}}
+{{- if $storageBucket -}}
+{{- if not (regexMatch `^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$` $storageBucket) -}}
+{{- fail "roleSource.disasterRecovery.backup.storageBucket must be a valid 3-63 character bucket name" -}}
+{{- end -}}
+{{- if not $storageRegion -}}
+{{- fail "roleSource.disasterRecovery.backup.storageRegion is required with storageBucket" -}}
+{{- end -}}
+{{- if not (regexMatch `^[a-z0-9-]+$` $storageRegion) -}}
+{{- fail "roleSource.disasterRecovery.backup.storageRegion must contain only lowercase letters, digits and hyphens" -}}
+{{- end -}}
+{{- if and $storageEndpointURL (not (regexMatch `^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?(/[^[:space:]@]*)?$` $storageEndpointURL)) -}}
+{{- fail "roleSource.disasterRecovery.backup.storageEndpointUrl must be an HTTPS URL without userinfo" -}}
+{{- end -}}
+{{- end -}}
+{{- if eq $signingProvider "private_key" -}}
+{{- $_ := required "roleSource.disasterRecovery.backup.signingSecretName is required for private_key signing" $backup.signingSecretName -}}
+{{- if or $backup.signerKeyId $backup.awsKmsKeyId $backup.signingPublicKey -}}
+{{- fail "AWS KMS signing values must be empty for private_key signing" -}}
+{{- end -}}
+{{- else -}}
+{{- $_ := required "roleSource.jobs.serviceAccountName is required for aws_kms workload identity" .Values.roleSource.jobs.serviceAccountName -}}
+{{- $_ := required "roleSource.disasterRecovery.backup.signerKeyId is required for aws_kms signing" $backup.signerKeyId -}}
+{{- $_ := required "roleSource.disasterRecovery.backup.awsKmsKeyId is required for aws_kms signing" $backup.awsKmsKeyId -}}
+{{- $_ := required "roleSource.disasterRecovery.backup.signingPublicKey is required for aws_kms signing" $backup.signingPublicKey -}}
+{{- if $backup.signingSecretName -}}
+{{- fail "roleSource.disasterRecovery.backup.signingSecretName must be empty for aws_kms signing" -}}
+{{- end -}}
+{{- if $backup.storageSecretName -}}
+{{- fail "roleSource.disasterRecovery.backup.storageSecretName must be empty for aws_kms workload identity" -}}
+{{- end -}}
+{{- if not (regexMatch `^[a-z][a-z0-9_.-]{0,99}$` $backup.signerKeyId) -}}
+{{- fail "roleSource.disasterRecovery.backup.signerKeyId must be a valid stable signer key id" -}}
+{{- end -}}
+{{- if not (regexMatch `^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$` $backup.awsKmsKeyId) -}}
+{{- fail "roleSource.disasterRecovery.backup.awsKmsKeyId must be an immutable AWS KMS key ARN" -}}
+{{- end -}}
+{{- if not (regexMatch `^[A-Za-z0-9+/]{43}=$` $backup.signingPublicKey) -}}
+{{- fail "roleSource.disasterRecovery.backup.signingPublicKey must be a standard-base64 Ed25519 public key" -}}
+{{- end -}}
+{{- end -}}
 {{- if not (regexMatch `^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$` $backupRun) -}}
 {{- fail "roleSource.disasterRecovery.backup.runName must be a lowercase DNS-safe slug up to 40 characters" -}}
 {{- end -}}
@@ -148,16 +200,41 @@ spec:
           command: ["./role_source_dr"]
           args: ["backup", "--output-dir", {{ printf "/backup/%s" $backupDirectory | quote }}]
           env:
+            - name: MULTICA_ROLE_SOURCE_DR_SIGNING_PROVIDER
+              value: {{ $signingProvider | quote }}
+            {{- if eq $signingProvider "private_key" }}
             - name: MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ $signingSecret | quote }}
+                  name: {{ $backup.signingSecretName | quote }}
                   key: MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID
             - name: MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ $signingSecret | quote }}
+                  name: {{ $backup.signingSecretName | quote }}
                   key: MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY
+            {{- else }}
+            - name: MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID
+              value: {{ $backup.signerKeyId | quote }}
+            - name: MULTICA_ROLE_SOURCE_DR_AWS_KMS_KEY_ID
+              value: {{ $backup.awsKmsKeyId | quote }}
+            - name: MULTICA_ROLE_SOURCE_DR_SIGNING_PUBLIC_KEY
+              value: {{ $backup.signingPublicKey | quote }}
+            - name: AWS_REGION
+              value: {{ index (splitList ":" $backup.awsKmsKeyId) 3 | quote }}
+            {{- end }}
+            {{- if $storageBucket }}
+            - name: S3_BUCKET
+              value: {{ $storageBucket | quote }}
+            - name: S3_REGION
+              value: {{ $storageRegion | quote }}
+            {{- with $storageEndpointURL }}
+            - name: S3_ENDPOINT_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: S3_USE_PATH_STYLE
+              value: {{ ternary "true" "false" $backup.storageUsePathStyle | quote }}
+            {{- end }}
             {{- if not .Values.postgres.external.enabled }}
             - name: POSTGRES_DB
               valueFrom:

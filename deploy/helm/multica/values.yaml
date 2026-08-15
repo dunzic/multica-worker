@@ -215,10 +215,24 @@ roleSource:
       runName: ""
       existingClaim: ""
       outputDirectory: ""
+      # private_key preserves self-hosted compatibility. Production clusters
+      # should use aws_kms so private signing material never enters the Job.
+      signingProvider: private_key
       signingSecretName: ""
-      # Optional narrowly scoped S3 credentials. Leave empty for workload
-      # identity or when using the backend uploads PVC.
+      # AWS KMS mode requires an immutable key ARN, a stable manifest signer
+      # identity and a pinned raw Ed25519 public key (standard base64).
+      signerKeyId: ""
+      awsKmsKeyId: ""
+      signingPublicKey: ""
+      # Optional narrowly scoped S3 credentials for private_key mode. Must be
+      # empty for aws_kms so S3 and KMS use the reviewed workload identity.
       storageSecretName: ""
+      # Non-secret object-store settings. Prefer these with workload identity;
+      # storageEndpointUrl is scoped to S3 and cannot redirect STS or KMS.
+      storageBucket: ""
+      storageRegion: ""
+      storageEndpointUrl: ""
+      storageUsePathStyle: false
       activeDeadlineSeconds: 14400
       resources:
         requests:

@@ -39,8 +39,9 @@ const maxS3ObjectVersionsPerPurge = 10_000
 //   - S3_BUCKET (required)
 //   - S3_REGION (default: us-west-2)
 //   - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (optional; falls back to default credential chain)
-//   - AWS_ENDPOINT_URL (optional S3-compatible endpoint)
-//   - S3_USE_PATH_STYLE (optional; defaults to true when AWS_ENDPOINT_URL is set)
+//   - S3_ENDPOINT_URL (preferred optional S3-compatible endpoint)
+//   - AWS_ENDPOINT_URL (legacy endpoint alias; do not use in KMS-enabled jobs)
+//   - S3_USE_PATH_STYLE (optional; defaults to true when a custom endpoint is set)
 func NewS3StorageFromEnv() *S3Storage {
 	bucket := os.Getenv("S3_BUCKET")
 	if bucket == "" {
@@ -57,6 +58,12 @@ func NewS3StorageFromEnv() *S3Storage {
 	region := os.Getenv("S3_REGION")
 	if region == "" {
 		region = "us-west-2"
+	}
+
+	endpointURL, err := s3EndpointURLFromEnv()
+	if err != nil {
+		slog.Error("invalid S3 endpoint configuration", "error", err)
+		return nil
 	}
 
 	opts := []func(*config.LoadOptions) error{
@@ -79,7 +86,6 @@ func NewS3StorageFromEnv() *S3Storage {
 
 	cdnDomain := os.Getenv("CLOUDFRONT_DOMAIN")
 
-	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
 	usePathStyle := s3UsePathStyleFromEnv(endpointURL)
 	s3Opts := []func(*s3.Options){}
 	if endpointURL != "" || usePathStyle {
@@ -100,6 +106,18 @@ func NewS3StorageFromEnv() *S3Storage {
 		endpointURL:  endpointURL,
 		usePathStyle: usePathStyle,
 	}
+}
+
+func s3EndpointURLFromEnv() (string, error) {
+	preferred := strings.TrimSpace(os.Getenv("S3_ENDPOINT_URL"))
+	legacy := strings.TrimSpace(os.Getenv("AWS_ENDPOINT_URL"))
+	if preferred != "" && legacy != "" && preferred != legacy {
+		return "", errors.New("S3_ENDPOINT_URL and legacy AWS_ENDPOINT_URL conflict")
+	}
+	if preferred != "" {
+		return preferred, nil
+	}
+	return legacy, nil
 }
 
 func (s *S3Storage) CdnDomain() string {

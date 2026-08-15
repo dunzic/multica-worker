@@ -32,6 +32,8 @@ const migrationAdvisoryLockKey int64 = 7244554146635925501
 
 const maxManifestBytes int64 = 1 << 20
 
+const maxTrustedManifestKeys = 128
+
 var secretKeyIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
 
 func main() {
@@ -64,7 +66,7 @@ func run(ctx context.Context, args []string) error {
 func runGenerateSigningKey(args []string) error {
 	flags := flag.NewFlagSet("generate-signing-key", flag.ContinueOnError)
 	keyID := flags.String("key-id", "", "stable key id configured independently on backup and restore hosts")
-	privatePath := flags.String("private-key-file", "", "new mode-0600 file for one-time KMS/HSM import")
+	privatePath := flags.String("private-key-file", "", "new mode-0600 file for local/HSM provisioning; not for AWS KMS")
 	publicPath := flags.String("public-key-file", "", "new mode-0644 public key file")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -158,6 +160,9 @@ func runBackup(ctx context.Context, args []string) error {
 	if strings.TrimSpace(*output) == "" {
 		return errors.New("--output-dir is required")
 	}
+	if err := validateBackupSigningConfiguration(*allowUnsigned); err != nil {
+		return err
+	}
 	if err := os.Mkdir(*output, 0o700); err != nil {
 		return fmt.Errorf("create new output directory: %w", err)
 	}
@@ -235,7 +240,7 @@ func runBackup(ctx context.Context, args []string) error {
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("complete exported snapshot: %w", err)
 	}
-	if err := signBackupManifest(&manifest, *allowUnsigned); err != nil {
+	if err := signBackupManifest(ctx, &manifest, *allowUnsigned); err != nil {
 		return err
 	}
 	if err := writeJSONExclusive(filepath.Join(*output, "manifest.json"), manifest); err != nil {
@@ -430,12 +435,8 @@ func loadKeyringStrict() (map[string]rolesourcedr.SecretOpener, error) {
 	if len(previousRaw) > 64<<10 {
 		return nil, errors.New("previous role-source secret key map is oversized")
 	}
-	var previous map[string]string
-	decoder := json.NewDecoder(strings.NewReader(previousRaw))
-	if err := decoder.Decode(&previous); err != nil || len(previous) > 8 {
-		return nil, errors.New("invalid previous role-source secret key map")
-	}
-	if err := requireJSONEOF(decoder); err != nil {
+	previous, err := decodeStrictStringMap(previousRaw, 8)
+	if err != nil {
 		return nil, errors.New("invalid previous role-source secret key map")
 	}
 	for keyID, encoded := range previous {
@@ -492,23 +493,156 @@ func readManifest(path string) (rolesourcedr.Manifest, error) {
 	return manifest, nil
 }
 
-func signBackupManifest(manifest *rolesourcedr.Manifest, allowUnsigned bool) error {
+func signBackupManifest(ctx context.Context, manifest *rolesourcedr.Manifest, allowUnsigned bool) error {
+	return signBackupManifestWithKMSLoader(ctx, manifest, allowUnsigned, loadDefaultAWSKMSClient)
+}
+
+func signBackupManifestWithKMSLoader(ctx context.Context, manifest *rolesourcedr.Manifest, allowUnsigned bool, loadKMS awsKMSClientLoader) error {
+	if manifest == nil {
+		return errors.New("DR manifest is required for signing")
+	}
+	if err := validateBackupSigningConfiguration(allowUnsigned); err != nil {
+		return err
+	}
+	provider := signingProviderFromEnv()
 	encoded := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY"))
 	keyID := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID"))
-	if encoded == "" || keyID == "" {
-		if allowUnsigned && encoded == "" && keyID == "" {
-			manifest.UnsignedDevelopment = true
-			return rolesourcedr.ValidateManifest(*manifest, true)
+	kmsKeyID := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_AWS_KMS_KEY_ID"))
+	encodedPublicKey := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_SIGNING_PUBLIC_KEY"))
+
+	switch provider {
+	case "private_key":
+		if kmsKeyID != "" || encodedPublicKey != "" {
+			return errors.New("AWS KMS DR signing settings require signing provider aws_kms")
 		}
-		return errors.New("MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY and MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID are required")
+		if encoded == "" || keyID == "" {
+			if allowUnsigned && encoded == "" && keyID == "" {
+				manifest.UnsignedDevelopment = true
+				return rolesourcedr.ValidateManifest(*manifest, true)
+			}
+			return errors.New("MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY and MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID are required")
+		}
+		privateKey, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil || len(privateKey) != ed25519.PrivateKeySize {
+			clear(privateKey)
+			return errors.New("invalid base64 Ed25519 DR signing private key")
+		}
+		defer clear(privateKey)
+		return rolesourcedr.SignManifest(manifest, keyID, ed25519.PrivateKey(privateKey))
+	case "aws_kms":
+		if encoded != "" {
+			return errors.New("raw DR signing private key must not be configured with AWS KMS")
+		}
+		if err := validateAWSKMSRuntimeEnvironment(); err != nil {
+			return err
+		}
+		if keyID == "" || kmsKeyID == "" || encodedPublicKey == "" {
+			return errors.New("AWS KMS DR signing requires signer key id, KMS key id and pinned public key")
+		}
+		publicKey, err := base64.StdEncoding.DecodeString(encodedPublicKey)
+		if err != nil || len(publicKey) != ed25519.PublicKeySize {
+			clear(publicKey)
+			return errors.New("invalid base64 Ed25519 DR signing public key")
+		}
+		defer clear(publicKey)
+		if loadKMS == nil {
+			return errors.New("AWS KMS signing client is unavailable")
+		}
+		client, err := loadKMS(ctx)
+		if err != nil || client == nil {
+			return errors.New("AWS KMS signing client is unavailable")
+		}
+		return signManifestWithAWSKMS(ctx, manifest, keyID, kmsKeyID, ed25519.PublicKey(publicKey), client)
+	default:
+		return errors.New("unsupported DR signing provider")
 	}
-	privateKey, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(privateKey) != ed25519.PrivateKeySize {
-		clear(privateKey)
-		return errors.New("invalid base64 Ed25519 DR signing private key")
+}
+
+func validateBackupSigningConfiguration(allowUnsigned bool) error {
+	provider := signingProviderFromEnv()
+	encoded := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY"))
+	keyID := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID"))
+	kmsKeyID := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_AWS_KMS_KEY_ID"))
+	encodedPublicKey := strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_SIGNING_PUBLIC_KEY"))
+
+	switch provider {
+	case "private_key":
+		if kmsKeyID != "" || encodedPublicKey != "" {
+			return errors.New("AWS KMS DR signing settings require signing provider aws_kms")
+		}
+		if encoded == "" || keyID == "" {
+			if allowUnsigned && encoded == "" && keyID == "" {
+				return nil
+			}
+			return errors.New("MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY and MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID are required")
+		}
+		if err := rolesourcedr.ValidateSignerKeyID(keyID); err != nil {
+			return err
+		}
+		privateKey, err := base64.StdEncoding.DecodeString(encoded)
+		defer clear(privateKey)
+		if err != nil || len(privateKey) != ed25519.PrivateKeySize {
+			return errors.New("invalid base64 Ed25519 DR signing private key")
+		}
+		return nil
+	case "aws_kms":
+		if encoded != "" {
+			return errors.New("raw DR signing private key must not be configured with AWS KMS")
+		}
+		if err := validateAWSKMSRuntimeEnvironment(); err != nil {
+			return err
+		}
+		if keyID == "" || kmsKeyID == "" || encodedPublicKey == "" {
+			return errors.New("AWS KMS DR signing requires signer key id, KMS key id and pinned public key")
+		}
+		if err := rolesourcedr.ValidateSignerKeyID(keyID); err != nil {
+			return err
+		}
+		publicKey, err := base64.StdEncoding.DecodeString(encodedPublicKey)
+		defer clear(publicKey)
+		if err != nil || len(publicKey) != ed25519.PublicKeySize {
+			return errors.New("invalid base64 Ed25519 DR signing public key")
+		}
+		return nil
+	default:
+		return errors.New("unsupported DR signing provider")
 	}
-	defer clear(privateKey)
-	return rolesourcedr.SignManifest(manifest, keyID, ed25519.PrivateKey(privateKey))
+}
+
+func signingProviderFromEnv() string {
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_ROLE_SOURCE_DR_SIGNING_PROVIDER")))
+	if provider == "" {
+		return "private_key"
+	}
+	return provider
+}
+
+func validateAWSKMSRuntimeEnvironment() error {
+	if hasStaticAWSCredentialsEnvironment() {
+		return errors.New("AWS KMS DR signing requires workload identity; static AWS credentials are forbidden")
+	}
+	if hasAWSEndpointOverrideEnvironment() {
+		return errors.New("AWS KMS DR signing forbids AWS endpoint overrides; use S3_ENDPOINT_URL only for object storage")
+	}
+	return nil
+}
+
+func hasStaticAWSCredentialsEnvironment() bool {
+	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SHARED_CREDENTIALS_FILE", "AWS_PROFILE"} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAWSEndpointOverrideEnvironment() bool {
+	for _, name := range []string{"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_KMS", "AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL_S3"} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func loadManifestTrustStrict() (map[string]ed25519.PublicKey, error) {
@@ -519,13 +653,8 @@ func loadManifestTrustStrict() (map[string]ed25519.PublicKey, error) {
 	if len(raw) > 64<<10 {
 		return nil, errors.New("DR trusted public key map is oversized")
 	}
-	var encoded map[string]string
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&encoded); err != nil || len(encoded) == 0 || len(encoded) > 8 {
-		return nil, errors.New("invalid DR trusted public key map")
-	}
-	if err := requireJSONEOF(decoder); err != nil {
+	encoded, err := decodeStrictStringMap(raw, maxTrustedManifestKeys)
+	if err != nil || len(encoded) == 0 {
 		return nil, errors.New("invalid DR trusted public key map")
 	}
 	trusted := map[string]ed25519.PublicKey{}
@@ -540,6 +669,44 @@ func loadManifestTrustStrict() (map[string]ed25519.PublicKey, error) {
 		trusted[keyID] = ed25519.PublicKey(key)
 	}
 	return trusted, nil
+}
+
+func decodeStrictStringMap(raw string, maxEntries int) (map[string]string, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return nil, errors.New("string map must be an object")
+	}
+	encoded := make(map[string]string)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("map key must be a string")
+		}
+		if _, duplicate := encoded[key]; duplicate {
+			return nil, errors.New("duplicate map key")
+		}
+		if len(encoded) >= maxEntries {
+			return nil, errors.New("too many map entries")
+		}
+		var value string
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		encoded[key] = value
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return nil, errors.New("invalid string map")
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return nil, err
+	}
+	return encoded, nil
 }
 
 func requireJSONEOF(decoder *json.Decoder) error {

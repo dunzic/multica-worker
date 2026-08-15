@@ -115,7 +115,8 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `S3_REGION` | `us-west-2` | Bucket 所在区域 |
 | `AWS_ACCESS_KEY_ID` | SDK 默认凭据链 | 静态 access key |
 | `AWS_SECRET_ACCESS_KEY` | SDK 默认凭据链 | 静态 secret key |
-| `AWS_ENDPOINT_URL` | 空 | MinIO 等 S3 兼容 endpoint |
+| `S3_ENDPOINT_URL` | 空 | MinIO 等 S3 兼容 endpoint 的首选配置，仅作用于 S3 |
+| `AWS_ENDPOINT_URL` | 空 | `S3_ENDPOINT_URL` 的旧版兼容别名；使用 KMS 的 DR 任务禁止配置 |
 | `S3_USE_PATH_STYLE` | 自定义 endpoint 时为 `true` | 是否使用 path-style 地址 |
 | `ATTACHMENT_DOWNLOAD_MODE` | `auto` | `auto`、`cloudfront`、`presign` 或 `proxy` |
 | `ATTACHMENT_DOWNLOAD_URL_TTL` | `30m` | 签名下载地址的有效期 |

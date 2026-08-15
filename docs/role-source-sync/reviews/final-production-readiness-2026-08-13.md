@@ -60,6 +60,23 @@ response loss, KMS, managed failover, concurrent load or RPO/RTO evidence;
 Architecture/Test and overall production scores remain 2/3 and the NO-GO
 decision does not change.
 
+2026-08-15 RS-06 KMS-signing addendum: new backups now bind
+`signature_scheme=ed25519-sha512-commitment-v2` and sign a compact,
+domain-separated SHA-512 commitment, while manifests without the field retain
+legacy-v1 verification. The AWS path requires an Ed25519/SIGN_VERIFY key,
+independently pinned public key, resolved immutable ARN,
+`ED25519_SHA_512`/`RAW` response metadata and successful local signature
+verification; errors are bounded and no raw-key/unsigned fallback exists. Helm
+KMS mode requires workload identity, renders no signing-private-key variable,
+uses only `S3_ENDPOINT_URL` for custom storage and rejects global/service AWS
+endpoint overrides before output or storage access; shared AWS files are
+disabled and the official KMS resolver is reinstated as defense in depth.
+Three fresh 64 MiB process-kill runs plus one assertion smoke passed the complete
+local recovery/fault matrix with the packaged v2 scheme. This is code, render,
+fake-provider and local-private-key compatibility evidence only. No real KMS,
+CloudTrail/IAM deny, rotation/revocation or candidate Gate F run exists, so all
+four scores and the production NO-GO remain unchanged.
+
 ## Feature disposition
 
 | Feature | Merge disposition | Production disposition |
@@ -84,20 +101,18 @@ decision does not change.
   Actions updater-type errors in unmodified `packages/core/chat/mutations.ts`
   and `packages/core/realtime/use-realtime-sync.ts`; focused changed-file tests
   and ESLint remain green;
-- `go vet ./...` passed;
-- `go test ./...` passed every package in the final 2026-08-14 run when local
-  loopback binding was allowed; an earlier run retained evidence of the known
-  `pkg/agent` parallel five-second timing instability, so candidate CI remains
-  authoritative for that repository-wide release gate;
+- `go vet ./...` and `go build ./...` passed again after the AWS KMS dependency
+  addition in a standard Go 1.26 non-root environment with read-only source;
+- `go test -count=1 ./...` passed every package, including `pkg/agent`, in that
+  same standard non-root Go 1.26 environment with read-only source. Earlier
+  Alpine attempts failed because that image lacked bash/git and a passwd/HOME
+  entry for UID 501; those environment failures are not counted as code gates;
 - all role-source packages, daemon, handlers, migrations, realtime, storage,
   DR and capacity commands passed in the full Go run;
-- the current Go 1.26 Alpine `go build ./...` passed; the delivery package plus
-  its process-kill and 10k scale gates also passed under Go's race detector.
-  A fresh non-root, source-read-only Go 1.26 all-package test passed every
-  package except unmodified `pkg/agent`; 15 process-reap/timeout assertions
-  missed their 5–30-second test windows in the container, so the run exited 1
-  and is not counted as a green release gate. The DR command/packages passed
-  ordinary and race runs independently;
+- the DR protocol/command passed focused ordinary and race tests, targeted vet
+  and build. Helm lint/render, default-off/private-key mode, KMS workload-
+  identity mode, missing-identity refusal and no-private-key render assertions
+  passed; both updated shell gates passed ShellCheck;
 - focused role-source race, fuzz, cross-build, migration-contract and Helm
   tests are recorded in `implementation-status.md` and the per-feature reviews.
 - the RS-07 PostgreSQL 17 gate passed six real OS-process kill chains across two

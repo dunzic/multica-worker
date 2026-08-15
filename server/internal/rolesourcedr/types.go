@@ -47,6 +47,7 @@ type Manifest struct {
 	DatabaseDumpDigest    string          `json:"database_dump_digest,omitempty"`
 	ArtifactArchiveDigest string          `json:"artifact_archive_digest,omitempty"`
 	SignerKeyID           string          `json:"signer_key_id,omitempty"`
+	SignatureScheme       string          `json:"signature_scheme,omitempty"`
 	Signature             string          `json:"signature,omitempty"`
 	UnsignedDevelopment   bool            `json:"unsigned_development,omitempty"`
 }

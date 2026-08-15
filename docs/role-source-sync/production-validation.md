@@ -14,7 +14,7 @@ export S3_REGION='VALIDATION_REGION'
 export AWS_ACCESS_KEY_ID='VALIDATION_ACCESS_KEY'
 export AWS_SECRET_ACCESS_KEY='VALIDATION_SECRET_KEY'
 # For MinIO, OSS, COS or another S3-compatible staging service:
-export AWS_ENDPOINT_URL='https://VALIDATION_ENDPOINT'
+export S3_ENDPOINT_URL='https://VALIDATION_ENDPOINT'
 export S3_USE_PATH_STYLE='true'
 ```
 
@@ -702,6 +702,18 @@ workspace deletion and permanent purge. Kill the backup during object copy and
 one object, change one byte, remove one current/previous secret key, break an
 audit link and restore to a point immediately before/after a legal hold.
 
+Use the candidate AWS KMS/HSM-backed Ed25519 signer through workload identity,
+not the local raw-private-key compatibility mode or static AWS environment
+credentials. Exercise an overlap rotation
+from signer A to signer B, alias/key-ARN mismatch, disabled key, revoked
+permission, throttling and unreachable endpoint. Retain the KMS/CloudTrail
+audit export and prove no signing-private-key environment variable, Secret,
+log, trace, bundle or process argument exists. Set the candidate S3-compatible
+`S3_ENDPOINT_URL` during the drill, prove global and service-specific AWS
+endpoint overrides fail before backup output or storage access, and prove the
+S3 endpoint access log receives no STS or KMS request while both use the
+expected regional/FIPS AWS endpoints.
+
 Pass criteria:
 
 - the exclusive/shared lock places every destructive operation wholly before
@@ -716,6 +728,10 @@ Pass criteria:
   before traffic, retention or GC resumes;
 - measured RPO/RTO, dump/archive sizes, lock wait p99, WAL/load, restore
   throughput and operator actions fit the approved 10,000-user cohort budget.
+- both old and new retained backups verify during and after rotation; disabled,
+  unauthorized, mismatched and tampered KMS responses fail non-zero without
+  provider identifiers leaking into ordinary logs; the named security approver
+  signs the workload-identity policy and audit export.
 
 ## Gate D — failover and restart exercise
 

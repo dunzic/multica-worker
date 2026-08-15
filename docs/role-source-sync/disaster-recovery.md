@@ -33,16 +33,36 @@ logical size, stable backend/mode, aggregate provider observations, verified
 absence and completion time, never a raw storage key. Backup/restore preserves
 these rows as audit evidence; it must not recreate purged bodies from receipts.
 
-The manifest is domain-separated and Ed25519-signed. Keep the signing private
-key in a KMS/HSM-backed operator secret and distribute the trusted public key
-through a different configuration channel from the backup bundle. Only the
-backup command has a development-only `--allow-unsigned-manifest` option;
-restore and verification always reject unsigned manifests, preventing a
-development artifact from becoming recovery evidence.
+The manifest is domain-separated and Ed25519-signed. New backups use the
+`ed25519-sha512-commitment-v2` scheme: SHA-512 commits the canonical manifest
+under a dedicated domain and Ed25519 signs a second domain plus that 64-byte
+commitment. This keeps the remote signing message below the AWS KMS 4 KiB RAW
+limit without changing the committed manifest content. Restore keeps verifying
+legacy v1 signatures whose `signature_scheme` field is absent; removing or
+substituting the v2 scheme breaks verification.
 
-Bootstrap a key once, import the private file into the approved signer/KMS, then
-securely delete that bootstrap file after verified import. Distribute the public
-file independently:
+Production backup Jobs should use the `aws_kms` signer so private key material
+never enters the container. The command fetches the KMS public key, requires
+`ECC_NIST_EDWARDS25519`, `SIGN_VERIFY` and `ED25519_SHA_512`, compares the exact
+DER-decoded key to an independently pinned raw public key, resolves an alias to
+the returned immutable key ARN, requests `MessageType=RAW`, and locally verifies
+the returned signature before publishing the manifest. Provider errors are
+reduced to stable messages and each KMS operation has a 15-second application
+deadline. KMS mode rejects global and service-specific AWS endpoint variables
+before creating the output directory or reading artifact storage, disables
+shared AWS config/credential files, and reinstalls the official
+region/FIPS-aware KMS resolver as defense in depth. A custom object store uses
+the S3-only `S3_ENDPOINT_URL`, which cannot redirect the STS credential exchange
+or KMS signing request. Only the backup command has a development-only
+`--allow-unsigned-manifest` option; restore and verification always reject
+unsigned manifests.
+
+For a local/HSM signer that accepts imported keys, bootstrap a key once, import
+the private file into the approved signer, then securely delete that bootstrap
+file after verified import. Distribute the public file independently. For AWS
+KMS, create an asymmetric signing key with key spec
+`ECC_NIST_EDWARDS25519` and key usage `SIGN_VERIFY`; do not generate or import a
+raw private key through this command.
 
 ```bash
 /app/role_source_dr generate-signing-key --key-id backup-v1 \
@@ -59,23 +79,59 @@ The DR command passes a password-free URL and explicit database user to
 `pg_dump`, supplies the password only through `PGPASSWORD`, and removes pgx-only
 `pool_*` query settings before invoking the PostgreSQL client.
 
+The raw-private-key mode below remains available for the repeatable local gate
+and non-production self-hosting compatibility:
+
 ```bash
+export MULTICA_ROLE_SOURCE_DR_SIGNING_PROVIDER='private_key'
 export MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID='backup-v1'
 export MULTICA_ROLE_SOURCE_DR_SIGNING_PRIVATE_KEY='BASE64_ED25519_PRIVATE_KEY_FROM_APPROVED_SIGNER'
 /app/role_source_dr backup \
   --output-dir /private/backup/role-source-2026-08-13
 ```
 
+Use workload identity and an immutable KMS key ARN for a production Job. The
+stable signer key ID must change whenever the signing key changes. The public
+key is not secret, but it must come through an independently reviewed channel:
+
+```bash
+export MULTICA_ROLE_SOURCE_DR_SIGNING_PROVIDER='aws_kms'
+export MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID='backup-kms-2026q3'
+export MULTICA_ROLE_SOURCE_DR_AWS_KMS_KEY_ID='arn:aws:kms:REGION:ACCOUNT:key/KEY_UUID'
+export MULTICA_ROLE_SOURCE_DR_SIGNING_PUBLIC_KEY='BASE64_RAW_ED25519_PUBLIC_KEY'
+export AWS_REGION='REGION'
+# Optional for a non-AWS S3-compatible artifact store:
+export S3_ENDPOINT_URL='https://OBJECT_STORE_ENDPOINT'
+/app/role_source_dr backup \
+  --output-dir /private/backup/role-source-2026-08-15
+```
+
+AWS mode rejects any simultaneously configured raw signing private key. It does
+not fall back to unsigned or local signing when KMS is disabled, revoked,
+unreachable, returns another key, changes algorithm metadata or returns a bad
+signature.
+
 When running inside the Helm backend pod with local PVC storage, explicitly set
 `LOCAL_UPLOAD_DIR=/app/data/uploads` and mount a separate encrypted backup
 volume at `/private/backup`; never write the bundle to the uploads PVC itself.
 For S3, use a dedicated backup job/pod based on the same image and credentials,
-with the output volume and KMS signing secret mounted only for that job. The
+with the output volume mounted only for that job. The
 chart provides an explicitly default-off one-shot backup Job template; it does
 not schedule backups automatically. Set a unique DNS-safe `runName`, a separate
-backup PVC, a new single-directory `outputDirectory`, the signer Secret name
-and optional narrowly scoped storage Secret. The Job refuses retries and the
-backup tool refuses an existing directory.
+backup PVC and a new single-directory `outputDirectory`. For `private_key`, set
+the legacy signer Secret name. For `aws_kms`, set a workload-identity service
+account, immutable KMS key ARN, stable signer key ID and pinned public key; the
+rendered Job contains no signing-private-key variable or signer Secret. KMS mode
+also rejects `storageSecretName` and static AWS credential/profile environment
+variables. After resolution, the credential source must identify Web Identity
+or the container credential endpoint; shared files, profiles, static values,
+assume-role chains and the node/EC2 role are refused. Use the same reviewed
+workload identity for S3 and KMS, or the local artifact PVC. For object storage,
+set the chart's non-secret `storageBucket`, `storageRegion`, optional
+`storageEndpointUrl` and `storageUsePathStyle` values. The endpoint must be
+HTTPS and renders only as `S3_ENDPOINT_URL`; the KMS key ARN supplies the
+Job's `AWS_REGION`. The Job refuses retries and the backup tool refuses an
+existing directory.
 
 The command produces `database.dump`, `artifacts.tar` and `manifest.json`, all
 mode 0600 below a mode 0700 directory. Copy the bundle to approved encrypted,
@@ -123,6 +179,12 @@ result.
    ```bash
    export MULTICA_ROLE_SOURCE_DR_TRUSTED_PUBLIC_KEYS='{"backup-v1":"BASE64_ED25519_PUBLIC_KEY"}'
    ```
+
+   During rotation, install both old and new public keys in this trust map
+   before switching the backup signer. Keep each old public key for at least the
+   full retention period of every backup it signed. The bounded map accepts up
+   to 128 keys under a 64 KiB total input limit; it never fetches trust from the
+   bundle or from the signing alias.
 3. Rehydrate immutable objects. The command verifies the signed whole-archive
    digest, every member digest and the database inventory before any upload,
    holds the exclusive DR lock so a mistakenly running deletion worker cannot
@@ -166,6 +228,26 @@ result.
    reviewed daemon, wait for fresh loaded attestation, perform a read-only scan,
    then execute a controlled no-op plan. Re-enable traffic only after the drill
    owner signs the evidence record. Re-enable deletion workers last.
+
+## Signing-key rotation and emergency revocation
+
+1. Create a new immutable KMS Ed25519 signing key and least-privilege workload
+   role. Record its key ARN, protection configuration and audit-log destination.
+2. Retrieve its public key through an independently approved operator path and
+   add a new unique signer ID/public key to every recovery trust configuration.
+   Keep the old signer entry present.
+3. Deploy the backup Job with the new signer ID, immutable key ARN and pinned
+   public key. Produce a backup and restore it into an isolated target.
+4. Prove the manifest verifies with the overlap trust set, KMS audit records
+   show only the expected Job identity and the old backup still verifies.
+5. Remove `kms:Sign` from the old workload path or disable the old key according
+   to policy. Never delete its public key from recovery trust while a retained
+   backup still depends on it.
+
+Emergency disable/revocation must make backup fail non-zero and leave
+`INCOMPLETE`; operators must not switch to `private_key` or
+`--allow-unsigned-manifest` to clear the incident. Re-enablement requires the
+named security approver and a new isolated restore drill.
 
 For a full Multica database recovery, preserve `channel_delivery` together with
 its evidence JSON, evidence digest and `ambiguous_at`. Before starting Slack or
