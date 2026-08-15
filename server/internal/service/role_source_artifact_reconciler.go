@@ -88,7 +88,7 @@ func (r *RoleSourceArtifactReconciler) RunOnce(ctx context.Context) {
 	}
 	for range roleSourceArtifactGCLimit {
 		token := pgtype.UUID{Bytes: uuid.New(), Valid: true}
-		intent, err := r.Queries.ClaimNextRoleSourceArtifactDeleteIntent(ctx, db.ClaimNextRoleSourceArtifactDeleteIntentParams{
+		claimed, err := r.Queries.ClaimNextRoleSourceArtifactDeleteIntent(ctx, db.ClaimNextRoleSourceArtifactDeleteIntentParams{
 			LeaseToken: token, LeaseDuration: pgInterval(roleSourceArtifactGCLease),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -100,7 +100,10 @@ func (r *RoleSourceArtifactReconciler) RunOnce(ctx context.Context) {
 			}
 			break
 		}
-		r.delete(ctx, intent, token)
+		if claimed.PurgeEvidenceAmbiguous && r.Metrics != nil {
+			r.Metrics.AmbiguousFailures.Inc()
+		}
+		r.delete(ctx, roleSourceArtifactDeleteIntentFromClaim(claimed), token)
 	}
 	if r.Metrics != nil {
 		if counts, err := r.Queries.CountRoleSourceArtifactDeleteIntents(ctx); err == nil {
@@ -110,9 +113,26 @@ func (r *RoleSourceArtifactReconciler) RunOnce(ctx context.Context) {
 	}
 }
 
+func roleSourceArtifactDeleteIntentFromClaim(claimed db.ClaimNextRoleSourceArtifactDeleteIntentRow) db.RoleSourceArtifactDeleteIntent {
+	return db.RoleSourceArtifactDeleteIntent{
+		StorageKey: claimed.StorageKey, ArtifactDigest: claimed.ArtifactDigest,
+		SizeBytes: claimed.SizeBytes, Reason: claimed.Reason, State: claimed.State,
+		LeaseToken: claimed.LeaseToken, LeaseExpiresAt: claimed.LeaseExpiresAt,
+		Attempt: claimed.Attempt, TombstonePass: claimed.TombstonePass,
+		NextAttemptAt: claimed.NextAttemptAt, CreatedAt: claimed.CreatedAt,
+		UpdatedAt: claimed.UpdatedAt, ID: claimed.ID, WorkspaceID: claimed.WorkspaceID,
+		PurgeBackend: claimed.PurgeBackend, PurgeMode: claimed.PurgeMode,
+		PurgePasses: claimed.PurgePasses, DeletedVersions: claimed.DeletedVersions,
+		DeletedDeleteMarkers: claimed.DeletedDeleteMarkers,
+		ObservedDeletedBytes: claimed.ObservedDeletedBytes,
+		AbsenceVerified:      claimed.AbsenceVerified, LastPurgedAt: claimed.LastPurgedAt,
+		PurgeAmbiguousAttempts: claimed.PurgeAmbiguousAttempts,
+	}
+}
+
 func (r *RoleSourceArtifactReconciler) delete(ctx context.Context, intent db.RoleSourceArtifactDeleteIntent, token pgtype.UUID) {
 	if r.DRGuard == nil {
-		r.releaseDeleteIntent(ctx, intent, token, errors.New("role-source DR guard is not configured"))
+		r.releaseDeleteIntent(ctx, intent, token, false, errors.New("role-source DR guard is not configured"))
 		return
 	}
 	var result storage.PermanentPurgeResult
@@ -122,7 +142,8 @@ func (r *RoleSourceArtifactReconciler) delete(ctx context.Context, intent db.Rol
 		return purgeErr
 	})
 	if err != nil {
-		r.releaseDeleteIntent(ctx, intent, token, err)
+		ambiguous := storage.PermanentPurgeMayHaveMutated(err) || permanentPurgeResultObserved(result)
+		r.releaseDeleteIntent(ctx, intent, token, ambiguous, err)
 		return
 	}
 	r.advanceDeleteIntent(ctx, intent, token, result)
@@ -139,15 +160,19 @@ func (r *RoleSourceArtifactReconciler) purge(ctx context.Context, intent db.Role
 	return result, err
 }
 
-func (r *RoleSourceArtifactReconciler) releaseDeleteIntent(ctx context.Context, intent db.RoleSourceArtifactDeleteIntent, token pgtype.UUID, cause error) {
+func (r *RoleSourceArtifactReconciler) releaseDeleteIntent(ctx context.Context, intent db.RoleSourceArtifactDeleteIntent, token pgtype.UUID, purgeEvidenceAmbiguous bool, cause error) {
 	if r.Metrics != nil {
 		r.Metrics.DeleteFailures.Inc()
+		if purgeEvidenceAmbiguous {
+			r.Metrics.AmbiguousFailures.Inc()
+		}
 	}
 	delay := time.Minute << min(int(intent.Attempt-1), 6)
 	writeCtx, writeCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer writeCancel()
 	released, releaseErr := r.Queries.ReleaseRoleSourceArtifactDeleteIntent(writeCtx, db.ReleaseRoleSourceArtifactDeleteIntentParams{
-		RetryDelay: pgInterval(delay), StorageKey: intent.StorageKey, LeaseToken: token,
+		RetryDelay: pgInterval(delay), PurgeEvidenceAmbiguous: purgeEvidenceAmbiguous,
+		StorageKey: intent.StorageKey, LeaseToken: token,
 	})
 	if (releaseErr != nil || released != 1) && ctx.Err() == nil {
 		r.logger().Warn("role source artifact GC release failed", "storage_key", intent.StorageKey, "error", releaseErr)
@@ -167,7 +192,7 @@ func (r *RoleSourceArtifactReconciler) advanceDeleteIntent(ctx context.Context, 
 		defer writeCancel()
 		params, err := buildRoleSourceArtifactPurgeReceiptParams(intent, token, result, time.Now())
 		if err != nil {
-			r.releaseDeleteIntent(ctx, intent, token, err)
+			r.releaseDeleteIntent(ctx, intent, token, true, err)
 			return
 		}
 		receipt, err := r.Queries.CompleteRoleSourceArtifactDeleteIntent(writeCtx, params)
@@ -200,12 +225,18 @@ func purgeRoleSourceArtifactObject(ctx context.Context, objectStorage MediaObjec
 	if purger, ok := objectStorage.(roleSourceArtifactObjectPurger); ok {
 		result, err := purger.PurgeObjectWithResult(ctx, key)
 		if err != nil {
-			return storage.PermanentPurgeResult{}, err
+			return result, err
 		}
 		if err := validatePermanentPurgeResult(result); err != nil {
-			return storage.PermanentPurgeResult{}, err
+			return result, &storage.PermanentPurgeError{
+				Operation: "result validation", MayHaveMutated: true, Err: err,
+			}
 		}
 		return result, nil
 	}
 	return storage.PermanentPurgeResult{}, errors.New("role source artifact storage does not support receipt-bearing permanent object purge")
+}
+
+func permanentPurgeResultObserved(result storage.PermanentPurgeResult) bool {
+	return result.VerifiedAbsent || result.VersionsDeleted != 0 || result.DeleteMarkersDeleted != 0 || result.ObservedBytesDeleted != 0
 }

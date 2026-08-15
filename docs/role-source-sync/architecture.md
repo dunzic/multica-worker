@@ -190,16 +190,23 @@ being reported as erasure. A successful purge retains a widening 15-minute,
 1-hour, 6-hour and 24-hour tombstone re-delete tail to reclaim a PUT that
 materializes after its client abandoned the upload. Every pass persists stable
 backend/mode plus provider evidence: deleted versions, deleted delete markers,
-observed deleted version bytes and exact-key absence. The fifth verified pass
-atomically inserts a content-free immutable receipt and removes the deletion
-intent. The receipt commits to the intent/workspace, storage-key digest,
-artifact digest, original logical size, aggregate provider evidence and
-PostgreSQL-microsecond completion time; update/delete triggers protect it, and
-API/DR consumers recompute the receipt digest before trusting it. It contains
-no raw storage key or body. Exact re-upload may cancel a pending/tombstoned
-intent, but never an actively deleting one. Metrics report queued objects,
-purge passes, failures, active backlog, tombstones, completed receipts and
-logical bytes confirmed absent.
+observed deleted version bytes and exact-key absence. A typed storage failure
+also reports whether the provider may already have mutated. That signal is
+durably counted before retry; reclaiming an expired `deleting` lease increments
+the same counter, conservatively covering process death between provider
+mutation and database persistence. The fifth verified pass atomically inserts
+a content-free immutable receipt and removes the deletion intent. New receipts
+use contract v2 and commit to the intent/workspace, storage-key digest, artifact
+digest, original logical size, aggregate provider evidence, ambiguity count,
+provider-evidence completeness and PostgreSQL-microsecond completion time. An
+ambiguity count above zero leaves exact-key absence authoritative but makes
+version/delete-marker/observed-byte totals lower bounds. V1 receipts remain
+verifiable; v2 rows prevent schema downgrade. Update/delete triggers protect
+both versions, and API/DR consumers recompute the versioned digest before
+trusting a row. Receipts contain no raw storage key or body. Exact re-upload may
+cancel a pending/tombstoned intent, but never an actively deleting one. Metrics
+report queued objects, purge passes, failures, ambiguous failures, active
+backlog, tombstones, completed receipts and logical bytes confirmed absent.
 
 Legal hold is independent retention authority, not a source lifecycle state.
 Only a workspace owner may create, list or release a hold. A hold applies to an

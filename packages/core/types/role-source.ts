@@ -153,6 +153,7 @@ export interface RoleSourceRetentionPreview {
 }
 
 export interface RoleSourceArtifactPurgeReceipt {
+  contract_version: "role-source-artifact-purge-receipt-v1" | "role-source-artifact-purge-receipt-v2";
   artifact_digest: string;
   size_bytes: number;
   reason: "unreachable" | "workspace_deleted";
@@ -163,6 +164,8 @@ export interface RoleSourceArtifactPurgeReceipt {
   deleted_delete_markers: number;
   observed_deleted_bytes: number;
   logical_bytes_confirmed_absent: number;
+  ambiguous_attempts: number;
+  provider_evidence_complete: boolean;
   completed_at: string;
   receipt_digest: string;
 }
@@ -173,6 +176,8 @@ export interface RoleSourceArtifactPurgeReceiptSummary {
   observed_deleted_bytes: number;
   deleted_versions: number;
   deleted_delete_markers: number;
+  ambiguous_attempts: number;
+  incomplete_provider_evidence_receipts: number;
   truncated: boolean;
   receipts: RoleSourceArtifactPurgeReceipt[];
 }

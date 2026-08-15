@@ -236,8 +236,23 @@ function formatRetentionBytes(value: number) {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
+function formatAuditTimestamp(value: string, locale: string) {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return value;
+  return new Intl.DateTimeFormat(locale, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
+  }).format(timestamp);
+}
+
 export function RoleSourcesTab() {
-  const { t } = useT("settings");
+  const { t, i18n } = useT("settings");
   const workspaceId = useCurrentWorkspace()?.id ?? "";
   const queryClient = useQueryClient();
   const { role } = useCurrentMember(workspaceId);
@@ -1265,16 +1280,39 @@ export function RoleSourcesTab() {
                             bytes: formatRetentionBytes(purgeReceipts.data.observed_deleted_bytes),
                           })}
                         </p>
+                        {purgeReceipts.data.incomplete_provider_evidence_receipts > 0 ? (
+                          <p className="mt-1 text-caption text-amber-700">
+                            {t(($) => $.role_sources.retention_purge_receipt_incomplete, {
+                              count: purgeReceipts.data.incomplete_provider_evidence_receipts,
+                              attempts: purgeReceipts.data.ambiguous_attempts,
+                            })}
+                          </p>
+                        ) : null}
                         {purgeReceipts.data.receipts.length ? (
                           <div className="mt-3 max-h-48 divide-y divide-surface-border overflow-y-auto rounded-md border border-surface-border">
                             {purgeReceipts.data.receipts.map((receipt) => (
                               <div key={receipt.receipt_digest} className="flex items-start justify-between gap-3 px-3 py-2 text-caption">
-                                <div className="min-w-0">
+                                <div className="min-w-0 flex-1">
                                   <div className="truncate font-mono">{shortDigest(receipt.artifact_digest)}</div>
                                   <div className="truncate font-mono text-muted-foreground">{shortDigest(receipt.receipt_digest)}</div>
                                 </div>
-                                <span className="shrink-0 text-right text-muted-foreground">
-                                  {receipt.completed_at} · {receipt.storage_backend} · {formatRetentionBytes(receipt.logical_bytes_confirmed_absent)}
+                                <span className="min-w-0 text-right text-muted-foreground tabular-nums">
+                                  <span className="block break-words">
+                                    <time dateTime={receipt.completed_at}>
+                                      {formatAuditTimestamp(receipt.completed_at, i18n.resolvedLanguage ?? i18n.language)}
+                                    </time>
+                                    {" · "}
+                                    <span translate="no">{receipt.storage_backend}</span>
+                                    {" · "}
+                                    {formatRetentionBytes(receipt.logical_bytes_confirmed_absent)}
+                                  </span>
+                                  <span className={receipt.provider_evidence_complete ? "block" : "block text-amber-700"}>
+                                    {receipt.provider_evidence_complete
+                                      ? t(($) => $.role_sources.retention_purge_receipt_evidence_complete)
+                                      : t(($) => $.role_sources.retention_purge_receipt_evidence_lower_bound, {
+                                          attempts: receipt.ambiguous_attempts,
+                                        })}
+                                  </span>
                                 </span>
                               </div>
                             ))}

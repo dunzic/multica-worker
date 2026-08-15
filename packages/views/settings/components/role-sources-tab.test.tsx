@@ -433,8 +433,11 @@ beforeEach(() => {
     observed_deleted_bytes: 8192,
     deleted_versions: 2,
     deleted_delete_markers: 1,
+    ambiguous_attempts: 1,
+    incomplete_provider_evidence_receipts: 1,
     truncated: false,
     receipts: [{
+      contract_version: "role-source-artifact-purge-receipt-v2",
       artifact_digest: `sha256:${"9".repeat(64)}`,
       size_bytes: 4096,
       reason: "unreachable",
@@ -445,6 +448,8 @@ beforeEach(() => {
       deleted_delete_markers: 1,
       observed_deleted_bytes: 8192,
       logical_bytes_confirmed_absent: 4096,
+      ambiguous_attempts: 1,
+      provider_evidence_complete: false,
       completed_at: "2026-08-15T11:12:13Z",
       receipt_digest: `sha256:${"8".repeat(64)}`,
     }],
@@ -1081,6 +1086,8 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText(/1 completed purge receipts.*4\.0 KiB/)).toBeInTheDocument();
     expect(screen.getByText(/storage evidence, not provider billing savings/)).toBeInTheDocument();
     expect(screen.getByText(/8\.0 KiB of object-version bytes/)).toBeInTheDocument();
+    expect(screen.getByText(/1 receipts include 1 purge attempts/)).toBeInTheDocument();
+    expect(screen.getByText(/1 ambiguous attempts.*provider counts are lower bounds/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit policy" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /delete snapshot|prune now/i })).not.toBeInTheDocument();
   });

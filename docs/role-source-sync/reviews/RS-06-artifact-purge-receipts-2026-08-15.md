@@ -8,6 +8,12 @@ closes the local versioned-provider late-PUT, legal-hold and explicit IAM-deny
 probe. Candidate-provider, topology, receipt-correlation and recovery gates
 remain open.
 
+The same-day
+[`RS-06-purge-ambiguity-evidence-2026-08-15.md`](RS-06-purge-ambiguity-evidence-2026-08-15.md)
+adds the v2 lower-bound contract for partial responses, lost responses and
+expired deleting leases. It closes the local transport/state-machine evidence,
+not the candidate two-replica process-kill or failover gate.
+
 Decision: **GO for merge behind the existing default-off artifact-GC gate;
 NO-GO for customer deletion or storage-savings claims until the candidate
 versioned-object-store, failover and provider-accounting gates pass.**
@@ -69,22 +75,22 @@ It proves logical exact-key absence, not a provider invoice or cost reduction.
   unsupported/changed providers and unverified absence fail closed. Core schema
   tests reject malformed totals; settings tests cover bounded rendering and the
   no-billing-savings warning.
-- A disposable PostgreSQL 17 database migrated from 001 through 386. Three
-  consecutive real state-machine runs executed five purge passes, removed the
-  intent, inserted exactly one receipt, verified aggregate totals and received
-  SQLSTATE `23000` for direct update/delete. The gate initially failed all three
-  runs because Go nanoseconds were hashed before PostgreSQL truncated to
-  microseconds; normalizing before the commitment fixed the production defect,
-  after which all three runs passed.
+- A disposable PostgreSQL 17 database migrated from 001 through 387. Three
+  consecutive real state-machine runs executed ordinary five-pass completion,
+  ambiguous response loss followed by retry and expired-lease reclaim. Direct
+  SQL showed three complete and three incomplete v2 receipts, all exact keys
+  absent, zero residual intents and the immutable trigger enabled. The v2
+  downgrade guard failed closed; an empty-ledger 387 down/up round trip passed.
 - The full role-source migration set passed isolated-schema up/down. Relevant
   Go tests and vet, Core 87 tests, Views 30 tests and changed-file ESLint pass.
   Full Core/Views typecheck remains red only on the three pre-existing Chat
   Quick Actions errors outside this slice.
 - Open objections: the local real versioned-provider late-PUT, legal-hold and
-  explicit version-delete-deny probes now pass; candidate-store >10,000
-  versions, partial delete, transport ambiguity, process death, primary
-  failover, receipt correlation, restore and fleet/backlog SLO injection remain
-  external gates.
+  explicit version-delete-deny probes plus deterministic partial-delete,
+  response-timeout and expired-lease ambiguity cases now pass; candidate-store
+  >10,000 versions, real process death, two-replica race, primary failover,
+  receipt correlation, restore and fleet/backlog SLO injection remain external
+  gates.
 
 ## CEO / rollout owner — 2/3
 

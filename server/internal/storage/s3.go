@@ -362,13 +362,13 @@ func (s *S3Storage) PurgeObjectWithResult(ctx context.Context, key string) (Perm
 		return result, nil
 	}
 	if _, err := s.listObjectVersionsForPurge(ctx, key, maxS3ObjectVersionsPerPurge); err != nil {
-		return result, err
+		return result, permanentPurgeFailure("preflight inventory", false, err)
 	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket), Key: aws.String(key),
 	})
 	if err != nil {
-		return result, fmt.Errorf("s3 purge current object: %w", err)
+		return result, permanentPurgeFailure("current object delete", true, err)
 	}
 	// Re-list after deleting current so the batch includes the new delete
 	// marker and any PUT that raced the preflight inventory. The extra slot is
@@ -376,7 +376,7 @@ func (s *S3Storage) PurgeObjectWithResult(ctx context.Context, key string) (Perm
 	// leaves the durable intent retryable without adding markers on every retry.
 	objects, err := s.listObjectVersionsForPurge(ctx, key, maxS3ObjectVersionsPerPurge+1)
 	if err != nil {
-		return result, err
+		return result, permanentPurgeFailure("post-delete inventory", true, err)
 	}
 	for start := 0; start < len(objects); start += 1000 {
 		end := min(start+1000, len(objects))
@@ -395,19 +395,21 @@ func (s *S3Storage) PurgeObjectWithResult(ctx context.Context, key string) (Perm
 			Delete: &types.Delete{Objects: identifiers, Quiet: aws.Bool(true)},
 		})
 		if err != nil {
-			return result, fmt.Errorf("s3 purge retained object versions: %w", err)
+			return result, permanentPurgeFailure("retained-version delete", true, err)
 		}
 		if len(output.Errors) > 0 {
 			first := output.Errors[0]
-			return result, fmt.Errorf("s3 purge retained object version failed: code=%s key=%s", aws.ToString(first.Code), aws.ToString(first.Key))
+			return result, permanentPurgeFailure("retained-version delete", true,
+				fmt.Errorf("provider failure: code=%s key=%s", aws.ToString(first.Code), aws.ToString(first.Key)))
 		}
 	}
 	remaining, err := s.listObjectVersionsForPurge(ctx, key, 1)
 	if err != nil {
-		return result, err
+		return result, permanentPurgeFailure("absence inventory", true, err)
 	}
 	if len(remaining) != 0 {
-		return result, fmt.Errorf("s3 purge verification failed: exact key still has retained versions")
+		return result, permanentPurgeFailure("absence verification", true,
+			fmt.Errorf("exact key still has retained versions"))
 	}
 	result.VerifiedAbsent = true
 	return result, nil

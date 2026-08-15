@@ -25,6 +25,17 @@ tests or a local single-primary container.
 
 No perspective can be raised to 3 by document review alone.
 
+2026-08-15 ambiguity-evidence addendum: migration 387 introduces receipt v2.
+Provider mutation followed by response loss and expired `deleting` lease
+reclaim are now durable ambiguity events; exact-key absence remains verifiable,
+while version/delete-marker/observed-byte counts are labelled lower bounds.
+Fresh PostgreSQL 17 migrations, three consecutive ordinary/response-loss/lease-
+reclaim runs, v1/v2 digest checks, guarded downgrade, empty-ledger down/up,
+transport-fault tests, API/Core/Views/DR parsing and the ambiguity alert pass.
+This strengthens the Test and Architecture evidence within their existing 2/3
+scores; it does not replace candidate-store process-kill, two-replica, failover,
+restore, RACI or provider reconciliation evidence.
+
 ## Feature disposition
 
 | Feature | Merge disposition | Production disposition |
@@ -34,7 +45,7 @@ No perspective can be raised to 3 by document review alone.
 | RS-03 plan, approval and safe apply | GO for controlled default-off cohort after the 2026-08-14 live atomicity and two-control-plane concurrency matrices | NO-GO pending database-outage/failover, real process-kill and recorded operator recovery evidence |
 | RS-04 materialization | GO for controlled default-off cohort after local 1,000-role/10,000-skill create/update evidence | NO-GO pending candidate-image two-replica/S3/contention/failover SLO and cross-runtime execution |
 | RS-05 secret and MCP transfer | GO for a controlled default-off cohort after the local B11 lifecycle gate | NO-GO pending candidate-image KMS/HSM key rotation, process restart/lease reclaim, failover, burst-load and exfiltration exercises |
-| RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local hold/policy/pin/prune matrix, 10,000-snapshot exact-SQL scale gate, five-pass immutable purge-receipt gate and real versioned-provider fail-closed suite | NO-GO pending candidate-topology primary-failover race/scale repeat, candidate-provider receipt/inventory/accounting reconciliation, retention RACI and recorded restore with RPO/RTO |
+| RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local hold/policy/pin/prune matrix, 10,000-snapshot exact-SQL scale gate, v2 ambiguity-aware immutable purge receipts and real versioned-provider fail-closed suite | NO-GO pending candidate-topology process-kill/primary-failover race and scale repeat, candidate-provider receipt/inventory/accounting reconciliation, retention RACI and recorded restore with RPO/RTO |
 | RS-07 delivery receipts | GO as two-connector backend pilot | NO-GO pending ambiguous-send handling, operator retry, callbacks and production telemetry |
 
 ## Local evidence retained
@@ -73,12 +84,14 @@ No perspective can be raised to 3 by document review alone.
   shared artifact lock: prune waited, the retained edge committed, and the
   prune audit recorded zero newly unreachable bytes.
 - the RS-06 purge-receipt gate migrated a disposable PostgreSQL 17 database
-  through 386 and passed the generated-query five-pass state machine three
-  consecutive times. It proved atomic intent-to-receipt completion, aggregate
-  provider evidence, workspace totals, post-database digest verification and
-  immutable update/delete guards. The gate first exposed and fixed a Go
-  nanosecond/PostgreSQL-microsecond commitment mismatch. It uses a storage
-  protocol fake and therefore does not prove provider deletion or billed
+  through 387 and passed the ordinary five-pass, response-lost retry and
+  expired-lease ambiguity state machines three consecutive times. Direct SQL
+  proved three complete and three lower-bound v2 receipts, exact-key absence,
+  zero residual intents and the immutable trigger. V1 remained verifiable;
+  downgrade with v2 rows failed closed and an empty-ledger 387 down/up passed.
+  The companion S3 transport test simulated timeout after mutation with SDK
+  retries disabled. This is still local single-primary evidence and does not
+  prove candidate-provider deletion, real process kill, failover or billed
   savings.
 - the RS-02/RS-06 live object-store gate used an exact source-built MinIO
   `RELEASE.2025-10-15T17-29-55Z` binary on an isolated one-drive network. A

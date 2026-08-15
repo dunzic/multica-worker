@@ -180,16 +180,25 @@ WAL records. This is a 10,000-snapshot/artifact/edge inventory result across
 100 sources; it does not represent 10,000 users and must be repeated on
 candidate hardware and topology.
 
-The purge-receipt gate must run after the database is migrated through 386. It
+The purge-receipt gate must run after the database is migrated through 387. It
 executes all five verified passes against the generated PostgreSQL queries,
 persists aggregate version/delete-marker/observed-byte evidence, atomically
 replaces the leased intent with one immutable receipt, recomputes the receipt
 commitment after the database timestamp round trip, verifies workspace totals
-and proves direct update/delete fail with SQLSTATE `23000`. On 2026-08-15 this
-gate passed three consecutive runs after it exposed and drove a fix for Go
-nanoseconds versus PostgreSQL `timestamptz` microseconds. This is local
-single-primary state-machine evidence; the storage fake proves protocol shape,
-not provider deletion or billed savings.
+and proves direct update/delete fail with SQLSTATE `23000`. It must also inject
+a provider mutation followed by a lost response, retry to an empty inventory,
+and reclaim an expired `deleting` lease. Both paths must durably increment the
+ambiguity counter; the final v2 receipt must verify exact-key absence while
+marking provider evidence incomplete and its operation counts as lower bounds.
+Legacy v1 receipts must still verify. Migration 387 down must refuse when a v2
+receipt exists and must round-trip on an empty ledger. On 2026-08-15 the
+ordinary, ambiguous-response and expired-lease cases passed three consecutive
+runs against a fully migrated disposable PostgreSQL 17 database. Direct SQL
+confirmed three complete and three incomplete v2 receipts, zero residual
+intents and the immutable trigger; the protected downgrade failed with the
+expected guard, while an empty-ledger down/up restored all four columns. This
+is local single-primary state-machine evidence, not provider deletion, process
+kill, failover or billed savings.
 
 Then run two server replicas with both retention and permanent artifact-GC gates
 enabled against a disposable PostgreSQL 17 dataset containing current, recent,
@@ -215,6 +224,9 @@ Pass criteria:
 - the fifth verified purge pass writes exactly one immutable, self-verifying,
   content-free receipt and removes the intent atomically; no API or metric calls
   logical/observed bytes provider-billed savings;
+- a response-lost or expired-lease attempt is durably represented in the v2
+  commitment; exact-key absence remains verifiable while provider-operation
+  counts are explicitly lower bounds and raise the ambiguity alert;
 - migration up/down, trigger behavior, EXPLAIN plans, lock waits, WAL, deadlocks,
   backlog age and p50/p95/p99 remain within the recorded cohort budget;
 - backup restore and point-in-time recovery restore active holds, policy
@@ -576,6 +588,14 @@ Multica. Match the resulting receipt's backend/mode and aggregate counts to the
 provider evidence, then separately compare object-store inventory and billing
 after the provider's documented accounting delay. Multica's receipt proves
 logical exact-key absence; it does not itself prove a cost reduction.
+
+A companion deterministic transport-fault gate must additionally prove that a
+request timeout after provider mutation is classified `MayHaveMutated`, that a
+partial `DeleteObjects` response cannot be reported as complete, and that a
+later empty-inventory retry converges without fabricating the lost operation's
+counts. The local 2026-08-15 implementation passes these cases with SDK retries
+disabled. Repeat response loss and real process termination against the
+candidate store and two-replica topology before enabling a customer cohort.
 
 ## Gate F — database/object-store disaster recovery
 

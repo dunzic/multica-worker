@@ -938,7 +938,8 @@ SELECT queued.* FROM queued JOIN removed USING (storage_key);
 
 -- name: ClaimNextRoleSourceArtifactDeleteIntent :one
 WITH candidate AS MATERIALIZED (
-    SELECT storage_key
+    SELECT storage_key,
+           COALESCE(state = 'deleting' AND lease_expires_at < now(), false)::boolean AS purge_evidence_ambiguous
     FROM role_source_artifact_delete_intent
     WHERE next_attempt_at <= now()
       AND (state IN ('pending', 'tombstoned') OR (state = 'deleting' AND lease_expires_at < now()))
@@ -949,10 +950,15 @@ WITH candidate AS MATERIALIZED (
 UPDATE role_source_artifact_delete_intent intent
 SET state = 'deleting', lease_token = @lease_token,
     lease_expires_at = now() + @lease_duration::interval,
-    attempt = attempt + 1, updated_at = now()
+    attempt = attempt + 1,
+    purge_ambiguous_attempts = purge_ambiguous_attempts + CASE
+        WHEN intent.state = 'deleting' AND intent.lease_expires_at < now() THEN 1
+        ELSE 0
+    END,
+    updated_at = now()
 FROM candidate
 WHERE intent.storage_key = candidate.storage_key
-RETURNING intent.*;
+RETURNING intent.*, candidate.purge_evidence_ambiguous;
 
 -- name: TombstoneRoleSourceArtifactDeleteIntent :execrows
 UPDATE role_source_artifact_delete_intent
@@ -975,6 +981,9 @@ WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease
 -- name: ReleaseRoleSourceArtifactDeleteIntent :execrows
 UPDATE role_source_artifact_delete_intent
 SET state = 'pending', lease_token = NULL, lease_expires_at = NULL,
+    purge_ambiguous_attempts = purge_ambiguous_attempts + CASE
+        WHEN @purge_evidence_ambiguous::boolean THEN 1 ELSE 0
+    END,
     next_attempt_at = now() + @retry_delay::interval, updated_at = now()
 WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease_token;
 
@@ -992,6 +1001,9 @@ WITH owned AS MATERIALIZED (
       AND @total_deleted_versions::bigint = intent.deleted_versions + @purged_version_count
       AND @total_deleted_delete_markers::bigint = intent.deleted_delete_markers + @purged_delete_marker_count
       AND @total_observed_deleted_bytes::bigint = intent.observed_deleted_bytes + @purged_observed_bytes
+      AND @contract_version::text = 'role-source-artifact-purge-receipt-v2'
+      AND @ambiguous_attempts::integer = intent.purge_ambiguous_attempts
+      AND @provider_evidence_complete::boolean = (intent.purge_ambiguous_attempts = 0)
     FOR UPDATE
 ), evidence AS (
     SELECT o.id, o.workspace_id, o.artifact_digest, o.size_bytes, o.reason,
@@ -1003,7 +1015,8 @@ WITH owned AS MATERIALIZED (
         intent_id, workspace_id, storage_key_digest, artifact_digest,
         size_bytes, reason, storage_backend, purge_mode, successful_passes,
         deleted_versions, deleted_delete_markers, observed_deleted_bytes,
-        logical_bytes_confirmed_absent, absence_verified, completed_at,
+        logical_bytes_confirmed_absent, absence_verified, contract_version,
+        ambiguous_attempts, provider_evidence_complete, completed_at,
         receipt_digest
     )
     SELECT evidence.id, evidence.workspace_id, @storage_key_digest, evidence.artifact_digest,
@@ -1011,7 +1024,9 @@ WITH owned AS MATERIALIZED (
            evidence.completed_purge_mode, @successful_passes,
            @total_deleted_versions, @total_deleted_delete_markers,
            @total_observed_deleted_bytes,
-           evidence.size_bytes, true, @completed_at, @receipt_digest
+           evidence.size_bytes, true, @contract_version,
+           @ambiguous_attempts, @provider_evidence_complete, @completed_at,
+           @receipt_digest
     FROM evidence
     ON CONFLICT (intent_id) DO NOTHING
     RETURNING *
@@ -1043,7 +1058,9 @@ SELECT count(*)::bigint AS receipt_count,
        COALESCE(sum(logical_bytes_confirmed_absent), 0)::bigint AS logical_bytes_confirmed_absent,
        COALESCE(sum(observed_deleted_bytes), 0)::bigint AS observed_deleted_bytes,
        COALESCE(sum(deleted_versions), 0)::bigint AS deleted_versions,
-       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers
+       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers,
+       COALESCE(sum(ambiguous_attempts), 0)::bigint AS ambiguous_attempts,
+       count(*) FILTER (WHERE NOT provider_evidence_complete)::bigint AS incomplete_provider_evidence_receipts
 FROM role_source_artifact_purge_receipt;
 
 -- name: GetWorkspaceRoleSourceArtifactPurgeReceiptTotals :one
@@ -1051,7 +1068,9 @@ SELECT count(*)::bigint AS receipt_count,
        COALESCE(sum(logical_bytes_confirmed_absent), 0)::bigint AS logical_bytes_confirmed_absent,
        COALESCE(sum(observed_deleted_bytes), 0)::bigint AS observed_deleted_bytes,
        COALESCE(sum(deleted_versions), 0)::bigint AS deleted_versions,
-       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers
+       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers,
+       COALESCE(sum(ambiguous_attempts), 0)::bigint AS ambiguous_attempts,
+       count(*) FILTER (WHERE NOT provider_evidence_complete)::bigint AS incomplete_provider_evidence_receipts
 FROM role_source_artifact_purge_receipt
 WHERE workspace_id = @workspace_id;
 

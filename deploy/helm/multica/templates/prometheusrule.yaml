@@ -99,6 +99,14 @@ spec:
           annotations:
             summary: "Role-source artifact garbage collection cannot permanently purge objects"
             description: "More than 20 role-source artifact purges failed in 15 minutes and the failure rate stayed elevated. The durable intents are retained for retry; inspect object-storage availability, version-list/version-delete permissions, Object Lock/legal hold and backend purge support before backlog growth exhausts capacity."
+        - alert: MulticaRoleSourceArtifactGCAmbiguousEvidence
+          expr: increase(multica_role_source_artifact_gc_ambiguous_failures_total[15m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Role-source artifact purge has incomplete provider-operation evidence"
+            description: "A purge request may have changed object storage before its response was lost, partially failed or its worker lease expired. Exact-key absence remains retryable and auditable, but version and observed-byte counts in the eventual receipt are lower bounds; retain provider logs and reconcile request/inventory evidence before making deletion-volume or billing claims."
         - alert: MulticaRoleSourceArtifactIntegrityQuarantined
           expr: multica_role_source_artifact_integrity_quarantined > 0
           for: 10m

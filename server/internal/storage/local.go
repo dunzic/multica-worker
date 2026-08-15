@@ -154,7 +154,7 @@ func (s *LocalStorage) PurgeObject(ctx context.Context, key string) error {
 func (s *LocalStorage) PurgeObjectWithResult(ctx context.Context, key string) (PermanentPurgeResult, error) {
 	result := PermanentPurgeResult{Backend: PermanentPurgeBackendLocal, Mode: PermanentPurgeModeCurrent}
 	if err := ctx.Err(); err != nil {
-		return result, err
+		return result, permanentPurgeFailure("preflight context", false, err)
 	}
 	if key == "" {
 		result.VerifiedAbsent = true
@@ -165,19 +165,19 @@ func (s *LocalStorage) PurgeObjectWithResult(ctx context.Context, key string) (P
 		result.VersionsDeleted = 1
 		result.ObservedBytesDeleted = info.Size()
 	} else if !os.IsNotExist(err) {
-		return result, err
+		return result, permanentPurgeFailure("preflight inventory", false, err)
 	}
 	if err := s.DeleteObject(ctx, key); err != nil {
-		return result, err
+		return result, permanentPurgeFailure("current object delete", true, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return result, err
+		return result, permanentPurgeFailure("post-delete context", true, err)
 	}
 	for _, path := range []string{filePath, filePath + metaSuffix, tempPath(filePath)} {
 		if _, err := os.Stat(path); err == nil {
-			return result, fmt.Errorf("local permanent purge verification: object still exists")
+			return result, permanentPurgeFailure("absence verification", true, fmt.Errorf("object still exists"))
 		} else if !os.IsNotExist(err) {
-			return result, fmt.Errorf("local permanent purge verification: %w", err)
+			return result, permanentPurgeFailure("absence verification", true, err)
 		}
 	}
 	result.VerifiedAbsent = true

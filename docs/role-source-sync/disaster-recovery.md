@@ -118,8 +118,13 @@ put key bytes beside the bundle.
    pin, mapping, capability, plan, apply, hold, retention and artifact edges;
    every artifact's exact byte length/SHA-256; and every unexpired transfer's
    claims, envelope digest and decryptable private key. It also recomputes every
-   artifact-purge receipt commitment and rejects an invalid shape, changed
-   provider mode, unverified absence or logical-byte mismatch.
+   artifact-purge receipt commitment for both the legacy v1 contract and the
+   ambiguity-aware v2 contract. It rejects unsupported versions, an invalid
+   shape, changed provider mode, unverified absence, logical-byte mismatch or
+   a v2 completeness flag inconsistent with its ambiguity count. A passing v2
+   receipt with `provider_evidence_complete=false` still proves exact-key
+   absence, but its provider-operation counts are lower bounds and must remain
+   labelled that way in the restore report and any external reconciliation.
 6. Start the server with retention and artifact GC still disabled. Start one
    reviewed daemon, wait for fresh loaded attestation, perform a read-only scan,
    then execute a controlled no-op plan. Re-enable traffic only after the drill

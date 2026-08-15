@@ -430,6 +430,24 @@ func TestRoleSourceArtifactPurgeReceiptIsBoundedImmutableAndContentFree(t *testi
 			t.Fatalf("%s must contain %q: %v", name, fragment, readErr)
 		}
 	}
+	ambiguityBody, err := os.ReadFile(filepath.Join(root, "387_role_source_artifact_purge_ambiguity.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguity := strings.ToLower(string(ambiguityBody))
+	for _, required := range []string{
+		"purge_ambiguous_attempts", "contract_version", "ambiguous_attempts",
+		"provider_evidence_complete", "role-source-artifact-purge-receipt-v1",
+		"role-source-artifact-purge-receipt-v2",
+	} {
+		if !strings.Contains(ambiguity, required) {
+			t.Fatalf("artifact purge ambiguity migration is missing %q", required)
+		}
+	}
+	downBody, err := os.ReadFile(filepath.Join(root, "387_role_source_artifact_purge_ambiguity.down.sql"))
+	if err != nil || !strings.Contains(string(downBody), "cannot remove artifact purge ambiguity fields while v2 receipts exist") {
+		t.Fatalf("artifact purge ambiguity rollback must reject v2 evidence loss: %v", err)
+	}
 	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
 	if err != nil {
 		t.Fatal(err)
@@ -442,6 +460,11 @@ func TestRoleSourceArtifactPurgeReceiptIsBoundedImmutableAndContentFree(t *testi
 		"intent.deleted_versions + @purged_version_count",
 		"intent.deleted_delete_markers + @purged_delete_marker_count",
 		"intent.observed_deleted_bytes + @purged_observed_bytes",
+		"@purge_evidence_ambiguous::boolean",
+		"intent.state = 'deleting' AND intent.lease_expires_at < now()",
+		"@ambiguous_attempts::integer = intent.purge_ambiguous_attempts",
+		"@provider_evidence_complete::boolean = (intent.purge_ambiguous_attempts = 0)",
+		"incomplete_provider_evidence_receipts",
 		"ListWorkspaceRoleSourceArtifactPurgeReceipts", "GetWorkspaceRoleSourceArtifactPurgeReceiptTotals",
 	} {
 		if !strings.Contains(queryText, required) {

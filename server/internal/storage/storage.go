@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"time"
 )
@@ -46,6 +48,45 @@ type PermanentPurgeResult struct {
 	DeleteMarkersDeleted int64
 	ObservedBytesDeleted int64
 	VerifiedAbsent       bool
+}
+
+// PermanentPurgeError preserves whether a failed call may already have
+// changed storage. Callers must persist that ambiguity before retrying: a
+// later empty inventory proves absence, but cannot reconstruct version/byte
+// counts from a response lost after the provider performed the deletion.
+type PermanentPurgeError struct {
+	Operation      string
+	MayHaveMutated bool
+	Err            error
+}
+
+func (e *PermanentPurgeError) Error() string {
+	if e == nil {
+		return "artifact permanent purge failed"
+	}
+	if e.Operation == "" {
+		return fmt.Sprintf("artifact permanent purge failed: %v", e.Err)
+	}
+	return fmt.Sprintf("artifact permanent purge %s: %v", e.Operation, e.Err)
+}
+
+func (e *PermanentPurgeError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func PermanentPurgeMayHaveMutated(err error) bool {
+	var purgeErr *PermanentPurgeError
+	return errors.As(err, &purgeErr) && purgeErr.MayHaveMutated
+}
+
+func permanentPurgeFailure(operation string, mayHaveMutated bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &PermanentPurgeError{Operation: operation, MayHaveMutated: mayHaveMutated, Err: err}
 }
 
 type Presigner interface {

@@ -15,9 +15,12 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-const roleSourceArtifactPurgeReceiptContract = "role-source-artifact-purge-receipt-v1"
+const (
+	roleSourceArtifactPurgeReceiptContractV1 = "role-source-artifact-purge-receipt-v1"
+	roleSourceArtifactPurgeReceiptContractV2 = "role-source-artifact-purge-receipt-v2"
+)
 
-type roleSourceArtifactPurgeReceiptCommitment struct {
+type roleSourceArtifactPurgeReceiptCommitmentV1 struct {
 	ContractVersion             string `json:"contract_version"`
 	IntentID                    string `json:"intent_id"`
 	WorkspaceID                 string `json:"workspace_id"`
@@ -33,6 +36,27 @@ type roleSourceArtifactPurgeReceiptCommitment struct {
 	ObservedDeletedBytes        int64  `json:"observed_deleted_bytes"`
 	LogicalBytesConfirmedAbsent int64  `json:"logical_bytes_confirmed_absent"`
 	AbsenceVerified             bool   `json:"absence_verified"`
+	CompletedAt                 string `json:"completed_at"`
+}
+
+type roleSourceArtifactPurgeReceiptCommitmentV2 struct {
+	ContractVersion             string `json:"contract_version"`
+	IntentID                    string `json:"intent_id"`
+	WorkspaceID                 string `json:"workspace_id"`
+	StorageKeyDigest            string `json:"storage_key_digest"`
+	ArtifactDigest              string `json:"artifact_digest"`
+	SizeBytes                   int64  `json:"size_bytes"`
+	Reason                      string `json:"reason"`
+	StorageBackend              string `json:"storage_backend"`
+	PurgeMode                   string `json:"purge_mode"`
+	SuccessfulPasses            int32  `json:"successful_passes"`
+	DeletedVersions             int64  `json:"deleted_versions"`
+	DeletedDeleteMarkers        int64  `json:"deleted_delete_markers"`
+	ObservedDeletedBytes        int64  `json:"observed_deleted_bytes"`
+	LogicalBytesConfirmedAbsent int64  `json:"logical_bytes_confirmed_absent"`
+	AbsenceVerified             bool   `json:"absence_verified"`
+	AmbiguousAttempts           int32  `json:"ambiguous_attempts"`
+	ProviderEvidenceComplete    bool   `json:"provider_evidence_complete"`
 	CompletedAt                 string `json:"completed_at"`
 }
 
@@ -78,14 +102,21 @@ func buildRoleSourceArtifactPurgeReceiptParams(
 	// INSERT round trip.
 	completedAt = completedAt.UTC().Truncate(time.Microsecond)
 	storageKeyDigest := digestPurgeReceiptValue(intent.StorageKey)
-	commitment := roleSourceArtifactPurgeReceiptCommitment{
-		ContractVersion: roleSourceArtifactPurgeReceiptContract,
+	ambiguousAttempts := intent.PurgeAmbiguousAttempts
+	if ambiguousAttempts < 0 || ambiguousAttempts > 1_000_000 {
+		return db.CompleteRoleSourceArtifactDeleteIntentParams{}, errors.New("artifact purge ambiguity count is outside the receipt contract")
+	}
+	providerEvidenceComplete := ambiguousAttempts == 0
+	commitment := roleSourceArtifactPurgeReceiptCommitmentV2{
+		ContractVersion: roleSourceArtifactPurgeReceiptContractV2,
 		IntentID:        util.UUIDToString(intent.ID), WorkspaceID: util.UUIDToString(intent.WorkspaceID),
 		StorageKeyDigest: storageKeyDigest, ArtifactDigest: intent.ArtifactDigest,
 		SizeBytes: intent.SizeBytes, Reason: intent.Reason, StorageBackend: backend, PurgeMode: mode,
 		SuccessfulPasses: int32(passes), DeletedVersions: versions, DeletedDeleteMarkers: markers,
 		ObservedDeletedBytes: observedBytes, LogicalBytesConfirmedAbsent: intent.SizeBytes,
-		AbsenceVerified: true, CompletedAt: completedAt.Format(time.RFC3339Nano),
+		AbsenceVerified: true, AmbiguousAttempts: ambiguousAttempts,
+		ProviderEvidenceComplete: providerEvidenceComplete,
+		CompletedAt:              completedAt.Format(time.RFC3339Nano),
 	}
 	body, err := json.Marshal(commitment)
 	if err != nil {
@@ -99,6 +130,9 @@ func buildRoleSourceArtifactPurgeReceiptParams(
 		PurgedObservedBytes:  result.ObservedBytesDeleted,
 		TotalDeletedVersions: versions, TotalDeletedDeleteMarkers: markers,
 		TotalObservedDeletedBytes: observedBytes,
+		ContractVersion:           roleSourceArtifactPurgeReceiptContractV2,
+		AmbiguousAttempts:         ambiguousAttempts,
+		ProviderEvidenceComplete:  providerEvidenceComplete,
 		CompletedAt:               pgtype.Timestamptz{Time: completedAt, Valid: true},
 		ReceiptDigest:             digestPurgeReceiptBytes(body),
 	}, nil
@@ -120,17 +154,47 @@ func VerifyRoleSourceArtifactPurgeReceipt(receipt db.RoleSourceArtifactPurgeRece
 	if err := validatePermanentPurgeResult(result); err != nil {
 		return err
 	}
-	commitment := roleSourceArtifactPurgeReceiptCommitment{
-		ContractVersion: roleSourceArtifactPurgeReceiptContract,
-		IntentID:        util.UUIDToString(receipt.IntentID), WorkspaceID: util.UUIDToString(receipt.WorkspaceID),
-		StorageKeyDigest: receipt.StorageKeyDigest, ArtifactDigest: receipt.ArtifactDigest,
-		SizeBytes: receipt.SizeBytes, Reason: receipt.Reason, StorageBackend: receipt.StorageBackend,
-		PurgeMode: receipt.PurgeMode, SuccessfulPasses: receipt.SuccessfulPasses,
-		DeletedVersions: receipt.DeletedVersions, DeletedDeleteMarkers: receipt.DeletedDeleteMarkers,
-		ObservedDeletedBytes:        receipt.ObservedDeletedBytes,
-		LogicalBytesConfirmedAbsent: receipt.LogicalBytesConfirmedAbsent,
-		AbsenceVerified:             receipt.AbsenceVerified,
-		CompletedAt:                 receipt.CompletedAt.Time.UTC().Format(time.RFC3339Nano),
+	if receipt.AmbiguousAttempts < 0 || receipt.AmbiguousAttempts > 1_000_000 {
+		return errors.New("artifact purge receipt ambiguity count is invalid")
+	}
+	if receipt.ProviderEvidenceComplete != (receipt.AmbiguousAttempts == 0) {
+		return errors.New("artifact purge receipt evidence-completeness flag is invalid")
+	}
+	var commitment any
+	switch receipt.ContractVersion {
+	case roleSourceArtifactPurgeReceiptContractV1:
+		if receipt.AmbiguousAttempts != 0 || !receipt.ProviderEvidenceComplete {
+			return errors.New("artifact purge v1 receipt contains ambiguity evidence")
+		}
+		commitment = roleSourceArtifactPurgeReceiptCommitmentV1{
+			ContractVersion: roleSourceArtifactPurgeReceiptContractV1,
+			IntentID:        util.UUIDToString(receipt.IntentID), WorkspaceID: util.UUIDToString(receipt.WorkspaceID),
+			StorageKeyDigest: receipt.StorageKeyDigest, ArtifactDigest: receipt.ArtifactDigest,
+			SizeBytes: receipt.SizeBytes, Reason: receipt.Reason, StorageBackend: receipt.StorageBackend,
+			PurgeMode: receipt.PurgeMode, SuccessfulPasses: receipt.SuccessfulPasses,
+			DeletedVersions: receipt.DeletedVersions, DeletedDeleteMarkers: receipt.DeletedDeleteMarkers,
+			ObservedDeletedBytes:        receipt.ObservedDeletedBytes,
+			LogicalBytesConfirmedAbsent: receipt.LogicalBytesConfirmedAbsent,
+			AbsenceVerified:             receipt.AbsenceVerified,
+			CompletedAt:                 receipt.CompletedAt.Time.UTC().Format(time.RFC3339Nano),
+		}
+	case roleSourceArtifactPurgeReceiptContractV2:
+		commitment = roleSourceArtifactPurgeReceiptCommitmentV2{
+			ContractVersion: roleSourceArtifactPurgeReceiptContractV2,
+			IntentID:        util.UUIDToString(receipt.IntentID), WorkspaceID: util.UUIDToString(receipt.WorkspaceID),
+			StorageKeyDigest: receipt.StorageKeyDigest, ArtifactDigest: receipt.ArtifactDigest,
+			SizeBytes: receipt.SizeBytes, Reason: receipt.Reason, StorageBackend: receipt.StorageBackend,
+			PurgeMode: receipt.PurgeMode, SuccessfulPasses: receipt.SuccessfulPasses,
+			DeletedVersions: receipt.DeletedVersions, DeletedDeleteMarkers: receipt.DeletedDeleteMarkers,
+			ObservedDeletedBytes:        receipt.ObservedDeletedBytes,
+			LogicalBytesConfirmedAbsent: receipt.LogicalBytesConfirmedAbsent,
+			AbsenceVerified:             receipt.AbsenceVerified,
+			AmbiguousAttempts:           receipt.AmbiguousAttempts,
+			ProviderEvidenceComplete:    receipt.ProviderEvidenceComplete,
+			CompletedAt:                 receipt.CompletedAt.Time.UTC().Format(time.RFC3339Nano),
+		}
+	default:
+		return errors.New("artifact purge receipt contract version is unsupported")
 	}
 	body, err := json.Marshal(commitment)
 	if err != nil {

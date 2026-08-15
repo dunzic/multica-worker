@@ -435,8 +435,11 @@ describe("ApiClient role-source runtime evidence", () => {
       observed_deleted_bytes: 8192,
       deleted_versions: 2,
       deleted_delete_markers: 1,
+      ambiguous_attempts: 0,
+      incomplete_provider_evidence_receipts: 0,
       truncated: false,
       receipts: [{
+        contract_version: "role-source-artifact-purge-receipt-v2",
         artifact_digest: digest,
         size_bytes: 4096,
         reason: "unreachable",
@@ -447,6 +450,8 @@ describe("ApiClient role-source runtime evidence", () => {
         deleted_delete_markers: 1,
         observed_deleted_bytes: 8192,
         logical_bytes_confirmed_absent: 4096,
+        ambiguous_attempts: 0,
+        provider_evidence_complete: true,
         completed_at: "2026-08-15T11:12:13Z",
         receipt_digest: digest,
       }],
@@ -460,6 +465,10 @@ describe("ApiClient role-source runtime evidence", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ...summary,
         observed_deleted_bytes: Number.MAX_SAFE_INTEGER + 1,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...summary,
+        receipts: [{ ...summary.receipts[0], ambiguous_attempts: 1, provider_evidence_complete: true }],
       }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -476,6 +485,13 @@ describe("ApiClient role-source runtime evidence", () => {
       expect.objectContaining({
         receipt_count: 0,
         observed_deleted_bytes: 0,
+        receipts: [],
+      }),
+    );
+    await expect(client.getWorkspaceRoleSourceArtifactPurgeReceipts("workspace-1")).resolves.toEqual(
+      expect.objectContaining({
+        receipt_count: 0,
+        ambiguous_attempts: 0,
         receipts: [],
       }),
     );

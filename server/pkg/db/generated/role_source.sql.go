@@ -150,7 +150,8 @@ func (q *Queries) CancelRoleSourceArtifactDeleteIntent(ctx context.Context, stor
 
 const claimNextRoleSourceArtifactDeleteIntent = `-- name: ClaimNextRoleSourceArtifactDeleteIntent :one
 WITH candidate AS MATERIALIZED (
-    SELECT storage_key
+    SELECT storage_key,
+           COALESCE(state = 'deleting' AND lease_expires_at < now(), false)::boolean AS purge_evidence_ambiguous
     FROM role_source_artifact_delete_intent
     WHERE next_attempt_at <= now()
       AND (state IN ('pending', 'tombstoned') OR (state = 'deleting' AND lease_expires_at < now()))
@@ -161,10 +162,15 @@ WITH candidate AS MATERIALIZED (
 UPDATE role_source_artifact_delete_intent intent
 SET state = 'deleting', lease_token = $1,
     lease_expires_at = now() + $2::interval,
-    attempt = attempt + 1, updated_at = now()
+    attempt = attempt + 1,
+    purge_ambiguous_attempts = purge_ambiguous_attempts + CASE
+        WHEN intent.state = 'deleting' AND intent.lease_expires_at < now() THEN 1
+        ELSE 0
+    END,
+    updated_at = now()
 FROM candidate
 WHERE intent.storage_key = candidate.storage_key
-RETURNING intent.storage_key, intent.artifact_digest, intent.size_bytes, intent.reason, intent.state, intent.lease_token, intent.lease_expires_at, intent.attempt, intent.tombstone_pass, intent.next_attempt_at, intent.created_at, intent.updated_at, intent.id, intent.workspace_id, intent.purge_backend, intent.purge_mode, intent.purge_passes, intent.deleted_versions, intent.deleted_delete_markers, intent.observed_deleted_bytes, intent.absence_verified, intent.last_purged_at
+RETURNING intent.storage_key, intent.artifact_digest, intent.size_bytes, intent.reason, intent.state, intent.lease_token, intent.lease_expires_at, intent.attempt, intent.tombstone_pass, intent.next_attempt_at, intent.created_at, intent.updated_at, intent.id, intent.workspace_id, intent.purge_backend, intent.purge_mode, intent.purge_passes, intent.deleted_versions, intent.deleted_delete_markers, intent.observed_deleted_bytes, intent.absence_verified, intent.last_purged_at, intent.purge_ambiguous_attempts, candidate.purge_evidence_ambiguous
 `
 
 type ClaimNextRoleSourceArtifactDeleteIntentParams struct {
@@ -172,9 +178,36 @@ type ClaimNextRoleSourceArtifactDeleteIntentParams struct {
 	LeaseDuration pgtype.Interval `json:"lease_duration"`
 }
 
-func (q *Queries) ClaimNextRoleSourceArtifactDeleteIntent(ctx context.Context, arg ClaimNextRoleSourceArtifactDeleteIntentParams) (RoleSourceArtifactDeleteIntent, error) {
+type ClaimNextRoleSourceArtifactDeleteIntentRow struct {
+	StorageKey             string             `json:"storage_key"`
+	ArtifactDigest         string             `json:"artifact_digest"`
+	SizeBytes              int64              `json:"size_bytes"`
+	Reason                 string             `json:"reason"`
+	State                  string             `json:"state"`
+	LeaseToken             pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt         pgtype.Timestamptz `json:"lease_expires_at"`
+	Attempt                int32              `json:"attempt"`
+	TombstonePass          int32              `json:"tombstone_pass"`
+	NextAttemptAt          pgtype.Timestamptz `json:"next_attempt_at"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+	ID                     pgtype.UUID        `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	PurgeBackend           pgtype.Text        `json:"purge_backend"`
+	PurgeMode              pgtype.Text        `json:"purge_mode"`
+	PurgePasses            int32              `json:"purge_passes"`
+	DeletedVersions        int64              `json:"deleted_versions"`
+	DeletedDeleteMarkers   int64              `json:"deleted_delete_markers"`
+	ObservedDeletedBytes   int64              `json:"observed_deleted_bytes"`
+	AbsenceVerified        bool               `json:"absence_verified"`
+	LastPurgedAt           pgtype.Timestamptz `json:"last_purged_at"`
+	PurgeAmbiguousAttempts int32              `json:"purge_ambiguous_attempts"`
+	PurgeEvidenceAmbiguous bool               `json:"purge_evidence_ambiguous"`
+}
+
+func (q *Queries) ClaimNextRoleSourceArtifactDeleteIntent(ctx context.Context, arg ClaimNextRoleSourceArtifactDeleteIntentParams) (ClaimNextRoleSourceArtifactDeleteIntentRow, error) {
 	row := q.db.QueryRow(ctx, claimNextRoleSourceArtifactDeleteIntent, arg.LeaseToken, arg.LeaseDuration)
-	var i RoleSourceArtifactDeleteIntent
+	var i ClaimNextRoleSourceArtifactDeleteIntentRow
 	err := row.Scan(
 		&i.StorageKey,
 		&i.ArtifactDigest,
@@ -198,6 +231,8 @@ func (q *Queries) ClaimNextRoleSourceArtifactDeleteIntent(ctx context.Context, a
 		&i.ObservedDeletedBytes,
 		&i.AbsenceVerified,
 		&i.LastPurgedAt,
+		&i.PurgeAmbiguousAttempts,
+		&i.PurgeEvidenceAmbiguous,
 	)
 	return i, err
 }
@@ -563,7 +598,7 @@ func (q *Queries) CompleteRoleSourceApply(ctx context.Context, arg CompleteRoleS
 
 const completeRoleSourceArtifactDeleteIntent = `-- name: CompleteRoleSourceArtifactDeleteIntent :one
 WITH owned AS MATERIALIZED (
-    SELECT intent.storage_key, intent.artifact_digest, intent.size_bytes, intent.reason, intent.state, intent.lease_token, intent.lease_expires_at, intent.attempt, intent.tombstone_pass, intent.next_attempt_at, intent.created_at, intent.updated_at, intent.id, intent.workspace_id, intent.purge_backend, intent.purge_mode, intent.purge_passes, intent.deleted_versions, intent.deleted_delete_markers, intent.observed_deleted_bytes, intent.absence_verified, intent.last_purged_at FROM role_source_artifact_delete_intent intent
+    SELECT intent.storage_key, intent.artifact_digest, intent.size_bytes, intent.reason, intent.state, intent.lease_token, intent.lease_expires_at, intent.attempt, intent.tombstone_pass, intent.next_attempt_at, intent.created_at, intent.updated_at, intent.id, intent.workspace_id, intent.purge_backend, intent.purge_mode, intent.purge_passes, intent.deleted_versions, intent.deleted_delete_markers, intent.observed_deleted_bytes, intent.absence_verified, intent.last_purged_at, intent.purge_ambiguous_attempts FROM role_source_artifact_delete_intent intent
     WHERE intent.storage_key = $1 AND intent.state = 'deleting' AND intent.lease_token = $2
       AND $3::boolean
       AND (intent.purge_backend IS NULL OR intent.purge_backend = $4)
@@ -575,6 +610,9 @@ WITH owned AS MATERIALIZED (
       AND $10::bigint = intent.deleted_versions + $7
       AND $11::bigint = intent.deleted_delete_markers + $8
       AND $12::bigint = intent.observed_deleted_bytes + $9
+      AND $13::text = 'role-source-artifact-purge-receipt-v2'
+      AND $14::integer = intent.purge_ambiguous_attempts
+      AND $15::boolean = (intent.purge_ambiguous_attempts = 0)
     FOR UPDATE
 ), evidence AS (
     SELECT o.id, o.workspace_id, o.artifact_digest, o.size_bytes, o.reason,
@@ -586,25 +624,28 @@ WITH owned AS MATERIALIZED (
         intent_id, workspace_id, storage_key_digest, artifact_digest,
         size_bytes, reason, storage_backend, purge_mode, successful_passes,
         deleted_versions, deleted_delete_markers, observed_deleted_bytes,
-        logical_bytes_confirmed_absent, absence_verified, completed_at,
+        logical_bytes_confirmed_absent, absence_verified, contract_version,
+        ambiguous_attempts, provider_evidence_complete, completed_at,
         receipt_digest
     )
-    SELECT evidence.id, evidence.workspace_id, $13, evidence.artifact_digest,
+    SELECT evidence.id, evidence.workspace_id, $16, evidence.artifact_digest,
            evidence.size_bytes, evidence.reason, evidence.storage_backend,
            evidence.completed_purge_mode, $6,
            $10, $11,
            $12,
-           evidence.size_bytes, true, $14, $15
+           evidence.size_bytes, true, $13,
+           $14, $15, $17,
+           $18
     FROM evidence
     ON CONFLICT (intent_id) DO NOTHING
-    RETURNING id, intent_id, workspace_id, storage_key_digest, artifact_digest, size_bytes, reason, storage_backend, purge_mode, successful_passes, deleted_versions, deleted_delete_markers, observed_deleted_bytes, logical_bytes_confirmed_absent, absence_verified, completed_at, receipt_digest, created_at
+    RETURNING id, intent_id, workspace_id, storage_key_digest, artifact_digest, size_bytes, reason, storage_backend, purge_mode, successful_passes, deleted_versions, deleted_delete_markers, observed_deleted_bytes, logical_bytes_confirmed_absent, absence_verified, completed_at, receipt_digest, created_at, contract_version, ambiguous_attempts, provider_evidence_complete
 ), removed AS (
     DELETE FROM role_source_artifact_delete_intent intent
     USING inserted
     WHERE intent.id = inserted.intent_id
     RETURNING intent.id
 )
-SELECT inserted.id, inserted.intent_id, inserted.workspace_id, inserted.storage_key_digest, inserted.artifact_digest, inserted.size_bytes, inserted.reason, inserted.storage_backend, inserted.purge_mode, inserted.successful_passes, inserted.deleted_versions, inserted.deleted_delete_markers, inserted.observed_deleted_bytes, inserted.logical_bytes_confirmed_absent, inserted.absence_verified, inserted.completed_at, inserted.receipt_digest, inserted.created_at FROM inserted JOIN removed ON removed.id = inserted.intent_id
+SELECT inserted.id, inserted.intent_id, inserted.workspace_id, inserted.storage_key_digest, inserted.artifact_digest, inserted.size_bytes, inserted.reason, inserted.storage_backend, inserted.purge_mode, inserted.successful_passes, inserted.deleted_versions, inserted.deleted_delete_markers, inserted.observed_deleted_bytes, inserted.logical_bytes_confirmed_absent, inserted.absence_verified, inserted.completed_at, inserted.receipt_digest, inserted.created_at, inserted.contract_version, inserted.ambiguous_attempts, inserted.provider_evidence_complete FROM inserted JOIN removed ON removed.id = inserted.intent_id
 `
 
 type CompleteRoleSourceArtifactDeleteIntentParams struct {
@@ -620,6 +661,9 @@ type CompleteRoleSourceArtifactDeleteIntentParams struct {
 	TotalDeletedVersions      int64              `json:"total_deleted_versions"`
 	TotalDeletedDeleteMarkers int64              `json:"total_deleted_delete_markers"`
 	TotalObservedDeletedBytes int64              `json:"total_observed_deleted_bytes"`
+	ContractVersion           string             `json:"contract_version"`
+	AmbiguousAttempts         int32              `json:"ambiguous_attempts"`
+	ProviderEvidenceComplete  bool               `json:"provider_evidence_complete"`
 	StorageKeyDigest          string             `json:"storage_key_digest"`
 	CompletedAt               pgtype.Timestamptz `json:"completed_at"`
 	ReceiptDigest             string             `json:"receipt_digest"`
@@ -644,6 +688,9 @@ type CompleteRoleSourceArtifactDeleteIntentRow struct {
 	CompletedAt                 pgtype.Timestamptz `json:"completed_at"`
 	ReceiptDigest               string             `json:"receipt_digest"`
 	CreatedAt                   pgtype.Timestamptz `json:"created_at"`
+	ContractVersion             string             `json:"contract_version"`
+	AmbiguousAttempts           int32              `json:"ambiguous_attempts"`
+	ProviderEvidenceComplete    bool               `json:"provider_evidence_complete"`
 }
 
 func (q *Queries) CompleteRoleSourceArtifactDeleteIntent(ctx context.Context, arg CompleteRoleSourceArtifactDeleteIntentParams) (CompleteRoleSourceArtifactDeleteIntentRow, error) {
@@ -660,6 +707,9 @@ func (q *Queries) CompleteRoleSourceArtifactDeleteIntent(ctx context.Context, ar
 		arg.TotalDeletedVersions,
 		arg.TotalDeletedDeleteMarkers,
 		arg.TotalObservedDeletedBytes,
+		arg.ContractVersion,
+		arg.AmbiguousAttempts,
+		arg.ProviderEvidenceComplete,
 		arg.StorageKeyDigest,
 		arg.CompletedAt,
 		arg.ReceiptDigest,
@@ -684,6 +734,9 @@ func (q *Queries) CompleteRoleSourceArtifactDeleteIntent(ctx context.Context, ar
 		&i.CompletedAt,
 		&i.ReceiptDigest,
 		&i.CreatedAt,
+		&i.ContractVersion,
+		&i.AmbiguousAttempts,
+		&i.ProviderEvidenceComplete,
 	)
 	return i, err
 }
@@ -1913,7 +1966,7 @@ func (q *Queries) GetRoleSourceArtifact(ctx context.Context, arg GetRoleSourceAr
 }
 
 const getRoleSourceArtifactDeleteIntentForUpdate = `-- name: GetRoleSourceArtifactDeleteIntentForUpdate :one
-SELECT storage_key, artifact_digest, size_bytes, reason, state, lease_token, lease_expires_at, attempt, tombstone_pass, next_attempt_at, created_at, updated_at, id, workspace_id, purge_backend, purge_mode, purge_passes, deleted_versions, deleted_delete_markers, observed_deleted_bytes, absence_verified, last_purged_at FROM role_source_artifact_delete_intent
+SELECT storage_key, artifact_digest, size_bytes, reason, state, lease_token, lease_expires_at, attempt, tombstone_pass, next_attempt_at, created_at, updated_at, id, workspace_id, purge_backend, purge_mode, purge_passes, deleted_versions, deleted_delete_markers, observed_deleted_bytes, absence_verified, last_purged_at, purge_ambiguous_attempts FROM role_source_artifact_delete_intent
 WHERE storage_key = $1
 FOR UPDATE
 `
@@ -1944,6 +1997,7 @@ func (q *Queries) GetRoleSourceArtifactDeleteIntentForUpdate(ctx context.Context
 		&i.ObservedDeletedBytes,
 		&i.AbsenceVerified,
 		&i.LastPurgedAt,
+		&i.PurgeAmbiguousAttempts,
 	)
 	return i, err
 }
@@ -1953,16 +2007,20 @@ SELECT count(*)::bigint AS receipt_count,
        COALESCE(sum(logical_bytes_confirmed_absent), 0)::bigint AS logical_bytes_confirmed_absent,
        COALESCE(sum(observed_deleted_bytes), 0)::bigint AS observed_deleted_bytes,
        COALESCE(sum(deleted_versions), 0)::bigint AS deleted_versions,
-       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers
+       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers,
+       COALESCE(sum(ambiguous_attempts), 0)::bigint AS ambiguous_attempts,
+       count(*) FILTER (WHERE NOT provider_evidence_complete)::bigint AS incomplete_provider_evidence_receipts
 FROM role_source_artifact_purge_receipt
 `
 
 type GetRoleSourceArtifactPurgeReceiptTotalsRow struct {
-	ReceiptCount                int64 `json:"receipt_count"`
-	LogicalBytesConfirmedAbsent int64 `json:"logical_bytes_confirmed_absent"`
-	ObservedDeletedBytes        int64 `json:"observed_deleted_bytes"`
-	DeletedVersions             int64 `json:"deleted_versions"`
-	DeletedDeleteMarkers        int64 `json:"deleted_delete_markers"`
+	ReceiptCount                       int64 `json:"receipt_count"`
+	LogicalBytesConfirmedAbsent        int64 `json:"logical_bytes_confirmed_absent"`
+	ObservedDeletedBytes               int64 `json:"observed_deleted_bytes"`
+	DeletedVersions                    int64 `json:"deleted_versions"`
+	DeletedDeleteMarkers               int64 `json:"deleted_delete_markers"`
+	AmbiguousAttempts                  int64 `json:"ambiguous_attempts"`
+	IncompleteProviderEvidenceReceipts int64 `json:"incomplete_provider_evidence_receipts"`
 }
 
 func (q *Queries) GetRoleSourceArtifactPurgeReceiptTotals(ctx context.Context) (GetRoleSourceArtifactPurgeReceiptTotalsRow, error) {
@@ -1974,6 +2032,8 @@ func (q *Queries) GetRoleSourceArtifactPurgeReceiptTotals(ctx context.Context) (
 		&i.ObservedDeletedBytes,
 		&i.DeletedVersions,
 		&i.DeletedDeleteMarkers,
+		&i.AmbiguousAttempts,
+		&i.IncompleteProviderEvidenceReceipts,
 	)
 	return i, err
 }
@@ -2956,17 +3016,21 @@ SELECT count(*)::bigint AS receipt_count,
        COALESCE(sum(logical_bytes_confirmed_absent), 0)::bigint AS logical_bytes_confirmed_absent,
        COALESCE(sum(observed_deleted_bytes), 0)::bigint AS observed_deleted_bytes,
        COALESCE(sum(deleted_versions), 0)::bigint AS deleted_versions,
-       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers
+       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers,
+       COALESCE(sum(ambiguous_attempts), 0)::bigint AS ambiguous_attempts,
+       count(*) FILTER (WHERE NOT provider_evidence_complete)::bigint AS incomplete_provider_evidence_receipts
 FROM role_source_artifact_purge_receipt
 WHERE workspace_id = $1
 `
 
 type GetWorkspaceRoleSourceArtifactPurgeReceiptTotalsRow struct {
-	ReceiptCount                int64 `json:"receipt_count"`
-	LogicalBytesConfirmedAbsent int64 `json:"logical_bytes_confirmed_absent"`
-	ObservedDeletedBytes        int64 `json:"observed_deleted_bytes"`
-	DeletedVersions             int64 `json:"deleted_versions"`
-	DeletedDeleteMarkers        int64 `json:"deleted_delete_markers"`
+	ReceiptCount                       int64 `json:"receipt_count"`
+	LogicalBytesConfirmedAbsent        int64 `json:"logical_bytes_confirmed_absent"`
+	ObservedDeletedBytes               int64 `json:"observed_deleted_bytes"`
+	DeletedVersions                    int64 `json:"deleted_versions"`
+	DeletedDeleteMarkers               int64 `json:"deleted_delete_markers"`
+	AmbiguousAttempts                  int64 `json:"ambiguous_attempts"`
+	IncompleteProviderEvidenceReceipts int64 `json:"incomplete_provider_evidence_receipts"`
 }
 
 func (q *Queries) GetWorkspaceRoleSourceArtifactPurgeReceiptTotals(ctx context.Context, workspaceID pgtype.UUID) (GetWorkspaceRoleSourceArtifactPurgeReceiptTotalsRow, error) {
@@ -2978,6 +3042,8 @@ func (q *Queries) GetWorkspaceRoleSourceArtifactPurgeReceiptTotals(ctx context.C
 		&i.ObservedDeletedBytes,
 		&i.DeletedVersions,
 		&i.DeletedDeleteMarkers,
+		&i.AmbiguousAttempts,
+		&i.IncompleteProviderEvidenceReceipts,
 	)
 	return i, err
 }
@@ -5302,7 +5368,7 @@ func (q *Queries) ListSucceededRoleSourceApplies(ctx context.Context, arg ListSu
 }
 
 const listWorkspaceRoleSourceArtifactPurgeReceipts = `-- name: ListWorkspaceRoleSourceArtifactPurgeReceipts :many
-SELECT id, intent_id, workspace_id, storage_key_digest, artifact_digest, size_bytes, reason, storage_backend, purge_mode, successful_passes, deleted_versions, deleted_delete_markers, observed_deleted_bytes, logical_bytes_confirmed_absent, absence_verified, completed_at, receipt_digest, created_at FROM role_source_artifact_purge_receipt
+SELECT id, intent_id, workspace_id, storage_key_digest, artifact_digest, size_bytes, reason, storage_backend, purge_mode, successful_passes, deleted_versions, deleted_delete_markers, observed_deleted_bytes, logical_bytes_confirmed_absent, absence_verified, completed_at, receipt_digest, created_at, contract_version, ambiguous_attempts, provider_evidence_complete FROM role_source_artifact_purge_receipt
 WHERE workspace_id = $1
 ORDER BY completed_at DESC, intent_id DESC
 LIMIT $2
@@ -5341,6 +5407,9 @@ func (q *Queries) ListWorkspaceRoleSourceArtifactPurgeReceipts(ctx context.Conte
 			&i.CompletedAt,
 			&i.ReceiptDigest,
 			&i.CreatedAt,
+			&i.ContractVersion,
+			&i.AmbiguousAttempts,
+			&i.ProviderEvidenceComplete,
 		); err != nil {
 			return nil, err
 		}
@@ -5810,7 +5879,7 @@ WITH candidate AS MATERIALIZED (
     )
     SELECT workspace_id, storage_key, digest, size_bytes, 'unreachable' FROM candidate
     ON CONFLICT (storage_key) DO NOTHING
-    RETURNING storage_key, artifact_digest, size_bytes, reason, state, lease_token, lease_expires_at, attempt, tombstone_pass, next_attempt_at, created_at, updated_at, id, workspace_id, purge_backend, purge_mode, purge_passes, deleted_versions, deleted_delete_markers, observed_deleted_bytes, absence_verified, last_purged_at
+    RETURNING storage_key, artifact_digest, size_bytes, reason, state, lease_token, lease_expires_at, attempt, tombstone_pass, next_attempt_at, created_at, updated_at, id, workspace_id, purge_backend, purge_mode, purge_passes, deleted_versions, deleted_delete_markers, observed_deleted_bytes, absence_verified, last_purged_at, purge_ambiguous_attempts
 ), removed_integrity AS (
     DELETE FROM role_source_artifact_integrity integrity
     USING queued
@@ -5822,32 +5891,33 @@ WITH candidate AS MATERIALIZED (
     WHERE artifact.storage_key = queued.storage_key
     RETURNING artifact.storage_key
 )
-SELECT queued.storage_key, queued.artifact_digest, queued.size_bytes, queued.reason, queued.state, queued.lease_token, queued.lease_expires_at, queued.attempt, queued.tombstone_pass, queued.next_attempt_at, queued.created_at, queued.updated_at, queued.id, queued.workspace_id, queued.purge_backend, queued.purge_mode, queued.purge_passes, queued.deleted_versions, queued.deleted_delete_markers, queued.observed_deleted_bytes, queued.absence_verified, queued.last_purged_at FROM queued JOIN removed USING (storage_key)
+SELECT queued.storage_key, queued.artifact_digest, queued.size_bytes, queued.reason, queued.state, queued.lease_token, queued.lease_expires_at, queued.attempt, queued.tombstone_pass, queued.next_attempt_at, queued.created_at, queued.updated_at, queued.id, queued.workspace_id, queued.purge_backend, queued.purge_mode, queued.purge_passes, queued.deleted_versions, queued.deleted_delete_markers, queued.observed_deleted_bytes, queued.absence_verified, queued.last_purged_at, queued.purge_ambiguous_attempts FROM queued JOIN removed USING (storage_key)
 `
 
 type QueueNextUnreachableRoleSourceArtifactRow struct {
-	StorageKey           string             `json:"storage_key"`
-	ArtifactDigest       string             `json:"artifact_digest"`
-	SizeBytes            int64              `json:"size_bytes"`
-	Reason               string             `json:"reason"`
-	State                string             `json:"state"`
-	LeaseToken           pgtype.UUID        `json:"lease_token"`
-	LeaseExpiresAt       pgtype.Timestamptz `json:"lease_expires_at"`
-	Attempt              int32              `json:"attempt"`
-	TombstonePass        int32              `json:"tombstone_pass"`
-	NextAttemptAt        pgtype.Timestamptz `json:"next_attempt_at"`
-	CreatedAt            pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
-	ID                   pgtype.UUID        `json:"id"`
-	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
-	PurgeBackend         pgtype.Text        `json:"purge_backend"`
-	PurgeMode            pgtype.Text        `json:"purge_mode"`
-	PurgePasses          int32              `json:"purge_passes"`
-	DeletedVersions      int64              `json:"deleted_versions"`
-	DeletedDeleteMarkers int64              `json:"deleted_delete_markers"`
-	ObservedDeletedBytes int64              `json:"observed_deleted_bytes"`
-	AbsenceVerified      bool               `json:"absence_verified"`
-	LastPurgedAt         pgtype.Timestamptz `json:"last_purged_at"`
+	StorageKey             string             `json:"storage_key"`
+	ArtifactDigest         string             `json:"artifact_digest"`
+	SizeBytes              int64              `json:"size_bytes"`
+	Reason                 string             `json:"reason"`
+	State                  string             `json:"state"`
+	LeaseToken             pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt         pgtype.Timestamptz `json:"lease_expires_at"`
+	Attempt                int32              `json:"attempt"`
+	TombstonePass          int32              `json:"tombstone_pass"`
+	NextAttemptAt          pgtype.Timestamptz `json:"next_attempt_at"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+	ID                     pgtype.UUID        `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	PurgeBackend           pgtype.Text        `json:"purge_backend"`
+	PurgeMode              pgtype.Text        `json:"purge_mode"`
+	PurgePasses            int32              `json:"purge_passes"`
+	DeletedVersions        int64              `json:"deleted_versions"`
+	DeletedDeleteMarkers   int64              `json:"deleted_delete_markers"`
+	ObservedDeletedBytes   int64              `json:"observed_deleted_bytes"`
+	AbsenceVerified        bool               `json:"absence_verified"`
+	LastPurgedAt           pgtype.Timestamptz `json:"last_purged_at"`
+	PurgeAmbiguousAttempts int32              `json:"purge_ambiguous_attempts"`
 }
 
 func (q *Queries) QueueNextUnreachableRoleSourceArtifact(ctx context.Context, settleDelay pgtype.Interval) (QueueNextUnreachableRoleSourceArtifactRow, error) {
@@ -5876,6 +5946,7 @@ func (q *Queries) QueueNextUnreachableRoleSourceArtifact(ctx context.Context, se
 		&i.ObservedDeletedBytes,
 		&i.AbsenceVerified,
 		&i.LastPurgedAt,
+		&i.PurgeAmbiguousAttempts,
 	)
 	return i, err
 }
@@ -6054,18 +6125,27 @@ func (q *Queries) RecordRoleSourceRuntimeAttestation(ctx context.Context, arg Re
 const releaseRoleSourceArtifactDeleteIntent = `-- name: ReleaseRoleSourceArtifactDeleteIntent :execrows
 UPDATE role_source_artifact_delete_intent
 SET state = 'pending', lease_token = NULL, lease_expires_at = NULL,
-    next_attempt_at = now() + $1::interval, updated_at = now()
-WHERE storage_key = $2 AND state = 'deleting' AND lease_token = $3
+    purge_ambiguous_attempts = purge_ambiguous_attempts + CASE
+        WHEN $1::boolean THEN 1 ELSE 0
+    END,
+    next_attempt_at = now() + $2::interval, updated_at = now()
+WHERE storage_key = $3 AND state = 'deleting' AND lease_token = $4
 `
 
 type ReleaseRoleSourceArtifactDeleteIntentParams struct {
-	RetryDelay pgtype.Interval `json:"retry_delay"`
-	StorageKey string          `json:"storage_key"`
-	LeaseToken pgtype.UUID     `json:"lease_token"`
+	PurgeEvidenceAmbiguous bool            `json:"purge_evidence_ambiguous"`
+	RetryDelay             pgtype.Interval `json:"retry_delay"`
+	StorageKey             string          `json:"storage_key"`
+	LeaseToken             pgtype.UUID     `json:"lease_token"`
 }
 
 func (q *Queries) ReleaseRoleSourceArtifactDeleteIntent(ctx context.Context, arg ReleaseRoleSourceArtifactDeleteIntentParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseRoleSourceArtifactDeleteIntent, arg.RetryDelay, arg.StorageKey, arg.LeaseToken)
+	result, err := q.db.Exec(ctx, releaseRoleSourceArtifactDeleteIntent,
+		arg.PurgeEvidenceAmbiguous,
+		arg.RetryDelay,
+		arg.StorageKey,
+		arg.LeaseToken,
+	)
 	if err != nil {
 		return 0, err
 	}

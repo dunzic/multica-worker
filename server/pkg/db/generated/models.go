@@ -1008,28 +1008,29 @@ type RoleSourceArtifact struct {
 }
 
 type RoleSourceArtifactDeleteIntent struct {
-	StorageKey           string             `json:"storage_key"`
-	ArtifactDigest       string             `json:"artifact_digest"`
-	SizeBytes            int64              `json:"size_bytes"`
-	Reason               string             `json:"reason"`
-	State                string             `json:"state"`
-	LeaseToken           pgtype.UUID        `json:"lease_token"`
-	LeaseExpiresAt       pgtype.Timestamptz `json:"lease_expires_at"`
-	Attempt              int32              `json:"attempt"`
-	TombstonePass        int32              `json:"tombstone_pass"`
-	NextAttemptAt        pgtype.Timestamptz `json:"next_attempt_at"`
-	CreatedAt            pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
-	ID                   pgtype.UUID        `json:"id"`
-	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
-	PurgeBackend         pgtype.Text        `json:"purge_backend"`
-	PurgeMode            pgtype.Text        `json:"purge_mode"`
-	PurgePasses          int32              `json:"purge_passes"`
-	DeletedVersions      int64              `json:"deleted_versions"`
-	DeletedDeleteMarkers int64              `json:"deleted_delete_markers"`
-	ObservedDeletedBytes int64              `json:"observed_deleted_bytes"`
-	AbsenceVerified      bool               `json:"absence_verified"`
-	LastPurgedAt         pgtype.Timestamptz `json:"last_purged_at"`
+	StorageKey             string             `json:"storage_key"`
+	ArtifactDigest         string             `json:"artifact_digest"`
+	SizeBytes              int64              `json:"size_bytes"`
+	Reason                 string             `json:"reason"`
+	State                  string             `json:"state"`
+	LeaseToken             pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt         pgtype.Timestamptz `json:"lease_expires_at"`
+	Attempt                int32              `json:"attempt"`
+	TombstonePass          int32              `json:"tombstone_pass"`
+	NextAttemptAt          pgtype.Timestamptz `json:"next_attempt_at"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+	ID                     pgtype.UUID        `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	PurgeBackend           pgtype.Text        `json:"purge_backend"`
+	PurgeMode              pgtype.Text        `json:"purge_mode"`
+	PurgePasses            int32              `json:"purge_passes"`
+	DeletedVersions        int64              `json:"deleted_versions"`
+	DeletedDeleteMarkers   int64              `json:"deleted_delete_markers"`
+	ObservedDeletedBytes   int64              `json:"observed_deleted_bytes"`
+	AbsenceVerified        bool               `json:"absence_verified"`
+	LastPurgedAt           pgtype.Timestamptz `json:"last_purged_at"`
+	PurgeAmbiguousAttempts int32              `json:"purge_ambiguous_attempts"`
 }
 
 type RoleSourceArtifactIntegrity struct {
@@ -1071,6 +1072,9 @@ type RoleSourceArtifactPurgeReceipt struct {
 	CompletedAt                 pgtype.Timestamptz `json:"completed_at"`
 	ReceiptDigest               string             `json:"receipt_digest"`
 	CreatedAt                   pgtype.Timestamptz `json:"created_at"`
+	ContractVersion             string             `json:"contract_version"`
+	AmbiguousAttempts           int32              `json:"ambiguous_attempts"`
+	ProviderEvidenceComplete    bool               `json:"provider_evidence_complete"`
 }
 
 type RoleSourceAuditEvent struct {

@@ -137,6 +137,16 @@ and preserve the intent, provider request IDs, content-free logs and metrics.
 Never treat a successful current-object delete alone as S3 erasure, and never
 manually mark `absence_verified` or insert a receipt.
 
+`MulticaRoleSourceArtifactGCAmbiguousEvidence` means a provider operation may
+have completed without Multica receiving or persisting the complete response,
+or a `deleting` lease expired and was reclaimed. Do not clear the ambiguity
+counter or edit a receipt. Let the reconciler reach a verified empty exact-key
+inventory; the resulting v2 receipt remains valid for logical absence but its
+version/delete-marker/observed-byte totals are lower bounds. Preserve bounded
+provider request IDs and inventory evidence outside Multica, correlate them by
+approved operational timestamps/digests, and keep storage-savings claims
+disabled until independent provider reconciliation is complete.
+
 ## Artifact-integrity quarantine operations
 
 The integrity worker is independently default-off. Enable

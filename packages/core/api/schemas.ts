@@ -210,6 +210,7 @@ export const EMPTY_ROLE_SOURCE_RETENTION_PREVIEW: RoleSourceRetentionPreview = {
 const JSONSafeNonnegativeIntegerSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 
 const RoleSourceArtifactPurgeReceiptSchema = z.object({
+  contract_version: z.enum(["role-source-artifact-purge-receipt-v1", "role-source-artifact-purge-receipt-v2"]),
   artifact_digest: Sha256DigestSchema,
   size_bytes: JSONSafeNonnegativeIntegerSchema,
   reason: z.enum(["unreachable", "workspace_deleted"]),
@@ -220,9 +221,18 @@ const RoleSourceArtifactPurgeReceiptSchema = z.object({
   deleted_delete_markers: JSONSafeNonnegativeIntegerSchema,
   observed_deleted_bytes: JSONSafeNonnegativeIntegerSchema,
   logical_bytes_confirmed_absent: JSONSafeNonnegativeIntegerSchema,
+  ambiguous_attempts: JSONSafeNonnegativeIntegerSchema,
+  provider_evidence_complete: z.boolean(),
   completed_at: z.string(),
   receipt_digest: Sha256DigestSchema,
-}).strict();
+}).strict().superRefine((receipt, ctx) => {
+  if (receipt.provider_evidence_complete !== (receipt.ambiguous_attempts === 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "purge receipt evidence completeness is inconsistent" });
+  }
+  if (receipt.contract_version === "role-source-artifact-purge-receipt-v1" && receipt.ambiguous_attempts !== 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "v1 purge receipt cannot contain ambiguity evidence" });
+  }
+});
 
 export const RoleSourceArtifactPurgeReceiptSummarySchema: z.ZodType<RoleSourceArtifactPurgeReceiptSummary> = z.object({
   receipt_count: JSONSafeNonnegativeIntegerSchema,
@@ -230,9 +240,16 @@ export const RoleSourceArtifactPurgeReceiptSummarySchema: z.ZodType<RoleSourceAr
   observed_deleted_bytes: JSONSafeNonnegativeIntegerSchema,
   deleted_versions: JSONSafeNonnegativeIntegerSchema,
   deleted_delete_markers: JSONSafeNonnegativeIntegerSchema,
+  ambiguous_attempts: JSONSafeNonnegativeIntegerSchema,
+  incomplete_provider_evidence_receipts: JSONSafeNonnegativeIntegerSchema,
   truncated: z.boolean(),
   receipts: z.array(RoleSourceArtifactPurgeReceiptSchema).max(50),
-}).strict();
+}).strict().superRefine((summary, ctx) => {
+  if (summary.incomplete_provider_evidence_receipts > summary.receipt_count ||
+      summary.ambiguous_attempts < summary.incomplete_provider_evidence_receipts) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "purge receipt ambiguity totals are inconsistent" });
+  }
+});
 
 export const EMPTY_ROLE_SOURCE_ARTIFACT_PURGE_RECEIPT_SUMMARY: RoleSourceArtifactPurgeReceiptSummary = {
   receipt_count: 0,
@@ -240,6 +257,8 @@ export const EMPTY_ROLE_SOURCE_ARTIFACT_PURGE_RECEIPT_SUMMARY: RoleSourceArtifac
   observed_deleted_bytes: 0,
   deleted_versions: 0,
   deleted_delete_markers: 0,
+  ambiguous_attempts: 0,
+  incomplete_provider_evidence_receipts: 0,
   truncated: false,
   receipts: [],
 };

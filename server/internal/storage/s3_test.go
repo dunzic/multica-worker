@@ -215,6 +215,119 @@ func TestS3StoragePurgeObjectRefusesUnboundedHistoryBeforeMutation(t *testing.T)
 	}
 }
 
+func TestS3StoragePurgeErrorClassifiesPreflightAndPartialMutation(t *testing.T) {
+	t.Run("preflight failure did not mutate", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>denied</Message></Error>`)
+		}))
+		t.Cleanup(server.Close)
+		store := newPurgeTestS3Storage(server.URL)
+		_, err := store.PurgeObjectWithResult(context.Background(), "role-source/preflight-denied")
+		if err == nil || PermanentPurgeMayHaveMutated(err) {
+			t.Fatalf("preflight error=%v may_have_mutated=%v", err, PermanentPurgeMayHaveMutated(err))
+		}
+	})
+
+	t.Run("partial batch may have mutated", func(t *testing.T) {
+		const key = "role-source/partial-delete"
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodDelete:
+				w.WriteHeader(http.StatusNoContent)
+			case r.Method == http.MethodGet && r.URL.Query().Has("versions"):
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>`+key+`</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Version><Key>`+key+`</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest><Size>7</Size></Version>
+</ListVersionsResult>`)
+			case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Error><Key>`+key+`</Key><VersionId>v1</VersionId><Code>AccessDenied</Code><Message>denied</Message></Error>
+</DeleteResult>`)
+			default:
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		}))
+		t.Cleanup(server.Close)
+		store := newPurgeTestS3Storage(server.URL)
+		result, err := store.PurgeObjectWithResult(context.Background(), key)
+		if err == nil || !PermanentPurgeMayHaveMutated(err) || !strings.Contains(err.Error(), "AccessDenied") {
+			t.Fatalf("partial-delete result=%+v error=%v may_have_mutated=%v", result, err, PermanentPurgeMayHaveMutated(err))
+		}
+		if result.VersionsDeleted != 1 || result.ObservedBytesDeleted != 7 || result.VerifiedAbsent {
+			t.Fatalf("partial-delete result=%+v", result)
+		}
+	})
+}
+
+func TestS3StoragePurgeTimeoutAfterProviderMutationConvergesWithAmbiguousEvidence(t *testing.T) {
+	const key = "role-source/timeout-after-delete"
+	var retained atomic.Bool
+	retained.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Query().Has("versions"):
+			w.Header().Set("Content-Type", "application/xml")
+			if retained.Load() {
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>`+key+`</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+  <Version><Key>`+key+`</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest><Size>11</Size></Version>
+</ListVersionsResult>`)
+				return
+			}
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>`+key+`</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+</ListVersionsResult>`)
+		case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
+			retained.Store(false)
+			select {
+			case <-r.Context().Done():
+			case <-time.After(250 * time.Millisecond):
+			}
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+	store := newPurgeTestS3Storage(server.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	result, err := store.PurgeObjectWithResult(ctx, key)
+	cancel()
+	if err == nil || !PermanentPurgeMayHaveMutated(err) || retained.Load() {
+		t.Fatalf("timeout result=%+v error=%v retained=%v may_have_mutated=%v", result, err, retained.Load(), PermanentPurgeMayHaveMutated(err))
+	}
+	if result.VersionsDeleted != 1 || result.ObservedBytesDeleted != 11 || result.VerifiedAbsent {
+		t.Fatalf("timeout result=%+v", result)
+	}
+
+	retry, err := store.PurgeObjectWithResult(context.Background(), key)
+	if err != nil || !retry.VerifiedAbsent || retry.VersionsDeleted != 0 || retry.ObservedBytesDeleted != 0 {
+		t.Fatalf("retry result=%+v error=%v", retry, err)
+	}
+}
+
+func newPurgeTestS3Storage(endpoint string) *S3Storage {
+	return &S3Storage{
+		client: s3.New(s3.Options{
+			Region:       "us-east-1",
+			Credentials:  aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
+			BaseEndpoint: aws.String(endpoint),
+			UsePathStyle: true,
+			Retryer:      aws.NopRetryer{},
+		}),
+		bucket: "test-bucket", region: "us-east-1", endpointURL: endpoint, usePathStyle: true,
+	}
+}
+
 type observedChecksumRequest struct {
 	contentSHA256 string
 	trailer       string

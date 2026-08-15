@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,8 @@ func (s *roleSourcePurgeRecordingStorage) PurgeObjectWithResult(context.Context,
 
 type roleSourceDeleteOnlyStorage struct{ deletes int }
 
+type roleSourceAmbiguousPurgeStorage struct{}
+
 type roleSourceGuardProbe struct{ calls int }
 
 func (g *roleSourceGuardProbe) WithDestructive(ctx context.Context, fn func(context.Context) error) error {
@@ -46,6 +49,19 @@ func (g *roleSourceGuardProbe) WithDestructive(ctx context.Context, fn func(cont
 func (s *roleSourceDeleteOnlyStorage) DeleteObject(context.Context, string) error {
 	s.deletes++
 	return nil
+}
+
+func (s *roleSourceAmbiguousPurgeStorage) DeleteObject(context.Context, string) error { return nil }
+
+func (s *roleSourceAmbiguousPurgeStorage) PurgeObjectWithResult(context.Context, string) (storage.PermanentPurgeResult, error) {
+	result := storage.PermanentPurgeResult{
+		Backend: storage.PermanentPurgeBackendS3, Mode: storage.PermanentPurgeModeVersions,
+		VersionsDeleted: 1, ObservedBytesDeleted: 64,
+	}
+	return result, &storage.PermanentPurgeError{
+		Operation: "retained-version delete", MayHaveMutated: true,
+		Err: errors.New("response lost"),
+	}
 }
 
 func TestRoleSourceArtifactGCUsesVersionPurgingWhenAvailable(t *testing.T) {
@@ -67,6 +83,11 @@ func TestRoleSourceArtifactGCUsesVersionPurgingWhenAvailable(t *testing.T) {
 	}
 	if legacy.deletes != 0 {
 		t.Fatalf("delete-only storage calls = %d, want 0 fail-closed calls", legacy.deletes)
+	}
+
+	ambiguous, err := purgeRoleSourceArtifactObject(context.Background(), &roleSourceAmbiguousPurgeStorage{}, "artifact")
+	if err == nil || !storage.PermanentPurgeMayHaveMutated(err) || ambiguous.VersionsDeleted != 1 || ambiguous.ObservedBytesDeleted != 64 {
+		t.Fatalf("ambiguous purge result=%+v error=%v", ambiguous, err)
 	}
 }
 

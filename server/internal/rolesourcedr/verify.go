@@ -304,7 +304,8 @@ func verifyArtifactPurgeReceipts(ctx context.Context, tx pgx.Tx, report *Report)
 SELECT id,intent_id,workspace_id,storage_key_digest,artifact_digest,size_bytes,
        reason,storage_backend,purge_mode,successful_passes,deleted_versions,
        deleted_delete_markers,observed_deleted_bytes,logical_bytes_confirmed_absent,
-       absence_verified,completed_at,receipt_digest,created_at
+       absence_verified,contract_version,ambiguous_attempts,provider_evidence_complete,
+       completed_at,receipt_digest,created_at
 FROM role_source_artifact_purge_receipt
 ORDER BY workspace_id,completed_at,intent_id`)
 	if err != nil {
@@ -317,6 +318,7 @@ ORDER BY workspace_id,completed_at,intent_id`)
 			&row.ArtifactDigest, &row.SizeBytes, &row.Reason, &row.StorageBackend, &row.PurgeMode,
 			&row.SuccessfulPasses, &row.DeletedVersions, &row.DeletedDeleteMarkers,
 			&row.ObservedDeletedBytes, &row.LogicalBytesConfirmedAbsent, &row.AbsenceVerified,
+			&row.ContractVersion, &row.AmbiguousAttempts, &row.ProviderEvidenceComplete,
 			&row.CompletedAt, &row.ReceiptDigest, &row.CreatedAt); err != nil {
 			return err
 		}

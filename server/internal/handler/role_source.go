@@ -276,6 +276,7 @@ type roleSourceRetentionPreviewResponse struct {
 }
 
 type roleSourceArtifactPurgeReceiptResponse struct {
+	ContractVersion             string `json:"contract_version"`
 	ArtifactDigest              string `json:"artifact_digest"`
 	SizeBytes                   int64  `json:"size_bytes"`
 	Reason                      string `json:"reason"`
@@ -286,18 +287,22 @@ type roleSourceArtifactPurgeReceiptResponse struct {
 	DeletedDeleteMarkers        int64  `json:"deleted_delete_markers"`
 	ObservedDeletedBytes        int64  `json:"observed_deleted_bytes"`
 	LogicalBytesConfirmedAbsent int64  `json:"logical_bytes_confirmed_absent"`
+	AmbiguousAttempts           int32  `json:"ambiguous_attempts"`
+	ProviderEvidenceComplete    bool   `json:"provider_evidence_complete"`
 	CompletedAt                 string `json:"completed_at"`
 	ReceiptDigest               string `json:"receipt_digest"`
 }
 
 type roleSourceArtifactPurgeReceiptSummaryResponse struct {
-	ReceiptCount                int64                                    `json:"receipt_count"`
-	LogicalBytesConfirmedAbsent int64                                    `json:"logical_bytes_confirmed_absent"`
-	ObservedDeletedBytes        int64                                    `json:"observed_deleted_bytes"`
-	DeletedVersions             int64                                    `json:"deleted_versions"`
-	DeletedDeleteMarkers        int64                                    `json:"deleted_delete_markers"`
-	Truncated                   bool                                     `json:"truncated"`
-	Receipts                    []roleSourceArtifactPurgeReceiptResponse `json:"receipts"`
+	ReceiptCount                       int64                                    `json:"receipt_count"`
+	LogicalBytesConfirmedAbsent        int64                                    `json:"logical_bytes_confirmed_absent"`
+	ObservedDeletedBytes               int64                                    `json:"observed_deleted_bytes"`
+	DeletedVersions                    int64                                    `json:"deleted_versions"`
+	DeletedDeleteMarkers               int64                                    `json:"deleted_delete_markers"`
+	AmbiguousAttempts                  int64                                    `json:"ambiguous_attempts"`
+	IncompleteProviderEvidenceReceipts int64                                    `json:"incomplete_provider_evidence_receipts"`
+	Truncated                          bool                                     `json:"truncated"`
+	Receipts                           []roleSourceArtifactPurgeReceiptResponse `json:"receipts"`
 }
 
 const maxRoleSourceJSONSafeInteger int64 = 1<<53 - 1
@@ -828,7 +833,8 @@ func (h *Handler) GetWorkspaceRoleSourceArtifactPurgeReceipts(w http.ResponseWri
 	}
 	if !roleSourcePurgeReceiptJSONIntegersSafe(
 		totals.ReceiptCount, totals.LogicalBytesConfirmedAbsent, totals.ObservedDeletedBytes,
-		totals.DeletedVersions, totals.DeletedDeleteMarkers,
+		totals.DeletedVersions, totals.DeletedDeleteMarkers, totals.AmbiguousAttempts,
+		totals.IncompleteProviderEvidenceReceipts,
 	) {
 		writeError(w, http.StatusInternalServerError, "artifact purge receipt totals exceed the API integer contract")
 		return
@@ -836,13 +842,16 @@ func (h *Handler) GetWorkspaceRoleSourceArtifactPurgeReceipts(w http.ResponseWri
 	response := roleSourceArtifactPurgeReceiptSummaryResponse{
 		ReceiptCount: totals.ReceiptCount, LogicalBytesConfirmedAbsent: totals.LogicalBytesConfirmedAbsent,
 		ObservedDeletedBytes: totals.ObservedDeletedBytes, DeletedVersions: totals.DeletedVersions,
-		DeletedDeleteMarkers: totals.DeletedDeleteMarkers, Truncated: totals.ReceiptCount > int64(len(rows)),
-		Receipts: make([]roleSourceArtifactPurgeReceiptResponse, 0, len(rows)),
+		DeletedDeleteMarkers: totals.DeletedDeleteMarkers, AmbiguousAttempts: totals.AmbiguousAttempts,
+		IncompleteProviderEvidenceReceipts: totals.IncompleteProviderEvidenceReceipts,
+		Truncated:                          totals.ReceiptCount > int64(len(rows)),
+		Receipts:                           make([]roleSourceArtifactPurgeReceiptResponse, 0, len(rows)),
 	}
 	for _, row := range rows {
 		if !roleSourcePurgeReceiptJSONIntegersSafe(
 			row.SizeBytes, int64(row.SuccessfulPasses), row.DeletedVersions,
 			row.DeletedDeleteMarkers, row.ObservedDeletedBytes, row.LogicalBytesConfirmedAbsent,
+			int64(row.AmbiguousAttempts),
 		) {
 			writeError(w, http.StatusInternalServerError, "artifact purge receipt exceeds the API integer contract")
 			return
@@ -852,11 +861,14 @@ func (h *Handler) GetWorkspaceRoleSourceArtifactPurgeReceipts(w http.ResponseWri
 			return
 		}
 		response.Receipts = append(response.Receipts, roleSourceArtifactPurgeReceiptResponse{
-			ArtifactDigest: row.ArtifactDigest, SizeBytes: row.SizeBytes, Reason: row.Reason,
+			ContractVersion: row.ContractVersion, ArtifactDigest: row.ArtifactDigest,
+			SizeBytes: row.SizeBytes, Reason: row.Reason,
 			StorageBackend: row.StorageBackend, PurgeMode: row.PurgeMode, SuccessfulPasses: row.SuccessfulPasses,
 			DeletedVersions: row.DeletedVersions, DeletedDeleteMarkers: row.DeletedDeleteMarkers,
 			ObservedDeletedBytes:        row.ObservedDeletedBytes,
 			LogicalBytesConfirmedAbsent: row.LogicalBytesConfirmedAbsent,
+			AmbiguousAttempts:           row.AmbiguousAttempts,
+			ProviderEvidenceComplete:    row.ProviderEvidenceComplete,
 			CompletedAt:                 util.TimestampToString(row.CompletedAt), ReceiptDigest: row.ReceiptDigest,
 		})
 	}

@@ -164,6 +164,7 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 	r.RoleSource.RecordOutboxDispatch("published")
 	r.RoleSource.SetOutboxState(1, 2, 3)
 	r.RoleSourceArtifactGC.DeleteFailures.Inc()
+	r.RoleSourceArtifactGC.AmbiguousFailures.Inc()
 	r.RoleSourceArtifactIntegrity.RecordOutcome("read_failed")
 	r.RoleSourceArtifactIntegrity.RecordFailure("claim")
 	r.RoleSourceArtifactIntegrity.Quarantined.Set(1)
@@ -175,19 +176,20 @@ func TestRegistryExposesRoleSourceMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	wanted := map[string]bool{
-		"multica_role_source_apply_failure_audit_writes_total":   false,
-		"multica_role_source_apply_commit_reconciliations_total": false,
-		"multica_role_source_runtime_config_attestations_total":  false,
-		"multica_role_source_outbox_dispatches_total":            false,
-		"multica_role_source_outbox_active":                      false,
-		"multica_role_source_outbox_dead":                        false,
-		"multica_role_source_outbox_oldest_active_seconds":       false,
-		"multica_role_source_artifact_gc_delete_failures_total":  false,
-		"multica_role_source_artifact_integrity_outcomes_total":  false,
-		"multica_role_source_artifact_integrity_failures_total":  false,
-		"multica_role_source_artifact_integrity_quarantined":     false,
-		"multica_role_source_retention_failures_total":           false,
-		"multica_role_source_retention_outcomes_total":           false,
+		"multica_role_source_apply_failure_audit_writes_total":     false,
+		"multica_role_source_apply_commit_reconciliations_total":   false,
+		"multica_role_source_runtime_config_attestations_total":    false,
+		"multica_role_source_outbox_dispatches_total":              false,
+		"multica_role_source_outbox_active":                        false,
+		"multica_role_source_outbox_dead":                          false,
+		"multica_role_source_outbox_oldest_active_seconds":         false,
+		"multica_role_source_artifact_gc_delete_failures_total":    false,
+		"multica_role_source_artifact_gc_ambiguous_failures_total": false,
+		"multica_role_source_artifact_integrity_outcomes_total":    false,
+		"multica_role_source_artifact_integrity_failures_total":    false,
+		"multica_role_source_artifact_integrity_quarantined":       false,
+		"multica_role_source_retention_failures_total":             false,
+		"multica_role_source_retention_outcomes_total":             false,
 	}
 	for _, family := range families {
 		if _, ok := wanted[family.GetName()]; ok {
@@ -215,6 +217,7 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 		"MulticaRoleSourceOutboxBacklogOld",
 		"MulticaRoleSourceOutboxDeadLetters",
 		"MulticaRoleSourceArtifactGCDeleteFailures",
+		"MulticaRoleSourceArtifactGCAmbiguousEvidence",
 		"MulticaRoleSourceArtifactIntegrityQuarantined",
 		"MulticaRoleSourceArtifactIntegrityReadFailures",
 		"MulticaRoleSourceArtifactIntegrityWorkerFailures",
@@ -229,6 +232,7 @@ func TestHelmRulePagesOnMissingRoleSourceFailureEvidence(t *testing.T) {
 		"multica_role_source_outbox_dead",
 		"multica_role_source_runtime_config_attestations_total",
 		"multica_role_source_runtime_availability",
+		"multica_role_source_artifact_gc_ambiguous_failures_total",
 		`outcome=~"persist_failed|id_generation_failed"`,
 		"roleSourceAuditWriteFailureFor",
 		"roleSourceOutboxFailureFor",
