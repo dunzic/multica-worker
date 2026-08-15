@@ -3,6 +3,9 @@
 Scope: provider partial success, response loss, process interruption and the
 truthfulness of immutable artifact-purge receipts
 
+Execution record:
+[`RS-06-purge-ambiguity-local-validation-2026-08-15.md`](../evidence/RS-06-purge-ambiguity-local-validation-2026-08-15.md)
+
 Decision: **GO to merge behind the existing default-off artifact-GC gate;
 NO-GO for a customer deletion cohort until candidate-store, two-replica,
 primary-failover and restore evidence pass.**
