@@ -50,6 +50,20 @@ type cachedToken struct {
 	expiresAt time.Time
 }
 
+type apiHTTPError struct {
+	Path       string
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *apiHTTPError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("dingtalk: %s: code=%q message=%q", e.Path, e.Code, e.Message)
+	}
+	return fmt.Sprintf("dingtalk: %s: http %d", e.Path, e.StatusCode)
+}
+
 // NewClient builds the outbound client. apiBase defaults to the DingTalk
 // Open-API host; tests point it at an httptest server.
 func NewClient(httpClient *http.Client, apiBase string) *Client {
@@ -184,10 +198,7 @@ func (c *Client) postJSON(ctx context.Context, path, accessToken string, body, o
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var apiErr apiError
 		_ = json.Unmarshal(respBody, &apiErr)
-		if apiErr.Message != "" {
-			return fmt.Errorf("dingtalk: %s: code=%q message=%q", path, apiErr.Code, apiErr.Message)
-		}
-		return fmt.Errorf("dingtalk: %s: http %d", path, resp.StatusCode)
+		return &apiHTTPError{Path: path, StatusCode: resp.StatusCode, Code: apiErr.Code, Message: apiErr.Message}
 	}
 	if out != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {

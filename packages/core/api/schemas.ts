@@ -310,6 +310,14 @@ export const RoleSourceConfigurationReviewSchema: z.ZodType<RoleSourceConfigurat
   }).strict()).max(100),
 }).strict();
 
+const ChannelDeliveryAmbiguityReasonSchema = z.enum([
+  "response_unknown",
+  "partial_delivery",
+  "receipt_persist_failed",
+  "lease_expired",
+  "missing_provider_id",
+]);
+
 const ChannelDeliveryEvidenceSchema = z.object({
   contract_version: z.string(),
   delivery_id: z.string(),
@@ -327,6 +335,8 @@ const ChannelDeliveryEvidenceSchema = z.object({
   delivered_at: z.string(),
   readback_message_id: z.string().optional(),
   readback_at: z.string().optional(),
+  ambiguity_reason: ChannelDeliveryAmbiguityReasonSchema.optional(),
+  ambiguous_at: z.string().optional(),
 }).loose();
 
 const ChannelDeliverySchema: z.ZodType<ChannelDelivery> = z.object({
@@ -346,18 +356,41 @@ const ChannelDeliverySchema: z.ZodType<ChannelDelivery> = z.object({
   evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullish().transform((value) => value ?? undefined),
   evidence: ChannelDeliveryEvidenceSchema.nullish().transform((value) => value ?? undefined),
   last_error_code: z.string().nullish().transform((value) => value ?? undefined),
+  ambiguous_at: z.string().nullish().transform((value) => value ?? undefined),
   created_at: z.string(),
   updated_at: z.string(),
 }).loose().superRefine((delivery, ctx) => {
-  if (delivery.status !== "delivered" && delivery.status !== "readback") return;
+  if (delivery.status !== "delivered" && delivery.status !== "readback" && delivery.status !== "ambiguous") return;
   if (!delivery.evidence_digest || !delivery.evidence ||
       delivery.evidence.delivery_id !== delivery.id ||
       delivery.evidence.correlation_id !== delivery.correlation_id ||
+      delivery.evidence.workspace_id !== delivery.workspace_id ||
       delivery.evidence.task_id !== delivery.task_id ||
+      delivery.evidence.chat_session_id !== delivery.chat_session_id ||
+      delivery.evidence.channel_type !== delivery.channel_type ||
+      delivery.evidence.channel_chat_id !== delivery.channel_chat_id ||
+      delivery.evidence.operation_kind !== delivery.operation_kind ||
       delivery.evidence.status !== delivery.status ||
       delivery.evidence.payload_digest !== delivery.payload_digest ||
       delivery.evidence.attempt_count !== delivery.attempt_count) {
     ctx.addIssue({ code: "custom", message: "terminal delivery evidence does not match its row" });
+  }
+  if (delivery.status === "ambiguous") {
+    if (!delivery.ambiguous_at || !delivery.last_error_code ||
+        delivery.evidence?.contract_version !== "2.0" ||
+        delivery.evidence.ambiguous_at !== delivery.ambiguous_at ||
+        delivery.evidence.ambiguity_reason !== delivery.last_error_code ||
+        delivery.evidence.delivered_at !== "" || delivery.evidence.readback_at ||
+        delivery.evidence.readback_message_id ||
+        (delivery.external_message_id ?? "") !== delivery.evidence.external_message_id) {
+      ctx.addIssue({ code: "custom", message: "ambiguous delivery requires frozen ambiguity evidence" });
+    }
+    return;
+  }
+  if (delivery.evidence?.contract_version !== "1.0" || !delivery.external_message_id ||
+      delivery.evidence.external_message_id !== delivery.external_message_id || !delivery.evidence.delivered_at ||
+      delivery.ambiguous_at || delivery.evidence.ambiguous_at || delivery.evidence.ambiguity_reason) {
+    ctx.addIssue({ code: "custom", message: "delivered state requires provider receipt evidence" });
   }
   if (delivery.status === "readback" &&
       (!delivery.evidence?.readback_at || !delivery.evidence.readback_message_id)) {

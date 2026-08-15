@@ -1,6 +1,9 @@
 package metrics
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -11,7 +14,9 @@ func TestChannelDeliveryMetricsNormalizeCallerValuesAndCarryNoIdentity(t *testin
 	m := NewChannelDeliveryMetrics()
 	m.RecordChannelDeliveryTransition("private-workspace", "private-task", "private-status", "raw provider error with token")
 	m.RecordChannelDeliveryTransition("slack", "failure_notice", "delivered", "none")
+	m.RecordChannelDeliveryTransition("dingtalk", "chat_reply", "ambiguous", "partial_delivery")
 	m.RecordChannelDeliveryReconcile("private-worker-error")
+	m.RecordChannelDeliveryReconcile("write_failed")
 
 	if got := testutil.ToFloat64(m.transitions.WithLabelValues("unknown", "unknown", "failed", "provider_error")); got != 1 {
 		t.Fatalf("normalized transition=%v, want 1", got)
@@ -19,8 +24,14 @@ func TestChannelDeliveryMetricsNormalizeCallerValuesAndCarryNoIdentity(t *testin
 	if got := testutil.ToFloat64(m.transitions.WithLabelValues("slack", "failure_notice", "delivered", "none")); got != 1 {
 		t.Fatalf("known transition=%v, want 1", got)
 	}
+	if got := testutil.ToFloat64(m.transitions.WithLabelValues("dingtalk", "chat_reply", "ambiguous", "partial_delivery")); got != 1 {
+		t.Fatalf("ambiguity transition=%v, want 1", got)
+	}
 	if got := testutil.ToFloat64(m.reconciles.WithLabelValues("query_failed")); got != 1 {
 		t.Fatalf("normalized reconcile=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.reconciles.WithLabelValues("write_failed")); got != 1 {
+		t.Fatalf("write-failed reconcile=%v, want 1", got)
 	}
 
 	reg := prometheus.NewRegistry()
@@ -37,6 +48,31 @@ func TestChannelDeliveryMetricsNormalizeCallerValuesAndCarryNoIdentity(t *testin
 				}
 			}
 		}
+	}
+}
+
+func TestChannelDeliveryHelmRulesSeparateFailureFromAmbiguity(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	body, err := os.ReadFile(filepath.Join(root, "deploy", "helm", "multica", "templates", "prometheusrule.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := string(body)
+	for _, required := range []string{
+		"MulticaChannelDeliveryFailuresElevated",
+		"MulticaChannelDeliveryAcceptanceAmbiguous",
+		"MulticaChannelDeliveryReconcilerErrors",
+		`status="failed"`,
+		`status="ambiguous"`,
+		`outcome=~"query_failed|write_failed"`,
+		"automatic resend is blocked",
+	} {
+		if !strings.Contains(rule, required) {
+			t.Fatalf("channel-delivery alert rules are missing %q", required)
+		}
+	}
+	if strings.Contains(rule, `status=~"failed|lease_expired"`) {
+		t.Fatal("expired leases are still presented as retryable failures")
 	}
 }
 

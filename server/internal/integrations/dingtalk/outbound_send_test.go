@@ -7,10 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 )
 
 // dingtalkSendServer stubs the access-token mint plus the two robot send
@@ -117,6 +121,77 @@ func TestSender_RefreshesTokenOn401(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&d.sendCalls); got != 2 {
 		t.Errorf("send attempted %d times, want 2 (401 then retry)", got)
+	}
+}
+
+func TestSenderExplicit429RemainsRetryable(t *testing.T) {
+	httpClient := &http.Client{Transport: dingtalkRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == accessTokenPath {
+			return jsonResponse(http.StatusOK, `{"accessToken":"tok","expireIn":7200}`), nil
+		}
+		return jsonResponse(http.StatusTooManyRequests, `{"code":"Throttled","message":"slow down"}`), nil
+	})}
+	recorder := &outboundDeliveryRecorder{}
+	s := newTestSender(NewClient(httpClient, "https://dingtalk.invalid"))
+	_, err := delivery.Send(context.Background(), recorder, delivery.ClaimInput{
+		WorkspaceID: dingtalkTestUUID(1), InstallationID: dingtalkTestUUID(2), TaskID: dingtalkTestUUID(3), ChatSessionID: dingtalkTestUUID(4),
+		ChannelType: TypeDingTalk, ChannelChatID: "cid-g", OperationKind: delivery.OperationChatReply, Payload: "hello",
+	}, func(ctx context.Context) (channel.SendResult, error) {
+		key, sendErr := s.send(ctx, sendTarget{ConversationType: convTypeGroup, ConversationID: "cid-g"}, "hello")
+		return channel.SendResult{MessageID: key}, sendErr
+	})
+	if err == nil || recorder.failed != 1 || recorder.failureCode != "rate_limited" || recorder.ambiguous != 0 {
+		t.Fatalf("err=%v recorder=%+v", err, recorder)
+	}
+}
+
+func TestSenderTransportLossFreezesUnknownAcceptance(t *testing.T) {
+	httpClient := &http.Client{Transport: dingtalkRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == accessTokenPath {
+			return jsonResponse(http.StatusOK, `{"accessToken":"tok","expireIn":7200}`), nil
+		}
+		return nil, errors.New("connection reset after request write")
+	})}
+	recorder := &outboundDeliveryRecorder{}
+	s := newTestSender(NewClient(httpClient, "https://dingtalk.invalid"))
+	_, err := delivery.Send(context.Background(), recorder, delivery.ClaimInput{
+		WorkspaceID: dingtalkTestUUID(1), InstallationID: dingtalkTestUUID(2), TaskID: dingtalkTestUUID(3), ChatSessionID: dingtalkTestUUID(4),
+		ChannelType: TypeDingTalk, ChannelChatID: "cid-g", OperationKind: delivery.OperationChatReply, Payload: "hello",
+	}, func(ctx context.Context) (channel.SendResult, error) {
+		key, sendErr := s.send(ctx, sendTarget{ConversationType: convTypeGroup, ConversationID: "cid-g"}, "hello")
+		return channel.SendResult{MessageID: key}, sendErr
+	})
+	if !errors.Is(err, delivery.ErrAmbiguous) || recorder.ambiguous != 1 || recorder.ambiguityReason != delivery.AmbiguityResponseUnknown || recorder.failed != 0 {
+		t.Fatalf("err=%v recorder=%+v", err, recorder)
+	}
+}
+
+func TestSenderGatewayFailureFreezesUnknownAcceptance(t *testing.T) {
+	httpClient := &http.Client{Transport: dingtalkRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == accessTokenPath {
+			return jsonResponse(http.StatusOK, `{"accessToken":"tok","expireIn":7200}`), nil
+		}
+		return jsonResponse(http.StatusBadGateway, `{"code":"BadGateway","message":"upstream response lost"}`), nil
+	})}
+	recorder := &outboundDeliveryRecorder{}
+	s := newTestSender(NewClient(httpClient, "https://dingtalk.invalid"))
+	_, err := delivery.Send(context.Background(), recorder, delivery.ClaimInput{
+		WorkspaceID: dingtalkTestUUID(1), InstallationID: dingtalkTestUUID(2), TaskID: dingtalkTestUUID(3), ChatSessionID: dingtalkTestUUID(4),
+		ChannelType: TypeDingTalk, ChannelChatID: "cid-g", OperationKind: delivery.OperationChatReply, Payload: "hello",
+	}, func(ctx context.Context) (channel.SendResult, error) {
+		key, sendErr := s.send(ctx, sendTarget{ConversationType: convTypeGroup, ConversationID: "cid-g"}, "hello")
+		return channel.SendResult{MessageID: key}, sendErr
+	})
+	if !errors.Is(err, delivery.ErrAmbiguous) || recorder.ambiguous != 1 || recorder.failed != 0 {
+		t.Fatalf("err=%v recorder=%+v", err, recorder)
+	}
+}
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
 

@@ -2,15 +2,23 @@ package slack
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/slack-go/slack"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 )
+
+type slackRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f slackRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestChunkMessage(t *testing.T) {
 	if got := chunkMessage("short", 100); len(got) != 1 || got[0] != "short" {
@@ -58,6 +66,52 @@ func TestSend(t *testing.T) {
 	}
 	if gotForm.Get("thread_ts") != "1700000000.000400" {
 		t.Errorf("thread_ts = %q, want the inbound thread", gotForm.Get("thread_ts"))
+	}
+}
+
+func TestSendExplicitProviderRejectionRemainsRetryable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`))
+	}))
+	defer srv.Close()
+
+	recorder := &fakeDeliveryRecorder{}
+	sender := newSlackSender(credentials{TeamID: "T1"}, slack.New("xoxb-test", slack.OptionAPIURL(srv.URL+"/")), nil)
+	_, err := delivery.Send(context.Background(), recorder, delivery.ClaimInput{
+		WorkspaceID: uid(1), InstallationID: uid(2), TaskID: uid(3), ChatSessionID: uid(4),
+		ChannelType: TypeSlack, ChannelChatID: "C1", OperationKind: delivery.OperationChatReply, Payload: "hello",
+	}, func(ctx context.Context) (channel.SendResult, error) {
+		return sender.Send(ctx, channel.OutboundMessage{ChatID: "C1", Text: "hello"})
+	})
+	if err == nil || recorder.failed != 1 || recorder.failureCode != "authorization" || recorder.ambiguous != 0 {
+		t.Fatalf("err=%v recorder=%+v", err, recorder)
+	}
+}
+
+func TestSendTransportLossAfterFirstChunkFreezesPartialDelivery(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: slackRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true,"channel":"C1","ts":"1.1"}`)),
+			}, nil
+		}
+		return nil, errors.New("connection reset after request write")
+	})}
+	recorder := &fakeDeliveryRecorder{}
+	sender := newSlackSender(credentials{TeamID: "T1"}, slack.New("xoxb-test", slack.OptionHTTPClient(client)), nil)
+	result, err := delivery.Send(context.Background(), recorder, delivery.ClaimInput{
+		WorkspaceID: uid(1), InstallationID: uid(2), TaskID: uid(3), ChatSessionID: uid(4),
+		ChannelType: TypeSlack, ChannelChatID: "C1", OperationKind: delivery.OperationChatReply, Payload: "long reply",
+	}, func(ctx context.Context) (channel.SendResult, error) {
+		return sender.Send(ctx, channel.OutboundMessage{ChatID: "C1", Text: strings.Repeat("x", maxMessageRunes+1)})
+	})
+	if result.MessageID != "1.1" || !errors.Is(err, delivery.ErrAmbiguous) || recorder.ambiguous != 1 || recorder.ambiguityReason != delivery.AmbiguityPartialDelivery || recorder.failed != 0 {
+		t.Fatalf("result=%+v err=%v recorder=%+v calls=%d", result, err, recorder, calls)
 	}
 }
 

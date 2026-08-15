@@ -28,11 +28,8 @@ SET lease_token = gen_random_uuid(),
     updated_at = now()
 WHERE channel_delivery.payload_digest = EXCLUDED.payload_digest
   AND channel_delivery.attempt_count < 100
-  AND (
-      channel_delivery.status = 'failed'
-      OR (channel_delivery.status = 'pending' AND channel_delivery.lease_expires_at < now())
-  )
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at
+  AND channel_delivery.status = 'failed'
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
 `
 
 type ClaimChannelDeliveryParams struct {
@@ -82,8 +79,70 @@ func (q *Queries) ClaimChannelDelivery(ctx context.Context, arg ClaimChannelDeli
 		&i.FailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AmbiguousAt,
 	)
 	return i, err
+}
+
+const claimExpiredChannelDeliveryLeases = `-- name: ClaimExpiredChannelDeliveryLeases :many
+WITH due AS (
+    SELECT id FROM channel_delivery
+    WHERE status = 'pending' AND lease_expires_at < now()
+    ORDER BY lease_expires_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT $1
+)
+UPDATE channel_delivery
+SET lease_token = gen_random_uuid(),
+    lease_expires_at = now() + INTERVAL '30 seconds',
+    updated_at = now()
+WHERE id IN (SELECT id FROM due)
+RETURNING channel_delivery.id, channel_delivery.workspace_id, channel_delivery.installation_id, channel_delivery.task_id, channel_delivery.chat_session_id, channel_delivery.channel_type, channel_delivery.channel_chat_id, channel_delivery.operation_kind, channel_delivery.correlation_id, channel_delivery.payload_digest, channel_delivery.status, channel_delivery.attempt_count, channel_delivery.lease_token, channel_delivery.lease_expires_at, channel_delivery.external_message_id, channel_delivery.evidence, channel_delivery.evidence_digest, channel_delivery.last_error_code, channel_delivery.delivered_at, channel_delivery.readback_at, channel_delivery.failed_at, channel_delivery.created_at, channel_delivery.updated_at, channel_delivery.ambiguous_at
+`
+
+func (q *Queries) ClaimExpiredChannelDeliveryLeases(ctx context.Context, limit int32) ([]ChannelDelivery, error) {
+	rows, err := q.db.Query(ctx, claimExpiredChannelDeliveryLeases, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDelivery{}
+	for rows.Next() {
+		var i ChannelDelivery
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.TaskID,
+			&i.ChatSessionID,
+			&i.ChannelType,
+			&i.ChannelChatID,
+			&i.OperationKind,
+			&i.CorrelationID,
+			&i.PayloadDigest,
+			&i.Status,
+			&i.AttemptCount,
+			&i.LeaseToken,
+			&i.LeaseExpiresAt,
+			&i.ExternalMessageID,
+			&i.Evidence,
+			&i.EvidenceDigest,
+			&i.LastErrorCode,
+			&i.DeliveredAt,
+			&i.ReadbackAt,
+			&i.FailedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AmbiguousAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const completeChannelDelivery = `-- name: CompleteChannelDelivery :one
@@ -97,7 +156,7 @@ SET status = 'delivered',
     lease_expires_at = NULL,
     updated_at = now()
 WHERE id = $1 AND lease_token = $2 AND status = 'pending'
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
 `
 
 type CompleteChannelDeliveryParams struct {
@@ -143,6 +202,7 @@ func (q *Queries) CompleteChannelDelivery(ctx context.Context, arg CompleteChann
 		&i.FailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AmbiguousAt,
 	)
 	return i, err
 }
@@ -156,86 +216,6 @@ func (q *Queries) DeleteChannelDeliveriesByWorkspace(ctx context.Context, worksp
 	return err
 }
 
-const detachChannelDeliveriesByInstallation = `-- name: DetachChannelDeliveriesByInstallation :exec
-UPDATE channel_delivery
-SET installation_id = NULL,
-    status = CASE WHEN status = 'pending' THEN 'failed' ELSE status END,
-    last_error_code = CASE WHEN status = 'pending' THEN 'installation_detached' ELSE last_error_code END,
-    failed_at = CASE WHEN status = 'pending' THEN now() ELSE failed_at END,
-    lease_token = NULL,
-    lease_expires_at = NULL,
-    updated_at = now()
-WHERE installation_id = $1
-`
-
-func (q *Queries) DetachChannelDeliveriesByInstallation(ctx context.Context, installationID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, detachChannelDeliveriesByInstallation, installationID)
-	return err
-}
-
-const expireChannelDeliveryLeases = `-- name: ExpireChannelDeliveryLeases :many
-WITH due AS (
-    SELECT id FROM channel_delivery
-    WHERE status = 'pending' AND lease_expires_at < now()
-    ORDER BY lease_expires_at, id
-    FOR UPDATE SKIP LOCKED
-    LIMIT $1
-)
-UPDATE channel_delivery
-SET status = 'failed',
-    last_error_code = 'timeout',
-    failed_at = now(),
-    lease_token = NULL,
-    lease_expires_at = NULL,
-    updated_at = now()
-WHERE id IN (SELECT id FROM due)
-RETURNING channel_delivery.id, channel_delivery.workspace_id, channel_delivery.installation_id, channel_delivery.task_id, channel_delivery.chat_session_id, channel_delivery.channel_type, channel_delivery.channel_chat_id, channel_delivery.operation_kind, channel_delivery.correlation_id, channel_delivery.payload_digest, channel_delivery.status, channel_delivery.attempt_count, channel_delivery.lease_token, channel_delivery.lease_expires_at, channel_delivery.external_message_id, channel_delivery.evidence, channel_delivery.evidence_digest, channel_delivery.last_error_code, channel_delivery.delivered_at, channel_delivery.readback_at, channel_delivery.failed_at, channel_delivery.created_at, channel_delivery.updated_at
-`
-
-func (q *Queries) ExpireChannelDeliveryLeases(ctx context.Context, limit int32) ([]ChannelDelivery, error) {
-	rows, err := q.db.Query(ctx, expireChannelDeliveryLeases, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelDelivery{}
-	for rows.Next() {
-		var i ChannelDelivery
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.InstallationID,
-			&i.TaskID,
-			&i.ChatSessionID,
-			&i.ChannelType,
-			&i.ChannelChatID,
-			&i.OperationKind,
-			&i.CorrelationID,
-			&i.PayloadDigest,
-			&i.Status,
-			&i.AttemptCount,
-			&i.LeaseToken,
-			&i.LeaseExpiresAt,
-			&i.ExternalMessageID,
-			&i.Evidence,
-			&i.EvidenceDigest,
-			&i.LastErrorCode,
-			&i.DeliveredAt,
-			&i.ReadbackAt,
-			&i.FailedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const failChannelDelivery = `-- name: FailChannelDelivery :one
 UPDATE channel_delivery
 SET status = 'failed',
@@ -245,7 +225,7 @@ SET status = 'failed',
     lease_expires_at = NULL,
     updated_at = now()
 WHERE id = $1 AND lease_token = $2 AND status = 'pending'
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
 `
 
 type FailChannelDeliveryParams struct {
@@ -281,12 +261,13 @@ func (q *Queries) FailChannelDelivery(ctx context.Context, arg FailChannelDelive
 		&i.FailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AmbiguousAt,
 	)
 	return i, err
 }
 
 const getChannelDeliveryByExternalMessage = `-- name: GetChannelDeliveryByExternalMessage :one
-SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at FROM channel_delivery
+SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at FROM channel_delivery
 WHERE installation_id = $1 AND external_message_id = $2
 `
 
@@ -322,12 +303,13 @@ func (q *Queries) GetChannelDeliveryByExternalMessage(ctx context.Context, arg G
 		&i.FailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AmbiguousAt,
 	)
 	return i, err
 }
 
 const getChannelDeliveryByIdentity = `-- name: GetChannelDeliveryByIdentity :one
-SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at FROM channel_delivery
+SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at FROM channel_delivery
 WHERE installation_id = $1 AND task_id = $2 AND operation_kind = $3
 `
 
@@ -364,12 +346,13 @@ func (q *Queries) GetChannelDeliveryByIdentity(ctx context.Context, arg GetChann
 		&i.FailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AmbiguousAt,
 	)
 	return i, err
 }
 
 const listChannelDeliveriesByWorkspace = `-- name: ListChannelDeliveriesByWorkspace :many
-SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at FROM channel_delivery
+SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at FROM channel_delivery
 WHERE workspace_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT $2
@@ -413,6 +396,7 @@ func (q *Queries) ListChannelDeliveriesByWorkspace(ctx context.Context, arg List
 			&i.FailedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.AmbiguousAt,
 		); err != nil {
 			return nil, err
 		}
@@ -424,6 +408,71 @@ func (q *Queries) ListChannelDeliveriesByWorkspace(ctx context.Context, arg List
 	return items, nil
 }
 
+const markChannelDeliveryAmbiguous = `-- name: MarkChannelDeliveryAmbiguous :one
+UPDATE channel_delivery
+SET status = 'ambiguous',
+    external_message_id = $1::text,
+    evidence = $2,
+    evidence_digest = $3,
+    last_error_code = $4,
+    ambiguous_at = $5,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    updated_at = now()
+WHERE id = $6 AND lease_token = $7 AND status = 'pending'
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
+`
+
+type MarkChannelDeliveryAmbiguousParams struct {
+	ExternalMessageID pgtype.Text        `json:"external_message_id"`
+	Evidence          []byte             `json:"evidence"`
+	EvidenceDigest    pgtype.Text        `json:"evidence_digest"`
+	LastErrorCode     pgtype.Text        `json:"last_error_code"`
+	AmbiguousAt       pgtype.Timestamptz `json:"ambiguous_at"`
+	ID                pgtype.UUID        `json:"id"`
+	LeaseToken        pgtype.UUID        `json:"lease_token"`
+}
+
+func (q *Queries) MarkChannelDeliveryAmbiguous(ctx context.Context, arg MarkChannelDeliveryAmbiguousParams) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, markChannelDeliveryAmbiguous,
+		arg.ExternalMessageID,
+		arg.Evidence,
+		arg.EvidenceDigest,
+		arg.LastErrorCode,
+		arg.AmbiguousAt,
+		arg.ID,
+		arg.LeaseToken,
+	)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.OperationKind,
+		&i.CorrelationID,
+		&i.PayloadDigest,
+		&i.Status,
+		&i.AttemptCount,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExternalMessageID,
+		&i.Evidence,
+		&i.EvidenceDigest,
+		&i.LastErrorCode,
+		&i.DeliveredAt,
+		&i.ReadbackAt,
+		&i.FailedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AmbiguousAt,
+	)
+	return i, err
+}
+
 const markChannelDeliveryReadback = `-- name: MarkChannelDeliveryReadback :one
 UPDATE channel_delivery
 SET status = 'readback',
@@ -432,7 +481,7 @@ SET status = 'readback',
     readback_at = $5,
     updated_at = now()
 WHERE id = $1 AND status = 'delivered' AND external_message_id = $2
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
 `
 
 type MarkChannelDeliveryReadbackParams struct {
@@ -476,6 +525,7 @@ func (q *Queries) MarkChannelDeliveryReadback(ctx context.Context, arg MarkChann
 		&i.FailedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.AmbiguousAt,
 	)
 	return i, err
 }

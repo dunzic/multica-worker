@@ -9,6 +9,7 @@ import (
 	"github.com/slack-go/slack"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/integrations/delivery"
 )
 
 // TypeSlack is the channel discriminator for the Slack adapter. It is defined
@@ -37,7 +38,7 @@ type slackSender struct {
 // SendResult carries the timestamp of the LAST posted chunk.
 func (c *slackSender) Send(ctx context.Context, out channel.OutboundMessage) (channel.SendResult, error) {
 	if c.api == nil {
-		return channel.SendResult{}, errors.New("slack: api client not configured")
+		return channel.SendResult{}, delivery.DefiniteFailure("delivery_state_conflict", errors.New("slack: api client not configured"))
 	}
 	threadTS := outboundThreadTS(out)
 	var lastTS string
@@ -53,11 +54,36 @@ func (c *slackSender) Send(ctx context.Context, out channel.OutboundMessage) (ch
 		}
 		_, ts, err := c.api.PostMessageContext(ctx, out.ChatID, opts...)
 		if err != nil {
-			return channel.SendResult{}, fmt.Errorf("slack: chat.postMessage: %w", err)
+			wrapped := fmt.Errorf("slack: chat.postMessage: %w", err)
+			return channel.SendResult{MessageID: lastTS}, classifySlackSendError(wrapped)
 		}
 		lastTS = ts
 	}
 	return channel.SendResult{MessageID: lastTS}, nil
+}
+
+func classifySlackSendError(err error) error {
+	var rateLimited *slack.RateLimitedError
+	if errors.As(err, &rateLimited) {
+		return delivery.DefiniteFailure("rate_limited", err)
+	}
+	var apiErr slack.SlackErrorResponse
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	switch apiErr.Err {
+	case "fatal_error", "internal_error":
+		// Slack documents that these responses can follow partial success, so
+		// acceptance cannot be inferred from the error envelope.
+		return err
+	case "invalid_auth", "not_authed", "account_inactive", "token_revoked", "missing_scope", "no_permission":
+		return delivery.DefiniteFailure("authorization", err)
+	case "rate_limited":
+		return delivery.DefiniteFailure("rate_limited", err)
+	default:
+		// A parsed Slack {ok:false,error:...} response is an explicit rejection.
+		return delivery.DefiniteFailure("provider_error", err)
+	}
 }
 
 // newSlackSender builds a Send-only client from decoded credentials and a

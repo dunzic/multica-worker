@@ -295,12 +295,36 @@ describe("ApiClient role-source runtime evidence", () => {
       evidence: null,
       last_error_code: "rate_limited",
     };
+    const ambiguous = {
+      ...delivery,
+      id: "delivery-3",
+      status: "ambiguous",
+      external_message_id: "provider-message-maybe",
+      last_error_code: "partial_delivery",
+      ambiguous_at: "2026-08-13T06:02:00Z",
+      evidence: {
+        ...delivery.evidence,
+        contract_version: "2.0",
+        delivery_id: "delivery-3",
+        status: "ambiguous",
+        external_message_id: "provider-message-maybe",
+        delivered_at: "",
+        readback_message_id: undefined,
+        readback_at: undefined,
+        ambiguity_reason: "partial_delivery",
+        ambiguous_at: "2026-08-13T06:02:00Z",
+      },
+    };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [delivery, failed] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [delivery, failed, ambiguous] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
         ...delivery,
         evidence: { ...delivery.evidence, task_id: "other-task" },
+      }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
+        ...ambiguous,
+        last_error_code: "lease_expired",
       }] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const client = new ApiClient("https://api.example.test");
@@ -314,7 +338,9 @@ describe("ApiClient role-source runtime evidence", () => {
         evidence_digest: undefined,
         evidence: undefined,
       },
+      ambiguous,
     ]);
+    await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
     await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://api.example.test/api/workspaces/workspace-1/channel-deliveries?limit=100",

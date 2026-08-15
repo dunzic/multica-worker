@@ -321,6 +321,7 @@ type ChannelDelivery struct {
 	FailedAt          pgtype.Timestamptz `json:"failed_at"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	AmbiguousAt       pgtype.Timestamptz `json:"ambiguous_at"`
 }
 
 type ChannelInboundAudit struct {

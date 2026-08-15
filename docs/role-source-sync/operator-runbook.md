@@ -185,6 +185,49 @@ shared storage or integrity incident. Do not initiate bulk re-upload or GC. A
 restore is acceptable only through the isolated DR workflow and its semantic
 verifier; restoring PostgreSQL metadata alone cannot restore missing bodies.
 
+## Channel-delivery ambiguity operations
+
+`MulticaChannelDeliveryAcceptanceAmbiguous` means Slack or DingTalk may already
+have accepted a message even though Multica could not prove the complete send.
+The row is durably frozen as `ambiguous`; duplicate task events and expired
+leases cannot reclaim it for automatic resend. This alert is distinct from an
+explicit `failed` provider rejection, which remains retryable.
+
+1. In the affected workspace, open **Integrations → Delivery evidence**, filter
+   for **Acceptance unknown — resend blocked**, and record the delivery and
+   correlation identifiers in the approved incident system. Do not copy the
+   channel routing identity, provider message ID, message content or credential.
+2. Interpret the bounded reason code:
+
+   - `response_unknown`: the request or response transport failed;
+   - `partial_delivery`: at least one message chunk has a provider ID but a
+     later chunk is unconfirmed;
+   - `receipt_persist_failed`: the provider returned an ID but Multica could not
+     durably commit the delivered receipt;
+   - `lease_expired`: the sender process stopped before recording an outcome;
+   - `missing_provider_id`: the provider call returned without a stable receipt.
+
+3. Preserve the matching application logs, PostgreSQL row/evidence digest,
+   alert window and provider-side audit export. Reconcile using provider-native
+   history and the approved time/correlation window; never search by or paste
+   customer message text into an ordinary incident ticket.
+4. Do not update `channel_delivery`, clear `ambiguous_at`, manufacture a
+   provider ID, mark the row failed, or replay the originating event. The
+   current safety contract intentionally has no HTTP/UI resend or manual state
+   mutation endpoint.
+5. If the business owner requires another notification before controlled
+   reconciliation is available, treat it as a new customer-approved message
+   whose wording acknowledges that the earlier message may already have been
+   delivered. Approval must be retained outside Multica; it is not a resolution
+   of the frozen evidence row.
+
+`MulticaChannelDeliveryReconcilerErrors` with `query_failed` or `write_failed`
+means expired `pending` leases could not be frozen. They remain non-retryable by
+business events. Restore PostgreSQL reads/writes, let the reconciler complete,
+then confirm the rows become valid `ambiguous/lease_expired` evidence before
+reenabling connector workers. Never convert them to `failed` merely to drain a
+queue.
+
 ## Durable apply-event backlog and dead letters
 
 `role_source:applied` is an invalidation signal, not the apply authority. A

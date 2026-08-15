@@ -193,6 +193,7 @@
     "status_delivered": "平台已投递",
     "status_readback": "已收到显式回复",
     "status_failed": "投递失败",
+    "status_ambiguous": "接收结果未知—已禁止重发",
     "status_unknown": "未知投递状态",
     "loading": "正在加载投递证据…",
     "load_failed": "无法验证投递证据。",
@@ -202,6 +203,7 @@
     "correlation": "关联号",
     "metadata": "{{operation}} · 尝试次数：{{attempts}} · {{time}}",
     "readback_explanation": "这仅证明收到一条明确回复原平台消息的入站消息，不代表平台提供了被动已读回执。",
+    "ambiguous_explanation": "平台可能已经接收该消息。在授权对账确认结果前，系统已禁止自动重发。",
     "error_code": "错误码",
     "evidence": "证据摘要"
   },

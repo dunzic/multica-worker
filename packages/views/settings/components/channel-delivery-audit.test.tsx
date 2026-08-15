@@ -64,6 +64,31 @@ beforeEach(() => {
       created_at: "2026-08-13T05:00:00Z",
       updated_at: "2026-08-13T05:01:00Z",
     },
+    {
+      id: "delivery-3",
+      workspace_id: "workspace-1",
+      task_id: "task-3",
+      chat_session_id: "chat-ambiguous-secret",
+      channel_type: "slack",
+      channel_chat_id: "channel-ambiguous-secret",
+      operation_kind: "chat_reply",
+      correlation_id: "correlation-3",
+      payload_digest: `sha256:${"d".repeat(64)}`,
+      status: "ambiguous",
+      attempt_count: 1,
+      external_message_id: "provider-ambiguous-secret",
+      evidence_digest: `sha256:${"e".repeat(64)}`,
+      evidence: {
+        external_message_id: "provider-ambiguous-secret",
+        delivered_at: "",
+        ambiguity_reason: "partial_delivery",
+        ambiguous_at: "2026-08-13T05:02:00Z",
+      },
+      last_error_code: "partial_delivery",
+      ambiguous_at: "2026-08-13T05:02:00Z",
+      created_at: "2026-08-13T05:00:00Z",
+      updated_at: "2026-08-13T05:02:00Z",
+    },
   ];
 });
 
@@ -82,7 +107,9 @@ describe("ChannelDeliveryAudit", () => {
     expect(screen.getByText("Explicit reply received")).toBeInTheDocument();
     expect(screen.getByText(/not a passive read receipt/)).toBeInTheDocument();
     expect(screen.getByText(/rate_limited/)).toBeInTheDocument();
-    expect(screen.queryByText(/chat-secret-route|channel-secret-route|provider-message-secret/)).not.toBeInTheDocument();
+    expect(screen.getByText("Acceptance unknown — resend blocked")).toBeInTheDocument();
+    expect(screen.getByText(/Automatic resend is blocked/)).toBeInTheDocument();
+    expect(screen.queryByText(/chat-secret-route|channel-secret-route|provider-message-secret|ambiguous-secret/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /retry|replay|resend/i })).not.toBeInTheDocument();
   });
 

@@ -42,7 +42,7 @@ func (m *ChannelDeliveryMetrics) RecordChannelDeliveryReconcile(outcome string) 
 		return
 	}
 	switch outcome {
-	case "completed", "query_failed":
+	case "completed", "query_failed", "write_failed":
 	default:
 		outcome = "query_failed"
 	}
@@ -69,7 +69,7 @@ func channelDeliveryOperation(value string) string {
 
 func channelDeliveryStatus(value string) string {
 	switch value {
-	case "delivered", "readback", "failed", "lease_expired":
+	case "delivered", "readback", "failed", "ambiguous":
 		return value
 	default:
 		return "failed"
@@ -78,7 +78,8 @@ func channelDeliveryStatus(value string) string {
 
 func channelDeliveryError(value string) string {
 	switch value {
-	case "none", "timeout", "authorization", "rate_limited", "provider_error", "delivery_state_conflict":
+	case "none", "timeout", "authorization", "rate_limited", "provider_error", "delivery_state_conflict",
+		"response_unknown", "partial_delivery", "receipt_persist_failed", "lease_expired", "missing_provider_id":
 		return value
 	default:
 		return "provider_error"

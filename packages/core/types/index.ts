@@ -329,6 +329,7 @@ export type {
 } from "./billing";
 export type {
   ChannelDelivery,
+  ChannelDeliveryAmbiguityReason,
   ChannelDeliveryEvidence,
   ChannelDeliveryStatus,
 } from "./channel-delivery";

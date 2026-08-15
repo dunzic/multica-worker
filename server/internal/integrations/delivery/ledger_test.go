@@ -14,8 +14,11 @@ import (
 )
 
 type memoryQueries struct {
-	row db.ChannelDelivery
-	has bool
+	row          db.ChannelDelivery
+	has          bool
+	completeErr  error
+	ambiguousErr error
+	ambiguousCtx error
 }
 
 type deliveryMetricsRecorder struct {
@@ -40,7 +43,7 @@ func testUUID(n byte) pgtype.UUID {
 
 func (m *memoryQueries) ClaimChannelDelivery(_ context.Context, p db.ClaimChannelDeliveryParams) (db.ChannelDelivery, error) {
 	if m.has {
-		if m.row.PayloadDigest != p.PayloadDigest || (m.row.Status != "failed" && !(m.row.Status == "pending" && m.row.LeaseExpiresAt.Time.Before(time.Now()))) {
+		if m.row.PayloadDigest != p.PayloadDigest || m.row.Status != "failed" {
 			return db.ChannelDelivery{}, pgx.ErrNoRows
 		}
 		m.row.Status = "pending"
@@ -70,6 +73,9 @@ func (m *memoryQueries) GetChannelDeliveryByIdentity(_ context.Context, p db.Get
 }
 
 func (m *memoryQueries) CompleteChannelDelivery(_ context.Context, p db.CompleteChannelDeliveryParams) (db.ChannelDelivery, error) {
+	if m.completeErr != nil {
+		return db.ChannelDelivery{}, m.completeErr
+	}
 	if !m.has || m.row.ID != p.ID || m.row.LeaseToken != p.LeaseToken || m.row.Status != "pending" {
 		return db.ChannelDelivery{}, pgx.ErrNoRows
 	}
@@ -78,6 +84,25 @@ func (m *memoryQueries) CompleteChannelDelivery(_ context.Context, p db.Complete
 	m.row.Evidence = append([]byte(nil), p.Evidence...)
 	m.row.EvidenceDigest = p.EvidenceDigest
 	m.row.DeliveredAt = p.DeliveredAt
+	m.row.LeaseToken = pgtype.UUID{}
+	m.row.LeaseExpiresAt = pgtype.Timestamptz{}
+	return m.row, nil
+}
+
+func (m *memoryQueries) MarkChannelDeliveryAmbiguous(ctx context.Context, p db.MarkChannelDeliveryAmbiguousParams) (db.ChannelDelivery, error) {
+	m.ambiguousCtx = ctx.Err()
+	if m.ambiguousErr != nil {
+		return db.ChannelDelivery{}, m.ambiguousErr
+	}
+	if !m.has || m.row.ID != p.ID || m.row.LeaseToken != p.LeaseToken || m.row.Status != "pending" {
+		return db.ChannelDelivery{}, pgx.ErrNoRows
+	}
+	m.row.Status = "ambiguous"
+	m.row.ExternalMessageID = p.ExternalMessageID
+	m.row.Evidence = append([]byte(nil), p.Evidence...)
+	m.row.EvidenceDigest = p.EvidenceDigest
+	m.row.LastErrorCode = p.LastErrorCode
+	m.row.AmbiguousAt = p.AmbiguousAt
 	m.row.LeaseToken = pgtype.UUID{}
 	m.row.LeaseExpiresAt = pgtype.Timestamptz{}
 	return m.row, nil
@@ -120,15 +145,12 @@ func (m *memoryQueries) ListChannelDeliveriesByWorkspace(_ context.Context, p db
 	return []db.ChannelDelivery{m.row}, nil
 }
 
-func (m *memoryQueries) ExpireChannelDeliveryLeases(context.Context, int32) ([]db.ChannelDelivery, error) {
+func (m *memoryQueries) ClaimExpiredChannelDeliveryLeases(context.Context, int32) ([]db.ChannelDelivery, error) {
 	if !m.has || m.row.Status != "pending" || !m.row.LeaseExpiresAt.Valid || !m.row.LeaseExpiresAt.Time.Before(time.Now()) {
 		return []db.ChannelDelivery{}, nil
 	}
-	m.row.Status = "failed"
-	m.row.LastErrorCode = pgtype.Text{String: "timeout", Valid: true}
-	m.row.FailedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
-	m.row.LeaseToken = pgtype.UUID{}
-	m.row.LeaseExpiresAt = pgtype.Timestamptz{}
+	m.row.LeaseToken = testUUID(99)
+	m.row.LeaseExpiresAt = pgtype.Timestamptz{Time: time.Now().Add(30 * time.Second), Valid: true}
 	return []db.ChannelDelivery{m.row}, nil
 }
 
@@ -170,7 +192,7 @@ func TestDeliveryMetricsObserveOnlyCommittedTransitions(t *testing.T) {
 	ledger.SetMetrics(metrics)
 
 	if _, err := Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
-		return channel.SendResult{}, errors.New("provider token must never become a label")
+		return channel.SendResult{}, DefiniteFailure("provider_error", errors.New("provider token must never become a label"))
 	}); err == nil {
 		t.Fatal("provider failure was hidden")
 	}
@@ -206,14 +228,36 @@ func TestReconcilerRecordsExpiredClaimsWithoutResending(t *testing.T) {
 	}
 	q.row.LeaseExpiresAt = pgtype.Timestamptz{Time: time.Now().Add(-time.Minute), Valid: true}
 	metrics := &deliveryMetricsRecorder{}
+	ledger.SetMetrics(metrics)
 	reconciler := &Reconciler{Ledger: ledger, Metrics: metrics}
 	reconciler.RunOnce(context.Background())
 
-	if claim.ShouldSend != true || q.row.Status != "failed" {
+	if claim.ShouldSend != true || q.row.Status != "ambiguous" {
 		t.Fatalf("claim=%+v row=%+v", claim, q.row)
 	}
-	if len(metrics.reconciles) != 1 || metrics.reconciles[0] != "completed" || len(metrics.transitions) != 1 || metrics.transitions[0] != "slack:chat_reply:lease_expired:timeout" {
+	if _, err := ValidateRow(q.row); err != nil {
+		t.Fatalf("expired lease evidence invalid: %v", err)
+	}
+	if len(metrics.reconciles) != 1 || metrics.reconciles[0] != "completed" || len(metrics.transitions) != 1 || metrics.transitions[0] != "slack:chat_reply:ambiguous:lease_expired" {
 		t.Fatalf("reconcile metrics=%+v", metrics)
+	}
+}
+
+func TestReconcilerWriteFailureLeavesLeaseNonRetryable(t *testing.T) {
+	q := &memoryQueries{ambiguousErr: errors.New("database unavailable")}
+	ledger := NewLedger(q)
+	if _, err := ledger.Claim(context.Background(), baseClaimInput()); err != nil {
+		t.Fatal(err)
+	}
+	q.row.LeaseExpiresAt = pgtype.Timestamptz{Time: time.Now().Add(-time.Minute), Valid: true}
+	metrics := &deliveryMetricsRecorder{}
+	(&Reconciler{Ledger: ledger, Metrics: metrics}).RunOnce(context.Background())
+	if q.row.Status != "pending" || !q.row.LeaseToken.Valid || len(metrics.reconciles) != 1 || metrics.reconciles[0] != "write_failed" {
+		t.Fatalf("row=%+v metrics=%+v", q.row, metrics)
+	}
+	replay, err := ledger.Claim(context.Background(), baseClaimInput())
+	if err != nil || replay.ShouldSend {
+		t.Fatalf("pending replay=%+v err=%v", replay, err)
 	}
 }
 
@@ -224,7 +268,7 @@ func TestFailedDeliveryCanBeRetriedWithoutChangingCorrelation(t *testing.T) {
 	send := func(context.Context) (channel.SendResult, error) {
 		if first {
 			first = false
-			return channel.SendResult{}, errors.New("provider unavailable")
+			return channel.SendResult{}, DefiniteFailure("provider_error", errors.New("provider rejected request"))
 		}
 		return channel.SendResult{MessageID: "provider-2"}, nil
 	}
@@ -240,6 +284,114 @@ func TestFailedDeliveryCanBeRetriedWithoutChangingCorrelation(t *testing.T) {
 	}
 	if q.row.AttemptCount != 2 || q.row.CorrelationID != correlation || q.row.Status != "delivered" {
 		t.Fatalf("retry row = attempt %d correlation %v status %q", q.row.AttemptCount, q.row.CorrelationID, q.row.Status)
+	}
+}
+
+func TestUnknownProviderOutcomeFreezesAndNeverResends(t *testing.T) {
+	q := &memoryQueries{}
+	ledger := NewLedger(q)
+	sends := 0
+	result, err := Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		sends++
+		return channel.SendResult{}, context.DeadlineExceeded
+	})
+	if result.MessageID != "" || !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	evidence, validateErr := ValidateRow(q.row)
+	if validateErr != nil || q.row.Status != "ambiguous" || evidence.AmbiguityReason != AmbiguityResponseUnknown {
+		t.Fatalf("row=%+v evidence=%+v err=%v", q.row, evidence, validateErr)
+	}
+	if _, err := Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		sends++
+		return channel.SendResult{MessageID: "must-not-send"}, nil
+	}); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("duplicate ambiguous send error=%v", err)
+	}
+	if sends != 1 {
+		t.Fatalf("provider sends=%d, want 1", sends)
+	}
+}
+
+func TestCallerCancellationDoesNotCancelAmbiguityEvidenceWrite(t *testing.T) {
+	q := &memoryQueries{}
+	ledger := NewLedger(q)
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := Send(ctx, ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		cancel()
+		return channel.SendResult{}, context.Canceled
+	})
+	if !errors.Is(err, ErrAmbiguous) || q.ambiguousCtx != nil || q.row.Status != "ambiguous" {
+		t.Fatalf("err=%v record_ctx_err=%v row=%+v", err, q.ambiguousCtx, q.row)
+	}
+}
+
+func TestPartialDeliveryFreezesKnownProviderMessage(t *testing.T) {
+	q := &memoryQueries{}
+	ledger := NewLedger(q)
+	result, err := Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		return channel.SendResult{MessageID: "provider-chunk-1"}, errors.New("second chunk response lost")
+	})
+	if result.MessageID != "provider-chunk-1" || !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	evidence, validateErr := ValidateRow(q.row)
+	if validateErr != nil || evidence.AmbiguityReason != AmbiguityPartialDelivery || evidence.ExternalMessageID != "provider-chunk-1" {
+		t.Fatalf("evidence=%+v err=%v", evidence, validateErr)
+	}
+}
+
+func TestReceiptPersistenceFailureFreezesAcceptedMessage(t *testing.T) {
+	q := &memoryQueries{completeErr: errors.New("database commit result unknown")}
+	ledger := NewLedger(q)
+	result, err := Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		return channel.SendResult{MessageID: "provider-accepted-1"}, nil
+	})
+	if result.MessageID != "provider-accepted-1" || !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	evidence, validateErr := ValidateRow(q.row)
+	if validateErr != nil || evidence.AmbiguityReason != AmbiguityReceiptPersistFailed || evidence.ExternalMessageID != "provider-accepted-1" {
+		t.Fatalf("evidence=%+v err=%v", evidence, validateErr)
+	}
+}
+
+func TestMissingProviderMessageIDFreezesInsteadOfRetrying(t *testing.T) {
+	q := &memoryQueries{}
+	ledger := NewLedger(q)
+	if _, err := Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		return channel.SendResult{}, nil
+	}); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("empty provider id error=%v", err)
+	}
+	evidence, err := ValidateRow(q.row)
+	if err != nil || evidence.AmbiguityReason != AmbiguityMissingProviderID {
+		t.Fatalf("evidence=%+v err=%v", evidence, err)
+	}
+}
+
+func TestAmbiguityEvidenceRejectsRowMutation(t *testing.T) {
+	q := &memoryQueries{}
+	ledger := NewLedger(q)
+	_, _ = Send(context.Background(), ledger, baseClaimInput(), func(context.Context) (channel.SendResult, error) {
+		return channel.SendResult{}, errors.New("response lost")
+	})
+	q.row.LastErrorCode = pgtype.Text{String: AmbiguityLeaseExpired, Valid: true}
+	if _, err := ValidateRow(q.row); !errors.Is(err, ErrInvalidEvidence) {
+		t.Fatalf("mutated ambiguity reason error=%v", err)
+	}
+}
+
+func TestExpiredPendingClaimCannotBeReclaimedByBusinessEvent(t *testing.T) {
+	q := &memoryQueries{}
+	ledger := NewLedger(q)
+	if _, err := ledger.Claim(context.Background(), baseClaimInput()); err != nil {
+		t.Fatal(err)
+	}
+	q.row.LeaseExpiresAt = pgtype.Timestamptz{Time: time.Now().Add(-time.Minute), Valid: true}
+	second, err := ledger.Claim(context.Background(), baseClaimInput())
+	if err != nil || second.ShouldSend || second.Row.Status != "pending" || second.Row.AttemptCount != 1 {
+		t.Fatalf("second=%+v err=%v", second, err)
 	}
 }
 

@@ -168,20 +168,30 @@ spec:
         - alert: MulticaChannelDeliveryFailuresElevated
           expr: |
             sum by (connector, operation) (
-              increase(multica_channel_delivery_transitions_total{status=~"failed|lease_expired"}[15m])
+              increase(multica_channel_delivery_transitions_total{status="failed"}[15m])
             ) > 20
           for: 10m
           labels:
             severity: warning
           annotations:
             summary: "Channel delivery failures are elevated"
-            description: "More than 20 {{ "{{ $labels.connector }}" }} {{ "{{ $labels.operation }}" }} deliveries failed or lost their send lease in 15 minutes. Do not blind-resend: use correlation evidence to reconcile provider acceptance before a controlled retry."
+            description: "More than 20 {{ "{{ $labels.connector }}" }} {{ "{{ $labels.operation }}" }} deliveries were explicitly rejected in 15 minutes. Inspect authorization, rate limits and provider availability before retrying."
+        - alert: MulticaChannelDeliveryAcceptanceAmbiguous
+          expr: |
+            sum by (connector, operation, error_code) (
+              increase(multica_channel_delivery_transitions_total{status="ambiguous"}[5m])
+            ) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "Channel delivery acceptance is ambiguous and automatic resend is blocked"
+            description: "At least one {{ "{{ $labels.connector }}" }} {{ "{{ $labels.operation }}" }} delivery entered {{ "{{ $labels.error_code }}" }}. The provider may already have accepted the message; do not resend until authorized reconciliation confirms the outcome."
         - alert: MulticaChannelDeliveryReconcilerErrors
-          expr: increase(multica_channel_delivery_reconciliations_total{outcome="query_failed"}[10m]) > 0
+          expr: increase(multica_channel_delivery_reconciliations_total{outcome=~"query_failed|write_failed"}[10m]) > 0
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "Channel delivery reconciler cannot expire abandoned leases"
-            description: "The delivery reconciler cannot query or persist expired send leases. Pending rows may remain unresolved; inspect PostgreSQL health and migration state before retrying connector events."
+            summary: "Channel delivery reconciler cannot freeze abandoned leases"
+            description: "The delivery reconciler cannot claim or persist ambiguity evidence for expired send leases. Pending rows remain non-retryable; restore PostgreSQL writes and let reconciliation complete before handling connector events."
 {{- end }}

@@ -19,9 +19,15 @@ import (
 )
 
 const (
-	EvidenceContractVersion = "1.0"
-	OperationChatReply      = "chat_reply"
-	OperationFailureNotice  = "failure_notice"
+	EvidenceContractVersion          = "1.0"
+	AmbiguityEvidenceContractVersion = "2.0"
+	OperationChatReply               = "chat_reply"
+	OperationFailureNotice           = "failure_notice"
+	AmbiguityResponseUnknown         = "response_unknown"
+	AmbiguityPartialDelivery         = "partial_delivery"
+	AmbiguityReceiptPersistFailed    = "receipt_persist_failed"
+	AmbiguityLeaseExpired            = "lease_expired"
+	AmbiguityMissingProviderID       = "missing_provider_id"
 )
 
 var (
@@ -29,6 +35,7 @@ var (
 	ErrClaimLost           = errors.New("channel delivery claim lost")
 	ErrInvalidEvidence     = errors.New("invalid channel delivery evidence")
 	ErrRetryExhausted      = errors.New("channel delivery retry limit exhausted")
+	ErrAmbiguous           = errors.New("channel delivery provider acceptance is ambiguous")
 )
 
 type Queries interface {
@@ -36,10 +43,11 @@ type Queries interface {
 	GetChannelDeliveryByIdentity(context.Context, db.GetChannelDeliveryByIdentityParams) (db.ChannelDelivery, error)
 	CompleteChannelDelivery(context.Context, db.CompleteChannelDeliveryParams) (db.ChannelDelivery, error)
 	FailChannelDelivery(context.Context, db.FailChannelDeliveryParams) (db.ChannelDelivery, error)
+	MarkChannelDeliveryAmbiguous(context.Context, db.MarkChannelDeliveryAmbiguousParams) (db.ChannelDelivery, error)
 	GetChannelDeliveryByExternalMessage(context.Context, db.GetChannelDeliveryByExternalMessageParams) (db.ChannelDelivery, error)
 	MarkChannelDeliveryReadback(context.Context, db.MarkChannelDeliveryReadbackParams) (db.ChannelDelivery, error)
 	ListChannelDeliveriesByWorkspace(context.Context, db.ListChannelDeliveriesByWorkspaceParams) ([]db.ChannelDelivery, error)
-	ExpireChannelDeliveryLeases(context.Context, int32) ([]db.ChannelDelivery, error)
+	ClaimExpiredChannelDeliveryLeases(context.Context, int32) ([]db.ChannelDelivery, error)
 }
 
 type Ledger struct {
@@ -78,6 +86,7 @@ type Recorder interface {
 	Claim(context.Context, ClaimInput) (Claim, error)
 	MarkDelivered(context.Context, Claim, string) (db.ChannelDelivery, error)
 	MarkFailed(context.Context, Claim, string) error
+	MarkAmbiguous(context.Context, Claim, string, string) (db.ChannelDelivery, error)
 }
 
 type ReadbackRecorder interface {
@@ -101,6 +110,8 @@ type Evidence struct {
 	DeliveredAt       string `json:"delivered_at"`
 	ReadbackMessageID string `json:"readback_message_id,omitempty"`
 	ReadbackAt        string `json:"readback_at,omitempty"`
+	AmbiguityReason   string `json:"ambiguity_reason,omitempty"`
+	AmbiguousAt       string `json:"ambiguous_at,omitempty"`
 }
 
 func PayloadDigest(payload string) string {
@@ -145,6 +156,12 @@ func (l *Ledger) Claim(ctx context.Context, input ClaimInput) (Claim, error) {
 		if _, err := ValidateRow(existing); err != nil {
 			return Claim{}, err
 		}
+	}
+	if existing.Status == "ambiguous" {
+		if _, err := ValidateRow(existing); err != nil {
+			return Claim{}, err
+		}
+		return Claim{}, ErrAmbiguous
 	}
 	if existing.AttemptCount >= 100 && existing.Status == "failed" {
 		return Claim{}, ErrRetryExhausted
@@ -202,6 +219,43 @@ func (l *Ledger) MarkFailed(ctx context.Context, claim Claim, errorCode string) 
 		l.metrics.RecordChannelDeliveryTransition(row.ChannelType, row.OperationKind, "failed", errorCode)
 	}
 	return err
+}
+
+func (l *Ledger) MarkAmbiguous(ctx context.Context, claim Claim, reason, externalMessageID string) (db.ChannelDelivery, error) {
+	if !claim.ShouldSend || !claim.Row.LeaseToken.Valid || !validAmbiguityReason(reason) {
+		return db.ChannelDelivery{}, ErrClaimLost
+	}
+	ambiguousAt := l.now().UTC().Truncate(time.Microsecond)
+	evidence := evidenceFromRow(claim.Row)
+	evidence.ContractVersion = AmbiguityEvidenceContractVersion
+	evidence.Status = "ambiguous"
+	evidence.ExternalMessageID = strings.TrimSpace(externalMessageID)
+	evidence.AmbiguityReason = reason
+	evidence.AmbiguousAt = ambiguousAt.Format(time.RFC3339Nano)
+	body, digest, err := encodeEvidence(evidence)
+	if err != nil {
+		return db.ChannelDelivery{}, err
+	}
+	row, err := l.q.MarkChannelDeliveryAmbiguous(ctx, db.MarkChannelDeliveryAmbiguousParams{
+		ID: claim.Row.ID, LeaseToken: claim.Row.LeaseToken,
+		ExternalMessageID: pgtype.Text{String: evidence.ExternalMessageID, Valid: evidence.ExternalMessageID != ""},
+		Evidence:          body, EvidenceDigest: pgtype.Text{String: digest, Valid: true},
+		LastErrorCode: pgtype.Text{String: reason, Valid: true},
+		AmbiguousAt:   pgtype.Timestamptz{Time: ambiguousAt, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.ChannelDelivery{}, ErrClaimLost
+	}
+	if err != nil {
+		return db.ChannelDelivery{}, err
+	}
+	if _, err := ValidateRow(row); err != nil {
+		return db.ChannelDelivery{}, err
+	}
+	if l.metrics != nil {
+		l.metrics.RecordChannelDeliveryTransition(row.ChannelType, row.OperationKind, "ambiguous", reason)
+	}
+	return row, nil
 }
 
 func (l *Ledger) MarkReadback(ctx context.Context, installationID pgtype.UUID, externalMessageID, inboundMessageID string) (db.ChannelDelivery, error) {
@@ -271,7 +325,7 @@ func (l *Ledger) List(ctx context.Context, workspaceID pgtype.UUID, limit int32)
 		return nil, err
 	}
 	for _, row := range rows {
-		if row.Status == "delivered" || row.Status == "readback" {
+		if row.Status == "delivered" || row.Status == "readback" || row.Status == "ambiguous" {
 			if _, err := ValidateRow(row); err != nil {
 				return nil, fmt.Errorf("delivery %s: %w", util.UUIDToString(row.ID), err)
 			}
@@ -280,30 +334,46 @@ func (l *Ledger) List(ctx context.Context, workspaceID pgtype.UUID, limit int32)
 	return rows, nil
 }
 
-func (l *Ledger) ExpireLeases(ctx context.Context, limit int32) ([]db.ChannelDelivery, error) {
+func (l *Ledger) ClaimExpiredLeases(ctx context.Context, limit int32) ([]db.ChannelDelivery, error) {
 	if l == nil || l.q == nil || limit < 1 || limit > 1000 {
 		return nil, errors.New("invalid channel delivery expiry request")
 	}
-	return l.q.ExpireChannelDeliveryLeases(ctx, limit)
+	return l.q.ClaimExpiredChannelDeliveryLeases(ctx, limit)
 }
 
 func ValidateRow(row db.ChannelDelivery) (Evidence, error) {
 	var evidence Evidence
-	if (row.Status != "delivered" && row.Status != "readback") || !row.EvidenceDigest.Valid || len(row.Evidence) == 0 {
+	if (row.Status != "delivered" && row.Status != "readback" && row.Status != "ambiguous") || !row.EvidenceDigest.Valid || len(row.Evidence) == 0 {
 		return evidence, ErrInvalidEvidence
 	}
 	if err := json.Unmarshal(row.Evidence, &evidence); err != nil {
 		return evidence, fmt.Errorf("%w: %v", ErrInvalidEvidence, err)
 	}
 	_, digest, err := encodeEvidence(evidence)
-	if err != nil || digest != row.EvidenceDigest.String || evidence.ContractVersion != EvidenceContractVersion ||
+	if err != nil || digest != row.EvidenceDigest.String ||
 		evidence.DeliveryID != util.UUIDToString(row.ID) || evidence.CorrelationID != util.UUIDToString(row.CorrelationID) ||
 		evidence.WorkspaceID != util.UUIDToString(row.WorkspaceID) || evidence.TaskID != util.UUIDToString(row.TaskID) ||
 		evidence.ChatSessionID != util.UUIDToString(row.ChatSessionID) || evidence.ChannelType != row.ChannelType ||
 		evidence.ChannelChatID != row.ChannelChatID || evidence.OperationKind != row.OperationKind ||
-		evidence.PayloadDigest != row.PayloadDigest || evidence.Status != row.Status || evidence.AttemptCount != row.AttemptCount ||
-		!row.ExternalMessageID.Valid || evidence.ExternalMessageID != row.ExternalMessageID.String || !row.DeliveredAt.Valid ||
-		evidence.DeliveredAt != row.DeliveredAt.Time.UTC().Format(time.RFC3339Nano) {
+		evidence.PayloadDigest != row.PayloadDigest || evidence.Status != row.Status || evidence.AttemptCount != row.AttemptCount {
+		return evidence, ErrInvalidEvidence
+	}
+	if row.Status == "ambiguous" {
+		if evidence.ContractVersion != AmbiguityEvidenceContractVersion || !row.AmbiguousAt.Valid ||
+			evidence.AmbiguousAt != row.AmbiguousAt.Time.UTC().Format(time.RFC3339Nano) ||
+			!row.LastErrorCode.Valid || evidence.AmbiguityReason != row.LastErrorCode.String ||
+			!validAmbiguityReason(evidence.AmbiguityReason) || evidence.DeliveredAt != "" ||
+			evidence.ReadbackAt != "" || evidence.ReadbackMessageID != "" || row.DeliveredAt.Valid || row.ReadbackAt.Valid ||
+			(row.ExternalMessageID.Valid && evidence.ExternalMessageID != row.ExternalMessageID.String) ||
+			(!row.ExternalMessageID.Valid && evidence.ExternalMessageID != "") {
+			return evidence, ErrInvalidEvidence
+		}
+		return evidence, nil
+	}
+	if evidence.ContractVersion != EvidenceContractVersion || !row.ExternalMessageID.Valid ||
+		evidence.ExternalMessageID != row.ExternalMessageID.String || !row.DeliveredAt.Valid ||
+		evidence.DeliveredAt != row.DeliveredAt.Time.UTC().Format(time.RFC3339Nano) ||
+		evidence.AmbiguityReason != "" || evidence.AmbiguousAt != "" || row.AmbiguousAt.Valid {
 		return evidence, ErrInvalidEvidence
 	}
 	if row.Status == "readback" {
@@ -336,6 +406,15 @@ func encodeEvidence(evidence Evidence) ([]byte, string, error) {
 
 func validOperation(operation string) bool {
 	return operation == OperationChatReply || operation == OperationFailureNotice
+}
+
+func validAmbiguityReason(reason string) bool {
+	switch reason {
+	case AmbiguityResponseUnknown, AmbiguityPartialDelivery, AmbiguityReceiptPersistFailed, AmbiguityLeaseExpired, AmbiguityMissingProviderID:
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeErrorCode(code string) string {

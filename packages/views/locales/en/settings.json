@@ -193,6 +193,7 @@
     "status_delivered": "Delivered by provider",
     "status_readback": "Explicit reply received",
     "status_failed": "Delivery failed",
+    "status_ambiguous": "Acceptance unknown — resend blocked",
     "status_unknown": "Unknown delivery state",
     "loading": "Loading delivery evidence…",
     "load_failed": "Couldn't validate delivery evidence.",
@@ -202,6 +203,7 @@
     "correlation": "Correlation",
     "metadata": "{{operation}} · attempts: {{attempts}} · {{time}}",
     "readback_explanation": "This proves that an inbound message explicitly replied to the delivered provider message; it is not a passive read receipt.",
+    "ambiguous_explanation": "The provider may already have accepted this message. Automatic resend is blocked until an authorized reconciliation confirms the outcome.",
     "error_code": "Error code",
     "evidence": "Evidence"
   },

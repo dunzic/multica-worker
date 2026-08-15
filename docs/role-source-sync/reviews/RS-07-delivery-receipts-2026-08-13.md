@@ -6,6 +6,12 @@ Date: 2026-08-13
 
 Decision: CONDITIONAL — the shared backend contract is suitable for a Slack/DingTalk controlled pilot; provider ambiguity, attachment receipts, remaining connectors, operator retry UX and live evidence remain general-availability blockers
 
+2026-08-15 addendum: provider ambiguity is now frozen as a tamper-evident,
+non-retryable state instead of being converted to `failed`. See
+`RS-07-ambiguous-send-reconciliation-2026-08-15.md`. The original descriptions
+below of expired leases becoming retryable failures are retained as historical
+review context and no longer describe the current implementation.
+
 ## Delivered customer outcome
 
 Agent replies sent to Slack or DingTalk no longer disappear into transport logs. Before a connector sends, Multica creates or reclaims a task-scoped delivery claim. A duplicate completion event for an already delivered/read-back task returns the existing provider message ID without calling the provider again. A provider failure becomes a visible standard error code and may earn a fresh attempt while retaining the same correlation ID. A process crash leaves a 30-second pending lease; the independent reconciler converts abandoned claims to retryable timeout failures rather than leaving permanent “sending” state. Both connectors also send a separate `failure_notice` for a terminal task failure only when no automatic retry is pending. It has its own ledger identity, so it cannot collide with a normal chat reply; a failure to send that notice is recorded but never recursively emits another notice.

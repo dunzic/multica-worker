@@ -29,6 +29,7 @@ function deliveryStatusKey(status: string) {
     case "delivered": return "status_delivered" as const;
     case "readback": return "status_readback" as const;
     case "failed": return "status_failed" as const;
+    case "ambiguous": return "status_ambiguous" as const;
     default: return "status_unknown" as const;
   }
 }
@@ -57,6 +58,7 @@ export function ChannelDeliveryAudit() {
               { value: "delivered", label: t(($) => $.channel_delivery.status_delivered) },
               { value: "readback", label: t(($) => $.channel_delivery.status_readback) },
               { value: "failed", label: t(($) => $.channel_delivery.status_failed) },
+              { value: "ambiguous", label: t(($) => $.channel_delivery.status_ambiguous) },
             ]}
             value={statusFilter}
             onValueChange={(value) => setStatusFilter(value ?? "all")}
@@ -68,6 +70,7 @@ export function ChannelDeliveryAudit() {
               <SelectItem value="delivered">{t(($) => $.channel_delivery.status_delivered)}</SelectItem>
               <SelectItem value="readback">{t(($) => $.channel_delivery.status_readback)}</SelectItem>
               <SelectItem value="failed">{t(($) => $.channel_delivery.status_failed)}</SelectItem>
+              <SelectItem value="ambiguous">{t(($) => $.channel_delivery.status_ambiguous)}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -91,6 +94,7 @@ export function ChannelDeliveryAudit() {
                 <div className="flex flex-wrap items-center gap-2 text-body font-medium">
                   {delivery.status === "readback" ? <MessageSquareReply className="h-4 w-4" />
                     : delivery.status === "failed" ? <CircleAlert className="h-4 w-4 text-destructive" />
+                      : delivery.status === "ambiguous" ? <CircleAlert className="h-4 w-4 text-warning" />
                       : delivery.status === "pending" ? <Loader2 className="h-4 w-4 animate-spin" />
                         : <CheckCircle2 className="h-4 w-4" />}
                   {t(($) => $.channel_delivery[deliveryStatusKey(delivery.status)])}
@@ -103,14 +107,19 @@ export function ChannelDeliveryAudit() {
                   {t(($) => $.channel_delivery.metadata, {
                     operation: delivery.operation_kind,
                     attempts: delivery.attempt_count,
-                    time: delivery.evidence?.readback_at ?? delivery.evidence?.delivered_at ?? delivery.updated_at,
+                    time: delivery.evidence?.readback_at || delivery.evidence?.ambiguous_at || delivery.evidence?.delivered_at || delivery.updated_at,
                   })}
                 </div>
                 {delivery.status === "readback" ? (
                   <div className="text-caption text-muted-foreground">{t(($) => $.channel_delivery.readback_explanation)}</div>
                 ) : null}
+                {delivery.status === "ambiguous" ? (
+                  <div className="rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-caption">
+                    {t(($) => $.channel_delivery.ambiguous_explanation)}
+                  </div>
+                ) : null}
                 {delivery.last_error_code ? (
-                  <div className="font-mono text-caption text-destructive">
+                  <div className={`font-mono text-caption ${delivery.status === "ambiguous" ? "text-warning" : "text-destructive"}`}>
                     {t(($) => $.channel_delivery.error_code)}: {delivery.last_error_code}
                   </div>
                 ) : null}
@@ -120,7 +129,7 @@ export function ChannelDeliveryAudit() {
                   </div>
                 ) : null}
               </div>
-              <Badge variant={delivery.status === "failed" ? "destructive" : delivery.status === "readback" ? "secondary" : "outline"}>
+              <Badge variant={delivery.status === "failed" ? "destructive" : delivery.status === "readback" || delivery.status === "ambiguous" ? "secondary" : "outline"}>
                 {delivery.attempt_count}
               </Badge>
             </div>

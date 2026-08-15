@@ -15,10 +15,7 @@ SET lease_token = gen_random_uuid(),
     updated_at = now()
 WHERE channel_delivery.payload_digest = EXCLUDED.payload_digest
   AND channel_delivery.attempt_count < 100
-  AND (
-      channel_delivery.status = 'failed'
-      OR (channel_delivery.status = 'pending' AND channel_delivery.lease_expires_at < now())
-  )
+  AND channel_delivery.status = 'failed'
 RETURNING *;
 
 -- name: GetChannelDeliveryByIdentity :one
@@ -49,6 +46,20 @@ SET status = 'failed',
 WHERE id = $1 AND lease_token = $2 AND status = 'pending'
 RETURNING *;
 
+-- name: MarkChannelDeliveryAmbiguous :one
+UPDATE channel_delivery
+SET status = 'ambiguous',
+    external_message_id = sqlc.narg('external_message_id')::text,
+    evidence = @evidence,
+    evidence_digest = @evidence_digest,
+    last_error_code = @last_error_code,
+    ambiguous_at = @ambiguous_at,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    updated_at = now()
+WHERE id = @id AND lease_token = @lease_token AND status = 'pending'
+RETURNING *;
+
 -- name: GetChannelDeliveryByExternalMessage :one
 SELECT * FROM channel_delivery
 WHERE installation_id = $1 AND external_message_id = $2;
@@ -69,7 +80,7 @@ WHERE workspace_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT $2;
 
--- name: ExpireChannelDeliveryLeases :many
+-- name: ClaimExpiredChannelDeliveryLeases :many
 WITH due AS (
     SELECT id FROM channel_delivery
     WHERE status = 'pending' AND lease_expires_at < now()
@@ -78,25 +89,11 @@ WITH due AS (
     LIMIT $1
 )
 UPDATE channel_delivery
-SET status = 'failed',
-    last_error_code = 'timeout',
-    failed_at = now(),
-    lease_token = NULL,
-    lease_expires_at = NULL,
+SET lease_token = gen_random_uuid(),
+    lease_expires_at = now() + INTERVAL '30 seconds',
     updated_at = now()
 WHERE id IN (SELECT id FROM due)
 RETURNING channel_delivery.*;
-
--- name: DetachChannelDeliveriesByInstallation :exec
-UPDATE channel_delivery
-SET installation_id = NULL,
-    status = CASE WHEN status = 'pending' THEN 'failed' ELSE status END,
-    last_error_code = CASE WHEN status = 'pending' THEN 'installation_detached' ELSE last_error_code END,
-    failed_at = CASE WHEN status = 'pending' THEN now() ELSE failed_at END,
-    lease_token = NULL,
-    lease_expires_at = NULL,
-    updated_at = now()
-WHERE installation_id = $1;
 
 -- name: DeleteChannelDeliveriesByWorkspace :exec
 DELETE FROM channel_delivery WHERE workspace_id = $1;

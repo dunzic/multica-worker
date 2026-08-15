@@ -130,6 +130,16 @@ put key bytes beside the bundle.
    then execute a controlled no-op plan. Re-enable traffic only after the drill
    owner signs the evidence record. Re-enable deletion workers last.
 
+For a full Multica database recovery, preserve `channel_delivery` together with
+its evidence JSON, evidence digest and `ambiguous_at`. Before starting Slack or
+DingTalk outbound consumers, run the channel-delivery reconciler with provider
+traffic still fenced. Restored expired `pending` rows must become
+`ambiguous/lease_expired`; they must never become retryable merely because the
+backup predates their send outcome. Validate every delivered, readback and
+ambiguous row through the application evidence validator. If validation fails,
+keep outbound connectors disabled and restore a known-good database copy rather
+than editing evidence or status fields.
+
 Expired, consumed, cancelled and failed secret transfers deliberately keep no
 recoverable private key. If a historical target needs environment/MCP values,
 rescan and create a fresh one-time transfer; a database restore never revives

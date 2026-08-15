@@ -55,9 +55,13 @@ type fakeSender struct {
 }
 
 type fakeDeliveryRecorder struct {
-	input     delivery.ClaimInput
-	claimed   int
-	delivered int
+	input           delivery.ClaimInput
+	claimed         int
+	delivered       int
+	failed          int
+	ambiguous       int
+	failureCode     string
+	ambiguityReason string
 }
 
 func (f *fakeDeliveryRecorder) Claim(_ context.Context, input delivery.ClaimInput) (delivery.Claim, error) {
@@ -78,7 +82,21 @@ func (f *fakeDeliveryRecorder) MarkDelivered(_ context.Context, claim delivery.C
 	return claim.Row, nil
 }
 
-func (f *fakeDeliveryRecorder) MarkFailed(context.Context, delivery.Claim, string) error { return nil }
+func (f *fakeDeliveryRecorder) MarkFailed(_ context.Context, _ delivery.Claim, code string) error {
+	f.failed++
+	f.failureCode = code
+	return nil
+}
+
+func (f *fakeDeliveryRecorder) MarkAmbiguous(_ context.Context, claim delivery.Claim, reason string, messageID string) (db.ChannelDelivery, error) {
+	f.ambiguous++
+	f.ambiguityReason = reason
+	claim.Row.Status = "ambiguous"
+	if messageID != "" {
+		claim.Row.ExternalMessageID = pgtype.Text{String: messageID, Valid: true}
+	}
+	return claim.Row, nil
+}
 
 func (f *fakeSender) Send(_ context.Context, out channel.OutboundMessage) (channel.SendResult, error) {
 	f.called++

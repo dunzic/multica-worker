@@ -46,7 +46,7 @@ restore, RACI or provider reconciliation evidence.
 | RS-04 materialization | GO for controlled default-off cohort after local 1,000-role/10,000-skill create/update evidence | NO-GO pending candidate-image two-replica/S3/contention/failover SLO and cross-runtime execution |
 | RS-05 secret and MCP transfer | GO for a controlled default-off cohort after the local B11 lifecycle gate | NO-GO pending candidate-image KMS/HSM key rotation, process restart/lease reclaim, failover, burst-load and exfiltration exercises |
 | RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local hold/policy/pin/prune matrix, 10,000-snapshot exact-SQL scale gate, v2 ambiguity-aware immutable purge receipts and real versioned-provider fail-closed suite | NO-GO pending candidate-topology process-kill/primary-failover race and scale repeat, candidate-provider receipt/inventory/accounting reconciliation, retention RACI and recorded restore with RPO/RTO |
-| RS-07 delivery receipts | GO as two-connector backend pilot | NO-GO pending ambiguous-send handling, operator retry, callbacks and production telemetry |
+| RS-07 delivery receipts | GO as two-connector backend pilot with unknown outcomes frozen | NO-GO pending controlled ambiguity resolution, remaining connectors, attachments and target-topology load/failover evidence |
 
 ## Local evidence retained
 

@@ -29,6 +29,7 @@ type channelDeliveryResponse struct {
 	EvidenceDigest    *string            `json:"evidence_digest"`
 	Evidence          *delivery.Evidence `json:"evidence"`
 	LastErrorCode     *string            `json:"last_error_code"`
+	AmbiguousAt       *string            `json:"ambiguous_at"`
 	CreatedAt         string             `json:"created_at"`
 	UpdatedAt         string             `json:"updated_at"`
 }
@@ -99,7 +100,11 @@ func channelDeliveryToResponse(row db.ChannelDelivery) (channelDeliveryResponse,
 		value := row.LastErrorCode.String
 		response.LastErrorCode = &value
 	}
-	if row.Status == "delivered" || row.Status == "readback" {
+	if row.AmbiguousAt.Valid {
+		value := row.AmbiguousAt.Time.UTC().Format(timeFormat)
+		response.AmbiguousAt = &value
+	}
+	if row.Status == "delivered" || row.Status == "readback" || row.Status == "ambiguous" {
 		evidence, err := delivery.ValidateRow(row)
 		if err != nil {
 			return channelDeliveryResponse{}, err

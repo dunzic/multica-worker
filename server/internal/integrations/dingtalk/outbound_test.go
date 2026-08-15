@@ -39,8 +39,12 @@ func (q *outboundTestQueries) GetChannelInstallation(context.Context, db.GetChan
 }
 
 type outboundDeliveryRecorder struct {
-	input     delivery.ClaimInput
-	delivered int
+	input           delivery.ClaimInput
+	delivered       int
+	failed          int
+	ambiguous       int
+	failureCode     string
+	ambiguityReason string
 }
 
 func (r *outboundDeliveryRecorder) Claim(_ context.Context, input delivery.ClaimInput) (delivery.Claim, error) {
@@ -59,8 +63,20 @@ func (r *outboundDeliveryRecorder) MarkDelivered(_ context.Context, claim delive
 	return claim.Row, nil
 }
 
-func (r *outboundDeliveryRecorder) MarkFailed(context.Context, delivery.Claim, string) error {
+func (r *outboundDeliveryRecorder) MarkFailed(_ context.Context, _ delivery.Claim, code string) error {
+	r.failed++
+	r.failureCode = code
 	return nil
+}
+
+func (r *outboundDeliveryRecorder) MarkAmbiguous(_ context.Context, claim delivery.Claim, reason string, messageID string) (db.ChannelDelivery, error) {
+	r.ambiguous++
+	r.ambiguityReason = reason
+	claim.Row.Status = "ambiguous"
+	if messageID != "" {
+		claim.Row.ExternalMessageID = pgtype.Text{String: messageID, Valid: true}
+	}
+	return claim.Row, nil
 }
 
 func dingtalkTestUUID(n byte) pgtype.UUID {

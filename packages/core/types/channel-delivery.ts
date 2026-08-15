@@ -1,4 +1,5 @@
-export type ChannelDeliveryStatus = "pending" | "delivered" | "readback" | "failed" | string;
+export type ChannelDeliveryStatus = "pending" | "delivered" | "readback" | "failed" | "ambiguous" | string;
+export type ChannelDeliveryAmbiguityReason = "response_unknown" | "partial_delivery" | "receipt_persist_failed" | "lease_expired" | "missing_provider_id";
 
 export interface ChannelDeliveryEvidence {
   contract_version: string;
@@ -17,6 +18,8 @@ export interface ChannelDeliveryEvidence {
   delivered_at: string;
   readback_message_id?: string;
   readback_at?: string;
+  ambiguity_reason?: ChannelDeliveryAmbiguityReason;
+  ambiguous_at?: string;
 }
 
 export interface ChannelDelivery {
@@ -36,6 +39,7 @@ export interface ChannelDelivery {
   evidence_digest?: string;
   evidence?: ChannelDeliveryEvidence;
   last_error_code?: string;
+  ambiguous_at?: string;
   created_at: string;
   updated_at: string;
 }
