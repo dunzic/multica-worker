@@ -597,6 +597,59 @@ counts. The local 2026-08-15 implementation passes these cases with SDK retries
 disabled. Repeat response loss and real process termination against the
 candidate store and two-replica topology before enabling a customer cohort.
 
+## Gate G — controlled channel-delivery ambiguity and retry
+
+Run the local safety baseline only against a disposable PostgreSQL 17 database
+migrated through 398. Both tests mutate and delete channel-delivery rows. The
+process gate launches three distinct child test-binary processes: the first is
+killed after it claims the authorized-publication lease, the second is killed
+after it reclaims that lease and atomically consumes the signed authorization
+into provider-send attempt 2, and the third freezes the expired attempt as the
+next ambiguity. Production lease timestamps are advanced directly, so elapsed
+test time is not an RTO measurement.
+
+```bash
+MULTICA_LIVE_CHANNEL_DELIVERY_PROCESS_TEST=1 \
+DATABASE_URL='postgres://...' \
+go -C server test -count=3 \
+  -run '^TestChannelDeliveryReconciliationProcessKillPostgres$' -v \
+  ./internal/integrations/delivery
+
+MULTICA_LIVE_CHANNEL_DELIVERY_SCALE_TEST=1 \
+DATABASE_URL='postgres://...' \
+go -C server test -count=3 \
+  -run '^TestChannelDeliveryReconciliationScalePostgres$' -v \
+  ./internal/integrations/delivery
+```
+
+Local pass criteria:
+
+- every killed owner is observed in PostgreSQL before termination; the final
+  row is `ambiguous/lease_expired`, has attempt 2, retains reconciliation
+  generation 1, requires generation 2 and cannot be reclaimed by the normal
+  task event;
+- each scale run inserts 10,000 canonically encoded authorized-retry rows plus
+  10,000 digest-valid receipts, completes 200 production audit reads at
+  concurrency 16 with p99 below 500 ms, and drains all publication leases with
+  eight workers in under 30 seconds;
+- all 10,000 delivery IDs are claimed exactly once, cleanup leaves zero rows,
+  and `EXPLAIN ANALYZE` uses the workspace-list, reconciliation-generation and
+  `idx_channel_delivery_retry_publish_due` indexes;
+- migration 398 remains one standalone `CREATE INDEX CONCURRENTLY` statement
+  and its down/up rehearsal succeeds without changing receipt rows.
+
+This is a single-primary database and real-OS-process baseline, not a provider
+exactly-once or 10,000-user claim. Before cohort expansion, repeat with two
+candidate backend images and a controllable provider sandbox. Kill the owning
+container after request write, after provider acceptance, and before/after
+receipt commit; fail over PostgreSQL during authorization commit and both lease
+claims; exercise KMS/HSM rotation/revocation; deliver the alert to the named
+support owner; and run the signed 10,000-user mixed traffic model while
+recording provider throttling, pool saturation, CPU, WAL, lock waits, p50/p95/
+p99, duplicate/ambiguous rates and operator RTO. Any silent loss, automatic
+retry of an ambiguous send, duplicate application owner, invalid receipt chain
+or missing alert is an immediate NO-GO.
+
 ## Gate F — database/object-store disaster recovery
 
 Follow [`disaster-recovery.md`](disaster-recovery.md) on a production-shaped

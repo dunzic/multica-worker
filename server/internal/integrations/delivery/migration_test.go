@@ -76,6 +76,7 @@ func TestReconciliationMigrationsPreserveEvidenceAndIndexAvailability(t *testing
 		"393_channel_delivery_reconciliation_listing_index.up.sql",
 		"394_channel_delivery_reconciliation_authorization_unique.up.sql",
 		"397_chat_message_assistant_task_index.up.sql",
+		"398_channel_delivery_retry_publish_due_index.up.sql",
 	} {
 		body, err := os.ReadFile(filepath.Join(root, migration))
 		if err != nil || !strings.Contains(string(body), "INDEX CONCURRENTLY") || strings.Count(strings.TrimSpace(string(body)), ";") != 1 {

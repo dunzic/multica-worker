@@ -47,7 +47,7 @@ constraint—not only by an operator instruction.
 
 ## Implemented control and evidence contract
 
-- migrations 390–397 add `retry_authorized` and `reconciled`, bounded generation
+- migrations 390–398 add `retry_authorized` and `reconciled`, bounded generation
   state, a separate append-only `channel_delivery_reconciliation` chain, four
   reconciliation indexes, a bounded assistant-result lookup index, a mutation
   trigger and deferred existing-row validation;
@@ -104,10 +104,12 @@ Accepted:
   DESC)` index and the audit receipt lookup is page-ID bounded, so both recovery
   and operator reads have bounded database work at large workspace history.
 
+Follow-on evidence: [RS-07 process-kill and 10k-backlog review](./RS-07-process-kill-10k-scale-2026-08-15.md).
+
 Open architecture gates:
 
-- run process-kill tests between publish, provider acceptance and receipt commit
-  across two backend replicas, not only the deterministic state/lease harness;
+- repeat the now-passing three-process lease-kill chain with two complete
+  candidate backend images and real provider transport/acceptance kill points;
 - run PostgreSQL primary failover during the serializable receipt transaction and
   publish-lease consumption;
 - provision the production KMS/HSM keyring, rotation, revocation and audit export;
@@ -164,6 +166,16 @@ Passing evidence on 2026-08-15:
   retry publish lease was claimed, and one delivery claim advanced to attempt 2;
 - the terminal outcome could not be event-reclaimed; direct receipt update and
   delete were rejected by the mutation trigger;
+- a three-process OS-level gate passed six consecutive runs across two
+  independent `-count=3` invocations: a killed publish-lease owner was
+  reclaimed, a killed controlled-send owner became attempt-2
+  `ambiguous/lease_expired`, generation 1 remained valid and generation 2
+  became mandatory;
+- a 10,000-row authorized-retry fixture passed the same six-run pattern. Two
+  hundred concurrent audit samples validated complete receipt chains at
+  41.83–66.46 ms p99; eight workers claimed all 10,000 publish leases uniquely
+  in 108.91–124.91 ms with zero duplicates and zero cleanup residue. Migration
+  398's due-queue partial index was used and its down/up check passed;
 - with 500,000 historical failed delivery rows, migration 390 completed in 0.05
   seconds and migration 396 validation in 0.20 seconds. All 500,000 rows remained,
   all four constraints were validated and the partial-delivery database guard was
@@ -174,21 +186,26 @@ Passing evidence on 2026-08-15:
   complete Views suite passed 320 files / 3,812 tests. TypeScript reports only
   the three pre-existing Chat Quick Actions errors and no new channel-delivery
   error;
-- all changed Go packages passed, `go build ./...` passed, Helm lint/config
-  rendering passed, and both backend and Web production images built. The
+- all changed Go packages and `go test ./...` passed, `go build ./...` passed,
+  and the delivery package plus both opt-in process/scale gates passed under
+  Go's race detector; Helm lint/config rendering passed, and both backend and
+  Web production images built. The
   backend image contains the executable reconciliation command and migration
   397; the Next.js production build completed its TypeScript, page-generation
   and trace phases.
 
 Missing evidence:
 
-- two-replica kill/restart and PostgreSQL failover fault injection;
+- two candidate-backend replicas with real provider kill points and PostgreSQL
+  failover fault injection;
 - real Slack/DingTalk sandbox sends plus provider audit-export reconciliation;
 - KMS/HSM signing, rotation and emergency revocation drill;
-- 10,000-user mixed connector traffic, reconciliation backlog latency and alert
-  delivery under the candidate production topology;
-- CI-equivalent all-package Go execution (the local Alpine harness still has
-  unrelated daemon/exec environment gaps documented in the parent review).
+- 10,000-user mixed connector traffic and alert delivery under the candidate
+  production topology; the passing 10,000-receipt local database gate is not a
+  user-cardinality or provider-throughput result;
+- the complete CI operating-system/service and repository-wide race matrix;
+  the Go 1.26 Alpine all-package suite is green, but it does not provision real
+  Redis/provider/KMS/failover dependencies.
 
 ## CEO review
 
