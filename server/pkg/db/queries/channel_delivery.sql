@@ -12,10 +12,29 @@ SET lease_token = gen_random_uuid(),
     attempt_count = channel_delivery.attempt_count + 1,
     last_error_code = NULL,
     failed_at = NULL,
+    ambiguous_at = NULL,
+    external_message_id = NULL,
+    evidence = NULL,
+    evidence_digest = NULL,
+    retry_publish_token = NULL,
+    retry_publish_expires_at = NULL,
     updated_at = now()
 WHERE channel_delivery.payload_digest = EXCLUDED.payload_digest
   AND channel_delivery.attempt_count < 100
-  AND channel_delivery.status = 'failed'
+  AND (
+      channel_delivery.status = 'failed'
+      OR (
+          channel_delivery.status = 'retry_authorized'
+          AND EXISTS (
+              SELECT 1
+              FROM channel_delivery_reconciliation reconciliation
+              WHERE reconciliation.delivery_id = channel_delivery.id
+                AND reconciliation.generation = channel_delivery.reconciliation_count
+                AND reconciliation.outcome = 'confirmed_not_delivered'
+                AND reconciliation.expected_ambiguity_evidence_digest = channel_delivery.evidence_digest
+          )
+      )
+  )
 RETURNING *;
 
 -- name: GetChannelDeliveryByIdentity :one
@@ -79,6 +98,96 @@ SELECT * FROM channel_delivery
 WHERE workspace_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT $2;
+
+-- name: GetChannelDeliveryByID :one
+SELECT * FROM channel_delivery WHERE id = $1;
+
+-- name: GetChannelDeliveryForReconciliation :one
+SELECT * FROM channel_delivery
+WHERE id = $1
+FOR UPDATE;
+
+-- name: GetLatestChannelDeliveryReconciliation :one
+SELECT * FROM channel_delivery_reconciliation
+WHERE delivery_id = $1
+ORDER BY generation DESC
+LIMIT 1;
+
+-- name: ListChannelDeliveryReconciliationsByDelivery :many
+SELECT * FROM channel_delivery_reconciliation
+WHERE delivery_id = $1
+ORDER BY generation;
+
+-- name: GetChannelDeliveryReconciliationByAuthorization :one
+SELECT * FROM channel_delivery_reconciliation
+WHERE authorization_id = $1;
+
+-- name: ListLatestChannelDeliveryReconciliationsByWorkspace :many
+SELECT DISTINCT ON (delivery_id) *
+FROM channel_delivery_reconciliation
+WHERE workspace_id = $1
+ORDER BY delivery_id, generation DESC;
+
+-- name: ListChannelDeliveryReconciliationsByWorkspaceDeliveries :many
+SELECT * FROM channel_delivery_reconciliation
+WHERE workspace_id = @workspace_id
+  AND delivery_id = ANY(@delivery_ids::uuid[])
+ORDER BY delivery_id, generation;
+
+-- name: InsertChannelDeliveryReconciliation :one
+INSERT INTO channel_delivery_reconciliation (
+    id, delivery_id, workspace_id, authorization_id, generation,
+    outcome, reason_code, external_evidence_digest,
+    expected_ambiguity_evidence_digest, ambiguity_evidence,
+    requester_key_id, approver_key_id, authorization_digest,
+    requester_signature_digest, approver_signature_digest,
+    previous_reconciliation_digest, reconciliation_digest, created_at
+) VALUES (
+    @id, @delivery_id, @workspace_id, @authorization_id, @generation,
+    @outcome, @reason_code, @external_evidence_digest,
+    @expected_ambiguity_evidence_digest, @ambiguity_evidence,
+    @requester_key_id, @approver_key_id, @authorization_digest,
+    @requester_signature_digest, @approver_signature_digest,
+    sqlc.narg('previous_reconciliation_digest')::text,
+    @reconciliation_digest, @created_at
+)
+RETURNING *;
+
+-- name: ResolveChannelDeliveryAmbiguity :one
+UPDATE channel_delivery
+SET status = CASE
+        WHEN @outcome::text = 'confirmed_not_delivered' THEN 'retry_authorized'
+        ELSE 'reconciled'
+    END,
+    reconciliation_count = reconciliation_count + 1,
+    last_reconciled_at = @reconciled_at,
+    retry_publish_token = NULL,
+    retry_publish_expires_at = NULL,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    updated_at = now()
+WHERE id = @id
+  AND status = 'ambiguous'
+  AND reconciliation_count = @expected_reconciliation_count
+  AND evidence_digest = @expected_ambiguity_evidence_digest
+RETURNING *;
+
+-- name: ClaimAuthorizedChannelDeliveryRetries :many
+WITH due AS (
+    SELECT id
+    FROM channel_delivery
+    WHERE status = 'retry_authorized'
+      AND (retry_publish_expires_at IS NULL OR retry_publish_expires_at < now())
+    ORDER BY last_reconciled_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT $1
+)
+UPDATE channel_delivery
+SET retry_publish_token = gen_random_uuid(),
+    retry_publish_expires_at = now() + INTERVAL '30 seconds',
+    updated_at = now()
+WHERE id IN (SELECT id FROM due)
+RETURNING channel_delivery.*;
 
 -- name: ClaimExpiredChannelDeliveryLeases :many
 WITH due AS (

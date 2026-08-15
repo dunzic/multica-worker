@@ -1,0 +1,2 @@
+DROP TRIGGER IF EXISTS trg_guard_channel_delivery_reconciliation_mutation ON channel_delivery_reconciliation;
+DROP FUNCTION IF EXISTS guard_channel_delivery_reconciliation_mutation();

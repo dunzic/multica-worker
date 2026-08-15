@@ -31,11 +31,12 @@ const (
 )
 
 var (
-	ErrIdempotencyConflict = errors.New("channel delivery idempotency conflict")
-	ErrClaimLost           = errors.New("channel delivery claim lost")
-	ErrInvalidEvidence     = errors.New("invalid channel delivery evidence")
-	ErrRetryExhausted      = errors.New("channel delivery retry limit exhausted")
-	ErrAmbiguous           = errors.New("channel delivery provider acceptance is ambiguous")
+	ErrIdempotencyConflict    = errors.New("channel delivery idempotency conflict")
+	ErrClaimLost              = errors.New("channel delivery claim lost")
+	ErrInvalidEvidence        = errors.New("invalid channel delivery evidence")
+	ErrRetryExhausted         = errors.New("channel delivery retry limit exhausted")
+	ErrAmbiguous              = errors.New("channel delivery provider acceptance is ambiguous")
+	ErrAuthorizedRetryPending = errors.New("channel delivery retry is authorized but not yet consumed")
 )
 
 type Queries interface {
@@ -48,6 +49,19 @@ type Queries interface {
 	MarkChannelDeliveryReadback(context.Context, db.MarkChannelDeliveryReadbackParams) (db.ChannelDelivery, error)
 	ListChannelDeliveriesByWorkspace(context.Context, db.ListChannelDeliveriesByWorkspaceParams) ([]db.ChannelDelivery, error)
 	ClaimExpiredChannelDeliveryLeases(context.Context, int32) ([]db.ChannelDelivery, error)
+}
+
+type authorizedRetryQueries interface {
+	ClaimAuthorizedChannelDeliveryRetries(context.Context, int32) ([]db.ChannelDelivery, error)
+	GetChannelDeliveryByID(context.Context, pgtype.UUID) (db.ChannelDelivery, error)
+}
+
+type reconciliationReadQueries interface {
+	ListChannelDeliveryReconciliationsByDelivery(context.Context, pgtype.UUID) ([]db.ChannelDeliveryReconciliation, error)
+}
+
+type reconciliationWorkspaceReadQueries interface {
+	ListChannelDeliveryReconciliationsByWorkspaceDeliveries(context.Context, db.ListChannelDeliveryReconciliationsByWorkspaceDeliveriesParams) ([]db.ChannelDeliveryReconciliation, error)
 }
 
 type Ledger struct {
@@ -155,6 +169,24 @@ func (l *Ledger) Claim(ctx context.Context, input ClaimInput) (Claim, error) {
 	if existing.Status == "delivered" || existing.Status == "readback" {
 		if _, err := ValidateRow(existing); err != nil {
 			return Claim{}, err
+		}
+	}
+	if (existing.Status == "reconciled" || existing.Status == "retry_authorized") && existing.ReconciliationCount == 0 {
+		return Claim{}, ErrInvalidEvidence
+	}
+	if existing.ReconciliationCount > 0 {
+		latest, err := l.LatestReconciliation(ctx, existing)
+		if err != nil {
+			return Claim{}, err
+		}
+		if existing.Status == "reconciled" && (latest == nil || latest.Outcome == ReconciliationConfirmedNotDelivered) {
+			return Claim{}, ErrInvalidEvidence
+		}
+		if existing.Status == "retry_authorized" {
+			if latest == nil || latest.Outcome != ReconciliationConfirmedNotDelivered {
+				return Claim{}, ErrInvalidEvidence
+			}
+			return Claim{}, ErrAuthorizedRetryPending
 		}
 	}
 	if existing.Status == "ambiguous" {
@@ -317,6 +349,23 @@ func (l *Ledger) MarkReadback(ctx context.Context, installationID pgtype.UUID, e
 }
 
 func (l *Ledger) List(ctx context.Context, workspaceID pgtype.UUID, limit int32) ([]db.ChannelDelivery, error) {
+	records, err := l.ListRecords(ctx, workspaceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]db.ChannelDelivery, 0, len(records))
+	for _, record := range records {
+		rows = append(rows, record.Row)
+	}
+	return rows, nil
+}
+
+type Record struct {
+	Row            db.ChannelDelivery
+	Reconciliation *ReconciliationReceipt
+}
+
+func (l *Ledger) ListRecords(ctx context.Context, workspaceID pgtype.UUID, limit int32) ([]Record, error) {
 	if !workspaceID.Valid || limit < 1 || limit > 100 {
 		return nil, errors.New("invalid channel delivery list request")
 	}
@@ -324,14 +373,70 @@ func (l *Ledger) List(ctx context.Context, workspaceID pgtype.UUID, limit int32)
 	if err != nil {
 		return nil, err
 	}
+	needsReconciliations := false
+	for _, row := range rows {
+		if row.ReconciliationCount > 0 {
+			needsReconciliations = true
+			break
+		}
+	}
+	reconciliationsByDelivery := map[pgtype.UUID][]db.ChannelDeliveryReconciliation{}
+	if needsReconciliations {
+		q, ok := l.q.(reconciliationWorkspaceReadQueries)
+		if !ok {
+			return nil, errors.New("channel delivery reconciliation listing is not configured")
+		}
+		deliveryIDs := make([]pgtype.UUID, 0, len(rows))
+		for _, row := range rows {
+			if row.ReconciliationCount > 0 {
+				deliveryIDs = append(deliveryIDs, row.ID)
+			}
+		}
+		reconciliations, err := q.ListChannelDeliveryReconciliationsByWorkspaceDeliveries(ctx, db.ListChannelDeliveryReconciliationsByWorkspaceDeliveriesParams{
+			WorkspaceID: workspaceID,
+			DeliveryIds: deliveryIDs,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, reconciliation := range reconciliations {
+			reconciliationsByDelivery[reconciliation.DeliveryID] = append(reconciliationsByDelivery[reconciliation.DeliveryID], reconciliation)
+		}
+	}
+	records := make([]Record, 0, len(rows))
 	for _, row := range rows {
 		if row.Status == "delivered" || row.Status == "readback" || row.Status == "ambiguous" {
 			if _, err := ValidateRow(row); err != nil {
 				return nil, fmt.Errorf("delivery %s: %w", util.UUIDToString(row.ID), err)
 			}
 		}
+		var latest *ReconciliationReceipt
+		if row.ReconciliationCount > 0 {
+			latest, err = validateReconciliationRows(row, reconciliationsByDelivery[row.ID])
+			if err != nil {
+				return nil, fmt.Errorf("delivery %s reconciliation: %w", util.UUIDToString(row.ID), err)
+			}
+		}
+		if row.Status == "retry_authorized" && (latest == nil || latest.Outcome != ReconciliationConfirmedNotDelivered) {
+			return nil, fmt.Errorf("delivery %s: %w", util.UUIDToString(row.ID), ErrInvalidEvidence)
+		}
+		if row.Status == "reconciled" && (latest == nil || latest.Outcome == ReconciliationConfirmedNotDelivered) {
+			return nil, fmt.Errorf("delivery %s: %w", util.UUIDToString(row.ID), ErrInvalidEvidence)
+		}
+		records = append(records, Record{Row: row, Reconciliation: latest})
 	}
-	return rows, nil
+	return records, nil
+}
+
+func (l *Ledger) LatestReconciliation(ctx context.Context, row db.ChannelDelivery) (*ReconciliationReceipt, error) {
+	if l == nil || l.q == nil || !row.ID.Valid || row.ReconciliationCount < 0 || row.ReconciliationCount > MaxReconciliationGenerations {
+		return nil, errors.New("invalid channel delivery reconciliation lookup")
+	}
+	q, ok := l.q.(reconciliationReadQueries)
+	if !ok {
+		return nil, errors.New("channel delivery reconciliation lookup is not configured")
+	}
+	return validateReconciliationChain(ctx, q, row)
 }
 
 func (l *Ledger) ClaimExpiredLeases(ctx context.Context, limit int32) ([]db.ChannelDelivery, error) {
@@ -339,6 +444,28 @@ func (l *Ledger) ClaimExpiredLeases(ctx context.Context, limit int32) ([]db.Chan
 		return nil, errors.New("invalid channel delivery expiry request")
 	}
 	return l.q.ClaimExpiredChannelDeliveryLeases(ctx, limit)
+}
+
+func (l *Ledger) ClaimAuthorizedRetries(ctx context.Context, limit int32) ([]db.ChannelDelivery, error) {
+	if l == nil || l.q == nil || limit < 1 || limit > 1000 {
+		return nil, errors.New("invalid authorized channel delivery retry request")
+	}
+	q, ok := l.q.(authorizedRetryQueries)
+	if !ok {
+		return nil, errors.New("authorized channel delivery retry is not configured")
+	}
+	return q.ClaimAuthorizedChannelDeliveryRetries(ctx, limit)
+}
+
+func (l *Ledger) Get(ctx context.Context, id pgtype.UUID) (db.ChannelDelivery, error) {
+	if l == nil || l.q == nil || !id.Valid {
+		return db.ChannelDelivery{}, errors.New("invalid channel delivery lookup")
+	}
+	q, ok := l.q.(authorizedRetryQueries)
+	if !ok {
+		return db.ChannelDelivery{}, errors.New("channel delivery lookup is not configured")
+	}
+	return q.GetChannelDeliveryByID(ctx, id)
 }
 
 func ValidateRow(row db.ChannelDelivery) (Evidence, error) {

@@ -89,6 +89,32 @@ beforeEach(() => {
       created_at: "2026-08-13T05:00:00Z",
       updated_at: "2026-08-13T05:02:00Z",
     },
+    {
+      id: "delivery-4",
+      workspace_id: "workspace-1",
+      task_id: "task-4",
+      chat_session_id: "reconciled-chat-secret",
+      channel_type: "slack",
+      channel_chat_id: "reconciled-channel-secret",
+      operation_kind: "chat_reply",
+      correlation_id: "correlation-4",
+      payload_digest: `sha256:${"f".repeat(64)}`,
+      status: "reconciled",
+      attempt_count: 1,
+      reconciliation_count: 1,
+      last_reconciled_at: "2026-08-13T05:04:00Z",
+      reconciliation: {
+        generation: 1,
+        outcome: "confirmed_delivered",
+        reason_code: "provider_delivery_confirmed",
+        external_evidence_digest: `sha256:${"1".repeat(64)}`,
+        expected_ambiguity_evidence_digest: `sha256:${"2".repeat(64)}`,
+        reconciliation_digest: `sha256:${"3".repeat(64)}`,
+        created_at: "2026-08-13T05:04:00Z",
+      },
+      created_at: "2026-08-13T05:00:00Z",
+      updated_at: "2026-08-13T05:04:00Z",
+    },
   ];
 });
 
@@ -109,7 +135,9 @@ describe("ChannelDeliveryAudit", () => {
     expect(screen.getByText(/rate_limited/)).toBeInTheDocument();
     expect(screen.getByText("Acceptance unknown — resend blocked")).toBeInTheDocument();
     expect(screen.getByText(/Automatic resend is blocked/)).toBeInTheDocument();
-    expect(screen.queryByText(/chat-secret-route|channel-secret-route|provider-message-secret|ambiguous-secret/)).not.toBeInTheDocument();
+    expect(screen.getByText("Reconciled — resend closed")).toBeInTheDocument();
+    expect(screen.getByText(/Provider delivery confirmed/)).toBeInTheDocument();
+    expect(screen.queryByText(/chat-secret-route|channel-secret-route|provider-message-secret|ambiguous-secret|reconciled-chat-secret|reconciled-channel-secret/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /retry|replay|resend/i })).not.toBeInTheDocument();
   });
 

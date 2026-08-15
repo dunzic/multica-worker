@@ -30,7 +30,18 @@ function deliveryStatusKey(status: string) {
     case "readback": return "status_readback" as const;
     case "failed": return "status_failed" as const;
     case "ambiguous": return "status_ambiguous" as const;
+    case "retry_authorized": return "status_retry_authorized" as const;
+    case "reconciled": return "status_reconciled" as const;
     default: return "status_unknown" as const;
+  }
+}
+
+function reconciliationOutcomeKey(outcome: string) {
+  switch (outcome) {
+    case "confirmed_delivered": return "outcome_confirmed_delivered" as const;
+    case "confirmed_not_delivered": return "outcome_confirmed_not_delivered" as const;
+    case "closed_no_retry": return "outcome_closed_no_retry" as const;
+    default: return "outcome_unknown" as const;
   }
 }
 
@@ -59,6 +70,8 @@ export function ChannelDeliveryAudit() {
               { value: "readback", label: t(($) => $.channel_delivery.status_readback) },
               { value: "failed", label: t(($) => $.channel_delivery.status_failed) },
               { value: "ambiguous", label: t(($) => $.channel_delivery.status_ambiguous) },
+              { value: "retry_authorized", label: t(($) => $.channel_delivery.status_retry_authorized) },
+              { value: "reconciled", label: t(($) => $.channel_delivery.status_reconciled) },
             ]}
             value={statusFilter}
             onValueChange={(value) => setStatusFilter(value ?? "all")}
@@ -71,6 +84,8 @@ export function ChannelDeliveryAudit() {
               <SelectItem value="readback">{t(($) => $.channel_delivery.status_readback)}</SelectItem>
               <SelectItem value="failed">{t(($) => $.channel_delivery.status_failed)}</SelectItem>
               <SelectItem value="ambiguous">{t(($) => $.channel_delivery.status_ambiguous)}</SelectItem>
+              <SelectItem value="retry_authorized">{t(($) => $.channel_delivery.status_retry_authorized)}</SelectItem>
+              <SelectItem value="reconciled">{t(($) => $.channel_delivery.status_reconciled)}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -95,6 +110,7 @@ export function ChannelDeliveryAudit() {
                   {delivery.status === "readback" ? <MessageSquareReply className="h-4 w-4" />
                     : delivery.status === "failed" ? <CircleAlert className="h-4 w-4 text-destructive" />
                       : delivery.status === "ambiguous" ? <CircleAlert className="h-4 w-4 text-warning" />
+                      : delivery.status === "retry_authorized" ? <Loader2 className="h-4 w-4 animate-spin text-warning" />
                       : delivery.status === "pending" ? <Loader2 className="h-4 w-4 animate-spin" />
                         : <CheckCircle2 className="h-4 w-4" />}
                   {t(($) => $.channel_delivery[deliveryStatusKey(delivery.status)])}
@@ -118,7 +134,19 @@ export function ChannelDeliveryAudit() {
                     {t(($) => $.channel_delivery.ambiguous_explanation)}
                   </div>
                 ) : null}
-                {delivery.last_error_code ? (
+                {delivery.reconciliation ? (
+                  <div className="rounded-md border border-surface-border bg-surface-subtle px-2 py-1 text-caption">
+                    {t(($) => $.channel_delivery.reconciliation, {
+                      generation: delivery.reconciliation?.generation,
+                      outcome: t(($) => $.channel_delivery[reconciliationOutcomeKey(delivery.reconciliation?.outcome ?? "")]),
+                      reason: delivery.reconciliation?.reason_code,
+                    })}
+                    <div className="font-mono text-muted-foreground">
+                      {t(($) => $.channel_delivery.reconciliation_evidence)}: {shortIdentifier(delivery.reconciliation.external_evidence_digest)}
+                    </div>
+                  </div>
+                ) : null}
+                {delivery.last_error_code && (delivery.status === "failed" || delivery.status === "ambiguous") ? (
                   <div className={`font-mono text-caption ${delivery.status === "ambiguous" ? "text-warning" : "text-destructive"}`}>
                     {t(($) => $.channel_delivery.error_code)}: {delivery.last_error_code}
                   </div>
@@ -129,7 +157,7 @@ export function ChannelDeliveryAudit() {
                   </div>
                 ) : null}
               </div>
-              <Badge variant={delivery.status === "failed" ? "destructive" : delivery.status === "readback" || delivery.status === "ambiguous" ? "secondary" : "outline"}>
+              <Badge variant={delivery.status === "failed" ? "destructive" : delivery.status === "readback" || delivery.status === "ambiguous" || delivery.status === "reconciled" ? "secondary" : "outline"}>
                 {delivery.attempt_count}
               </Badge>
             </div>

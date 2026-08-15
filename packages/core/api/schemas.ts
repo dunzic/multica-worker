@@ -339,6 +339,16 @@ const ChannelDeliveryEvidenceSchema = z.object({
   ambiguous_at: z.string().optional(),
 }).loose();
 
+const ChannelDeliveryReconciliationSchema = z.object({
+  generation: z.number().int().min(1).max(3),
+  outcome: z.string(),
+  reason_code: z.string(),
+  external_evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  expected_ambiguity_evidence_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  reconciliation_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  created_at: z.string(),
+}).loose();
+
 const ChannelDeliverySchema: z.ZodType<ChannelDelivery> = z.object({
   id: z.string(),
   workspace_id: z.string(),
@@ -357,9 +367,34 @@ const ChannelDeliverySchema: z.ZodType<ChannelDelivery> = z.object({
   evidence: ChannelDeliveryEvidenceSchema.nullish().transform((value) => value ?? undefined),
   last_error_code: z.string().nullish().transform((value) => value ?? undefined),
   ambiguous_at: z.string().nullish().transform((value) => value ?? undefined),
+  reconciliation_count: z.number().int().min(0).max(3).catch(0),
+  last_reconciled_at: z.string().nullish().transform((value) => value ?? undefined),
+  reconciliation: ChannelDeliveryReconciliationSchema.nullish().transform((value) => value ?? undefined),
   created_at: z.string(),
   updated_at: z.string(),
 }).loose().superRefine((delivery, ctx) => {
+  if (delivery.reconciliation_count > 0 &&
+      (!delivery.reconciliation || delivery.reconciliation.generation !== delivery.reconciliation_count)) {
+    ctx.addIssue({ code: "custom", message: "delivery reconciliation does not match its evidence chain" });
+  }
+  if ((delivery.status === "retry_authorized" || delivery.status === "reconciled") &&
+      (!delivery.last_reconciled_at || !delivery.reconciliation ||
+       delivery.reconciliation.expected_ambiguity_evidence_digest !== delivery.evidence_digest)) {
+    ctx.addIssue({ code: "custom", message: "resolved delivery requires an authorized reconciliation receipt" });
+  }
+  if (delivery.status === "retry_authorized" && delivery.reconciliation?.outcome !== "confirmed_not_delivered") {
+    ctx.addIssue({ code: "custom", message: "authorized retry requires confirmed non-delivery" });
+  }
+  if (delivery.status === "reconciled" && delivery.reconciliation?.outcome === "confirmed_not_delivered") {
+    ctx.addIssue({ code: "custom", message: "terminal reconciliation has a retry outcome" });
+  }
+  if (delivery.reconciliation && !(
+      (delivery.reconciliation.outcome === "confirmed_delivered" && delivery.reconciliation.reason_code === "provider_delivery_confirmed") ||
+      (delivery.reconciliation.outcome === "confirmed_not_delivered" && delivery.reconciliation.reason_code === "provider_non_delivery_confirmed") ||
+      (delivery.reconciliation.outcome === "closed_no_retry" &&
+       (delivery.reconciliation.reason_code === "business_superseded" || delivery.reconciliation.reason_code === "risk_accepted")))) {
+    ctx.addIssue({ code: "custom", message: "delivery reconciliation outcome and reason are incompatible" });
+  }
   if (delivery.status !== "delivered" && delivery.status !== "readback" && delivery.status !== "ambiguous") return;
   if (!delivery.evidence_digest || !delivery.evidence ||
       delivery.evidence.delivery_id !== delivery.id ||

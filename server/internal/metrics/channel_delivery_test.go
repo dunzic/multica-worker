@@ -17,6 +17,7 @@ func TestChannelDeliveryMetricsNormalizeCallerValuesAndCarryNoIdentity(t *testin
 	m.RecordChannelDeliveryTransition("dingtalk", "chat_reply", "ambiguous", "partial_delivery")
 	m.RecordChannelDeliveryReconcile("private-worker-error")
 	m.RecordChannelDeliveryReconcile("write_failed")
+	m.RecordChannelDeliveryReconcile("retry_published")
 
 	if got := testutil.ToFloat64(m.transitions.WithLabelValues("unknown", "unknown", "failed", "provider_error")); got != 1 {
 		t.Fatalf("normalized transition=%v, want 1", got)
@@ -32,6 +33,9 @@ func TestChannelDeliveryMetricsNormalizeCallerValuesAndCarryNoIdentity(t *testin
 	}
 	if got := testutil.ToFloat64(m.reconciles.WithLabelValues("write_failed")); got != 1 {
 		t.Fatalf("write-failed reconcile=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.reconciles.WithLabelValues("retry_published")); got != 1 {
+		t.Fatalf("published retry reconcile=%v, want 1", got)
 	}
 
 	reg := prometheus.NewRegistry()
@@ -62,9 +66,11 @@ func TestChannelDeliveryHelmRulesSeparateFailureFromAmbiguity(t *testing.T) {
 		"MulticaChannelDeliveryFailuresElevated",
 		"MulticaChannelDeliveryAcceptanceAmbiguous",
 		"MulticaChannelDeliveryReconcilerErrors",
+		"MulticaChannelDeliveryAuthorizedRetryStalled",
 		`status="failed"`,
 		`status="ambiguous"`,
 		`outcome=~"query_failed|write_failed"`,
+		`outcome=~"retry_query_failed|retry_publish_failed|retry_unconsumed"`,
 		"automatic resend is blocked",
 	} {
 		if !strings.Contains(rule, required) {

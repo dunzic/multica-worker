@@ -407,6 +407,9 @@ DELETE FROM project WHERE project.workspace_id = $1;
 
 -- name: DeleteWorkspaceRoleSources :exec
 WITH
+deleted_channel_delivery_reconciliations AS (
+    DELETE FROM channel_delivery_reconciliation WHERE channel_delivery_reconciliation.workspace_id = $1
+),
 deleted_runtime_attestation_observations AS (
     DELETE FROM role_source_runtime_attestation_observation WHERE role_source_runtime_attestation_observation.workspace_id = $1
 ),

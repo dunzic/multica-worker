@@ -277,6 +277,7 @@ build: ## Build server, CLI, migration and role-source operator binaries into se
 	cd server && go build -o bin/migrate ./cmd/migrate
 	cd server && go build -o bin/role_source_dr ./cmd/role_source_dr
 	cd server && go build -o bin/role_source_outbox_replay ./cmd/role_source_outbox_replay
+	cd server && go build -o bin/channel_delivery_reconcile ./cmd/channel_delivery_reconcile
 	cd server && go build -ldflags "-X main.commit=$(FULL_COMMIT)" -o bin/role_source_capacity ./cmd/role_source_capacity
 
 test: ## Run Go tests after ensuring the target DB exists and migrations are applied

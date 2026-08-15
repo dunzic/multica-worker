@@ -194,4 +194,12 @@ spec:
           annotations:
             summary: "Channel delivery reconciler cannot freeze abandoned leases"
             description: "The delivery reconciler cannot claim or persist ambiguity evidence for expired send leases. Pending rows remain non-retryable; restore PostgreSQL writes and let reconciliation complete before handling connector events."
+        - alert: MulticaChannelDeliveryAuthorizedRetryStalled
+          expr: increase(multica_channel_delivery_reconciliations_total{outcome=~"retry_query_failed|retry_publish_failed|retry_unconsumed"}[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "An authorized channel-delivery retry is stalled"
+            description: "A signed non-delivery reconciliation could not be loaded, reconstructed from the persisted terminal chat result, or consumed by the connector. The row remains retry_authorized and cannot bypass its one-shot claim fence. Repair the dependency or digest mismatch; never publish replacement content manually."
 {{- end }}

@@ -262,6 +262,7 @@ describe("ApiClient role-source runtime evidence", () => {
       payload_digest: `sha256:${"a".repeat(64)}`,
       status: "readback",
       attempt_count: 1,
+      reconciliation_count: 0,
       external_message_id: "provider-message-1",
       evidence_digest: `sha256:${"b".repeat(64)}`,
       evidence: {
@@ -315,9 +316,25 @@ describe("ApiClient role-source runtime evidence", () => {
         ambiguous_at: "2026-08-13T06:02:00Z",
       },
     };
+    const reconciled = {
+      ...ambiguous,
+      id: "delivery-4",
+      status: "reconciled",
+      reconciliation_count: 1,
+      last_reconciled_at: "2026-08-13T06:04:00Z",
+      reconciliation: {
+        generation: 1,
+        outcome: "confirmed_delivered",
+        reason_code: "provider_delivery_confirmed",
+        external_evidence_digest: `sha256:${"c".repeat(64)}`,
+        expected_ambiguity_evidence_digest: ambiguous.evidence_digest,
+        reconciliation_digest: `sha256:${"d".repeat(64)}`,
+        created_at: "2026-08-13T06:04:00Z",
+      },
+    };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [delivery, failed, ambiguous] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [delivery, failed, ambiguous, reconciled] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
         ...delivery,
         evidence: { ...delivery.evidence, task_id: "other-task" },
@@ -325,6 +342,11 @@ describe("ApiClient role-source runtime evidence", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
         ...ambiguous,
         last_error_code: "lease_expired",
+      }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliveries: [{
+        ...reconciled,
+        status: "retry_authorized",
+        reconciliation: { ...reconciled.reconciliation, outcome: "confirmed_delivered" },
       }] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const client = new ApiClient("https://api.example.test");
@@ -339,7 +361,9 @@ describe("ApiClient role-source runtime evidence", () => {
         evidence: undefined,
       },
       ambiguous,
+      reconciled,
     ]);
+    await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
     await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
     await expect(client.listChannelDeliveries("workspace-1")).resolves.toEqual([]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(

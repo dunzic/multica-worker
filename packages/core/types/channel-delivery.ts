@@ -1,4 +1,4 @@
-export type ChannelDeliveryStatus = "pending" | "delivered" | "readback" | "failed" | "ambiguous" | string;
+export type ChannelDeliveryStatus = "pending" | "delivered" | "readback" | "failed" | "ambiguous" | "retry_authorized" | "reconciled" | string;
 export type ChannelDeliveryAmbiguityReason = "response_unknown" | "partial_delivery" | "receipt_persist_failed" | "lease_expired" | "missing_provider_id";
 
 export interface ChannelDeliveryEvidence {
@@ -22,6 +22,16 @@ export interface ChannelDeliveryEvidence {
   ambiguous_at?: string;
 }
 
+export interface ChannelDeliveryReconciliation {
+  generation: number;
+  outcome: "confirmed_delivered" | "confirmed_not_delivered" | "closed_no_retry" | string;
+  reason_code: string;
+  external_evidence_digest: string;
+  expected_ambiguity_evidence_digest: string;
+  reconciliation_digest: string;
+  created_at: string;
+}
+
 export interface ChannelDelivery {
   id: string;
   workspace_id: string;
@@ -40,6 +50,9 @@ export interface ChannelDelivery {
   evidence?: ChannelDeliveryEvidence;
   last_error_code?: string;
   ambiguous_at?: string;
+  reconciliation_count: number;
+  last_reconciled_at?: string;
+  reconciliation?: ChannelDeliveryReconciliation;
   created_at: string;
   updated_at: string;
 }

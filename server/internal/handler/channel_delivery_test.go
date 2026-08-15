@@ -88,6 +88,37 @@ func TestChannelDeliveryResponseRejectsUnverifiedTerminalRow(t *testing.T) {
 	}
 }
 
+func TestChannelDeliveryResponseIncludesSanitizedReconciliation(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 30, 0, 0, time.UTC)
+	row := db.ChannelDelivery{
+		ID: testDeliveryUUID(1), WorkspaceID: testDeliveryUUID(2), TaskID: testDeliveryUUID(4), ChatSessionID: testDeliveryUUID(5),
+		ChannelType: "slack", ChannelChatID: "C1", OperationKind: "chat_reply", CorrelationID: testDeliveryUUID(6),
+		PayloadDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Status:        "reconciled", AttemptCount: 1, ReconciliationCount: 1,
+		LastReconciledAt: pgtype.Timestamptz{Time: now, Valid: true},
+		CreatedAt:        pgtype.Timestamptz{Time: now, Valid: true}, UpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+	}
+	receipt := &delivery.ReconciliationReceipt{
+		Generation: 1, Outcome: delivery.ReconciliationConfirmedDelivered,
+		ReasonCode:                      delivery.ReconciliationProviderDeliveryConfirmed,
+		ExternalEvidenceDigest:          "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ExpectedAmbiguityEvidenceDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ReconciliationDigest:            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		RequesterKeyID:                  "private_requester_key", ApproverKeyID: "private_approver_key", CreatedAt: now,
+	}
+	response, err := channelDeliveryToResponse(row, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(response)
+	if response.Reconciliation == nil || response.Reconciliation.Outcome != delivery.ReconciliationConfirmedDelivered {
+		t.Fatalf("response=%+v", response)
+	}
+	if strings.Contains(string(body), "private_requester_key") || strings.Contains(string(body), "private_approver_key") {
+		t.Fatalf("response leaked operator key identity: %s", body)
+	}
+}
+
 func testDeliveryUUID(n byte) pgtype.UUID {
 	var id pgtype.UUID
 	id.Bytes[15] = n

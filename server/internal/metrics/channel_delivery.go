@@ -18,7 +18,7 @@ func NewChannelDeliveryMetrics() *ChannelDeliveryMetrics {
 		}, []string{"connector", "operation", "status", "error_code"}),
 		reconciles: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "multica", Subsystem: "channel_delivery", Name: "reconciliations_total",
-			Help: "Channel-delivery expired-lease reconciliation outcomes.",
+			Help: "Channel-delivery expired-lease freezes and authorized-retry publication outcomes.",
 		}, []string{"outcome"}),
 	}
 }
@@ -42,7 +42,7 @@ func (m *ChannelDeliveryMetrics) RecordChannelDeliveryReconcile(outcome string) 
 		return
 	}
 	switch outcome {
-	case "completed", "query_failed", "write_failed":
+	case "completed", "query_failed", "write_failed", "retry_query_failed", "retry_publish_failed", "retry_unconsumed", "retry_published":
 	default:
 		outcome = "query_failed"
 	}
@@ -69,7 +69,7 @@ func channelDeliveryOperation(value string) string {
 
 func channelDeliveryStatus(value string) string {
 	switch value {
-	case "delivered", "readback", "failed", "ambiguous":
+	case "delivered", "readback", "failed", "ambiguous", "retry_authorized", "reconciled":
 		return value
 	default:
 		return "failed"

@@ -11,6 +11,73 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimAuthorizedChannelDeliveryRetries = `-- name: ClaimAuthorizedChannelDeliveryRetries :many
+WITH due AS (
+    SELECT id
+    FROM channel_delivery
+    WHERE status = 'retry_authorized'
+      AND (retry_publish_expires_at IS NULL OR retry_publish_expires_at < now())
+    ORDER BY last_reconciled_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT $1
+)
+UPDATE channel_delivery
+SET retry_publish_token = gen_random_uuid(),
+    retry_publish_expires_at = now() + INTERVAL '30 seconds',
+    updated_at = now()
+WHERE id IN (SELECT id FROM due)
+RETURNING channel_delivery.id, channel_delivery.workspace_id, channel_delivery.installation_id, channel_delivery.task_id, channel_delivery.chat_session_id, channel_delivery.channel_type, channel_delivery.channel_chat_id, channel_delivery.operation_kind, channel_delivery.correlation_id, channel_delivery.payload_digest, channel_delivery.status, channel_delivery.attempt_count, channel_delivery.lease_token, channel_delivery.lease_expires_at, channel_delivery.external_message_id, channel_delivery.evidence, channel_delivery.evidence_digest, channel_delivery.last_error_code, channel_delivery.delivered_at, channel_delivery.readback_at, channel_delivery.failed_at, channel_delivery.created_at, channel_delivery.updated_at, channel_delivery.ambiguous_at, channel_delivery.reconciliation_count, channel_delivery.last_reconciled_at, channel_delivery.retry_publish_token, channel_delivery.retry_publish_expires_at
+`
+
+func (q *Queries) ClaimAuthorizedChannelDeliveryRetries(ctx context.Context, limit int32) ([]ChannelDelivery, error) {
+	rows, err := q.db.Query(ctx, claimAuthorizedChannelDeliveryRetries, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDelivery{}
+	for rows.Next() {
+		var i ChannelDelivery
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.TaskID,
+			&i.ChatSessionID,
+			&i.ChannelType,
+			&i.ChannelChatID,
+			&i.OperationKind,
+			&i.CorrelationID,
+			&i.PayloadDigest,
+			&i.Status,
+			&i.AttemptCount,
+			&i.LeaseToken,
+			&i.LeaseExpiresAt,
+			&i.ExternalMessageID,
+			&i.Evidence,
+			&i.EvidenceDigest,
+			&i.LastErrorCode,
+			&i.DeliveredAt,
+			&i.ReadbackAt,
+			&i.FailedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AmbiguousAt,
+			&i.ReconciliationCount,
+			&i.LastReconciledAt,
+			&i.RetryPublishToken,
+			&i.RetryPublishExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const claimChannelDelivery = `-- name: ClaimChannelDelivery :one
 INSERT INTO channel_delivery (
     workspace_id, installation_id, task_id, chat_session_id, channel_type,
@@ -25,11 +92,30 @@ SET lease_token = gen_random_uuid(),
     attempt_count = channel_delivery.attempt_count + 1,
     last_error_code = NULL,
     failed_at = NULL,
+    ambiguous_at = NULL,
+    external_message_id = NULL,
+    evidence = NULL,
+    evidence_digest = NULL,
+    retry_publish_token = NULL,
+    retry_publish_expires_at = NULL,
     updated_at = now()
 WHERE channel_delivery.payload_digest = EXCLUDED.payload_digest
   AND channel_delivery.attempt_count < 100
-  AND channel_delivery.status = 'failed'
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
+  AND (
+      channel_delivery.status = 'failed'
+      OR (
+          channel_delivery.status = 'retry_authorized'
+          AND EXISTS (
+              SELECT 1
+              FROM channel_delivery_reconciliation reconciliation
+              WHERE reconciliation.delivery_id = channel_delivery.id
+                AND reconciliation.generation = channel_delivery.reconciliation_count
+                AND reconciliation.outcome = 'confirmed_not_delivered'
+                AND reconciliation.expected_ambiguity_evidence_digest = channel_delivery.evidence_digest
+          )
+      )
+  )
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at
 `
 
 type ClaimChannelDeliveryParams struct {
@@ -80,6 +166,10 @@ func (q *Queries) ClaimChannelDelivery(ctx context.Context, arg ClaimChannelDeli
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
 	)
 	return i, err
 }
@@ -97,7 +187,7 @@ SET lease_token = gen_random_uuid(),
     lease_expires_at = now() + INTERVAL '30 seconds',
     updated_at = now()
 WHERE id IN (SELECT id FROM due)
-RETURNING channel_delivery.id, channel_delivery.workspace_id, channel_delivery.installation_id, channel_delivery.task_id, channel_delivery.chat_session_id, channel_delivery.channel_type, channel_delivery.channel_chat_id, channel_delivery.operation_kind, channel_delivery.correlation_id, channel_delivery.payload_digest, channel_delivery.status, channel_delivery.attempt_count, channel_delivery.lease_token, channel_delivery.lease_expires_at, channel_delivery.external_message_id, channel_delivery.evidence, channel_delivery.evidence_digest, channel_delivery.last_error_code, channel_delivery.delivered_at, channel_delivery.readback_at, channel_delivery.failed_at, channel_delivery.created_at, channel_delivery.updated_at, channel_delivery.ambiguous_at
+RETURNING channel_delivery.id, channel_delivery.workspace_id, channel_delivery.installation_id, channel_delivery.task_id, channel_delivery.chat_session_id, channel_delivery.channel_type, channel_delivery.channel_chat_id, channel_delivery.operation_kind, channel_delivery.correlation_id, channel_delivery.payload_digest, channel_delivery.status, channel_delivery.attempt_count, channel_delivery.lease_token, channel_delivery.lease_expires_at, channel_delivery.external_message_id, channel_delivery.evidence, channel_delivery.evidence_digest, channel_delivery.last_error_code, channel_delivery.delivered_at, channel_delivery.readback_at, channel_delivery.failed_at, channel_delivery.created_at, channel_delivery.updated_at, channel_delivery.ambiguous_at, channel_delivery.reconciliation_count, channel_delivery.last_reconciled_at, channel_delivery.retry_publish_token, channel_delivery.retry_publish_expires_at
 `
 
 func (q *Queries) ClaimExpiredChannelDeliveryLeases(ctx context.Context, limit int32) ([]ChannelDelivery, error) {
@@ -134,6 +224,10 @@ func (q *Queries) ClaimExpiredChannelDeliveryLeases(ctx context.Context, limit i
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.AmbiguousAt,
+			&i.ReconciliationCount,
+			&i.LastReconciledAt,
+			&i.RetryPublishToken,
+			&i.RetryPublishExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -156,7 +250,7 @@ SET status = 'delivered',
     lease_expires_at = NULL,
     updated_at = now()
 WHERE id = $1 AND lease_token = $2 AND status = 'pending'
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at
 `
 
 type CompleteChannelDeliveryParams struct {
@@ -203,6 +297,10 @@ func (q *Queries) CompleteChannelDelivery(ctx context.Context, arg CompleteChann
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
 	)
 	return i, err
 }
@@ -225,7 +323,7 @@ SET status = 'failed',
     lease_expires_at = NULL,
     updated_at = now()
 WHERE id = $1 AND lease_token = $2 AND status = 'pending'
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at
 `
 
 type FailChannelDeliveryParams struct {
@@ -262,12 +360,16 @@ func (q *Queries) FailChannelDelivery(ctx context.Context, arg FailChannelDelive
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
 	)
 	return i, err
 }
 
 const getChannelDeliveryByExternalMessage = `-- name: GetChannelDeliveryByExternalMessage :one
-SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at FROM channel_delivery
+SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at FROM channel_delivery
 WHERE installation_id = $1 AND external_message_id = $2
 `
 
@@ -304,12 +406,56 @@ func (q *Queries) GetChannelDeliveryByExternalMessage(ctx context.Context, arg G
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
+	)
+	return i, err
+}
+
+const getChannelDeliveryByID = `-- name: GetChannelDeliveryByID :one
+SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at FROM channel_delivery WHERE id = $1
+`
+
+func (q *Queries) GetChannelDeliveryByID(ctx context.Context, id pgtype.UUID) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, getChannelDeliveryByID, id)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.OperationKind,
+		&i.CorrelationID,
+		&i.PayloadDigest,
+		&i.Status,
+		&i.AttemptCount,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExternalMessageID,
+		&i.Evidence,
+		&i.EvidenceDigest,
+		&i.LastErrorCode,
+		&i.DeliveredAt,
+		&i.ReadbackAt,
+		&i.FailedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
 	)
 	return i, err
 }
 
 const getChannelDeliveryByIdentity = `-- name: GetChannelDeliveryByIdentity :one
-SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at FROM channel_delivery
+SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at FROM channel_delivery
 WHERE installation_id = $1 AND task_id = $2 AND operation_kind = $3
 `
 
@@ -347,12 +493,208 @@ func (q *Queries) GetChannelDeliveryByIdentity(ctx context.Context, arg GetChann
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
+	)
+	return i, err
+}
+
+const getChannelDeliveryForReconciliation = `-- name: GetChannelDeliveryForReconciliation :one
+SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at FROM channel_delivery
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetChannelDeliveryForReconciliation(ctx context.Context, id pgtype.UUID) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, getChannelDeliveryForReconciliation, id)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.OperationKind,
+		&i.CorrelationID,
+		&i.PayloadDigest,
+		&i.Status,
+		&i.AttemptCount,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExternalMessageID,
+		&i.Evidence,
+		&i.EvidenceDigest,
+		&i.LastErrorCode,
+		&i.DeliveredAt,
+		&i.ReadbackAt,
+		&i.FailedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
+	)
+	return i, err
+}
+
+const getChannelDeliveryReconciliationByAuthorization = `-- name: GetChannelDeliveryReconciliationByAuthorization :one
+SELECT id, delivery_id, workspace_id, authorization_id, generation, outcome, reason_code, external_evidence_digest, expected_ambiguity_evidence_digest, ambiguity_evidence, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, previous_reconciliation_digest, reconciliation_digest, created_at FROM channel_delivery_reconciliation
+WHERE authorization_id = $1
+`
+
+func (q *Queries) GetChannelDeliveryReconciliationByAuthorization(ctx context.Context, authorizationID pgtype.UUID) (ChannelDeliveryReconciliation, error) {
+	row := q.db.QueryRow(ctx, getChannelDeliveryReconciliationByAuthorization, authorizationID)
+	var i ChannelDeliveryReconciliation
+	err := row.Scan(
+		&i.ID,
+		&i.DeliveryID,
+		&i.WorkspaceID,
+		&i.AuthorizationID,
+		&i.Generation,
+		&i.Outcome,
+		&i.ReasonCode,
+		&i.ExternalEvidenceDigest,
+		&i.ExpectedAmbiguityEvidenceDigest,
+		&i.AmbiguityEvidence,
+		&i.RequesterKeyID,
+		&i.ApproverKeyID,
+		&i.AuthorizationDigest,
+		&i.RequesterSignatureDigest,
+		&i.ApproverSignatureDigest,
+		&i.PreviousReconciliationDigest,
+		&i.ReconciliationDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getLatestChannelDeliveryReconciliation = `-- name: GetLatestChannelDeliveryReconciliation :one
+SELECT id, delivery_id, workspace_id, authorization_id, generation, outcome, reason_code, external_evidence_digest, expected_ambiguity_evidence_digest, ambiguity_evidence, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, previous_reconciliation_digest, reconciliation_digest, created_at FROM channel_delivery_reconciliation
+WHERE delivery_id = $1
+ORDER BY generation DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestChannelDeliveryReconciliation(ctx context.Context, deliveryID pgtype.UUID) (ChannelDeliveryReconciliation, error) {
+	row := q.db.QueryRow(ctx, getLatestChannelDeliveryReconciliation, deliveryID)
+	var i ChannelDeliveryReconciliation
+	err := row.Scan(
+		&i.ID,
+		&i.DeliveryID,
+		&i.WorkspaceID,
+		&i.AuthorizationID,
+		&i.Generation,
+		&i.Outcome,
+		&i.ReasonCode,
+		&i.ExternalEvidenceDigest,
+		&i.ExpectedAmbiguityEvidenceDigest,
+		&i.AmbiguityEvidence,
+		&i.RequesterKeyID,
+		&i.ApproverKeyID,
+		&i.AuthorizationDigest,
+		&i.RequesterSignatureDigest,
+		&i.ApproverSignatureDigest,
+		&i.PreviousReconciliationDigest,
+		&i.ReconciliationDigest,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertChannelDeliveryReconciliation = `-- name: InsertChannelDeliveryReconciliation :one
+INSERT INTO channel_delivery_reconciliation (
+    id, delivery_id, workspace_id, authorization_id, generation,
+    outcome, reason_code, external_evidence_digest,
+    expected_ambiguity_evidence_digest, ambiguity_evidence,
+    requester_key_id, approver_key_id, authorization_digest,
+    requester_signature_digest, approver_signature_digest,
+    previous_reconciliation_digest, reconciliation_digest, created_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8,
+    $9, $10,
+    $11, $12, $13,
+    $14, $15,
+    $16::text,
+    $17, $18
+)
+RETURNING id, delivery_id, workspace_id, authorization_id, generation, outcome, reason_code, external_evidence_digest, expected_ambiguity_evidence_digest, ambiguity_evidence, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, previous_reconciliation_digest, reconciliation_digest, created_at
+`
+
+type InsertChannelDeliveryReconciliationParams struct {
+	ID                              pgtype.UUID        `json:"id"`
+	DeliveryID                      pgtype.UUID        `json:"delivery_id"`
+	WorkspaceID                     pgtype.UUID        `json:"workspace_id"`
+	AuthorizationID                 pgtype.UUID        `json:"authorization_id"`
+	Generation                      int16              `json:"generation"`
+	Outcome                         string             `json:"outcome"`
+	ReasonCode                      string             `json:"reason_code"`
+	ExternalEvidenceDigest          string             `json:"external_evidence_digest"`
+	ExpectedAmbiguityEvidenceDigest string             `json:"expected_ambiguity_evidence_digest"`
+	AmbiguityEvidence               []byte             `json:"ambiguity_evidence"`
+	RequesterKeyID                  string             `json:"requester_key_id"`
+	ApproverKeyID                   string             `json:"approver_key_id"`
+	AuthorizationDigest             string             `json:"authorization_digest"`
+	RequesterSignatureDigest        string             `json:"requester_signature_digest"`
+	ApproverSignatureDigest         string             `json:"approver_signature_digest"`
+	PreviousReconciliationDigest    pgtype.Text        `json:"previous_reconciliation_digest"`
+	ReconciliationDigest            string             `json:"reconciliation_digest"`
+	CreatedAt                       pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) InsertChannelDeliveryReconciliation(ctx context.Context, arg InsertChannelDeliveryReconciliationParams) (ChannelDeliveryReconciliation, error) {
+	row := q.db.QueryRow(ctx, insertChannelDeliveryReconciliation,
+		arg.ID,
+		arg.DeliveryID,
+		arg.WorkspaceID,
+		arg.AuthorizationID,
+		arg.Generation,
+		arg.Outcome,
+		arg.ReasonCode,
+		arg.ExternalEvidenceDigest,
+		arg.ExpectedAmbiguityEvidenceDigest,
+		arg.AmbiguityEvidence,
+		arg.RequesterKeyID,
+		arg.ApproverKeyID,
+		arg.AuthorizationDigest,
+		arg.RequesterSignatureDigest,
+		arg.ApproverSignatureDigest,
+		arg.PreviousReconciliationDigest,
+		arg.ReconciliationDigest,
+		arg.CreatedAt,
+	)
+	var i ChannelDeliveryReconciliation
+	err := row.Scan(
+		&i.ID,
+		&i.DeliveryID,
+		&i.WorkspaceID,
+		&i.AuthorizationID,
+		&i.Generation,
+		&i.Outcome,
+		&i.ReasonCode,
+		&i.ExternalEvidenceDigest,
+		&i.ExpectedAmbiguityEvidenceDigest,
+		&i.AmbiguityEvidence,
+		&i.RequesterKeyID,
+		&i.ApproverKeyID,
+		&i.AuthorizationDigest,
+		&i.RequesterSignatureDigest,
+		&i.ApproverSignatureDigest,
+		&i.PreviousReconciliationDigest,
+		&i.ReconciliationDigest,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const listChannelDeliveriesByWorkspace = `-- name: ListChannelDeliveriesByWorkspace :many
-SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at FROM channel_delivery
+SELECT id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at FROM channel_delivery
 WHERE workspace_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT $2
@@ -397,6 +739,152 @@ func (q *Queries) ListChannelDeliveriesByWorkspace(ctx context.Context, arg List
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.AmbiguousAt,
+			&i.ReconciliationCount,
+			&i.LastReconciledAt,
+			&i.RetryPublishToken,
+			&i.RetryPublishExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelDeliveryReconciliationsByDelivery = `-- name: ListChannelDeliveryReconciliationsByDelivery :many
+SELECT id, delivery_id, workspace_id, authorization_id, generation, outcome, reason_code, external_evidence_digest, expected_ambiguity_evidence_digest, ambiguity_evidence, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, previous_reconciliation_digest, reconciliation_digest, created_at FROM channel_delivery_reconciliation
+WHERE delivery_id = $1
+ORDER BY generation
+`
+
+func (q *Queries) ListChannelDeliveryReconciliationsByDelivery(ctx context.Context, deliveryID pgtype.UUID) ([]ChannelDeliveryReconciliation, error) {
+	rows, err := q.db.Query(ctx, listChannelDeliveryReconciliationsByDelivery, deliveryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDeliveryReconciliation{}
+	for rows.Next() {
+		var i ChannelDeliveryReconciliation
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeliveryID,
+			&i.WorkspaceID,
+			&i.AuthorizationID,
+			&i.Generation,
+			&i.Outcome,
+			&i.ReasonCode,
+			&i.ExternalEvidenceDigest,
+			&i.ExpectedAmbiguityEvidenceDigest,
+			&i.AmbiguityEvidence,
+			&i.RequesterKeyID,
+			&i.ApproverKeyID,
+			&i.AuthorizationDigest,
+			&i.RequesterSignatureDigest,
+			&i.ApproverSignatureDigest,
+			&i.PreviousReconciliationDigest,
+			&i.ReconciliationDigest,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelDeliveryReconciliationsByWorkspaceDeliveries = `-- name: ListChannelDeliveryReconciliationsByWorkspaceDeliveries :many
+SELECT id, delivery_id, workspace_id, authorization_id, generation, outcome, reason_code, external_evidence_digest, expected_ambiguity_evidence_digest, ambiguity_evidence, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, previous_reconciliation_digest, reconciliation_digest, created_at FROM channel_delivery_reconciliation
+WHERE workspace_id = $1
+  AND delivery_id = ANY($2::uuid[])
+ORDER BY delivery_id, generation
+`
+
+type ListChannelDeliveryReconciliationsByWorkspaceDeliveriesParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	DeliveryIds []pgtype.UUID `json:"delivery_ids"`
+}
+
+func (q *Queries) ListChannelDeliveryReconciliationsByWorkspaceDeliveries(ctx context.Context, arg ListChannelDeliveryReconciliationsByWorkspaceDeliveriesParams) ([]ChannelDeliveryReconciliation, error) {
+	rows, err := q.db.Query(ctx, listChannelDeliveryReconciliationsByWorkspaceDeliveries, arg.WorkspaceID, arg.DeliveryIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDeliveryReconciliation{}
+	for rows.Next() {
+		var i ChannelDeliveryReconciliation
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeliveryID,
+			&i.WorkspaceID,
+			&i.AuthorizationID,
+			&i.Generation,
+			&i.Outcome,
+			&i.ReasonCode,
+			&i.ExternalEvidenceDigest,
+			&i.ExpectedAmbiguityEvidenceDigest,
+			&i.AmbiguityEvidence,
+			&i.RequesterKeyID,
+			&i.ApproverKeyID,
+			&i.AuthorizationDigest,
+			&i.RequesterSignatureDigest,
+			&i.ApproverSignatureDigest,
+			&i.PreviousReconciliationDigest,
+			&i.ReconciliationDigest,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLatestChannelDeliveryReconciliationsByWorkspace = `-- name: ListLatestChannelDeliveryReconciliationsByWorkspace :many
+SELECT DISTINCT ON (delivery_id) id, delivery_id, workspace_id, authorization_id, generation, outcome, reason_code, external_evidence_digest, expected_ambiguity_evidence_digest, ambiguity_evidence, requester_key_id, approver_key_id, authorization_digest, requester_signature_digest, approver_signature_digest, previous_reconciliation_digest, reconciliation_digest, created_at
+FROM channel_delivery_reconciliation
+WHERE workspace_id = $1
+ORDER BY delivery_id, generation DESC
+`
+
+func (q *Queries) ListLatestChannelDeliveryReconciliationsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ChannelDeliveryReconciliation, error) {
+	rows, err := q.db.Query(ctx, listLatestChannelDeliveryReconciliationsByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDeliveryReconciliation{}
+	for rows.Next() {
+		var i ChannelDeliveryReconciliation
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeliveryID,
+			&i.WorkspaceID,
+			&i.AuthorizationID,
+			&i.Generation,
+			&i.Outcome,
+			&i.ReasonCode,
+			&i.ExternalEvidenceDigest,
+			&i.ExpectedAmbiguityEvidenceDigest,
+			&i.AmbiguityEvidence,
+			&i.RequesterKeyID,
+			&i.ApproverKeyID,
+			&i.AuthorizationDigest,
+			&i.RequesterSignatureDigest,
+			&i.ApproverSignatureDigest,
+			&i.PreviousReconciliationDigest,
+			&i.ReconciliationDigest,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -420,7 +908,7 @@ SET status = 'ambiguous',
     lease_expires_at = NULL,
     updated_at = now()
 WHERE id = $6 AND lease_token = $7 AND status = 'pending'
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at
 `
 
 type MarkChannelDeliveryAmbiguousParams struct {
@@ -469,6 +957,10 @@ func (q *Queries) MarkChannelDeliveryAmbiguous(ctx context.Context, arg MarkChan
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
 	)
 	return i, err
 }
@@ -481,7 +973,7 @@ SET status = 'readback',
     readback_at = $5,
     updated_at = now()
 WHERE id = $1 AND status = 'delivered' AND external_message_id = $2
-RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at
 `
 
 type MarkChannelDeliveryReadbackParams struct {
@@ -526,6 +1018,80 @@ func (q *Queries) MarkChannelDeliveryReadback(ctx context.Context, arg MarkChann
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
+	)
+	return i, err
+}
+
+const resolveChannelDeliveryAmbiguity = `-- name: ResolveChannelDeliveryAmbiguity :one
+UPDATE channel_delivery
+SET status = CASE
+        WHEN $1::text = 'confirmed_not_delivered' THEN 'retry_authorized'
+        ELSE 'reconciled'
+    END,
+    reconciliation_count = reconciliation_count + 1,
+    last_reconciled_at = $2,
+    retry_publish_token = NULL,
+    retry_publish_expires_at = NULL,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    updated_at = now()
+WHERE id = $3
+  AND status = 'ambiguous'
+  AND reconciliation_count = $4
+  AND evidence_digest = $5
+RETURNING id, workspace_id, installation_id, task_id, chat_session_id, channel_type, channel_chat_id, operation_kind, correlation_id, payload_digest, status, attempt_count, lease_token, lease_expires_at, external_message_id, evidence, evidence_digest, last_error_code, delivered_at, readback_at, failed_at, created_at, updated_at, ambiguous_at, reconciliation_count, last_reconciled_at, retry_publish_token, retry_publish_expires_at
+`
+
+type ResolveChannelDeliveryAmbiguityParams struct {
+	Outcome                         string             `json:"outcome"`
+	ReconciledAt                    pgtype.Timestamptz `json:"reconciled_at"`
+	ID                              pgtype.UUID        `json:"id"`
+	ExpectedReconciliationCount     int16              `json:"expected_reconciliation_count"`
+	ExpectedAmbiguityEvidenceDigest pgtype.Text        `json:"expected_ambiguity_evidence_digest"`
+}
+
+func (q *Queries) ResolveChannelDeliveryAmbiguity(ctx context.Context, arg ResolveChannelDeliveryAmbiguityParams) (ChannelDelivery, error) {
+	row := q.db.QueryRow(ctx, resolveChannelDeliveryAmbiguity,
+		arg.Outcome,
+		arg.ReconciledAt,
+		arg.ID,
+		arg.ExpectedReconciliationCount,
+		arg.ExpectedAmbiguityEvidenceDigest,
+	)
+	var i ChannelDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.TaskID,
+		&i.ChatSessionID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.OperationKind,
+		&i.CorrelationID,
+		&i.PayloadDigest,
+		&i.Status,
+		&i.AttemptCount,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.ExternalMessageID,
+		&i.Evidence,
+		&i.EvidenceDigest,
+		&i.LastErrorCode,
+		&i.DeliveredAt,
+		&i.ReadbackAt,
+		&i.FailedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AmbiguousAt,
+		&i.ReconciliationCount,
+		&i.LastReconciledAt,
+		&i.RetryPublishToken,
+		&i.RetryPublishExpiresAt,
 	)
 	return i, err
 }

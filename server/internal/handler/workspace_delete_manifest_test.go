@@ -38,6 +38,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"autopilot_trigger":                  workspaceDelete,
 	"channel_binding_token":              workspaceDelete,
 	"channel_delivery":                   workspaceDelete,
+	"channel_delivery_reconciliation":    workspaceDelete,
 	"channel_chat_session_binding":       workspaceDelete,
 	"channel_inbound_audit":              workspaceDelete,
 	"channel_inbound_message_dedup":      workspaceDelete,

@@ -212,14 +212,95 @@ explicit `failed` provider rejection, which remains retryable.
    history and the approved time/correlation window; never search by or paste
    customer message text into an ordinary incident ticket.
 4. Do not update `channel_delivery`, clear `ambiguous_at`, manufacture a
-   provider ID, mark the row failed, or replay the originating event. The
-   current safety contract intentionally has no HTTP/UI resend or manual state
-   mutation endpoint.
-5. If the business owner requires another notification before controlled
-   reconciliation is available, treat it as a new customer-approved message
-   whose wording acknowledges that the earlier message may already have been
-   delivered. Approval must be retained outside Multica; it is not a resolution
-   of the frozen evidence row.
+   provider ID, mark the row failed, or replay the originating event. The only
+   mutation path is the offline, two-person procedure below; it has no HTTP or
+   UI write endpoint.
+
+### Controlled ambiguity reconciliation
+
+Use a protected platform-operator session with direct PostgreSQL 17 access.
+The requester and approver must be different people with different configured
+Ed25519 public keys. Store provider exports and incident records outside
+Multica; PostgreSQL retains only SHA-256 commitments, signer key IDs and the
+original content-free ambiguity evidence. Never place message content,
+credentials, raw provider errors or routing IDs in an ordinary incident ticket.
+
+1. Inspect the exact row and its complete reconciliation chain:
+
+   ```bash
+   DATABASE_URL="$RECONCILIATION_DATABASE_URL" \
+     /app/channel_delivery_reconcile inspect \
+     --delivery-id "$DELIVERY_ID"
+   ```
+
+   Inspection fails closed on a malformed ambiguity receipt, missing generation
+   or reconciliation digest mismatch. The next generation must be 1–3.
+2. Choose exactly one outcome/reason pair:
+
+   - `confirmed_delivered` + `provider_delivery_confirmed`: provider-native
+     evidence proves acceptance; the row becomes terminal `reconciled`;
+   - `confirmed_not_delivered` + `provider_non_delivery_confirmed`: provider
+     evidence proves absence; exactly one retry is authorized;
+   - `closed_no_retry` + `business_superseded`: the business owner approved a
+     replacement/new communication and closes the old row;
+   - `closed_no_retry` + `risk_accepted`: the incident owner explicitly accepts
+     uncertainty and closes without another message.
+
+   Never use `confirmed_not_delivered` for `partial_delivery`: at least one
+   chunk already has a provider receipt, and both the command and database
+   reject that false conclusion. For every other reason, absence must cover the
+   provider, destination and entire incident window—not merely a UI search miss.
+3. Place the complete provider export or signed incident evidence in a new
+   mode-0600 regular file. Prepare a single-use canonical authorization; the
+   output is created mode 0600 and is valid for exactly 15 minutes.
+
+   ```bash
+   DATABASE_URL="$RECONCILIATION_DATABASE_URL" \
+     /app/channel_delivery_reconcile prepare \
+     --delivery-id "$DELIVERY_ID" \
+     --outcome confirmed_not_delivered \
+     --reason-code provider_non_delivery_confirmed \
+     --external-evidence-file /secure/provider-export.json \
+     --output /secure/delivery-reconciliation.json
+   ```
+4. Both operators independently sign the exact authorization bytes through the
+   approved KMS/HSM flow. Do not pretty-print or add a newline. Export only the
+   base64 Ed25519 signatures to separate mode-0600 files. The read-only public
+   keyring must contain 2–32 distinct keys; aliases of one key are rejected.
+5. Execute the signed authorization:
+
+   ```bash
+   DATABASE_URL="$RECONCILIATION_DATABASE_URL" \
+   MULTICA_CHANNEL_DELIVERY_RECONCILIATION_PUBLIC_KEYS_FILE=/secure/delivery-reconciliation-keys.json \
+     /app/channel_delivery_reconcile execute \
+     --authorization /secure/delivery-reconciliation.json \
+     --requester-key-id requester_2026_01 \
+     --requester-signature-file /secure/requester.sig \
+     --approver-key-id approver_2026_01 \
+     --approver-signature-file /secure/approver.sig
+   ```
+
+   The transaction appends an immutable receipt before changing operational
+   state. Re-running the exact authorization and signatures is idempotent even
+   after expiry; never create a second authorization to guess whether the first
+   command committed.
+6. For terminal outcomes, verify the audit view shows `reconciled`, the exact
+   outcome, generation and evidence digest. For confirmed non-delivery, verify
+   `retry_authorized`: the background reconciler reloads the already-redacted
+   assistant outcome from PostgreSQL, requires its SHA-256 payload digest to
+   match the quarantined send, publishes the original task event and lets the
+   normal connector atomically consume that authorization once. Multica never
+   stores new message content in the reconciliation receipt.
+7. Watch `multica_channel_delivery_reconciliations_total`. `retry_published`
+   means the connector consumed the authorization. `retry_publish_failed` or
+   `retry_unconsumed` fires `MulticaChannelDeliveryAuthorizedRetryStalled`; the
+   row remains fenced in `retry_authorized`. Repair the missing task/message,
+   binding, credential or digest mismatch. Never publish replacement content
+   manually.
+8. If the authorized send itself becomes uncertain, it returns to `ambiguous`
+   with a new evidence digest and requires a new generation. At most three
+   generations are allowed. Preserve all authorizations, signatures, KMS/HSM
+   logs, provider evidence and public-key trust history for the audit period.
 
 `MulticaChannelDeliveryReconcilerErrors` with `query_failed` or `write_failed`
 means expired `pending` leases could not be frozen. They remain non-retryable by

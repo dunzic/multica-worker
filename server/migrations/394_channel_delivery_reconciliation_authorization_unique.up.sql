@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY channel_delivery_reconciliation_authorization_unique ON channel_delivery_reconciliation (authorization_id);

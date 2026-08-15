@@ -9,6 +9,10 @@ the Slack/DingTalk pilot; general availability still requires an authorized
 resolution workflow, remaining connector coverage and target-topology load and
 failover evidence
 
+Follow-on: the controlled two-person resolution workflow is implemented and
+reviewed in [RS-07 controlled ambiguity-resolution review](./RS-07-controlled-ambiguity-resolution-2026-08-15.md). This document remains the authoritative
+review of the original ambiguity-freeze boundary.
+
 ## High-value outcome and non-negotiable invariants
 
 A network timeout is not proof that a notification failed. Slack or DingTalk

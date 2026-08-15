@@ -14,11 +14,13 @@ import (
 )
 
 type memoryQueries struct {
-	row          db.ChannelDelivery
-	has          bool
-	completeErr  error
-	ambiguousErr error
-	ambiguousCtx error
+	row                       db.ChannelDelivery
+	has                       bool
+	completeErr               error
+	ambiguousErr              error
+	ambiguousCtx              error
+	reconciliationListErr     error
+	reconciliationListRequest db.ListChannelDeliveryReconciliationsByWorkspaceDeliveriesParams
 }
 
 type deliveryMetricsRecorder struct {
@@ -154,6 +156,11 @@ func (m *memoryQueries) ClaimExpiredChannelDeliveryLeases(context.Context, int32
 	return []db.ChannelDelivery{m.row}, nil
 }
 
+func (m *memoryQueries) ListChannelDeliveryReconciliationsByWorkspaceDeliveries(_ context.Context, request db.ListChannelDeliveryReconciliationsByWorkspaceDeliveriesParams) ([]db.ChannelDeliveryReconciliation, error) {
+	m.reconciliationListRequest = request
+	return nil, m.reconciliationListErr
+}
+
 func baseClaimInput() ClaimInput {
 	return ClaimInput{
 		WorkspaceID: testUUID(1), InstallationID: testUUID(2), TaskID: testUUID(3), ChatSessionID: testUUID(4),
@@ -258,6 +265,25 @@ func TestReconcilerWriteFailureLeavesLeaseNonRetryable(t *testing.T) {
 	replay, err := ledger.Claim(context.Background(), baseClaimInput())
 	if err != nil || replay.ShouldSend {
 		t.Fatalf("pending replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestListRecordsBoundsReconciliationLookupToPageDeliveryIDs(t *testing.T) {
+	sentinel := errors.New("stop after bounded reconciliation lookup")
+	q := &memoryQueries{
+		has: true,
+		row: db.ChannelDelivery{
+			ID: testUUID(10), WorkspaceID: testUUID(1), ReconciliationCount: 1,
+		},
+		reconciliationListErr: sentinel,
+	}
+	_, err := NewLedger(q).ListRecords(context.Background(), testUUID(1), 100)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("ListRecords error = %v, want %v", err, sentinel)
+	}
+	request := q.reconciliationListRequest
+	if request.WorkspaceID != testUUID(1) || len(request.DeliveryIds) != 1 || request.DeliveryIds[0] != testUUID(10) {
+		t.Fatalf("reconciliation list request = %+v", request)
 	}
 }
 

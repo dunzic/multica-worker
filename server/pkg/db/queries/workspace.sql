@@ -153,6 +153,11 @@ cleared_user_bindings AS (
 cleared_binding_tokens AS (
     DELETE FROM channel_binding_token WHERE workspace_id = $1
 ),
+cleared_channel_delivery_reconciliations AS (
+    DELETE FROM channel_delivery_reconciliation
+    WHERE workspace_id = $1
+      AND EXISTS (SELECT 1 FROM role_source_teardown_mode)
+),
 cleared_channel_deliveries AS (
     DELETE FROM channel_delivery WHERE workspace_id = $1
 ),
