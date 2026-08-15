@@ -19,6 +19,7 @@ const (
 	retentionScaleSnapshotsPerSource = 100
 	retentionScaleTotalSnapshots     = retentionScaleSources * retentionScaleSnapshotsPerSource
 	retentionScaleBatchSize          = 100
+	retentionScaleArtifactBytes      = 4096
 	retentionScaleP95Budget          = 2 * time.Second
 	retentionScaleP99Budget          = 5 * time.Second
 	retentionScaleTotalBudget        = 30 * time.Second
@@ -58,6 +59,23 @@ func TestRoleSourceRetentionCandidateScalePostgres(t *testing.T) {
 		}
 	})
 
+	control := newApplyFailureControl(t, pool, noArtifactReader{})
+	previewStarted := time.Now()
+	preview, err := control.GetRetentionPreview(ctx, fixture.workspaceID.String(), fixture.sourceID.String())
+	previewDuration := time.Since(previewStarted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const expectedSourceBytes = retentionScaleSnapshotsPerSource * retentionScaleArtifactBytes
+	if preview.EligibleCount != retentionScaleSnapshotsPerSource || preview.EstimatedBytes != expectedSourceBytes ||
+		preview.UniquelyReclaimableBytes != expectedSourceBytes || preview.Truncated {
+		t.Fatalf("retention scale preview count=%d referenced=%d unique=%d truncated=%t",
+			preview.EligibleCount, preview.EstimatedBytes, preview.UniquelyReclaimableBytes, preview.Truncated)
+	}
+	if previewDuration > retentionScaleP95Budget {
+		t.Fatalf("retention scale preview exceeded safety budget: %s", previewDuration)
+	}
+
 	query := generatedRetentionQueueSQL(t)
 	started := time.Now()
 	explain := explainRetentionQueue(t, ctx, pool, query)
@@ -68,7 +86,6 @@ func TestRoleSourceRetentionCandidateScalePostgres(t *testing.T) {
 		t.Fatalf("retention EXPLAIN did not execute the production INSERT: %s", explain.PlanJSON)
 	}
 
-	control := newApplyFailureControl(t, pool, noArtifactReader{})
 	latencies := []time.Duration{time.Duration(explain.ExecutionTimeMS * float64(time.Millisecond))}
 	totalQueued := retentionScaleBatchSize
 	for totalQueued < retentionScaleTotalSnapshots {
@@ -92,8 +109,9 @@ func TestRoleSourceRetentionCandidateScalePostgres(t *testing.T) {
 	if totalDuration > retentionScaleTotalBudget || p95 > retentionScaleP95Budget || p99 > retentionScaleP99Budget {
 		t.Fatalf("retention candidate SLO exceeded: total=%s p50=%s p95=%s p99=%s batches=%d", totalDuration, p50, p95, p99, len(latencies))
 	}
-	t.Logf("retention_scale_evidence sources=%d snapshots=%d batches=%d batch_size=%d planning_ms=%.3f first_execution_ms=%.3f shared_hit_blocks=%d shared_read_blocks=%d wal_records=%d total=%s p50=%s p95=%s p99=%s",
-		retentionScaleSources, retentionScaleTotalSnapshots, len(latencies), retentionScaleBatchSize,
+	t.Logf("retention_scale_evidence sources=%d snapshots=%d artifacts=%d edges=%d batches=%d batch_size=%d preview=%s planning_ms=%.3f first_execution_ms=%.3f shared_hit_blocks=%d shared_read_blocks=%d wal_records=%d total=%s p50=%s p95=%s p99=%s",
+		retentionScaleSources, retentionScaleTotalSnapshots, retentionScaleTotalSnapshots, retentionScaleTotalSnapshots,
+		len(latencies), retentionScaleBatchSize, previewDuration,
 		explain.PlanningTimeMS, explain.ExecutionTimeMS, explain.SharedHitBlocks, explain.SharedReadBlocks, explain.WALRecords,
 		totalDuration, p50, p95, p99)
 
@@ -106,6 +124,7 @@ type retentionScaleFixture struct {
 	userID      uuid.UUID
 	workspaceID uuid.UUID
 	runtimeID   uuid.UUID
+	sourceID    uuid.UUID
 }
 
 type retentionExplainEvidence struct {
@@ -181,7 +200,43 @@ WHERE source.workspace_id=$1
 `, fixture.workspaceID, fixture.runtimeID, retentionScaleSnapshotsPerSource); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := tx.Exec(ctx, `
+WITH generated AS (
+  SELECT source.workspace_id,source.id AS source_id,ordinal,
+         encode(digest(convert_to('artifact:'||source.id::text||':'||ordinal,'UTF8'),'sha256'),'hex') AS artifact_hex
+  FROM role_source source
+  CROSS JOIN generate_series(1,$4::int) ordinal
+  WHERE source.workspace_id=$1
+)
+INSERT INTO role_source_artifact (
+  workspace_id,digest,size_bytes,storage_key,uploaded_by_runtime_id,
+  first_source_id,first_scan_request_id
+)
+SELECT workspace_id,'sha256:'||artifact_hex,$3,
+       'role-source-artifacts/'||workspace_id::text||'/'||artifact_hex,
+       $2,source_id,gen_random_uuid()
+FROM generated
+`, fixture.workspaceID, fixture.runtimeID, retentionScaleArtifactBytes, retentionScaleSnapshotsPerSource); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO role_source_snapshot_artifact (
+  workspace_id,source_id,snapshot_digest,artifact_digest,size_bytes
+)
+SELECT source.workspace_id,source.id,
+       'sha256:'||encode(digest(convert_to(source.id::text||':'||ordinal,'UTF8'),'sha256'),'hex'),
+       'sha256:'||encode(digest(convert_to('artifact:'||source.id::text||':'||ordinal,'UTF8'),'sha256'),'hex'),
+       $2
+FROM role_source source
+CROSS JOIN generate_series(1,$3::int) ordinal
+WHERE source.workspace_id=$1
+`, fixture.workspaceID, retentionScaleArtifactBytes, retentionScaleSnapshotsPerSource); err != nil {
+		t.Fatal(err)
+	}
 	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id FROM role_source WHERE workspace_id=$1 ORDER BY id LIMIT 1`, fixture.workspaceID).Scan(&fixture.sourceID); err != nil {
 		t.Fatal(err)
 	}
 	return fixture
@@ -250,14 +305,16 @@ func retentionLatencyPercentiles(values []time.Duration) (time.Duration, time.Du
 func assertRetentionScaleCandidates(t *testing.T, ctx context.Context, pool *pgxpool.Pool, workspaceID uuid.UUID) {
 	t.Helper()
 	var total, distinct int
+	var estimatedBytes int64
 	if err := pool.QueryRow(ctx, `
-SELECT count(*),count(DISTINCT (source_id,snapshot_digest))
+SELECT count(*),count(DISTINCT (source_id,snapshot_digest)),COALESCE(sum(estimated_bytes),0)::bigint
 FROM role_source_retention_candidate WHERE workspace_id=$1
-`, workspaceID).Scan(&total, &distinct); err != nil {
+`, workspaceID).Scan(&total, &distinct, &estimatedBytes); err != nil {
 		t.Fatal(err)
 	}
-	if total != retentionScaleTotalSnapshots || distinct != retentionScaleTotalSnapshots {
-		t.Fatalf("retention candidates total=%d distinct=%d want=%d", total, distinct, retentionScaleTotalSnapshots)
+	if total != retentionScaleTotalSnapshots || distinct != retentionScaleTotalSnapshots ||
+		estimatedBytes != int64(retentionScaleTotalSnapshots*retentionScaleArtifactBytes) {
+		t.Fatalf("retention candidates total=%d distinct=%d estimated_bytes=%d", total, distinct, estimatedBytes)
 	}
 }
 
@@ -278,6 +335,11 @@ func cleanupRetentionScaleFixture(t *testing.T, pool *pgxpool.Pool, fixture rete
 	}
 	if err := q.DeleteWorkspaceRoleSources(ctx, pgUUID(fixture.workspaceID)); err != nil {
 		t.Errorf("delete retention scale role sources: %v", err)
+		return
+	}
+	storagePrefix := "role-source-artifacts/" + fixture.workspaceID.String() + "/%"
+	if _, err := tx.Exec(ctx, `DELETE FROM role_source_artifact_delete_intent WHERE storage_key LIKE $1`, storagePrefix); err != nil {
+		t.Errorf("delete retention scale artifact intents: %v", err)
 		return
 	}
 	for _, deletion := range []struct {
@@ -304,6 +366,8 @@ func assertRetentionScaleResidue(t *testing.T, ctx context.Context, pool *pgxpoo
 	checks := map[string]string{
 		"sources":    `SELECT count(*) FROM role_source WHERE workspace_id=$1`,
 		"snapshots":  `SELECT count(*) FROM role_source_snapshot WHERE workspace_id=$1`,
+		"edges":      `SELECT count(*) FROM role_source_snapshot_artifact WHERE workspace_id=$1`,
+		"artifacts":  `SELECT count(*) FROM role_source_artifact WHERE workspace_id=$1`,
 		"candidates": `SELECT count(*) FROM role_source_retention_candidate WHERE workspace_id=$1`,
 		"policies":   `SELECT count(*) FROM role_source_retention_policy WHERE workspace_id=$1`,
 		"workspace":  `SELECT count(*) FROM workspace WHERE id=$1`,
@@ -313,6 +377,10 @@ func assertRetentionScaleResidue(t *testing.T, ctx context.Context, pool *pgxpoo
 		if err := pool.QueryRow(ctx, query, fixture.workspaceID).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("retention scale residue %s=%d err=%v", label, count, err)
 		}
+	}
+	var intentCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM role_source_artifact_delete_intent WHERE storage_key LIKE $1`, "role-source-artifacts/"+fixture.workspaceID.String()+"/%").Scan(&intentCount); err != nil || intentCount != 0 {
+		t.Fatalf("retention scale artifact intent residue=%d err=%v", intentCount, err)
 	}
 	var runtimeCount, userCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_runtime WHERE id=$1`, fixture.runtimeID).Scan(&runtimeCount); err != nil || runtimeCount != 0 {

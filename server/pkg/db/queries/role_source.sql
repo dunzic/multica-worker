@@ -362,7 +362,7 @@ WITH successful AS MATERIALIZED (
     SELECT snapshot_digest, row_number() OVER (ORDER BY applied_at DESC, snapshot_digest DESC) AS reserve_rank
     FROM successful
 ), eligible AS MATERIALIZED (
-SELECT snapshot.snapshot_digest, snapshot.created_at,
+SELECT snapshot.workspace_id, snapshot.source_id, snapshot.snapshot_digest, snapshot.created_at,
        COALESCE((SELECT sum(edge.size_bytes) FROM role_source_snapshot_artifact edge
                  WHERE edge.workspace_id = snapshot.workspace_id AND edge.source_id = snapshot.source_id
                    AND edge.snapshot_digest = snapshot.snapshot_digest), 0)::bigint AS estimated_bytes
@@ -425,12 +425,41 @@ WHERE snapshot.workspace_id = @workspace_id
                   AND apply.plan_digest = plan.plan_digest AND apply.status = 'succeeded'
             )
           )
-        )
+      )
   )
+), uniquely_reclaimable_artifacts AS MATERIALIZED (
+    SELECT artifact.digest, artifact.size_bytes
+    FROM role_source_artifact artifact
+    WHERE artifact.workspace_id = @workspace_id
+      AND EXISTS (
+          SELECT 1
+          FROM role_source_snapshot_artifact edge
+          JOIN eligible candidate
+            ON candidate.workspace_id = edge.workspace_id
+           AND candidate.source_id = edge.source_id
+           AND candidate.snapshot_digest = edge.snapshot_digest
+          WHERE edge.workspace_id = artifact.workspace_id
+            AND edge.artifact_digest = artifact.digest
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM role_source_snapshot_artifact retained_edge
+          WHERE retained_edge.workspace_id = artifact.workspace_id
+            AND retained_edge.artifact_digest = artifact.digest
+            AND NOT EXISTS (
+                SELECT 1
+                FROM eligible candidate
+                WHERE candidate.workspace_id = retained_edge.workspace_id
+                  AND candidate.source_id = retained_edge.source_id
+                  AND candidate.snapshot_digest = retained_edge.snapshot_digest
+            )
+      )
 )
 SELECT snapshot_digest, created_at, estimated_bytes,
        count(*) OVER ()::bigint AS eligible_count,
-       COALESCE(sum(estimated_bytes) OVER (), 0)::bigint AS total_estimated_bytes
+       COALESCE(sum(estimated_bytes) OVER (), 0)::bigint AS total_estimated_bytes,
+       (SELECT COALESCE(sum(size_bytes), 0)::bigint FROM uniquely_reclaimable_artifacts)
+           AS uniquely_reclaimable_bytes
 FROM eligible
 ORDER BY created_at, snapshot_digest
 LIMIT @result_limit;
@@ -853,6 +882,26 @@ WHERE workspace_id = @workspace_id
   AND source_id = @source_id
   AND snapshot_digest = @snapshot_digest
 ORDER BY artifact_digest;
+
+-- name: LockRoleSourceArtifactsByDigestsForUpdate :many
+-- Serialize prune accounting with snapshot publication (FOR SHARE) and the
+-- artifact collector (FOR UPDATE). Every participant locks in digest order.
+SELECT digest FROM role_source_artifact
+WHERE workspace_id = @workspace_id
+  AND digest = ANY(@artifact_digests::text[])
+ORDER BY digest
+FOR UPDATE;
+
+-- name: SumUnreachableRoleSourceArtifactBytesByDigests :one
+SELECT COALESCE(sum(artifact.size_bytes), 0)::bigint
+FROM role_source_artifact artifact
+WHERE artifact.workspace_id = @workspace_id
+  AND artifact.digest = ANY(@artifact_digests::text[])
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_snapshot_artifact edge
+      WHERE edge.workspace_id = artifact.workspace_id
+        AND edge.artifact_digest = artifact.digest
+  );
 
 -- name: QueueNextUnreachableRoleSourceArtifact :one
 WITH candidate AS MATERIALIZED (

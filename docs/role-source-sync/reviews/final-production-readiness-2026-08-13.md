@@ -19,8 +19,8 @@ tests or a local single-primary container.
 | Perspective | Score | Decision and remaining objection |
 | --- | ---: | --- |
 | Architecture expert | 2/3 | The server is source-neutral; AgentWaker remains an adapter; source lifecycle, generation-isolated reload, artifact reachability, apply receipts, task pins, holds, retention and DR share explicit lock and provenance contracts. A 3 requires live PostgreSQL lock/failover, versioned-object-store and cross-runtime evidence. |
-| Product expert | 2/3 | Owners and members have a bounded read-only audit surface, drift/freshness evidence, retention preview and deliberate lifecycle operations. Mutation controls remain intentionally absent from broad UI; guided configuration, approval/apply/recovery and version-timeline UX still need controlled cohort validation. |
-| Test expert | 2/3 | Role-source unit, race, fuzz, redaction, capacity, DR and Helm gates pass; repository frontend typecheck/tests and Go vet pass. The 2026-08-14/15 update adds every migration through 380, a 13-case atomic apply/commit-ambiguity matrix, a three-case two-control-plane concurrency gate, live adoption target/mapping and Agent/Skill name-claim races, a six-case Autopilot advisory-title-lock matrix, a real two-runtime unloaded-attestation incident recovery, local PostgreSQL 17.10 create/update runs for 1,000 roles plus 10,000 skills, a real AES-GCM secret/MCP lifecycle with after-consume rollback/retry/expiry/redaction, a six-case legal-hold/policy/task-pin versus prune matrix passing three consecutive runs with real `transactionid`/tuple waits and fail-closed loser states, and a three-run exact-SQL PostgreSQL gate that queues 10,000 eligible snapshots across 100 sources in 2.099–2.181 seconds end-to-end with 23.522–23.890 ms p95. 10,000-user database/S3/secret burst load, Kubernetes Jobs, real process kill, KMS rotation, exfiltration, failover and restore exercises remain mandatory. |
+| Product expert | 2/3 | Owners and members have a bounded read-only audit surface, drift/freshness evidence, referenced versus uniquely reclaimable retention previews and deliberate lifecycle operations; the UI explicitly refuses to call projection realized savings. Mutation controls remain intentionally absent from broad UI; purge-receipt savings, guided configuration, approval/apply/recovery and version-timeline UX still need controlled cohort validation. |
+| Test expert | 2/3 | Role-source unit, race, fuzz, redaction, capacity, DR and Helm gates pass; current focused Core/Views tests, focused ESLint and role-source Go vet pass. Current Core/Views package typecheck is still blocked by three pre-existing Chat Quick Actions errors in unmodified files, so it is not counted as a green release gate. The 2026-08-14/15 update adds every migration through 380, a 13-case atomic apply/commit-ambiguity matrix, a three-case two-control-plane concurrency gate, live adoption target/mapping and Agent/Skill name-claim races, a six-case Autopilot advisory-title-lock matrix, a real two-runtime unloaded-attestation incident recovery, local PostgreSQL 17.10 create/update runs for 1,000 roles plus 10,000 skills, a real AES-GCM secret/MCP lifecycle with after-consume rollback/retry/expiry/redaction, a six-case legal-hold/policy/task-pin versus prune matrix passing three consecutive runs with real `transactionid`/tuple waits and fail-closed loser states, a three-run shared-artifact projection/prune/audit matrix, and a three-run exact-SQL PostgreSQL gate that queues 10,000 eligible snapshots with 10,000 artifacts/edges across 100 sources in 2.150–2.213 seconds end-to-end with 23.232–23.649 ms p95. 10,000-user database/S3/secret burst load, Kubernetes Jobs, real process kill, KMS rotation, exfiltration, failover and restore exercises remain mandatory. |
 | CEO | 2/3 | The design creates a defensible multi-source control plane without binding the product to AgentWaker and keeps all customer/destructive exposure default-off. A production ROI/SLA decision would be unsupported until capacity, recovery time, support labor, failure rate and operator ownership are measured. |
 
 No perspective can be raised to 3 by document review alone.
@@ -44,7 +44,11 @@ No perspective can be raised to 3 by document review alone.
   cases passed;
 - repository-pinned pnpm 10.28.2 completed all six typecheck tasks and all five
   Vitest workspace tasks; ESLint completed with zero errors and existing
-  warnings;
+  warnings in the final 2026-08-14 run. The current 2026-08-15 package-level
+  Core/Views typecheck attempt is not green: it stops on existing Chat Quick
+  Actions updater-type errors in unmodified `packages/core/chat/mutations.ts`
+  and `packages/core/realtime/use-realtime-sync.ts`; focused changed-file tests
+  and ESLint remain green;
 - `go vet ./...` passed;
 - `go test ./...` passed every package in the final 2026-08-14 run when local
   loopback binding was allowed; an earlier run retained evidence of the known
@@ -55,10 +59,20 @@ No perspective can be raised to 3 by document review alone.
 - focused role-source race, fuzz, cross-build, migration-contract and Helm
   tests are recorded in `implementation-status.md` and the per-feature reviews.
 - the RS-06 local PostgreSQL 17 scale gate ran the exact generated retention
-  candidate query three times over 100 sources and 10,000 eligible immutable
-  snapshots, drained 100 bounded batches with exact uniqueness and cleanup,
-  and measured 2.099–2.181 seconds end-to-end with 23.522–23.890 ms p95; this is not
-  a 10,000-user, two-replica or failover result.
+  candidate query three times over 100 sources, 10,000 eligible immutable
+  snapshots, 10,000 artifacts and 10,000 reachability edges; single-source
+  unique-reclaim preview measured 3.071–3.143 ms, 100 bounded batches measured
+  2.150–2.213 seconds end-to-end with 23.232–23.649 ms p95, and exact
+  candidates/bytes/cleanup passed; this is not a 10,000-user, two-replica or
+  failover result.
+- the RS-06 shared-artifact PostgreSQL matrix passed three runs: eligible-only
+  sharing counts once, any retained same-source or cross-source edge excludes
+  the body, prune records newly unreachable bytes in a verified hash-chain
+  event, and the next preview recomputes from the remaining graph. A companion
+  case passed three runs with snapshot publication holding its production
+  shared artifact lock: prune waited, the retained edge committed, and the
+  prune audit recorded zero newly unreachable bytes. This does not provide
+  purge-receipt-backed realized savings.
 
 The latest full run did not reproduce the historical `pkg/agent` instability;
 that does not erase prior evidence, so it remains release-environment debt

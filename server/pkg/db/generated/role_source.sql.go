@@ -3585,7 +3585,7 @@ WITH successful AS MATERIALIZED (
     SELECT snapshot_digest, row_number() OVER (ORDER BY applied_at DESC, snapshot_digest DESC) AS reserve_rank
     FROM successful
 ), eligible AS MATERIALIZED (
-SELECT snapshot.snapshot_digest, snapshot.created_at,
+SELECT snapshot.workspace_id, snapshot.source_id, snapshot.snapshot_digest, snapshot.created_at,
        COALESCE((SELECT sum(edge.size_bytes) FROM role_source_snapshot_artifact edge
                  WHERE edge.workspace_id = snapshot.workspace_id AND edge.source_id = snapshot.source_id
                    AND edge.snapshot_digest = snapshot.snapshot_digest), 0)::bigint AS estimated_bytes
@@ -3648,12 +3648,41 @@ WHERE snapshot.workspace_id = $2
                   AND apply.plan_digest = plan.plan_digest AND apply.status = 'succeeded'
             )
           )
-        )
+      )
   )
+), uniquely_reclaimable_artifacts AS MATERIALIZED (
+    SELECT artifact.digest, artifact.size_bytes
+    FROM role_source_artifact artifact
+    WHERE artifact.workspace_id = $2
+      AND EXISTS (
+          SELECT 1
+          FROM role_source_snapshot_artifact edge
+          JOIN eligible candidate
+            ON candidate.workspace_id = edge.workspace_id
+           AND candidate.source_id = edge.source_id
+           AND candidate.snapshot_digest = edge.snapshot_digest
+          WHERE edge.workspace_id = artifact.workspace_id
+            AND edge.artifact_digest = artifact.digest
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM role_source_snapshot_artifact retained_edge
+          WHERE retained_edge.workspace_id = artifact.workspace_id
+            AND retained_edge.artifact_digest = artifact.digest
+            AND NOT EXISTS (
+                SELECT 1
+                FROM eligible candidate
+                WHERE candidate.workspace_id = retained_edge.workspace_id
+                  AND candidate.source_id = retained_edge.source_id
+                  AND candidate.snapshot_digest = retained_edge.snapshot_digest
+            )
+      )
 )
 SELECT snapshot_digest, created_at, estimated_bytes,
        count(*) OVER ()::bigint AS eligible_count,
-       COALESCE(sum(estimated_bytes) OVER (), 0)::bigint AS total_estimated_bytes
+       COALESCE(sum(estimated_bytes) OVER (), 0)::bigint AS total_estimated_bytes,
+       (SELECT COALESCE(sum(size_bytes), 0)::bigint FROM uniquely_reclaimable_artifacts)
+           AS uniquely_reclaimable_bytes
 FROM eligible
 ORDER BY created_at, snapshot_digest
 LIMIT $1
@@ -3669,11 +3698,12 @@ type ListEligibleRoleSourceRetentionSnapshotsParams struct {
 }
 
 type ListEligibleRoleSourceRetentionSnapshotsRow struct {
-	SnapshotDigest      string             `json:"snapshot_digest"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
-	EstimatedBytes      int64              `json:"estimated_bytes"`
-	EligibleCount       int64              `json:"eligible_count"`
-	TotalEstimatedBytes int64              `json:"total_estimated_bytes"`
+	SnapshotDigest           string             `json:"snapshot_digest"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	EstimatedBytes           int64              `json:"estimated_bytes"`
+	EligibleCount            int64              `json:"eligible_count"`
+	TotalEstimatedBytes      int64              `json:"total_estimated_bytes"`
+	UniquelyReclaimableBytes int64              `json:"uniquely_reclaimable_bytes"`
 }
 
 func (q *Queries) ListEligibleRoleSourceRetentionSnapshots(ctx context.Context, arg ListEligibleRoleSourceRetentionSnapshotsParams) ([]ListEligibleRoleSourceRetentionSnapshotsRow, error) {
@@ -3698,6 +3728,7 @@ func (q *Queries) ListEligibleRoleSourceRetentionSnapshots(ctx context.Context, 
 			&i.EstimatedBytes,
 			&i.EligibleCount,
 			&i.TotalEstimatedBytes,
+			&i.UniquelyReclaimableBytes,
 		); err != nil {
 			return nil, err
 		}
@@ -5080,6 +5111,41 @@ func (q *Queries) ListSucceededRoleSourceApplies(ctx context.Context, arg ListSu
 	return items, nil
 }
 
+const lockRoleSourceArtifactsByDigestsForUpdate = `-- name: LockRoleSourceArtifactsByDigestsForUpdate :many
+SELECT digest FROM role_source_artifact
+WHERE workspace_id = $1
+  AND digest = ANY($2::text[])
+ORDER BY digest
+FOR UPDATE
+`
+
+type LockRoleSourceArtifactsByDigestsForUpdateParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ArtifactDigests []string    `json:"artifact_digests"`
+}
+
+// Serialize prune accounting with snapshot publication (FOR SHARE) and the
+// artifact collector (FOR UPDATE). Every participant locks in digest order.
+func (q *Queries) LockRoleSourceArtifactsByDigestsForUpdate(ctx context.Context, arg LockRoleSourceArtifactsByDigestsForUpdateParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, lockRoleSourceArtifactsByDigestsForUpdate, arg.WorkspaceID, arg.ArtifactDigests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var digest string
+		if err := rows.Scan(&digest); err != nil {
+			return nil, err
+		}
+		items = append(items, digest)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockRoleSourceRuntimeForRegistration = `-- name: LockRoleSourceRuntimeForRegistration :one
 SELECT id FROM agent_runtime
 WHERE id = $1 AND workspace_id = $2
@@ -6022,6 +6088,30 @@ func (q *Queries) SubmitRoleSourceSecretTransfer(ctx context.Context, arg Submit
 		&i.ErrorCode,
 	)
 	return i, err
+}
+
+const sumUnreachableRoleSourceArtifactBytesByDigests = `-- name: SumUnreachableRoleSourceArtifactBytesByDigests :one
+SELECT COALESCE(sum(artifact.size_bytes), 0)::bigint
+FROM role_source_artifact artifact
+WHERE artifact.workspace_id = $1
+  AND artifact.digest = ANY($2::text[])
+  AND NOT EXISTS (
+      SELECT 1 FROM role_source_snapshot_artifact edge
+      WHERE edge.workspace_id = artifact.workspace_id
+        AND edge.artifact_digest = artifact.digest
+  )
+`
+
+type SumUnreachableRoleSourceArtifactBytesByDigestsParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	ArtifactDigests []string    `json:"artifact_digests"`
+}
+
+func (q *Queries) SumUnreachableRoleSourceArtifactBytesByDigests(ctx context.Context, arg SumUnreachableRoleSourceArtifactBytesByDigestsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumUnreachableRoleSourceArtifactBytesByDigests, arg.WorkspaceID, arg.ArtifactDigests)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const tombstoneRoleSourceArtifactDeleteIntent = `-- name: TombstoneRoleSourceArtifactDeleteIntent :execrows

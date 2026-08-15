@@ -414,6 +414,7 @@ beforeEach(() => {
     },
     eligible_count: 1,
     estimated_bytes: 4096,
+    uniquely_reclaimable_bytes: 1024,
     truncated: false,
     candidates: [
       {
@@ -1049,6 +1050,8 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText("Historical retention")).toBeInTheDocument();
     expect(screen.getByText("Pruning disabled")).toBeInTheDocument();
     expect(screen.getByText(/1 snapshots currently eligible/)).toBeInTheDocument();
+    expect(screen.getByText(/Projected uniquely reclaimable artifacts.*1\.0 KiB/)).toBeInTheDocument();
+    expect(screen.getByText(/not realized storage savings/)).toBeInTheDocument();
     expect(screen.getByText(/rechecks legal holds, task pins/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit policy" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /delete snapshot|prune now/i })).not.toBeInTheDocument();

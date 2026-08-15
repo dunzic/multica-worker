@@ -2,7 +2,11 @@
 
 Status note: the missing legal-hold and historical-retention controls described
 below are implemented by the later RS-06 legal-hold and historical-retention
-reviews. Live PostgreSQL/storage/restore evidence remains open.
+reviews. That later work now exposes referenced bytes and a workspace-wide,
+edge-aware uniquely reclaimable projection, then records exact newly unreachable
+bytes in the prune audit event. Purge-receipt-backed realized savings and
+candidate-topology storage/restore evidence remain open. The objections below
+are retained as the historical decision for this prerequisite slice.
 
 Date: 2026-08-13
 

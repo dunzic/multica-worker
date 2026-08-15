@@ -159,6 +159,19 @@ Existing manifests are backfilled across every exact ArtifactRef location.
 The ledger is the deletion authority boundary; the worker below may act only
 after an artifact has no edge and has crossed the settle window.
 
+The owner retention preview reports two deliberately different quantities.
+Referenced bytes sum each eligible snapshot's edges and may count shared bodies
+more than once. Uniquely reclaimable bytes count an artifact once only when
+every workspace edge to it belongs to the complete current eligible set; any
+retained edge from the same or another source excludes it. Prune recomputes the
+newly unreachable subset after locking every involved artifact row exclusively
+in digest order and deleting one snapshot's edges. Snapshot publication's
+shared artifact locks and the collector's exclusive locks therefore serialize
+against that accounting; a missing ledger row aborts prune. The resulting
+number is committed inside the hash-chained audit event. Both values are
+projections. They must never be described as realized storage savings until the
+permanent purge and full tombstone tail produce a durable storage receipt.
+
 When the independent default-off
 `MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED` operator gate is enabled, the artifact
 reconciler moves only readiness rows older than 24 hours with no

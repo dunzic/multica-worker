@@ -62,6 +62,7 @@ import type {
   RoleSourceSnapshotSummary,
   RoleSourceSnapshotComparison,
   RoleSourceConfigurationReview,
+  RoleSourceRetentionPreview,
   ChannelDelivery,
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
@@ -159,6 +160,51 @@ export const RoleSourceLifecycleEventListSchema = z.object({
 }).loose();
 
 const Sha256DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+const RoleSourceRetentionPolicySchema = z.object({
+  workspace_id: z.string(),
+  source_id: z.string(),
+  version: z.number().int().nonnegative(),
+  enabled: z.boolean(),
+  minimum_age_days: z.number().int().min(30).max(3650),
+  keep_successful_snapshots: z.number().int().min(2).max(100),
+  created_by: z.string().optional(),
+  created_at: z.string().optional(),
+}).strict();
+
+const RoleSourceRetentionCandidateSchema = z.object({
+  snapshot_digest: Sha256DigestSchema,
+  created_at: z.string(),
+  estimated_bytes: z.number().int().nonnegative(),
+}).strict();
+
+export const RoleSourceRetentionPreviewSchema: z.ZodType<RoleSourceRetentionPreview> = z.object({
+  policy: RoleSourceRetentionPolicySchema,
+  eligible_count: z.number().int().nonnegative(),
+  estimated_bytes: z.number().int().nonnegative(),
+  // Newer frontends may talk to an older installed backend. Missing projected
+  // reclaim therefore degrades to zero instead of making the settings page
+  // unusable or overstating savings.
+  uniquely_reclaimable_bytes: z.number().int().nonnegative().default(0),
+  truncated: z.boolean(),
+  candidates: z.array(RoleSourceRetentionCandidateSchema).max(200),
+}).strict();
+
+export const EMPTY_ROLE_SOURCE_RETENTION_PREVIEW: RoleSourceRetentionPreview = {
+  policy: {
+    workspace_id: "",
+    source_id: "",
+    version: 0,
+    enabled: false,
+    minimum_age_days: 90,
+    keep_successful_snapshots: 10,
+  },
+  eligible_count: 0,
+  estimated_bytes: 0,
+  uniquely_reclaimable_bytes: 0,
+  truncated: false,
+  candidates: [],
+};
 
 export const RoleSourceSnapshotSummarySchema: z.ZodType<RoleSourceSnapshotSummary> = z.object({
   snapshot_digest: Sha256DigestSchema,

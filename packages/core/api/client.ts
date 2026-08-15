@@ -330,6 +330,8 @@ import {
   RoleSourceSnapshotSummaryListSchema,
   RoleSourceSnapshotComparisonSchema,
   RoleSourceConfigurationReviewSchema,
+  RoleSourceRetentionPreviewSchema,
+  EMPTY_ROLE_SOURCE_RETENTION_PREVIEW,
   RoleSourceAdapterDescriptorListSchema,
   RoleSourceSchema,
   ChannelDeliveryListSchema,
@@ -1910,9 +1912,12 @@ export class ApiClient {
     workspaceId: string,
     sourceId: string,
   ): Promise<RoleSourceRetentionPreview> {
-    return this.fetch<RoleSourceRetentionPreview>(
+    const raw = await this.fetch<unknown>(
       `/api/workspaces/${workspaceId}/role-sources/${sourceId}/retention`,
     );
+    return parseWithFallback(raw, RoleSourceRetentionPreviewSchema, EMPTY_ROLE_SOURCE_RETENTION_PREVIEW, {
+      endpoint: "GET /api/workspaces/:id/role-sources/:sourceId/retention",
+    });
   }
 
   async updateRoleSourceRetentionPolicy(

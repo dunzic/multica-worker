@@ -51,6 +51,14 @@ func TestAuditEventRejectsInvalidActorAndDigest(t *testing.T) {
 	}
 }
 
+func TestAuditEventRejectsNegativeRetentionReclaimProjection(t *testing.T) {
+	if _, err := BuildAuditEvent("source-1", "workspace-1", 1, "snapshot_retention_pruned", AuditActor{Type: "system"}, "", AuditPayload{
+		UniquelyReclaimableBytes: -1,
+	}, time.Now()); err == nil {
+		t.Fatal("BuildAuditEvent accepted negative uniquely reclaimable bytes")
+	}
+}
+
 func TestAuditDigestCanonicalizesEquivalentTimestampZones(t *testing.T) {
 	when := time.Date(2026, 8, 14, 1, 2, 3, 456789123, time.UTC)
 	event, err := BuildAuditEvent("source-1", "workspace-1", 1, "scan", AuditActor{Type: "system"}, "", AuditPayload{}, when)

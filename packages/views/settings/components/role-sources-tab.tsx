@@ -1225,6 +1225,11 @@ export function RoleSourcesTab() {
                           bytes: formatRetentionBytes(retention.data.estimated_bytes),
                         })}
                       </div>
+                      <p className="mt-1 text-caption font-medium text-foreground">
+                        {t(($) => $.role_sources.retention_preview_unique_reclaim, {
+                          bytes: formatRetentionBytes(retention.data.uniquely_reclaimable_bytes),
+                        })}
+                      </p>
                       <p className="mt-1 text-caption text-muted-foreground">{t(($) => $.role_sources.retention_preview_warning)}</p>
                       {retention.data.candidates.length ? (
                         <div className="mt-3 max-h-48 divide-y divide-surface-border overflow-y-auto rounded-md border border-surface-border">

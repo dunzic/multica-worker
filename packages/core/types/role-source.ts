@@ -147,6 +147,7 @@ export interface RoleSourceRetentionPreview {
   policy: RoleSourceRetentionPolicy;
   eligible_count: number;
   estimated_bytes: number;
+  uniquely_reclaimable_bytes: number;
   truncated: boolean;
   candidates: RoleSourceRetentionCandidate[];
 }

@@ -26,32 +26,33 @@ type AuditActor struct {
 // extend this typed digest/count vocabulary instead of accepting arbitrary
 // adapter JSON that could leak configuration, paths or credentials.
 type AuditPayload struct {
-	OperationID            string `json:"operation_id,omitempty"`
-	SnapshotDigest         string `json:"snapshot_digest,omitempty"`
-	ManifestDigest         string `json:"manifest_digest,omitempty"`
-	PlanDigest             string `json:"plan_digest,omitempty"`
-	ReceiptDigest          string `json:"receipt_digest,omitempty"`
-	AdapterKind            Kind   `json:"adapter_kind,omitempty"`
-	AdapterVersion         string `json:"adapter_version,omitempty"`
-	PreviousRuntimeID      string `json:"previous_runtime_id,omitempty"`
-	RuntimeID              string `json:"runtime_id,omitempty"`
-	PreviousState          string `json:"previous_state,omitempty"`
-	State                  string `json:"state,omitempty"`
-	Result                 string `json:"result,omitempty"`
-	ErrorCode              string `json:"error_code,omitempty"`
-	CreateCount            int    `json:"create_count,omitempty"`
-	UpdateCount            int    `json:"update_count,omitempty"`
-	AdoptCount             int    `json:"adopt_count,omitempty"`
-	UnchangedCount         int    `json:"unchanged_count,omitempty"`
-	ArchiveCount           int    `json:"archive_count,omitempty"`
-	BlockedCount           int    `json:"blocked_count,omitempty"`
-	DiagnosticCount        int    `json:"diagnostic_count,omitempty"`
-	CancelledScanCount     int    `json:"cancelled_scan_count,omitempty"`
-	CancelledTransferCount int    `json:"cancelled_transfer_count,omitempty"`
-	RetentionPolicyVersion int64  `json:"retention_policy_version,omitempty"`
-	RetentionMinimumDays   int    `json:"retention_minimum_days,omitempty"`
-	RetentionKeepSucceeded int    `json:"retention_keep_succeeded,omitempty"`
-	EstimatedBytes         int64  `json:"estimated_bytes,omitempty"`
+	OperationID              string `json:"operation_id,omitempty"`
+	SnapshotDigest           string `json:"snapshot_digest,omitempty"`
+	ManifestDigest           string `json:"manifest_digest,omitempty"`
+	PlanDigest               string `json:"plan_digest,omitempty"`
+	ReceiptDigest            string `json:"receipt_digest,omitempty"`
+	AdapterKind              Kind   `json:"adapter_kind,omitempty"`
+	AdapterVersion           string `json:"adapter_version,omitempty"`
+	PreviousRuntimeID        string `json:"previous_runtime_id,omitempty"`
+	RuntimeID                string `json:"runtime_id,omitempty"`
+	PreviousState            string `json:"previous_state,omitempty"`
+	State                    string `json:"state,omitempty"`
+	Result                   string `json:"result,omitempty"`
+	ErrorCode                string `json:"error_code,omitempty"`
+	CreateCount              int    `json:"create_count,omitempty"`
+	UpdateCount              int    `json:"update_count,omitempty"`
+	AdoptCount               int    `json:"adopt_count,omitempty"`
+	UnchangedCount           int    `json:"unchanged_count,omitempty"`
+	ArchiveCount             int    `json:"archive_count,omitempty"`
+	BlockedCount             int    `json:"blocked_count,omitempty"`
+	DiagnosticCount          int    `json:"diagnostic_count,omitempty"`
+	CancelledScanCount       int    `json:"cancelled_scan_count,omitempty"`
+	CancelledTransferCount   int    `json:"cancelled_transfer_count,omitempty"`
+	RetentionPolicyVersion   int64  `json:"retention_policy_version,omitempty"`
+	RetentionMinimumDays     int    `json:"retention_minimum_days,omitempty"`
+	RetentionKeepSucceeded   int    `json:"retention_keep_succeeded,omitempty"`
+	EstimatedBytes           int64  `json:"estimated_bytes,omitempty"`
+	UniquelyReclaimableBytes int64  `json:"uniquely_reclaimable_bytes,omitempty"`
 }
 
 // AuditEvent is the application-generated, hash-chained representation stored
@@ -226,7 +227,7 @@ func validateAuditPayload(payload AuditPayload) error {
 	if payload.RetentionPolicyVersion < 0 || payload.RetentionPolicyVersion > 1_000_000_000 ||
 		payload.RetentionMinimumDays < 0 || payload.RetentionMinimumDays > 3650 ||
 		payload.RetentionKeepSucceeded < 0 || payload.RetentionKeepSucceeded > 100 ||
-		payload.EstimatedBytes < 0 {
+		payload.EstimatedBytes < 0 || payload.UniquelyReclaimableBytes < 0 {
 		return errors.New("audit retention value is outside the allowed range")
 	}
 	return nil

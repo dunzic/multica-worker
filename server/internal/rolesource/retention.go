@@ -55,11 +55,12 @@ type RetentionCandidatePreview struct {
 }
 
 type RetentionPreview struct {
-	Policy         RetentionPolicy
-	EligibleCount  int
-	EstimatedBytes int64
-	Truncated      bool
-	Candidates     []RetentionCandidatePreview
+	Policy                   RetentionPolicy
+	EligibleCount            int
+	EstimatedBytes           int64
+	UniquelyReclaimableBytes int64
+	Truncated                bool
+	Candidates               []RetentionCandidatePreview
 }
 
 func (c *ControlPlane) GetRetentionPreview(ctx context.Context, workspaceIDText, sourceIDText string) (RetentionPreview, error) {
@@ -94,6 +95,7 @@ func (c *ControlPlane) GetRetentionPreview(ctx context.Context, workspaceIDText,
 	if len(rows) > 0 {
 		preview.EligibleCount = int(rows[0].EligibleCount)
 		preview.EstimatedBytes = rows[0].TotalEstimatedBytes
+		preview.UniquelyReclaimableBytes = rows[0].UniquelyReclaimableBytes
 	}
 	if preview.EligibleCount > int(maxRetentionPreviewRows) {
 		preview.Truncated = true
@@ -267,9 +269,34 @@ func (c *ControlPlane) PruneRetentionCandidate(ctx context.Context, candidateID,
 	if _, err := tx.Exec(ctx, "SELECT set_config('multica.role_source_retention_prune', 'on', true)"); err != nil {
 		return "", err
 	}
+	artifactEdges, err := qtx.ListRoleSourceSnapshotArtifacts(ctx, db.ListRoleSourceSnapshotArtifactsParams{
+		WorkspaceID: candidate.WorkspaceID, SourceID: candidate.SourceID, SnapshotDigest: candidate.SnapshotDigest,
+	})
+	if err != nil {
+		return "", err
+	}
+	artifactDigests := make([]string, 0, len(artifactEdges))
+	for _, edge := range artifactEdges {
+		artifactDigests = append(artifactDigests, edge.ArtifactDigest)
+	}
+	lockedArtifactDigests, err := qtx.LockRoleSourceArtifactsByDigestsForUpdate(ctx, db.LockRoleSourceArtifactsByDigestsForUpdateParams{
+		WorkspaceID: candidate.WorkspaceID, ArtifactDigests: artifactDigests,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(lockedArtifactDigests) != len(artifactDigests) {
+		return "", errors.New("retention snapshot artifact ledger is incomplete")
+	}
 	if err := qtx.DeleteRoleSourceSnapshotArtifacts(ctx, db.DeleteRoleSourceSnapshotArtifactsParams{
 		WorkspaceID: candidate.WorkspaceID, SourceID: candidate.SourceID, SnapshotDigest: candidate.SnapshotDigest,
 	}); err != nil {
+		return "", err
+	}
+	uniquelyReclaimableBytes, err := qtx.SumUnreachableRoleSourceArtifactBytesByDigests(ctx, db.SumUnreachableRoleSourceArtifactBytesByDigestsParams{
+		WorkspaceID: candidate.WorkspaceID, ArtifactDigests: artifactDigests,
+	})
+	if err != nil {
 		return "", err
 	}
 	deleted, err := qtx.DeleteRoleSourceSnapshotForRetention(ctx, db.DeleteRoleSourceSnapshotForRetentionParams{
@@ -292,6 +319,7 @@ func (c *ControlPlane) PruneRetentionCandidate(ctx context.Context, candidateID,
 	if err := c.appendAudit(ctx, qtx, source, "snapshot_retention_pruned", AuditActor{Type: "system"}, AuditPayload{
 		OperationID: util.UUIDToString(candidate.ID), SnapshotDigest: candidate.SnapshotDigest, Result: "pruned",
 		RetentionPolicyVersion: candidate.PolicyVersion, EstimatedBytes: candidate.EstimatedBytes,
+		UniquelyReclaimableBytes: uniquelyReclaimableBytes,
 	}); err != nil {
 		return "", err
 	}

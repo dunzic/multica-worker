@@ -93,8 +93,10 @@ redacted hold IDs; escalate to engineering without disabling triggers.
 The owner-only retention panel defaults to disabled. A policy revision must keep
 snapshots for at least 30 days and reserve at least two distinct successfully
 applied versions; the recommended initial cohort setting is 90 days and 10
-versions. The preview counts referenced bytes, not uniquely reclaimable storage,
-so do not use it as a savings invoice.
+versions. The preview separates referenced bytes from a workspace-wide,
+edge-aware uniquely reclaimable projection. The latter is revalidated during
+prune and is still not a savings invoice: it does not prove that object-store
+versions were permanently purged or that billed storage decreased.
 
 Before enabling, verify both server gates are intentionally configured:
 `MULTICA_ROLE_SOURCE_RETENTION_ENABLED=true` and

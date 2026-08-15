@@ -266,11 +266,12 @@ type roleSourceRetentionCandidateResponse struct {
 }
 
 type roleSourceRetentionPreviewResponse struct {
-	Policy         roleSourceRetentionPolicyResponse      `json:"policy"`
-	EligibleCount  int                                    `json:"eligible_count"`
-	EstimatedBytes int64                                  `json:"estimated_bytes"`
-	Truncated      bool                                   `json:"truncated"`
-	Candidates     []roleSourceRetentionCandidateResponse `json:"candidates"`
+	Policy                   roleSourceRetentionPolicyResponse      `json:"policy"`
+	EligibleCount            int                                    `json:"eligible_count"`
+	EstimatedBytes           int64                                  `json:"estimated_bytes"`
+	UniquelyReclaimableBytes int64                                  `json:"uniquely_reclaimable_bytes"`
+	Truncated                bool                                   `json:"truncated"`
+	Candidates               []roleSourceRetentionCandidateResponse `json:"candidates"`
 }
 
 func (h *Handler) roleSourceFeatureEnabled(r *http.Request, workspaceID, key string) bool {
@@ -1962,7 +1963,8 @@ func roleSourceRetentionPolicyToResponse(policy rolesource.RetentionPolicy) role
 func roleSourceRetentionPreviewToResponse(preview rolesource.RetentionPreview) roleSourceRetentionPreviewResponse {
 	response := roleSourceRetentionPreviewResponse{
 		Policy: roleSourceRetentionPolicyToResponse(preview.Policy), EligibleCount: preview.EligibleCount,
-		EstimatedBytes: preview.EstimatedBytes, Truncated: preview.Truncated,
+		EstimatedBytes: preview.EstimatedBytes, UniquelyReclaimableBytes: preview.UniquelyReclaimableBytes,
+		Truncated:  preview.Truncated,
 		Candidates: make([]roleSourceRetentionCandidateResponse, 0, len(preview.Candidates)),
 	}
 	for _, candidate := range preview.Candidates {

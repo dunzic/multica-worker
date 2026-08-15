@@ -685,7 +685,7 @@ func TestRoleSourceRetentionPreviewIsContentFreeAndBounded(t *testing.T) {
 			WorkspaceID: testWorkspaceID, SourceID: roleSourceTestSourceID,
 			Version: 2, Enabled: true, MinimumAgeDays: 90, KeepSuccessfulSnapshots: 10,
 		},
-		EligibleCount: 1, EstimatedBytes: 4096,
+		EligibleCount: 1, EstimatedBytes: 4096, UniquelyReclaimableBytes: 1024,
 		Candidates: []rolesource.RetentionCandidatePreview{{
 			SnapshotDigest: "sha256:" + strings.Repeat("a", 64), CreatedAt: "2026-01-01T00:00:00Z", EstimatedBytes: 4096,
 		}},
@@ -696,7 +696,8 @@ func TestRoleSourceRetentionPreviewIsContentFreeAndBounded(t *testing.T) {
 	req := withURLParams(newRequestAs(testUserID, http.MethodGet, "/ignored", nil), "id", testWorkspaceID, "sourceId", roleSourceTestSourceID)
 	h.GetRoleSourceRetentionPreview(w, req)
 	body := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(body, `"minimum_age_days":90`) || !strings.Contains(body, `"estimated_bytes":4096`) {
+	if w.Code != http.StatusOK || !strings.Contains(body, `"minimum_age_days":90`) ||
+		!strings.Contains(body, `"estimated_bytes":4096`) || !strings.Contains(body, `"uniquely_reclaimable_bytes":1024`) {
 		t.Fatalf("retention preview status=%d body=%s", w.Code, body)
 	}
 	for _, forbidden := range []string{"manifest", "diagnostics", "source_evidence", "request_key", "storage_key", "artifact_body"} {

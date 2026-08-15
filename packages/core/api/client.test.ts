@@ -366,7 +366,16 @@ describe("ApiClient role-source runtime evidence", () => {
   });
 
   it("previews and updates owner-only role-source retention", async () => {
-    const preview = { policy: { version: 0, enabled: false }, eligible_count: 2 };
+    const preview = {
+      policy: {
+        workspace_id: "workspace-1", source_id: "source-1", version: 0, enabled: false,
+        minimum_age_days: 90, keep_successful_snapshots: 10,
+      },
+      eligible_count: 2,
+      estimated_bytes: 4096,
+      truncated: false,
+      candidates: [],
+    };
     const policy = { version: 1, enabled: true, minimum_age_days: 90, keep_successful_snapshots: 10 };
     const fetchMock = vi
       .fn()
@@ -375,7 +384,10 @@ describe("ApiClient role-source runtime evidence", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new ApiClient("https://api.example.test");
-    await expect(client.getRoleSourceRetentionPreview("workspace-1", "source-1")).resolves.toEqual(preview);
+    await expect(client.getRoleSourceRetentionPreview("workspace-1", "source-1")).resolves.toEqual({
+      ...preview,
+      uniquely_reclaimable_bytes: 0,
+    });
     await client.updateRoleSourceRetentionPolicy("workspace-1", "source-1", {
       request_key: "retention-policy-1",
       expected_version: 0,
@@ -388,6 +400,31 @@ describe("ApiClient role-source runtime evidence", () => {
       "https://api.example.test/api/workspaces/workspace-1/role-sources/source-1/retention",
     );
     expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "PATCH" }));
+  });
+
+  it("fails a malformed role-source retention preview closed", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      policy: {
+        workspace_id: "workspace-1", source_id: "source-1", version: 1, enabled: true,
+        minimum_age_days: 90, keep_successful_snapshots: 10,
+      },
+      eligible_count: 1,
+      estimated_bytes: 4096,
+      uniquely_reclaimable_bytes: "4096",
+      truncated: false,
+      candidates: [],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.getRoleSourceRetentionPreview("workspace-1", "source-1")).resolves.toEqual(
+      expect.objectContaining({
+        eligible_count: 0,
+        estimated_bytes: 0,
+        uniquely_reclaimable_bytes: 0,
+        candidates: [],
+      }),
+    );
   });
 
   it("creates, approves, applies, and lists verified role-source operations", async () => {

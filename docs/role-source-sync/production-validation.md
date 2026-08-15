@@ -102,10 +102,6 @@ database, then repeat the workspace-delete race from two server replicas:
 ```bash
 go -C server test -count=1 -run '^TestRoleSourceLegalHoldCreateReleaseAndAudit$|^TestDeleteWorkspace_ActiveRoleSourceLegalHoldIsHardFence$' ./internal/handler
 go -C server test -race -count=10 -run '^TestDeleteWorkspace_ActiveRoleSourceLegalHoldIsHardFence$' ./internal/handler
-MULTICA_LIVE_ROLE_SOURCE_RETENTION_RACE_TEST=1 \
-go -C server test -count=3 -run '^TestRoleSourceRetentionProtectionRacesPostgres$' ./internal/rolesource
-MULTICA_LIVE_ROLE_SOURCE_RETENTION_SCALE_TEST=1 \
-go -C server test -count=3 -run '^TestRoleSourceRetentionCandidateScalePostgres$' ./internal/rolesource
 ```
 
 In staging, hold the workspace deletion transaction after its workspace lock;
@@ -135,6 +131,10 @@ go -C server test -race -count=10 -run '^TestRoleSourceRetentionPolicyHoldFenceA
 go -C server test -count=1 -run '^TestRoleSourceMigrationsRoundTripInIsolatedSchema$' ./cmd/migrate
 MULTICA_LIVE_ROLE_SOURCE_RETENTION_RACE_TEST=1 \
 go -C server test -count=3 -run '^TestRoleSourceRetentionProtectionRacesPostgres$' ./internal/rolesource
+MULTICA_LIVE_ROLE_SOURCE_RETENTION_RECLAIM_TEST=1 \
+go -C server test -count=3 -run '^TestRoleSourceRetention(UniqueReclaimProjection|PruneSerializesArtifactPublication)Postgres$' ./internal/rolesource
+MULTICA_LIVE_ROLE_SOURCE_RETENTION_SCALE_TEST=1 \
+go -C server test -count=3 -run '^TestRoleSourceRetentionCandidateScalePostgres$' ./internal/rolesource
 ```
 
 The local single-primary gate must record all six deterministic outcomes:
@@ -146,23 +146,37 @@ makes the later pin fail with PostgreSQL integrity SQLSTATE `23000`. This closes
 the single-primary row-lock/trigger TOCTOU gate but does not replace the
 two-replica primary-failover and object-store exercise below.
 
+The reclaim semantics gate must prove that one artifact shared only by eligible
+snapshots is counted once, while an edge from any retained snapshot—including a
+different source in the same workspace—excludes it. It then prunes the oldest
+snapshot and verifies the newly unreachable bytes in the hash-chained audit
+event and the recomputed remaining preview. `referenced_bytes` may double count;
+`uniquely_reclaimable_bytes` is a current projection, not realized savings.
+The same gate must hold a production-equivalent shared artifact lock for a new
+retained snapshot, prove prune cannot pass it, publish the retained edge, and
+then prove prune records zero newly unreachable bytes. Run both cases three
+consecutive times.
+
 The scale gate must use a disposable database migrated through the current
-schema. It creates 100 sources with 100 eligible immutable snapshots each,
-runs `EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON)` over the exact generated
-production candidate `INSERT`, and then drains all 10,000 snapshots through
-100 calls bounded to 100 rows. It fails if planning exceeds 1 second, the first
-execution exceeds 5 seconds, p95 exceeds 2 seconds, p99 exceeds 5 seconds, the
-full drain exceeds 30 seconds, any candidate is missing/duplicated, or fixture
+schema. It creates 100 sources with 100 eligible immutable snapshots each plus
+10,000 tenant-scoped artifacts and 10,000 reachability edges, measures one
+source's unique-reclaim preview, runs `EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT
+JSON)` over the exact generated production candidate `INSERT`, and then drains
+all 10,000 snapshots through 100 calls bounded to 100 rows. It fails if preview
+exceeds 2 seconds, planning exceeds 1 second, the first execution exceeds 5
+seconds, p95 exceeds 2 seconds, p99 exceeds 5 seconds, the full drain exceeds
+30 seconds, any candidate/byte total is missing or duplicated, or fixture
 cleanup leaves residue. These deliberately conservative thresholds are a
 repeatable local safety gate, not the production cohort SLO.
 
 The 2026-08-15 local PostgreSQL 17 evidence passed three consecutive runs:
-planning 2.465–2.487 ms, first execution 22.267–25.461 ms, end-to-end drain
-2.099–2.181 s, p50 20.536–21.640 ms, p95 23.522–23.890 ms and p99
-24.147–25.461 ms. The first production-query batch reported 111,981–142,513
-shared-hit blocks, zero shared-read blocks and 502–508 WAL records. This is a
-10,000-snapshot inventory result across 100 sources; it does not represent
-10,000 users and must be repeated on candidate hardware and topology.
+unique-reclaim preview 3.071–3.143 ms, planning 2.090–2.132 ms, first execution
+22.919–26.140 ms, end-to-end drain 2.150–2.213 s, p50 21.221–22.074 ms, p95
+23.232–23.649 ms and p99 24.766–25.843 ms. The first production-query batch
+reported 112,088–142,667 shared-hit blocks, zero shared-read blocks and 501–507
+WAL records. This is a 10,000-snapshot/artifact/edge inventory result across
+100 sources; it does not represent 10,000 users and must be repeated on
+candidate hardware and topology.
 
 Then run two server replicas with both retention and permanent artifact-GC gates
 enabled against a disposable PostgreSQL 17 dataset containing current, recent,

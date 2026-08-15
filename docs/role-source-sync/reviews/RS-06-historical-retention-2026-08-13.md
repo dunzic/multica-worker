@@ -29,24 +29,27 @@ evidence are recorded**
   candidate-topology failover races, candidate-hardware SLO repeat, and
   independent retention policy for plan, apply and scan metadata.
 - A separate opt-in gate runs JSON `EXPLAIN ANALYZE/BUFFERS/WAL` over the exact
-  generated candidate query, then drains 10,000 eligible snapshots across 100
-  sources through the public 100-row batch boundary. Three consecutive local
-  runs completed in 2.099–2.181 seconds with 23.522–23.890 ms p95 and no
-  duplicate candidate or fixture residue. This validates one single-primary
+  generated candidate query, then drains 10,000 eligible snapshots with 10,000
+  artifacts and reachability edges across 100 sources through the public
+  100-row batch boundary. Three consecutive local runs completed in
+  2.150–2.213 seconds with 23.232–23.649 ms p95 and no duplicate candidate,
+  byte-total error or fixture residue. This validates one single-primary
   inventory shape, not 10,000 users or a failover topology.
 
 ## Product expert — 2/3
 
-- Owners see exact eligible count, bounded snapshot details and referenced byte
-  estimate before creating a policy revision. Admins cannot see or mutate legal
-  retention authority.
+- Owners see exact eligible count, bounded snapshot details, referenced bytes
+  and a workspace-wide edge-aware uniquely reclaimable projection before
+  creating a policy revision. Admins cannot see or mutate legal retention
+  authority.
 - The UI has no immediate-delete control and explains that preview is
-  revalidated, artifact reclaim is later, and versions outside the reserve can
-  become non-runnable.
+  revalidated, projected reclaim is not realized savings, artifact purge and
+  its tombstone tail are later, and versions outside the reserve can become
+  non-runnable.
 - Defaults are preview-only, 90 days and 10 successful versions; hard limits are
   30–3,650 days and 2–100 versions.
-- Open objections: referenced bytes are not unique reclaim, no realized-savings
-  report exists, and legal/security approval ownership is not integrated.
+- Open objections: no purge-receipt-backed realized-savings report exists, and
+  legal/security approval ownership is not integrated.
 
 ## Test expert — 2/3
 
@@ -54,18 +57,27 @@ evidence are recorded**
   lease claims, teardown, mutation guards, capability reachability, bounded
   metrics and nested environment gates.
 - API/core/settings tests cover strict owner-only requests, safe response shapes,
-  exact preview totals, persistent request identity during retry and no manual
-  delete affordance.
+  backward-compatible schema parsing, exact referenced/unique preview totals,
+  persistent request identity during retry and no manual delete affordance.
 - The PostgreSQL end-to-end test executes direct-delete rejection, legal-hold
   fencing, release, candidate claim, transactional prune and one audit event.
 - The six-case deterministic matrix passed three consecutive runs: hold-first,
   policy-disable-first and pin-first defer prune; prune-first makes a later hold
   invalid, permits only the later append-only policy revision, and rejects a
   later pin with SQLSTATE `23000`; no orphan pin/snapshot state remains.
-- The 10,000-snapshot scale matrix passed three consecutive runs with exact
-  candidate count/distinctness, 2.465–2.487 ms planning,
-  22.267–25.461 ms first execution, 20.536–21.640 ms p50,
-  23.522–23.890 ms p95, 24.147–25.461 ms p99 and 2.099–2.181 seconds total.
+- A three-run shared-artifact matrix proves eligible-only sharing counts once,
+  same-source retained and cross-source retained edges count zero, prune writes
+  exact newly unreachable bytes into a verified hash-chain event, and the next
+  preview recomputes from the remaining graph.
+- A second case in every run holds the same shared artifact lock used by
+  snapshot publication, proves prune waits on its ordered exclusive artifact
+  lock, commits a new retained edge and verifies the prune audit records zero
+  newly unreachable bytes. A missing artifact ledger row aborts prune.
+- The 10,000-snapshot/artifact/edge scale matrix passed three consecutive runs
+  with exact candidate count/distinctness/bytes, 3.071–3.143 ms preview,
+  2.090–2.132 ms planning, 22.919–26.140 ms first execution,
+  21.221–22.074 ms p50, 23.232–23.649 ms p95, 24.766–25.843 ms p99 and
+  2.150–2.213 seconds total.
 - Open objections: replica competition during primary failover, the same load
   on candidate hardware, versioned-object purge and restore are not measured.
 
