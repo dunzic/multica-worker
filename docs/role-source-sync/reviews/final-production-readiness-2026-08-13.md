@@ -46,6 +46,17 @@ objection only. Managed multi-AZ fencing, real provider boundaries, KMS/HSM,
 alerts and mixed 10,000-user traffic remain production blockers, so the overall
 2/3 and NO-GO decision do not change.
 
+2026-08-15 RS-06 local restore addendum: three fresh packaged PostgreSQL 17
+signed backup/restore runs plus one final smoke run now pass with all 25 role-
+source tables and one exact artifact. Dump restoration into a new database,
+double object rehydration, final verification, failed-backup `INCOMPLETE` and
+four archive/object/database corruption refusals are executable. The drill also
+closed discarded `pg_dump` diagnostics and arbitrary-container-UID failure
+without exposing the database password in process arguments. This is a tiny
+local packaging baseline, not candidate versioned-store, KMS, managed failover,
+concurrent load or RPO/RTO evidence; Architecture/Test and overall production
+scores remain 2/3 and the NO-GO decision does not change.
+
 ## Feature disposition
 
 | Feature | Merge disposition | Production disposition |
@@ -55,7 +66,7 @@ alerts and mixed 10,000-user traffic remain production blockers, so the overall
 | RS-03 plan, approval and safe apply | GO for controlled default-off cohort after the 2026-08-14 live atomicity and two-control-plane concurrency matrices | NO-GO pending database-outage/failover, real process-kill and recorded operator recovery evidence |
 | RS-04 materialization | GO for controlled default-off cohort after local 1,000-role/10,000-skill create/update evidence | NO-GO pending candidate-image two-replica/S3/contention/failover SLO and cross-runtime execution |
 | RS-05 secret and MCP transfer | GO for a controlled default-off cohort after the local B11 lifecycle gate | NO-GO pending candidate-image KMS/HSM key rotation, process restart/lease reclaim, failover, burst-load and exfiltration exercises |
-| RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local hold/policy/pin/prune matrix, 10,000-snapshot exact-SQL scale gate, v2 ambiguity-aware immutable purge receipts and real versioned-provider fail-closed suite | NO-GO pending candidate-topology process-kill/primary-failover race and scale repeat, candidate-provider receipt/inventory/accounting reconciliation, retention RACI and recorded restore with RPO/RTO |
+| RS-06 provenance, rollback and retention | GO, destructive workers disabled after the local hold/policy/pin/prune matrix, 10,000-snapshot exact-SQL scale gate, v2 ambiguity-aware immutable purge receipts, real versioned-provider fail-closed suite and packaged local signed restore baseline | NO-GO pending candidate-topology process-kill/primary-failover race and scale repeat, candidate-provider receipt/inventory/accounting reconciliation, production KMS, retention RACI and recorded restore with approved RPO/RTO |
 | RS-07 delivery receipts | GO as a two-connector controlled pilot with signed ambiguity resolution, a three-process kill chain, a local 10,000-receipt backlog gate and a three-run local physical-primary failover gate | NO-GO pending remaining connectors, attachments, real-provider candidate replicas, managed multi-AZ failover/fencing, KMS/HSM and approved 10,000-user mixed-load evidence |
 
 ## Local evidence retained
@@ -134,6 +145,14 @@ alerts and mixed 10,000-user traffic remain production blockers, so the overall
   version byte-readable. Final independent listings contained no validation
   versions or markers. This is real local protocol evidence, not a candidate
   vendor, topology, durability, receipt-correlation or billing result.
+- the RS-06 packaged DR gate passed three formal fresh runs plus one final smoke
+  run: a signed 25-table manifest and one real artifact were dumped, restored to
+  a new database/storage directory, rehydrated twice and fully verified. An
+  invalid dump kept `INCOMPLETE`; archive tamper, missing/changed object and a
+  changed restored row all failed with exact redacted findings. Formal bundles
+  were 437,776–437,844 bytes, coarse restore plus first verification was 2
+  seconds, and the full local fault matrix was 9–10 seconds. These tiny local
+  timings are not production capacity, RPO/RTO, provider or KMS evidence.
 
 The latest full run did not reproduce the historical `pkg/agent` instability;
 that does not erase prior evidence, so it remains release-environment debt

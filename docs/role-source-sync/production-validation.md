@@ -674,6 +674,22 @@ invalid receipt chain or missing alert is an immediate NO-GO.
 
 ## Gate F — database/object-store disaster recovery
 
+Run the local packaged baseline first. It creates disposable PostgreSQL 17
+source/restore databases and object directories, restores one signed non-empty
+artifact inventory twice and injects archive/object/database corruption:
+
+```bash
+MULTICA_RS06_BACKEND_IMAGE='candidate-backend-image' \
+DOCKER_BIN=/usr/local/bin/docker \
+  scripts/validation/rs06-dr-restore.sh
+```
+
+The local gate must report 25 verified tables, one exact artifact, idempotent
+restore, `INCOMPLETE` for failed backup, refusal of archive tamper, missing and
+changed objects plus changed database state, and zero run-scoped residue. This
+is a packaging and fail-closed baseline only. Its one 38-byte fixture and local
+PostgreSQL/object directories do not satisfy Gate F, RPO/RTO or capacity.
+
 Follow [`disaster-recovery.md`](disaster-recovery.md) on a production-shaped
 PostgreSQL 17 primary plus the candidate versioned S3-compatible store. Start a
 backup while two replicas are scanning/applying and separately race retention,

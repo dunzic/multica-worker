@@ -1,8 +1,9 @@
 # Role-source disaster recovery
 
-Status: merge-ready behind disabled retention/GC gates. Production rollout
-remains NO-GO until the recorded PostgreSQL 17, object-store and topology drill
-in `production-validation.md` passes.
+Status: the packaged local PostgreSQL 17 signed backup/restore baseline passes
+behind disabled retention/GC gates. Production rollout remains NO-GO until the
+recorded candidate database, versioned object-store, KMS and topology drill in
+`production-validation.md` passes.
 
 ## Recovery contract
 
@@ -53,6 +54,10 @@ file independently:
 
 Use PostgreSQL 17 client tools against the primary and the same object-storage
 configuration as the server. The output directory must not already exist.
+`DATABASE_URL` must use the documented `postgres://` or `postgresql://` form.
+The DR command passes a password-free URL and explicit database user to
+`pg_dump`, supplies the password only through `PGPASSWORD`, and removes pgx-only
+`pool_*` query settings before invoking the PostgreSQL client.
 
 ```bash
 export MULTICA_ROLE_SOURCE_DR_SIGNING_KEY_ID='backup-v1'
@@ -77,6 +82,27 @@ mode 0600 below a mode 0700 directory. Copy the bundle to approved encrypted,
 immutable backup storage. Separately escrow every key ID named in
 `key_requirements` through the organization's KMS/secret-backup process. Never
 put key bytes beside the bundle.
+
+## Local repeatable baseline
+
+The repository includes a destructive, self-cleaning local gate. It creates
+fresh PostgreSQL 17 source/restore databases and local object directories,
+backs up one real immutable artifact with a signed manifest, restores and
+verifies it twice, then requires exact failure findings for archive tamper,
+missing/changed objects and changed restored database state:
+
+```bash
+MULTICA_RS06_BACKEND_IMAGE='candidate-backend-image' \
+DOCKER_BIN=/usr/local/bin/docker \
+  scripts/validation/rs06-dr-restore.sh
+```
+
+The corrected 2026-08-15 gate passed three consecutive fresh runs plus one
+final smoke run. It also proved that an invalid `pg_dump` leaves `INCOMPLETE`
+and no manifest. See the
+[local restore-drill review](reviews/RS-06-local-restore-drill-2026-08-15.md).
+This is a packaging and recovery-contract baseline for one 38-byte object, not
+a production RPO/RTO, object-store or KMS result.
 
 ## Restore drill
 

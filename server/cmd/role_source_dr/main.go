@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -213,12 +214,19 @@ func runBackup(ctx context.Context, args []string) error {
 		return err
 	}
 	dumpPath := filepath.Join(*output, "database.dump")
-	command := exec.CommandContext(ctx, *pgDump,
-		"--format=custom", "--no-owner", "--no-privileges", "--snapshot="+snapshotID, "--file="+dumpPath)
-	command.Env = append(os.Environ(), "PGDATABASE="+dbURL)
-	_, err = command.CombinedOutput()
+	pgDumpArgs, pgDumpPassword, err := buildPGDumpArgs(dbURL, snapshotID, dumpPath)
 	if err != nil {
-		return fmt.Errorf("pg_dump failed: %w", err)
+		return err
+	}
+	command := exec.CommandContext(ctx, *pgDump, pgDumpArgs...)
+	command.Env = replaceEnvironmentValue(os.Environ(), "PGPASSWORD", pgDumpPassword)
+	commandOutput, err := command.CombinedOutput()
+	if err != nil {
+		detail := boundedOutput(commandOutput)
+		if detail == "" {
+			return fmt.Errorf("pg_dump failed: %w", err)
+		}
+		return fmt.Errorf("pg_dump failed: %w; output: %s", err, detail)
 	}
 	manifest.DatabaseDumpDigest, err = rolesourcedr.FileDigest(dumpPath)
 	if err != nil {
@@ -244,6 +252,46 @@ func runBackup(ctx context.Context, args []string) error {
 	}
 	printJSON(manifest.PublicSummary("backup_passed"))
 	return nil
+}
+
+func buildPGDumpArgs(dbURL, snapshotID, dumpPath string) ([]string, string, error) {
+	config, err := pgx.ParseConfig(dbURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse database identity for pg_dump: %w", err)
+	}
+	if strings.TrimSpace(config.User) == "" {
+		return nil, "", errors.New("database user is required for pg_dump")
+	}
+	parsed, err := url.Parse(dbURL)
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Host == "" {
+		return nil, "", errors.New("role-source DR requires URL-form DATABASE_URL for pg_dump")
+	}
+	parsed.User = url.User(config.User)
+	query := parsed.Query()
+	for key := range query {
+		if strings.HasPrefix(key, "pool_") {
+			query.Del(key)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return []string{
+		"--format=custom", "--no-owner", "--no-privileges",
+		"--username=" + config.User,
+		"--dbname=" + parsed.String(),
+		"--snapshot=" + snapshotID,
+		"--file=" + dumpPath,
+	}, config.Password, nil
+}
+
+func replaceEnvironmentValue(environment []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, prefix+value)
 }
 
 func runVerify(ctx context.Context, args []string) error {

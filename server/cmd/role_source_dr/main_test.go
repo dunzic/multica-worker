@@ -25,6 +25,35 @@ func TestBoundedOutput(t *testing.T) {
 	if got := boundedOutput([]byte(strings.Repeat("x", 5000))); len(got) != 2048 {
 		t.Fatalf("bounded output length = %d", len(got))
 	}
+	if got := boundedOutput([]byte("\n  pg_dump: safe diagnostic  \n")); got != "pg_dump: safe diagnostic" {
+		t.Fatalf("bounded output = %q", got)
+	}
+}
+
+func TestPGDumpArgsUseDatabaseUserWithoutPassword(t *testing.T) {
+	args, password, err := buildPGDumpArgs("postgres://dr_operator:do-not-leak@database.example/restore?sslmode=require&pool_max_conns=40", "snapshot-1", "/private/database.dump")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	for _, required := range []string{"--username=dr_operator", "--dbname=postgres://dr_operator@database.example/restore?sslmode=require", "--snapshot=snapshot-1", "--file=/private/database.dump"} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("pg_dump args omit %s: %s", required, joined)
+		}
+	}
+	if strings.Contains(joined, "do-not-leak") || strings.Contains(joined, "pool_max_conns") {
+		t.Fatal("pg_dump arguments expose the database password")
+	}
+	if password != "do-not-leak" {
+		t.Fatal("pg_dump password was not separated from process arguments")
+	}
+	environment := replaceEnvironmentValue([]string{"PATH=/bin", "PGPASSWORD=stale"}, "PGPASSWORD", password)
+	if strings.Join(environment, "|") != "PATH=/bin|PGPASSWORD=do-not-leak" {
+		t.Fatalf("pg_dump environment = %v", environment)
+	}
+	if _, _, err := buildPGDumpArgs("host=database.example user=dr_operator password=do-not-leak dbname=restore", "snapshot-1", "/private/database.dump"); err == nil {
+		t.Fatal("non-URL DATABASE_URL was accepted for pg_dump")
+	}
 }
 
 func TestUnsignedManifestIsDevelopmentOptIn(t *testing.T) {
