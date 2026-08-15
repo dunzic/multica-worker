@@ -25,6 +25,13 @@ the key IDs needed by unexpired transfers. It contains no snapshot JSON, source
 configuration, local path, request key, ciphertext, envelope, artifact body or
 credential.
 
+The immutable `role_source_artifact_purge_receipt` ledger is part of the table
+inventory even though its corresponding object bodies are deliberately absent
+from the artifact archive. Each row is content-free: it retains digests,
+logical size, stable backend/mode, aggregate provider observations, verified
+absence and completion time, never a raw storage key. Backup/restore preserves
+these rows as audit evidence; it must not recreate purged bodies from receipts.
+
 The manifest is domain-separated and Ed25519-signed. Keep the signing private
 key in a KMS/HSM-backed operator secret and distribute the trusted public key
 through a different configuration channel from the backup bundle. Only the
@@ -110,7 +117,9 @@ put key bytes beside the bundle.
    canonical snapshot/plan/receipt digests; complete audit chains; current,
    pin, mapping, capability, plan, apply, hold, retention and artifact edges;
    every artifact's exact byte length/SHA-256; and every unexpired transfer's
-   claims, envelope digest and decryptable private key.
+   claims, envelope digest and decryptable private key. It also recomputes every
+   artifact-purge receipt commitment and rejects an invalid shape, changed
+   provider mode, unverified absence or logical-byte mismatch.
 6. Start the server with retention and artifact GC still disabled. Start one
    reviewed daemon, wait for fresh loaded attestation, perform a read-only scan,
    then execute a controlled no-op plan. Re-enable traffic only after the drill

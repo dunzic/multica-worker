@@ -94,6 +94,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"role_source_apply_failure":          workspaceDelete,
 	"role_source_artifact":               workspaceDelete,
 	"role_source_artifact_delete_intent": workspaceDeleteKeep,
+	"role_source_artifact_purge_receipt": workspaceDeleteKeep,
 	"role_source_artifact_integrity":     workspaceDelete,
 	"role_source_audit_event":            workspaceDelete,
 	"role_source_capability_version":     workspaceDelete,

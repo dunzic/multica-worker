@@ -26,6 +26,28 @@ type Storage interface {
 	GetReader(ctx context.Context, key string) (io.ReadCloser, error)
 }
 
+const (
+	PermanentPurgeBackendLocal = "local"
+	PermanentPurgeBackendS3    = "s3"
+	PermanentPurgeModeCurrent  = "current_object"
+	PermanentPurgeModeVersions = "all_versions"
+)
+
+// PermanentPurgeResult is storage-provider evidence, not a billing receipt.
+// VerifiedAbsent means the implementation performed a provider/filesystem
+// read-after-delete and found no current object, retained version or delete
+// marker for the exact key. ObservedBytesDeleted counts version bytes that the
+// purge inventory actually saw; a retry after an earlier successful delete may
+// legitimately report zero while still verifying absence.
+type PermanentPurgeResult struct {
+	Backend              string
+	Mode                 string
+	VersionsDeleted      int64
+	DeleteMarkersDeleted int64
+	ObservedBytesDeleted int64
+	VerifiedAbsent       bool
+}
+
 type Presigner interface {
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 }

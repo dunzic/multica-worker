@@ -98,6 +98,17 @@ edge-aware uniquely reclaimable projection. The latter is revalidated during
 prune and is still not a savings invoice: it does not prove that object-store
 versions were permanently purged or that billed storage decreased.
 
+After the fifth verified permanent-purge pass, the owner panel shows immutable
+purge-receipt totals and the newest 50 receipts. Interpret
+`logical_bytes_confirmed_absent` as original live-object bytes whose exact key
+is now absent. `observed_deleted_bytes` is the sum of version bytes observed
+during provider inventory and can be larger, smaller or zero on idempotent
+passes. Neither field is a cloud invoice or a promise of billed savings. A
+receipt must show five successful passes, `absence_verified=true`, a stable
+backend/mode and a valid SHA-256 receipt commitment. The UI and DR verifier fail
+closed on a malformed commitment; do not edit or delete receipt rows to repair
+one.
+
 Before enabling, verify both server gates are intentionally configured:
 `MULTICA_ROLE_SOURCE_RETENTION_ENABLED=true` and
 `MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED=true`. The first removes eligible
@@ -118,6 +129,13 @@ approving a plan. Versions outside the configured reserve may have only their
 digest/receipt/audit evidence left and are intentionally no longer runnable.
 Before broad rollout, complete the PostgreSQL race, object-storage purge and
 backup/restore gates in `production-validation.md`.
+
+If purge receipts stop advancing while tombstones grow, inspect Object Lock,
+version-list and delete-version permissions, the 10,000-version safety bound,
+worker leases and storage timeouts. Keep the GC gate off after repeated failure
+and preserve the intent, provider request IDs, content-free logs and metrics.
+Never treat a successful current-object delete alone as S3 erasure, and never
+manually mark `absence_verified` or insert a receipt.
 
 ## Artifact-integrity quarantine operations
 

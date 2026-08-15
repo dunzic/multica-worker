@@ -348,17 +348,27 @@ func (s *S3Storage) DeleteObject(ctx context.Context, key string) error {
 // s3:DeleteObject and s3:DeleteObjectVersion. Object Lock/legal holds fail
 // closed: the reconciler keeps its durable intent and retries/alerts.
 func (s *S3Storage) PurgeObject(ctx context.Context, key string) error {
+	_, err := s.PurgeObjectWithResult(ctx, key)
+	return err
+}
+
+// PurgeObjectWithResult performs an exact-key, all-version purge and verifies
+// the final version inventory is empty. Its result is provider operation
+// evidence; it must not be presented as a cloud billing adjustment.
+func (s *S3Storage) PurgeObjectWithResult(ctx context.Context, key string) (PermanentPurgeResult, error) {
+	result := PermanentPurgeResult{Backend: PermanentPurgeBackendS3, Mode: PermanentPurgeModeVersions}
 	if key == "" {
-		return nil
+		result.VerifiedAbsent = true
+		return result, nil
 	}
 	if _, err := s.listObjectVersionsForPurge(ctx, key, maxS3ObjectVersionsPerPurge); err != nil {
-		return err
+		return result, err
 	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket), Key: aws.String(key),
 	})
 	if err != nil {
-		return fmt.Errorf("s3 purge current object: %w", err)
+		return result, fmt.Errorf("s3 purge current object: %w", err)
 	}
 	// Re-list after deleting current so the batch includes the new delete
 	// marker and any PUT that raced the preflight inventory. The extra slot is
@@ -366,30 +376,54 @@ func (s *S3Storage) PurgeObject(ctx context.Context, key string) error {
 	// leaves the durable intent retryable without adding markers on every retry.
 	objects, err := s.listObjectVersionsForPurge(ctx, key, maxS3ObjectVersionsPerPurge+1)
 	if err != nil {
-		return err
+		return result, err
 	}
 	for start := 0; start < len(objects); start += 1000 {
 		end := min(start+1000, len(objects))
+		identifiers := make([]types.ObjectIdentifier, 0, end-start)
+		for _, object := range objects[start:end] {
+			identifiers = append(identifiers, object.Identifier)
+			if object.DeleteMarker {
+				result.DeleteMarkersDeleted++
+			} else {
+				result.VersionsDeleted++
+				result.ObservedBytesDeleted += object.SizeBytes
+			}
+		}
 		output, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(s.bucket),
-			Delete: &types.Delete{Objects: objects[start:end], Quiet: aws.Bool(true)},
+			Delete: &types.Delete{Objects: identifiers, Quiet: aws.Bool(true)},
 		})
 		if err != nil {
-			return fmt.Errorf("s3 purge retained object versions: %w", err)
+			return result, fmt.Errorf("s3 purge retained object versions: %w", err)
 		}
 		if len(output.Errors) > 0 {
 			first := output.Errors[0]
-			return fmt.Errorf("s3 purge retained object version failed: code=%s key=%s", aws.ToString(first.Code), aws.ToString(first.Key))
+			return result, fmt.Errorf("s3 purge retained object version failed: code=%s key=%s", aws.ToString(first.Code), aws.ToString(first.Key))
 		}
 	}
-	return nil
+	remaining, err := s.listObjectVersionsForPurge(ctx, key, 1)
+	if err != nil {
+		return result, err
+	}
+	if len(remaining) != 0 {
+		return result, fmt.Errorf("s3 purge verification failed: exact key still has retained versions")
+	}
+	result.VerifiedAbsent = true
+	return result, nil
 }
 
-func (s *S3Storage) listObjectVersionsForPurge(ctx context.Context, key string, limit int) ([]types.ObjectIdentifier, error) {
+type purgeObjectVersion struct {
+	Identifier   types.ObjectIdentifier
+	DeleteMarker bool
+	SizeBytes    int64
+}
+
+func (s *S3Storage) listObjectVersionsForPurge(ctx context.Context, key string, limit int) ([]purgeObjectVersion, error) {
 	paginator := s3.NewListObjectVersionsPaginator(s.client, &s3.ListObjectVersionsInput{
 		Bucket: aws.String(s.bucket), Prefix: aws.String(key),
 	})
-	objects := make([]types.ObjectIdentifier, 0, 16)
+	objects := make([]purgeObjectVersion, 0, 16)
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -397,12 +431,18 @@ func (s *S3Storage) listObjectVersionsForPurge(ctx context.Context, key string, 
 		}
 		for _, version := range page.Versions {
 			if aws.ToString(version.Key) == key {
-				objects = append(objects, types.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
+				objects = append(objects, purgeObjectVersion{
+					Identifier: types.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId},
+					SizeBytes:  aws.ToInt64(version.Size),
+				})
 			}
 		}
 		for _, marker := range page.DeleteMarkers {
 			if aws.ToString(marker.Key) == key {
-				objects = append(objects, types.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
+				objects = append(objects, purgeObjectVersion{
+					Identifier:   types.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId},
+					DeleteMarker: true,
+				})
 			}
 		}
 		if len(objects) > limit {

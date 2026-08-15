@@ -65,6 +65,7 @@ import type {
   ReleaseRoleSourceLegalHoldRequest,
   RoleSourceRetentionPolicy,
   RoleSourceRetentionPreview,
+  RoleSourceArtifactPurgeReceiptSummary,
   UpdateRoleSourceRetentionPolicyRequest,
   AgentRuntime,
   RuntimeProfile,
@@ -332,6 +333,8 @@ import {
   RoleSourceConfigurationReviewSchema,
   RoleSourceRetentionPreviewSchema,
   EMPTY_ROLE_SOURCE_RETENTION_PREVIEW,
+  RoleSourceArtifactPurgeReceiptSummarySchema,
+  EMPTY_ROLE_SOURCE_ARTIFACT_PURGE_RECEIPT_SUMMARY,
   RoleSourceAdapterDescriptorListSchema,
   RoleSourceSchema,
   ChannelDeliveryListSchema,
@@ -1918,6 +1921,20 @@ export class ApiClient {
     return parseWithFallback(raw, RoleSourceRetentionPreviewSchema, EMPTY_ROLE_SOURCE_RETENTION_PREVIEW, {
       endpoint: "GET /api/workspaces/:id/role-sources/:sourceId/retention",
     });
+  }
+
+  async getWorkspaceRoleSourceArtifactPurgeReceipts(
+    workspaceId: string,
+  ): Promise<RoleSourceArtifactPurgeReceiptSummary> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/role-source-purge-receipts`,
+    );
+    return parseWithFallback(
+      raw,
+      RoleSourceArtifactPurgeReceiptSummarySchema,
+      EMPTY_ROLE_SOURCE_ARTIFACT_PURGE_RECEIPT_SUMMARY,
+      { endpoint: "GET /api/workspaces/:id/role-source-purge-receipts" },
+    );
   }
 
   async updateRoleSourceRetentionPolicy(

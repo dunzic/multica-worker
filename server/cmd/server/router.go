@@ -1302,6 +1302,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Post("/role-sources/{sourceId}/legal-holds/{holdId}/release", h.ReleaseRoleSourceLegalHold)
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Get("/role-sources/{sourceId}/retention", h.GetRoleSourceRetentionPreview)
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Patch("/role-sources/{sourceId}/retention", h.UpdateRoleSourceRetentionPolicy)
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Get("/role-source-purge-receipts", h.GetWorkspaceRoleSourceArtifactPurgeReceipts)
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
 				// GitHub integration — connect / disconnect remain admin-only;

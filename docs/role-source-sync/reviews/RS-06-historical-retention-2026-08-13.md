@@ -48,7 +48,10 @@ evidence are recorded**
   non-runnable.
 - Defaults are preview-only, 90 days and 10 successful versions; hard limits are
   30–3,650 days and 2–100 versions.
-- Open objections: no purge-receipt-backed realized-savings report exists, and
+- The owner panel now includes immutable purge-receipt totals and the newest 50
+  verified receipts after the fifth pass, explicitly labelled logical absence
+  and provider observation rather than realized/billed savings.
+- Open objections: no provider-inventory/billing reconciliation exists, and
   legal/security approval ownership is not integrated.
 
 ## Test expert — 2/3
@@ -78,8 +81,13 @@ evidence are recorded**
   2.090–2.132 ms planning, 22.919–26.140 ms first execution,
   21.221–22.074 ms p50, 23.232–23.649 ms p95, 24.766–25.843 ms p99 and
   2.150–2.213 seconds total.
+- A disposable database migrated through 386 and passed the five-pass purge
+  receipt state machine three consecutive times, including atomic
+  intent-to-receipt completion, digest verification, totals and immutable-row
+  SQLSTATE `23000` guards. This uses a storage protocol fake, not a provider.
 - Open objections: replica competition during primary failover, the same load
-  on candidate hardware, versioned-object purge and restore are not measured.
+  on candidate hardware, candidate versioned-object purge, provider billing
+  reconciliation and restore are not measured.
 
 ## CEO / rollout owner — 2/3
 
@@ -89,9 +97,9 @@ evidence are recorded**
   let enterprise pilots remain preview-only.
 - The implementation avoids a support-heavy manual delete path and preserves
   digest/receipt/audit evidence after runnable snapshot content expires.
-- Open objections: approve retention RACI and customer terms; measure actual
-  reclaimed cost, support incidents and restore time before pricing or broad
-  claims.
+- Open objections: approve retention RACI and customer terms; measure provider
+  inventory/billing deltas, support incidents and restore time before pricing
+  or broad claims.
 
 ## Required next evidence
 

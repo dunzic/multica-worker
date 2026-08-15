@@ -352,6 +352,18 @@ func roleSourceTestHandler(t *testing.T, enabled bool, controlPlane *fakeRoleSou
 	}
 }
 
+func TestRoleSourcePurgeReceiptJSONIntegerContract(t *testing.T) {
+	if !roleSourcePurgeReceiptJSONIntegersSafe(0, 1, maxRoleSourceJSONSafeInteger) {
+		t.Fatal("expected JSON-safe receipt integers to pass")
+	}
+	if roleSourcePurgeReceiptJSONIntegersSafe(-1) {
+		t.Fatal("negative receipt integer must fail closed")
+	}
+	if roleSourcePurgeReceiptJSONIntegersSafe(maxRoleSourceJSONSafeInteger + 1) {
+		t.Fatal("receipt integer above JavaScript's exact range must fail closed")
+	}
+}
+
 func roleSourceTestRow() db.RoleSource {
 	now := pgtype.Timestamptz{Time: time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC), Valid: true}
 	return db.RoleSource{

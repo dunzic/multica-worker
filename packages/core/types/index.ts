@@ -134,6 +134,8 @@ export type {
   RoleSourceRetentionPolicy,
   RoleSourceRetentionCandidate,
   RoleSourceRetentionPreview,
+  RoleSourceArtifactPurgeReceipt,
+  RoleSourceArtifactPurgeReceiptSummary,
   UpdateRoleSourceRetentionPolicyRequest,
 } from "./role-source";
 export type { InboxItem, InboxSeverity, InboxItemType, InboxWorkspaceUnread } from "./inbox";

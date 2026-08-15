@@ -384,6 +384,72 @@ func TestRoleSourceArtifactDeleteIntentSurvivesTenantTeardownWithoutContent(t *t
 	}
 }
 
+func TestRoleSourceArtifactPurgeReceiptIsBoundedImmutableAndContentFree(t *testing.T) {
+	root := filepath.Join("..", "..", "migrations")
+	evidenceBody, err := os.ReadFile(filepath.Join(root, "381_role_source_artifact_purge_evidence.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := strings.ToLower(string(evidenceBody))
+	for _, required := range []string{
+		"workspace_id uuid", "purge_backend", "purge_mode", "purge_passes",
+		"deleted_versions", "deleted_delete_markers", "observed_deleted_bytes",
+		"absence_verified", "last_purged_at",
+	} {
+		if !strings.Contains(evidence, required) {
+			t.Fatalf("artifact purge evidence migration is missing %q", required)
+		}
+	}
+	receiptBody, err := os.ReadFile(filepath.Join(root, "383_role_source_artifact_purge_receipt.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := strings.ToLower(string(receiptBody))
+	for _, forbidden := range []string{"storage_key text", "manifest jsonb", "artifact_body", "prompt", "credential", "error_message"} {
+		if strings.Contains(receipt, forbidden) {
+			t.Fatalf("artifact purge receipt retains forbidden content %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"storage_key_digest", "artifact_digest", "logical_bytes_confirmed_absent",
+		"observed_deleted_bytes", "successful_passes", "receipt_digest",
+		"absence_verified boolean not null check (absence_verified)",
+	} {
+		if !strings.Contains(receipt, required) {
+			t.Fatalf("artifact purge receipt schema is missing %q", required)
+		}
+	}
+	for name, fragment := range map[string]string{
+		"382_role_source_artifact_delete_intent_id_unique.up.sql":       "CREATE UNIQUE INDEX CONCURRENTLY",
+		"384_role_source_artifact_purge_receipt_intent_unique.up.sql":   "intent_id",
+		"385_role_source_artifact_purge_receipt_workspace_index.up.sql": "workspace_id, completed_at DESC, intent_id DESC",
+		"386_role_source_artifact_purge_receipt_mutation_guard.up.sql":  "purge receipts are immutable",
+	} {
+		body, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil || !strings.Contains(string(body), fragment) {
+			t.Fatalf("%s must contain %q: %v", name, fragment, readErr)
+		}
+	}
+	queries, err := os.ReadFile(filepath.Join("..", "..", "pkg", "db", "queries", "role_source.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryText := string(queries)
+	for _, required := range []string{
+		"CompleteRoleSourceArtifactDeleteIntent", "INSERT INTO role_source_artifact_purge_receipt",
+		"logical_bytes_confirmed_absent", "ON CONFLICT (intent_id) DO NOTHING",
+		"intent.purge_passes + 1",
+		"intent.deleted_versions + @purged_version_count",
+		"intent.deleted_delete_markers + @purged_delete_marker_count",
+		"intent.observed_deleted_bytes + @purged_observed_bytes",
+		"ListWorkspaceRoleSourceArtifactPurgeReceipts", "GetWorkspaceRoleSourceArtifactPurgeReceiptTotals",
+	} {
+		if !strings.Contains(queryText, required) {
+			t.Fatalf("artifact purge receipt query contract is missing %q", required)
+		}
+	}
+}
+
 func TestRoleSourceArtifactIntegrityMigrationContract(t *testing.T) {
 	root := filepath.Join("..", "..", "migrations")
 	for _, required := range []struct {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/storage"
 )
 
 type roleSourcePurgeRecordingStorage struct {
@@ -22,6 +24,14 @@ func (s *roleSourcePurgeRecordingStorage) DeleteObject(context.Context, string) 
 func (s *roleSourcePurgeRecordingStorage) PurgeObject(context.Context, string) error {
 	s.purges++
 	return nil
+}
+
+func (s *roleSourcePurgeRecordingStorage) PurgeObjectWithResult(context.Context, string) (storage.PermanentPurgeResult, error) {
+	s.purges++
+	return storage.PermanentPurgeResult{
+		Backend: storage.PermanentPurgeBackendS3, Mode: storage.PermanentPurgeModeVersions,
+		VersionsDeleted: 1, ObservedBytesDeleted: 64, VerifiedAbsent: true,
+	}, nil
 }
 
 type roleSourceDeleteOnlyStorage struct{ deletes int }
@@ -40,15 +50,19 @@ func (s *roleSourceDeleteOnlyStorage) DeleteObject(context.Context, string) erro
 
 func TestRoleSourceArtifactGCUsesVersionPurgingWhenAvailable(t *testing.T) {
 	versioned := &roleSourcePurgeRecordingStorage{}
-	if err := purgeRoleSourceArtifactObject(context.Background(), versioned, "artifact"); err != nil {
+	result, err := purgeRoleSourceArtifactObject(context.Background(), versioned, "artifact")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !result.VerifiedAbsent || result.VersionsDeleted != 1 || result.ObservedBytesDeleted != 64 {
+		t.Fatalf("purge result = %+v", result)
 	}
 	if versioned.purges != 1 || versioned.deletes != 0 {
 		t.Fatalf("version-aware storage calls: purges=%d deletes=%d, want 1/0", versioned.purges, versioned.deletes)
 	}
 
 	legacy := &roleSourceDeleteOnlyStorage{}
-	if err := purgeRoleSourceArtifactObject(context.Background(), legacy, "artifact"); err == nil {
+	if _, err := purgeRoleSourceArtifactObject(context.Background(), legacy, "artifact"); err == nil {
 		t.Fatal("delete-only storage was accepted as a permanent role-source purge")
 	}
 	if legacy.deletes != 0 {

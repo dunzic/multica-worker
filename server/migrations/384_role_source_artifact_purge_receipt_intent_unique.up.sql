@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY role_source_artifact_purge_receipt_intent_unique ON role_source_artifact_purge_receipt (intent_id);

@@ -453,8 +453,8 @@ deleted_object_mappings AS (
     DELETE FROM role_source_object_mapping WHERE role_source_object_mapping.workspace_id = $1
 ),
 queued_role_source_artifact_deletes AS (
-    INSERT INTO role_source_artifact_delete_intent (storage_key, artifact_digest, size_bytes, reason)
-    SELECT storage_key, digest, size_bytes, 'workspace_deleted'
+    INSERT INTO role_source_artifact_delete_intent (workspace_id, storage_key, artifact_digest, size_bytes, reason)
+    SELECT workspace_id, storage_key, digest, size_bytes, 'workspace_deleted'
     FROM role_source_artifact WHERE role_source_artifact.workspace_id = $1
     ON CONFLICT (storage_key) DO NOTHING
 ),

@@ -19,6 +19,7 @@ var tableNames = [...]string{
 	"role_source_artifact_integrity",
 	"role_source_snapshot_artifact",
 	"role_source_artifact_delete_intent",
+	"role_source_artifact_purge_receipt",
 	"role_source_object_mapping",
 	"role_source_capability_version",
 	"role_source_secret_transfer",
@@ -94,12 +95,13 @@ type Report struct {
 }
 
 type DatabaseVerification struct {
-	TablesChecked           int   `json:"tables_checked"`
-	SnapshotsValidated      int64 `json:"snapshots_validated"`
-	PlansValidated          int64 `json:"plans_validated"`
-	ReceiptsValidated       int64 `json:"receipts_validated"`
-	AuditEventsValidated    int64 `json:"audit_events_validated"`
-	ReplayReceiptsValidated int64 `json:"replay_receipts_validated"`
+	TablesChecked                  int   `json:"tables_checked"`
+	SnapshotsValidated             int64 `json:"snapshots_validated"`
+	PlansValidated                 int64 `json:"plans_validated"`
+	ReceiptsValidated              int64 `json:"receipts_validated"`
+	AuditEventsValidated           int64 `json:"audit_events_validated"`
+	ReplayReceiptsValidated        int64 `json:"replay_receipts_validated"`
+	ArtifactPurgeReceiptsValidated int64 `json:"artifact_purge_receipts_validated"`
 }
 
 type ObjectVerification struct {

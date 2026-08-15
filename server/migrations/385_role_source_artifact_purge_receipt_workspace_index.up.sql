@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY role_source_artifact_purge_receipt_workspace_idx ON role_source_artifact_purge_receipt (workspace_id, completed_at DESC, intent_id DESC);

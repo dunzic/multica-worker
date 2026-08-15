@@ -144,7 +144,44 @@ func (s *LocalStorage) DeleteObject(_ context.Context, key string) error {
 // PurgeObject matches the stronger role-source GC contract. Local storage has
 // no hidden version layer, so deleting the current key is a complete purge.
 func (s *LocalStorage) PurgeObject(ctx context.Context, key string) error {
-	return s.DeleteObject(ctx, key)
+	_, err := s.PurgeObjectWithResult(ctx, key)
+	return err
+}
+
+// PurgeObjectWithResult permanently removes the exact local object and then
+// verifies that its body, metadata sidecar and abandoned staging file are all
+// absent. The observed byte count covers the immutable artifact body only.
+func (s *LocalStorage) PurgeObjectWithResult(ctx context.Context, key string) (PermanentPurgeResult, error) {
+	result := PermanentPurgeResult{Backend: PermanentPurgeBackendLocal, Mode: PermanentPurgeModeCurrent}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	if key == "" {
+		result.VerifiedAbsent = true
+		return result, nil
+	}
+	filePath := filepath.Join(s.uploadDir, key)
+	if info, err := os.Stat(filePath); err == nil {
+		result.VersionsDeleted = 1
+		result.ObservedBytesDeleted = info.Size()
+	} else if !os.IsNotExist(err) {
+		return result, err
+	}
+	if err := s.DeleteObject(ctx, key); err != nil {
+		return result, err
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	for _, path := range []string{filePath, filePath + metaSuffix, tempPath(filePath)} {
+		if _, err := os.Stat(path); err == nil {
+			return result, fmt.Errorf("local permanent purge verification: object still exists")
+		} else if !os.IsNotExist(err) {
+			return result, fmt.Errorf("local permanent purge verification: %w", err)
+		}
+	}
+	result.VerifiedAbsent = true
+	return result, nil
 }
 
 // ObjectURL returns the URL a successful Upload/UploadStream of key would

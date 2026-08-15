@@ -55,11 +55,11 @@ A slice cannot merge with any 0, cannot enter production with any score below 3,
 
 ## RS-06 Versioning, provenance and rollback
 
-- Architecture expert: verify append-only history, forward rollback, capability consumer resolution, retention/GC, backup restore, and historical task evidence.
-- Product expert: verify users can compare versions, identify affected roles, choose rollback scope, and understand non-restorable secret changes.
-- Test expert: require compatible/incompatible upgrade, same-version content change, removed profile, rollback during queued/running tasks, artifact GC reachability, and restore-from-backup tests.
-- CEO: verify rollback materially lowers enterprise adoption risk and storage/retention cost is controllable.
-- Go/no-go: a production-like disaster exercise restores source history, active workers, audit receipts, and pinned task evidence.
+- Architecture expert: verify append-only history, forward rollback, capability consumer resolution, retention/GC, content-free immutable purge receipts, backup restore, and historical task evidence.
+- Product expert: verify users can compare versions, identify affected roles, choose rollback scope, understand non-restorable secret changes, and distinguish projected reclaim, logical absence, provider observation and billed savings.
+- Test expert: require compatible/incompatible upgrade, same-version content change, removed profile, rollback during queued/running tasks, artifact GC reachability, five-pass receipt atomicity/immutability, versioned-object-store fault injection and restore-from-backup tests.
+- CEO: verify rollback materially lowers enterprise adoption risk and storage/retention cost is controllable without turning logical-absence evidence into an unsupported savings claim.
+- Go/no-go: a production-like disaster exercise restores source history, active workers, apply/purge audit receipts and pinned task evidence, while an independent provider inventory confirms the purge boundary.
 
 ## RS-07 Delivery receipts and external readback
 

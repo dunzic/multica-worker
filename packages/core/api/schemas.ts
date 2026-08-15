@@ -63,6 +63,7 @@ import type {
   RoleSourceSnapshotComparison,
   RoleSourceConfigurationReview,
   RoleSourceRetentionPreview,
+  RoleSourceArtifactPurgeReceiptSummary,
   ChannelDelivery,
   RoleSourcePlanRecord,
   RoleSourcePlanApproval,
@@ -204,6 +205,43 @@ export const EMPTY_ROLE_SOURCE_RETENTION_PREVIEW: RoleSourceRetentionPreview = {
   uniquely_reclaimable_bytes: 0,
   truncated: false,
   candidates: [],
+};
+
+const JSONSafeNonnegativeIntegerSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+
+const RoleSourceArtifactPurgeReceiptSchema = z.object({
+  artifact_digest: Sha256DigestSchema,
+  size_bytes: JSONSafeNonnegativeIntegerSchema,
+  reason: z.enum(["unreachable", "workspace_deleted"]),
+  storage_backend: z.enum(["local", "s3"]),
+  purge_mode: z.enum(["current_object", "all_versions"]),
+  successful_passes: z.number().int().min(1).max(100),
+  deleted_versions: JSONSafeNonnegativeIntegerSchema,
+  deleted_delete_markers: JSONSafeNonnegativeIntegerSchema,
+  observed_deleted_bytes: JSONSafeNonnegativeIntegerSchema,
+  logical_bytes_confirmed_absent: JSONSafeNonnegativeIntegerSchema,
+  completed_at: z.string(),
+  receipt_digest: Sha256DigestSchema,
+}).strict();
+
+export const RoleSourceArtifactPurgeReceiptSummarySchema: z.ZodType<RoleSourceArtifactPurgeReceiptSummary> = z.object({
+  receipt_count: JSONSafeNonnegativeIntegerSchema,
+  logical_bytes_confirmed_absent: JSONSafeNonnegativeIntegerSchema,
+  observed_deleted_bytes: JSONSafeNonnegativeIntegerSchema,
+  deleted_versions: JSONSafeNonnegativeIntegerSchema,
+  deleted_delete_markers: JSONSafeNonnegativeIntegerSchema,
+  truncated: z.boolean(),
+  receipts: z.array(RoleSourceArtifactPurgeReceiptSchema).max(50),
+}).strict();
+
+export const EMPTY_ROLE_SOURCE_ARTIFACT_PURGE_RECEIPT_SUMMARY: RoleSourceArtifactPurgeReceiptSummary = {
+  receipt_count: 0,
+  logical_bytes_confirmed_absent: 0,
+  observed_deleted_bytes: 0,
+  deleted_versions: 0,
+  deleted_delete_markers: 0,
+  truncated: false,
+  receipts: [],
 };
 
 export const RoleSourceSnapshotSummarySchema: z.ZodType<RoleSourceSnapshotSummary> = z.object({

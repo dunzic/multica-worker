@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/rolesourcereplay"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -72,6 +73,9 @@ func Verify(ctx context.Context, tx pgx.Tx, options VerificationOptions) (Report
 		return report, err
 	}
 	if err := verifyReceipts(ctx, tx, &report); err != nil {
+		return report, err
+	}
+	if err := verifyArtifactPurgeReceipts(ctx, tx, &report); err != nil {
 		return report, err
 	}
 	if err := verifyAuditChains(ctx, tx, &report); err != nil {
@@ -291,6 +295,36 @@ ORDER BY workspace_id, source_id, id`)
 			continue
 		}
 		report.Database.ReceiptsValidated++
+	}
+	return rows.Err()
+}
+
+func verifyArtifactPurgeReceipts(ctx context.Context, tx pgx.Tx, report *Report) error {
+	rows, err := tx.Query(ctx, `
+SELECT id,intent_id,workspace_id,storage_key_digest,artifact_digest,size_bytes,
+       reason,storage_backend,purge_mode,successful_passes,deleted_versions,
+       deleted_delete_markers,observed_deleted_bytes,logical_bytes_confirmed_absent,
+       absence_verified,completed_at,receipt_digest,created_at
+FROM role_source_artifact_purge_receipt
+ORDER BY workspace_id,completed_at,intent_id`)
+	if err != nil {
+		return fmt.Errorf("read artifact purge receipts for DR verification: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var row db.RoleSourceArtifactPurgeReceipt
+		if err := rows.Scan(&row.ID, &row.IntentID, &row.WorkspaceID, &row.StorageKeyDigest,
+			&row.ArtifactDigest, &row.SizeBytes, &row.Reason, &row.StorageBackend, &row.PurgeMode,
+			&row.SuccessfulPasses, &row.DeletedVersions, &row.DeletedDeleteMarkers,
+			&row.ObservedDeletedBytes, &row.LogicalBytesConfirmedAbsent, &row.AbsenceVerified,
+			&row.CompletedAt, &row.ReceiptDigest, &row.CreatedAt); err != nil {
+			return err
+		}
+		if err := service.VerifyRoleSourceArtifactPurgeReceipt(row); err != nil {
+			addFinding(report, "artifact_purge_receipt_invalid", 1)
+			continue
+		}
+		report.Database.ArtifactPurgeReceiptsValidated++
 	}
 	return rows.Err()
 }

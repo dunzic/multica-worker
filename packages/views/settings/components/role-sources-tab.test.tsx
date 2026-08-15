@@ -15,6 +15,7 @@ const queryFixtures = vi.hoisted(() => ({
   attestations: [] as Array<Record<string, unknown>>,
   legalHolds: [] as Array<Record<string, unknown>>,
   retention: undefined as Record<string, unknown> | undefined,
+  purgeReceipts: undefined as Record<string, unknown> | undefined,
   latestScan: undefined as Record<string, unknown> | undefined,
   scans: [] as Array<Record<string, unknown>>,
   lifecycleEvents: [] as Array<Record<string, unknown>>,
@@ -111,8 +112,10 @@ vi.mock("@tanstack/react-query", async () => {
             ? queryFixtures.secretTransfers
         : options.queryKey.includes("apply-failures")
           ? queryFixtures.failures
-          : options.queryKey.includes("legal-holds")
+        : options.queryKey.includes("legal-holds")
           ? queryFixtures.legalHolds
+          : options.queryKey.includes("purge-receipts")
+            ? queryFixtures.purgeReceipts
           : options.queryKey.includes("retention")
             ? queryFixtures.retention
           : options.queryKey.includes("runtime-attestations")
@@ -423,6 +426,28 @@ beforeEach(() => {
         estimated_bytes: 4096,
       },
     ],
+  };
+  queryFixtures.purgeReceipts = {
+    receipt_count: 1,
+    logical_bytes_confirmed_absent: 4096,
+    observed_deleted_bytes: 8192,
+    deleted_versions: 2,
+    deleted_delete_markers: 1,
+    truncated: false,
+    receipts: [{
+      artifact_digest: `sha256:${"9".repeat(64)}`,
+      size_bytes: 4096,
+      reason: "unreachable",
+      storage_backend: "s3",
+      purge_mode: "all_versions",
+      successful_passes: 5,
+      deleted_versions: 2,
+      deleted_delete_markers: 1,
+      observed_deleted_bytes: 8192,
+      logical_bytes_confirmed_absent: 4096,
+      completed_at: "2026-08-15T11:12:13Z",
+      receipt_digest: `sha256:${"8".repeat(64)}`,
+    }],
   };
 });
 
@@ -1053,6 +1078,9 @@ describe("RoleSourcesTab", () => {
     expect(screen.getByText(/Projected uniquely reclaimable artifacts.*1\.0 KiB/)).toBeInTheDocument();
     expect(screen.getByText(/not realized storage savings/)).toBeInTheDocument();
     expect(screen.getByText(/rechecks legal holds, task pins/)).toBeInTheDocument();
+    expect(screen.getByText(/1 completed purge receipts.*4\.0 KiB/)).toBeInTheDocument();
+    expect(screen.getByText(/storage evidence, not provider billing savings/)).toBeInTheDocument();
+    expect(screen.getByText(/8\.0 KiB of object-version bytes/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit policy" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /delete snapshot|prune now/i })).not.toBeInTheDocument();
   });

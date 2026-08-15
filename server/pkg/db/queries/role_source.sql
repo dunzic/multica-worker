@@ -918,9 +918,9 @@ WITH candidate AS MATERIALIZED (
     LIMIT 1
 ), queued AS (
     INSERT INTO role_source_artifact_delete_intent (
-        storage_key, artifact_digest, size_bytes, reason
+        workspace_id, storage_key, artifact_digest, size_bytes, reason
     )
-    SELECT storage_key, digest, size_bytes, 'unreachable' FROM candidate
+    SELECT workspace_id, storage_key, digest, size_bytes, 'unreachable' FROM candidate
     ON CONFLICT (storage_key) DO NOTHING
     RETURNING *
 ), removed_integrity AS (
@@ -958,8 +958,19 @@ RETURNING intent.*;
 UPDATE role_source_artifact_delete_intent
 SET state = 'tombstoned', lease_token = NULL, lease_expires_at = NULL,
     tombstone_pass = @tombstone_pass,
+    purge_backend = COALESCE(purge_backend, @purge_backend),
+    purge_mode = COALESCE(purge_mode, @purge_mode),
+    purge_passes = purge_passes + 1,
+    deleted_versions = deleted_versions + @purged_version_count,
+    deleted_delete_markers = deleted_delete_markers + @purged_delete_marker_count,
+    observed_deleted_bytes = observed_deleted_bytes + @purged_observed_bytes,
+    absence_verified = absence_verified OR @absence_verified,
+    last_purged_at = @purged_at,
     next_attempt_at = now() + @next_delay::interval, updated_at = now()
-WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease_token;
+WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease_token
+  AND @absence_verified
+  AND (purge_backend IS NULL OR purge_backend = @purge_backend)
+  AND (purge_mode IS NULL OR purge_mode = @purge_mode);
 
 -- name: ReleaseRoleSourceArtifactDeleteIntent :execrows
 UPDATE role_source_artifact_delete_intent
@@ -967,9 +978,50 @@ SET state = 'pending', lease_token = NULL, lease_expires_at = NULL,
     next_attempt_at = now() + @retry_delay::interval, updated_at = now()
 WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease_token;
 
--- name: CompleteRoleSourceArtifactDeleteIntent :execrows
-DELETE FROM role_source_artifact_delete_intent
-WHERE storage_key = @storage_key AND state = 'deleting' AND lease_token = @lease_token;
+-- name: CompleteRoleSourceArtifactDeleteIntent :one
+WITH owned AS MATERIALIZED (
+    SELECT intent.* FROM role_source_artifact_delete_intent intent
+    WHERE intent.storage_key = @storage_key AND intent.state = 'deleting' AND intent.lease_token = @lease_token
+      AND @absence_verified::boolean
+      AND (intent.purge_backend IS NULL OR intent.purge_backend = @purge_backend)
+      AND (intent.purge_mode IS NULL OR intent.purge_mode = @purge_mode)
+      AND @successful_passes::integer = intent.purge_passes + 1
+      AND @purged_version_count::bigint >= 0
+      AND @purged_delete_marker_count::bigint >= 0
+      AND @purged_observed_bytes::bigint >= 0
+      AND @total_deleted_versions::bigint = intent.deleted_versions + @purged_version_count
+      AND @total_deleted_delete_markers::bigint = intent.deleted_delete_markers + @purged_delete_marker_count
+      AND @total_observed_deleted_bytes::bigint = intent.observed_deleted_bytes + @purged_observed_bytes
+    FOR UPDATE
+), evidence AS (
+    SELECT o.id, o.workspace_id, o.artifact_digest, o.size_bytes, o.reason,
+           COALESCE(o.purge_backend, @purge_backend)::text AS storage_backend,
+           COALESCE(o.purge_mode, @purge_mode)::text AS completed_purge_mode
+    FROM owned o
+), inserted AS (
+    INSERT INTO role_source_artifact_purge_receipt (
+        intent_id, workspace_id, storage_key_digest, artifact_digest,
+        size_bytes, reason, storage_backend, purge_mode, successful_passes,
+        deleted_versions, deleted_delete_markers, observed_deleted_bytes,
+        logical_bytes_confirmed_absent, absence_verified, completed_at,
+        receipt_digest
+    )
+    SELECT evidence.id, evidence.workspace_id, @storage_key_digest, evidence.artifact_digest,
+           evidence.size_bytes, evidence.reason, evidence.storage_backend,
+           evidence.completed_purge_mode, @successful_passes,
+           @total_deleted_versions, @total_deleted_delete_markers,
+           @total_observed_deleted_bytes,
+           evidence.size_bytes, true, @completed_at, @receipt_digest
+    FROM evidence
+    ON CONFLICT (intent_id) DO NOTHING
+    RETURNING *
+), removed AS (
+    DELETE FROM role_source_artifact_delete_intent intent
+    USING inserted
+    WHERE intent.id = inserted.intent_id
+    RETURNING intent.id
+)
+SELECT inserted.* FROM inserted JOIN removed ON removed.id = inserted.intent_id;
 
 -- name: GetRoleSourceArtifactDeleteIntentForUpdate :one
 SELECT * FROM role_source_artifact_delete_intent
@@ -985,6 +1037,29 @@ SELECT
     count(*) FILTER (WHERE state IN ('pending', 'deleting'))::bigint AS active_count,
     count(*) FILTER (WHERE state = 'tombstoned')::bigint AS tombstone_count
 FROM role_source_artifact_delete_intent;
+
+-- name: GetRoleSourceArtifactPurgeReceiptTotals :one
+SELECT count(*)::bigint AS receipt_count,
+       COALESCE(sum(logical_bytes_confirmed_absent), 0)::bigint AS logical_bytes_confirmed_absent,
+       COALESCE(sum(observed_deleted_bytes), 0)::bigint AS observed_deleted_bytes,
+       COALESCE(sum(deleted_versions), 0)::bigint AS deleted_versions,
+       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers
+FROM role_source_artifact_purge_receipt;
+
+-- name: GetWorkspaceRoleSourceArtifactPurgeReceiptTotals :one
+SELECT count(*)::bigint AS receipt_count,
+       COALESCE(sum(logical_bytes_confirmed_absent), 0)::bigint AS logical_bytes_confirmed_absent,
+       COALESCE(sum(observed_deleted_bytes), 0)::bigint AS observed_deleted_bytes,
+       COALESCE(sum(deleted_versions), 0)::bigint AS deleted_versions,
+       COALESCE(sum(deleted_delete_markers), 0)::bigint AS deleted_delete_markers
+FROM role_source_artifact_purge_receipt
+WHERE workspace_id = @workspace_id;
+
+-- name: ListWorkspaceRoleSourceArtifactPurgeReceipts :many
+SELECT * FROM role_source_artifact_purge_receipt
+WHERE workspace_id = @workspace_id
+ORDER BY completed_at DESC, intent_id DESC
+LIMIT @result_limit;
 
 -- name: CreateRoleSourceScanRequest :one
 INSERT INTO role_source_scan_request (

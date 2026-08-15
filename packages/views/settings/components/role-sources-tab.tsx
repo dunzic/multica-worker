@@ -52,6 +52,7 @@ import {
   roleSourceSnapshotSummaryListOptions,
   roleSourceSecretTransferListOptions,
   roleSourceRetentionPreviewOptions,
+  roleSourceArtifactPurgeReceiptOptions,
   roleSourceKeys,
   useApplyRoleSourcePlan,
   useCreateRoleSource,
@@ -417,6 +418,10 @@ export function RoleSourcesTab() {
   const retention = useQuery({
     ...roleSourceRetentionPreviewOptions(workspaceId, selectedId),
     enabled: Boolean(workspaceId && selectedId && isOwner),
+  });
+  const purgeReceipts = useQuery({
+    ...roleSourceArtifactPurgeReceiptOptions(workspaceId),
+    enabled: Boolean(workspaceId && isOwner),
   });
 
   React.useEffect(() => {
@@ -1247,6 +1252,39 @@ export function RoleSourcesTab() {
                         <p className="mt-2 text-caption text-amber-700">{t(($) => $.role_sources.retention_preview_truncated)}</p>
                       ) : null}
                     </div>
+                    {purgeReceipts.data ? (
+                      <div className="p-4">
+                        <div className="text-body font-medium">
+                          {t(($) => $.role_sources.retention_purge_receipt_summary, {
+                            count: purgeReceipts.data.receipt_count,
+                            bytes: formatRetentionBytes(purgeReceipts.data.logical_bytes_confirmed_absent),
+                          })}
+                        </div>
+                        <p className="mt-1 text-caption text-muted-foreground">
+                          {t(($) => $.role_sources.retention_purge_receipt_warning, {
+                            bytes: formatRetentionBytes(purgeReceipts.data.observed_deleted_bytes),
+                          })}
+                        </p>
+                        {purgeReceipts.data.receipts.length ? (
+                          <div className="mt-3 max-h-48 divide-y divide-surface-border overflow-y-auto rounded-md border border-surface-border">
+                            {purgeReceipts.data.receipts.map((receipt) => (
+                              <div key={receipt.receipt_digest} className="flex items-start justify-between gap-3 px-3 py-2 text-caption">
+                                <div className="min-w-0">
+                                  <div className="truncate font-mono">{shortDigest(receipt.artifact_digest)}</div>
+                                  <div className="truncate font-mono text-muted-foreground">{shortDigest(receipt.receipt_digest)}</div>
+                                </div>
+                                <span className="shrink-0 text-right text-muted-foreground">
+                                  {receipt.completed_at} · {receipt.storage_backend} · {formatRetentionBytes(receipt.logical_bytes_confirmed_absent)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        {purgeReceipts.data.truncated ? (
+                          <p className="mt-2 text-caption text-amber-700">{t(($) => $.role_sources.retention_purge_receipt_truncated)}</p>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </SettingsCard>

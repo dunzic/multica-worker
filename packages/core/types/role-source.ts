@@ -152,6 +152,31 @@ export interface RoleSourceRetentionPreview {
   candidates: RoleSourceRetentionCandidate[];
 }
 
+export interface RoleSourceArtifactPurgeReceipt {
+  artifact_digest: string;
+  size_bytes: number;
+  reason: "unreachable" | "workspace_deleted";
+  storage_backend: "local" | "s3";
+  purge_mode: "current_object" | "all_versions";
+  successful_passes: number;
+  deleted_versions: number;
+  deleted_delete_markers: number;
+  observed_deleted_bytes: number;
+  logical_bytes_confirmed_absent: number;
+  completed_at: string;
+  receipt_digest: string;
+}
+
+export interface RoleSourceArtifactPurgeReceiptSummary {
+  receipt_count: number;
+  logical_bytes_confirmed_absent: number;
+  observed_deleted_bytes: number;
+  deleted_versions: number;
+  deleted_delete_markers: number;
+  truncated: boolean;
+  receipts: RoleSourceArtifactPurgeReceipt[];
+}
+
 export interface UpdateRoleSourceRetentionPolicyRequest {
   request_key: string;
   expected_version: number;

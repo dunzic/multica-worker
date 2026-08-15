@@ -135,6 +135,8 @@ MULTICA_LIVE_ROLE_SOURCE_RETENTION_RECLAIM_TEST=1 \
 go -C server test -count=3 -run '^TestRoleSourceRetention(UniqueReclaimProjection|PruneSerializesArtifactPublication)Postgres$' ./internal/rolesource
 MULTICA_LIVE_ROLE_SOURCE_RETENTION_SCALE_TEST=1 \
 go -C server test -count=3 -run '^TestRoleSourceRetentionCandidateScalePostgres$' ./internal/rolesource
+MULTICA_LIVE_ROLE_SOURCE_PURGE_RECEIPT_TEST=1 \
+go -C server test -count=3 -run '^TestRoleSourceArtifactPurgeReceiptStateMachinePostgres$' ./internal/service
 ```
 
 The local single-primary gate must record all six deterministic outcomes:
@@ -178,6 +180,17 @@ WAL records. This is a 10,000-snapshot/artifact/edge inventory result across
 100 sources; it does not represent 10,000 users and must be repeated on
 candidate hardware and topology.
 
+The purge-receipt gate must run after the database is migrated through 386. It
+executes all five verified passes against the generated PostgreSQL queries,
+persists aggregate version/delete-marker/observed-byte evidence, atomically
+replaces the leased intent with one immutable receipt, recomputes the receipt
+commitment after the database timestamp round trip, verifies workspace totals
+and proves direct update/delete fail with SQLSTATE `23000`. On 2026-08-15 this
+gate passed three consecutive runs after it exposed and drove a fix for Go
+nanoseconds versus PostgreSQL `timestamptz` microseconds. This is local
+single-primary state-machine evidence; the storage fake proves protocol shape,
+not provider deletion or billed savings.
+
 Then run two server replicas with both retention and permanent artifact-GC gates
 enabled against a disposable PostgreSQL 17 dataset containing current, recent,
 old-successful, never-applied, held, task-pinned and shared-artifact snapshots.
@@ -199,6 +212,9 @@ Pass criteria:
 - shared capability versions and artifact bodies remain while any retained
   snapshot references them; last-edge artifacts enter the independent purge
   ledger and are permanently removed only after its settle/tombstone protocol;
+- the fifth verified purge pass writes exactly one immutable, self-verifying,
+  content-free receipt and removes the intent atomically; no API or metric calls
+  logical/observed bytes provider-billed savings;
 - migration up/down, trigger behavior, EXPLAIN plans, lock waits, WAL, deadlocks,
   backlog age and p50/p95/p99 remain within the recorded cohort budget;
 - backup restore and point-in-time recovery restore active holds, policy
@@ -507,6 +523,13 @@ MULTICA_LIVE_ROLE_SOURCE_STORAGE_TEST=1 \
 
 Pass criteria: fixed-length streaming upload, byte-exact readback, zero retained versions/delete markers and verified current absence. Any transport/authentication error after purge is a failure, not proof of absence.
 
+For receipt-backed rollout evidence, run the GC state machine against that same
+versioned prefix and retain the provider version inventory/request IDs outside
+Multica. Match the resulting receipt's backend/mode and aggregate counts to the
+provider evidence, then separately compare object-store inventory and billing
+after the provider's documented accounting delay. Multica's receipt proves
+logical exact-key absence; it does not itself prove a cost reduction.
+
 ## Gate F — database/object-store disaster recovery
 
 Follow [`disaster-recovery.md`](disaster-recovery.md) on a production-shaped
@@ -665,6 +688,7 @@ Required initial SLOs for the engineering cohort:
 | Concurrency | Iterations, failures, deadlocks and max lock wait |
 | Failover | Trigger time, recovery time and retry count |
 | Capacity | p50/p95/p99, CPU, WAL, pool and S3 measurements |
+| Artifact purge | Receipt count/digests, logical bytes absent, observed versions/markers/bytes and independent provider inventory/billing reconciliation |
 | Security | Redaction and tenant-isolation checks |
 | Decision | GO/NO-GO with all four review scores |
 

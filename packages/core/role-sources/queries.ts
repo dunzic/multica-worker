@@ -27,6 +27,8 @@ export const roleSourceKeys = {
     [...roleSourceKeys.all(workspaceId), "legal-holds", sourceId] as const,
   retention: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "retention", sourceId] as const,
+  purgeReceipts: (workspaceId: string) =>
+    [...roleSourceKeys.all(workspaceId), "purge-receipts"] as const,
   latestScan: (workspaceId: string, sourceId: string) =>
     [...roleSourceKeys.all(workspaceId), "latest-scan", sourceId] as const,
   scans: (workspaceId: string, sourceId: string) =>
@@ -72,6 +74,14 @@ export function roleSourceRetentionPreviewOptions(
     queryKey: roleSourceKeys.retention(workspaceId, sourceId),
     queryFn: () => api.getRoleSourceRetentionPreview(workspaceId, sourceId),
     enabled: Boolean(sourceId),
+  });
+}
+
+export function roleSourceArtifactPurgeReceiptOptions(workspaceId: string) {
+  return queryOptions({
+    queryKey: roleSourceKeys.purgeReceipts(workspaceId),
+    queryFn: () => api.getWorkspaceRoleSourceArtifactPurgeReceipts(workspaceId),
+    enabled: Boolean(workspaceId),
   });
 }
 

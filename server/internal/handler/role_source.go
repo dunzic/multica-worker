@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/runtimehealth"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -272,6 +273,42 @@ type roleSourceRetentionPreviewResponse struct {
 	UniquelyReclaimableBytes int64                                  `json:"uniquely_reclaimable_bytes"`
 	Truncated                bool                                   `json:"truncated"`
 	Candidates               []roleSourceRetentionCandidateResponse `json:"candidates"`
+}
+
+type roleSourceArtifactPurgeReceiptResponse struct {
+	ArtifactDigest              string `json:"artifact_digest"`
+	SizeBytes                   int64  `json:"size_bytes"`
+	Reason                      string `json:"reason"`
+	StorageBackend              string `json:"storage_backend"`
+	PurgeMode                   string `json:"purge_mode"`
+	SuccessfulPasses            int32  `json:"successful_passes"`
+	DeletedVersions             int64  `json:"deleted_versions"`
+	DeletedDeleteMarkers        int64  `json:"deleted_delete_markers"`
+	ObservedDeletedBytes        int64  `json:"observed_deleted_bytes"`
+	LogicalBytesConfirmedAbsent int64  `json:"logical_bytes_confirmed_absent"`
+	CompletedAt                 string `json:"completed_at"`
+	ReceiptDigest               string `json:"receipt_digest"`
+}
+
+type roleSourceArtifactPurgeReceiptSummaryResponse struct {
+	ReceiptCount                int64                                    `json:"receipt_count"`
+	LogicalBytesConfirmedAbsent int64                                    `json:"logical_bytes_confirmed_absent"`
+	ObservedDeletedBytes        int64                                    `json:"observed_deleted_bytes"`
+	DeletedVersions             int64                                    `json:"deleted_versions"`
+	DeletedDeleteMarkers        int64                                    `json:"deleted_delete_markers"`
+	Truncated                   bool                                     `json:"truncated"`
+	Receipts                    []roleSourceArtifactPurgeReceiptResponse `json:"receipts"`
+}
+
+const maxRoleSourceJSONSafeInteger int64 = 1<<53 - 1
+
+func roleSourcePurgeReceiptJSONIntegersSafe(values ...int64) bool {
+	for _, value := range values {
+		if value < 0 || value > maxRoleSourceJSONSafeInteger {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) roleSourceFeatureEnabled(r *http.Request, workspaceID, key string) bool {
@@ -766,6 +803,64 @@ func (h *Handler) GetRoleSourceRetentionPreview(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, roleSourceRetentionPreviewToResponse(preview))
+}
+
+func (h *Handler) GetWorkspaceRoleSourceArtifactPurgeReceipts(w http.ResponseWriter, r *http.Request) {
+	workspaceIDText := chi.URLParam(r, "id")
+	if !h.requireRoleSourceFeature(w, r, workspaceIDText, rolesource.FeatureFlagRoleSourceScan) {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDText, "workspace id")
+	if !ok {
+		return
+	}
+	totals, err := h.Queries.GetWorkspaceRoleSourceArtifactPurgeReceiptTotals(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load artifact purge receipt totals")
+		return
+	}
+	rows, err := h.Queries.ListWorkspaceRoleSourceArtifactPurgeReceipts(r.Context(), db.ListWorkspaceRoleSourceArtifactPurgeReceiptsParams{
+		WorkspaceID: workspaceID, ResultLimit: 50,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load artifact purge receipts")
+		return
+	}
+	if !roleSourcePurgeReceiptJSONIntegersSafe(
+		totals.ReceiptCount, totals.LogicalBytesConfirmedAbsent, totals.ObservedDeletedBytes,
+		totals.DeletedVersions, totals.DeletedDeleteMarkers,
+	) {
+		writeError(w, http.StatusInternalServerError, "artifact purge receipt totals exceed the API integer contract")
+		return
+	}
+	response := roleSourceArtifactPurgeReceiptSummaryResponse{
+		ReceiptCount: totals.ReceiptCount, LogicalBytesConfirmedAbsent: totals.LogicalBytesConfirmedAbsent,
+		ObservedDeletedBytes: totals.ObservedDeletedBytes, DeletedVersions: totals.DeletedVersions,
+		DeletedDeleteMarkers: totals.DeletedDeleteMarkers, Truncated: totals.ReceiptCount > int64(len(rows)),
+		Receipts: make([]roleSourceArtifactPurgeReceiptResponse, 0, len(rows)),
+	}
+	for _, row := range rows {
+		if !roleSourcePurgeReceiptJSONIntegersSafe(
+			row.SizeBytes, int64(row.SuccessfulPasses), row.DeletedVersions,
+			row.DeletedDeleteMarkers, row.ObservedDeletedBytes, row.LogicalBytesConfirmedAbsent,
+		) {
+			writeError(w, http.StatusInternalServerError, "artifact purge receipt exceeds the API integer contract")
+			return
+		}
+		if err := service.VerifyRoleSourceArtifactPurgeReceipt(row); err != nil {
+			writeError(w, http.StatusInternalServerError, "artifact purge receipt verification failed")
+			return
+		}
+		response.Receipts = append(response.Receipts, roleSourceArtifactPurgeReceiptResponse{
+			ArtifactDigest: row.ArtifactDigest, SizeBytes: row.SizeBytes, Reason: row.Reason,
+			StorageBackend: row.StorageBackend, PurgeMode: row.PurgeMode, SuccessfulPasses: row.SuccessfulPasses,
+			DeletedVersions: row.DeletedVersions, DeletedDeleteMarkers: row.DeletedDeleteMarkers,
+			ObservedDeletedBytes:        row.ObservedDeletedBytes,
+			LogicalBytesConfirmedAbsent: row.LogicalBytesConfirmedAbsent,
+			CompletedAt:                 util.TimestampToString(row.CompletedAt), ReceiptDigest: row.ReceiptDigest,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) UpdateRoleSourceRetentionPolicy(w http.ResponseWriter, r *http.Request) {

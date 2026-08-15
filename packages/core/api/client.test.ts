@@ -427,6 +427,61 @@ describe("ApiClient role-source runtime evidence", () => {
     );
   });
 
+  it("parses receipt-backed artifact purge evidence and fails malformed totals closed", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const summary = {
+      receipt_count: 1,
+      logical_bytes_confirmed_absent: 4096,
+      observed_deleted_bytes: 8192,
+      deleted_versions: 2,
+      deleted_delete_markers: 1,
+      truncated: false,
+      receipts: [{
+        artifact_digest: digest,
+        size_bytes: 4096,
+        reason: "unreachable",
+        storage_backend: "s3",
+        purge_mode: "all_versions",
+        successful_passes: 5,
+        deleted_versions: 2,
+        deleted_delete_markers: 1,
+        observed_deleted_bytes: 8192,
+        logical_bytes_confirmed_absent: 4096,
+        completed_at: "2026-08-15T11:12:13Z",
+        receipt_digest: digest,
+      }],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(summary), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...summary,
+        logical_bytes_confirmed_absent: "4096",
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...summary,
+        observed_deleted_bytes: Number.MAX_SAFE_INTEGER + 1,
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.getWorkspaceRoleSourceArtifactPurgeReceipts("workspace-1")).resolves.toEqual(summary);
+    await expect(client.getWorkspaceRoleSourceArtifactPurgeReceipts("workspace-1")).resolves.toEqual(
+      expect.objectContaining({
+        receipt_count: 0,
+        logical_bytes_confirmed_absent: 0,
+        receipts: [],
+      }),
+    );
+    await expect(client.getWorkspaceRoleSourceArtifactPurgeReceipts("workspace-1")).resolves.toEqual(
+      expect.objectContaining({
+        receipt_count: 0,
+        observed_deleted_bytes: 0,
+        receipts: [],
+      }),
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/workspace-1/role-source-purge-receipts");
+  });
+
   it("creates, approves, applies, and lists verified role-source operations", async () => {
     const plan = {
       source_id: "source-1",

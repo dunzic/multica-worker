@@ -114,8 +114,15 @@ func TestS3StoragePurgeObjectDeletesEveryExactKeyVersion(t *testing.T) {
 			deleteCurrentCalls.Add(1)
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Query().Has("versions"):
-			versionListCalls.Add(1)
+			listCall := versionListCalls.Add(1)
 			w.Header().Set("Content-Type", "application/xml")
+			if listCall > 2 {
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>test-bucket</Name><Prefix>role-source/artifact</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
+</ListVersionsResult>`)
+				return
+			}
 			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
 <ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>test-bucket</Name><Prefix>role-source/artifact</Prefix><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>
@@ -146,14 +153,20 @@ func TestS3StoragePurgeObjectDeletesEveryExactKeyVersion(t *testing.T) {
 		}),
 		bucket: "test-bucket", region: "us-east-1", endpointURL: server.URL, usePathStyle: true,
 	}
-	if err := store.PurgeObject(context.Background(), key); err != nil {
-		t.Fatalf("PurgeObject: %v", err)
+	result, err := store.PurgeObjectWithResult(context.Background(), key)
+	if err != nil {
+		t.Fatalf("PurgeObjectWithResult: %v", err)
+	}
+	if result.Backend != PermanentPurgeBackendS3 || result.Mode != PermanentPurgeModeVersions ||
+		result.VersionsDeleted != 1 || result.DeleteMarkersDeleted != 1 ||
+		result.ObservedBytesDeleted != 7 || !result.VerifiedAbsent {
+		t.Fatalf("purge result = %+v", result)
 	}
 	if calls := deleteCurrentCalls.Load(); calls != 1 {
 		t.Fatalf("current-object delete calls = %d, want 1", calls)
 	}
-	if calls := versionListCalls.Load(); calls != 2 {
-		t.Fatalf("version inventory calls = %d, want preflight plus post-delete inventory", calls)
+	if calls := versionListCalls.Load(); calls != 3 {
+		t.Fatalf("version inventory calls = %d, want preflight, delete inventory and absence verification", calls)
 	}
 	body := <-deletedVersions
 	for _, required := range []string{"<Key>" + key + "</Key>", "<VersionId>v1</VersionId>", "<VersionId>d1</VersionId>"} {

@@ -168,25 +168,38 @@ newly unreachable subset after locking every involved artifact row exclusively
 in digest order and deleting one snapshot's edges. Snapshot publication's
 shared artifact locks and the collector's exclusive locks therefore serialize
 against that accounting; a missing ledger row aborts prune. The resulting
-number is committed inside the hash-chained audit event. Both values are
-projections. They must never be described as realized storage savings until the
-permanent purge and full tombstone tail produce a durable storage receipt.
+number is committed inside the hash-chained audit event. Both preview values
+are projections. After the permanent purge and full tombstone tail, the system
+may describe the receipt's original logical bytes as
+`logical_bytes_confirmed_absent`; it still must not call those bytes realized
+storage or billing savings without an independent provider inventory/billing
+reconciliation.
 
 When the independent default-off
 `MULTICA_ROLE_SOURCE_ARTIFACT_GC_ENABLED` operator gate is enabled, the artifact
-reconciler moves only readiness rows older than 24 hours with no
-reachability edge into a durable, workspace-independent deletion intent in one
-SQL statement. Workspace teardown writes the same intent before removing its
-artifact rows, so deleting a tenant does not orphan object-storage bytes. Each
+reconciler moves only readiness rows older than 24 hours with no reachability
+edge into a durable deletion intent in one SQL statement. The intent retains a
+workspace UUID for receipt attribution but no user path or body. Workspace
+teardown writes the same intent before removing its artifact rows, so deleting
+a tenant does not orphan object-storage bytes. Each
 worker claim has a two-minute lease; storage calls have a 30-second deadline;
 failures return to bounded backoff. Storage must implement permanent purge;
 S3 removes the current object plus every retained version/delete marker, and
 permission, Object Lock or version-count failure remains retryable rather than
-being reported as erasure. A successful purge retains a widening
-15-minute, 1-hour, 6-hour and 24-hour tombstone re-delete tail to reclaim a PUT
-that materializes after its client abandoned the upload. Exact re-upload may
-cancel a pending/tombstoned intent, but never an actively deleting one. Metrics
-report queued objects, purges, failures, active backlog and tombstones.
+being reported as erasure. A successful purge retains a widening 15-minute,
+1-hour, 6-hour and 24-hour tombstone re-delete tail to reclaim a PUT that
+materializes after its client abandoned the upload. Every pass persists stable
+backend/mode plus provider evidence: deleted versions, deleted delete markers,
+observed deleted version bytes and exact-key absence. The fifth verified pass
+atomically inserts a content-free immutable receipt and removes the deletion
+intent. The receipt commits to the intent/workspace, storage-key digest,
+artifact digest, original logical size, aggregate provider evidence and
+PostgreSQL-microsecond completion time; update/delete triggers protect it, and
+API/DR consumers recompute the receipt digest before trusting it. It contains
+no raw storage key or body. Exact re-upload may cancel a pending/tombstoned
+intent, but never an actively deleting one. Metrics report queued objects,
+purge passes, failures, active backlog, tombstones, completed receipts and
+logical bytes confirmed absent.
 
 Legal hold is independent retention authority, not a source lifecycle state.
 Only a workspace owner may create, list or release a hold. A hold applies to an

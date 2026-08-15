@@ -46,5 +46,7 @@ export type {
   RoleSourceRetentionPolicy,
   RoleSourceRetentionCandidate,
   RoleSourceRetentionPreview,
+  RoleSourceArtifactPurgeReceipt,
+  RoleSourceArtifactPurgeReceiptSummary,
   UpdateRoleSourceRetentionPolicyRequest,
 } from "../types/role-source";
