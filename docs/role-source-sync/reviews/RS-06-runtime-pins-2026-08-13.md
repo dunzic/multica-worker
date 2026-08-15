@@ -68,7 +68,7 @@ Passing evidence:
 - execution-environment tests prove nested capability marker/package files survive workspace-native skill materialization across every file-based provider plus Codex and Hermes task homes;
 - role-source/handler/migration race suites and `go vet` pass;
 - the isolated-schema PostgreSQL 17 round trip through migration 380 exercises initial capture, retry inheritance, immutable pins and same-transaction stale-task invalidation;
-- a deterministic live race gate proves pin-first holds `FOR KEY SHARE` and defers prune, while prune-first deletes then rejects the later pin with SQLSTATE `23000`; all four hold/pin cases pass three consecutive runs;
+- a deterministic live race gate proves pin-first holds `FOR KEY SHARE` and defers prune, while prune-first deletes then rejects the later pin with SQLSTATE `23000`; the complete six-case hold/policy/pin matrix passes three consecutive runs;
 - deterministic planning at 10,000 roles completes locally; this is algorithm evidence, not an end-to-end capacity claim.
 
 Missing evidence:

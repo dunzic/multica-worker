@@ -55,8 +55,8 @@ versioned-object purge and disaster-recovery evidence**
   mutation triggers and dependency-ordered teardown.
 - A disposable fully migrated PostgreSQL 17 database executed
   create/list/release/audit, active deletion fencing, direct mutation rejection
-  and released teardown cleanup. The four-case hold/task-pin versus prune gate
-  passed three consecutive runs with fail-closed loser states.
+  and released teardown cleanup. The six-case hold/policy/task-pin versus prune
+  gate passed three consecutive runs with fail-closed loser states.
 - Core typecheck/client tests, focused settings tests and Go role-source,
   handler and server suites pass locally.
 - The isolated-schema migration round trip through migration 380 and task-pin

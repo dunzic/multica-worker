@@ -16,7 +16,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// This opt-in gate proves the two destructive-retention races against a fully
+// This opt-in gate proves the three destructive-retention races against a fully
 // migrated PostgreSQL database. It deliberately queues both contenders behind
 // a real row lock, then releases them in each order. The result must be
 // linearizable: a legal hold or task pin that wins protects the snapshot; a
@@ -93,6 +93,64 @@ func TestRoleSourceRetentionProtectionRacesPostgres(t *testing.T) {
 		}
 		assertRetentionRaceState(t, ctx, admin, fixture.sourceID, snapshotDigest, candidateID, "completed", "pruned", 0, 0)
 		t.Logf("retention_race_evidence case=prune_first prune_wait=%s hold_wait=%s snapshot_deleted=true late_hold=invalid_snapshot", pruneWait, holdWait)
+	})
+
+	t.Run("policy_revision_commits_before_prune", func(t *testing.T) {
+		fixture, snapshotDigest, candidateID, leaseToken := prepareRetentionRaceFixture(t, ctx, admin)
+		blocker := lockRetentionSource(t, ctx, admin, fixture)
+		defer blocker.Rollback(context.Background()) //nolint:errcheck
+
+		policyPool, policyReplica := newApplyReplicaPool(t, ctx, "policy_first")
+		prunePool, pruneReplica := newApplyReplicaPool(t, ctx, "policy_prune_second")
+		policyControl := newApplyFailureControl(t, policyPool, noArtifactReader{})
+		pruneControl := newApplyFailureControl(t, prunePool, noArtifactReader{})
+		policyResult := runRetentionPolicyDisable(ctx, policyControl, fixture, "policy-first")
+		policyWait := awaitReplicaLockWait(t, ctx, admin, policyReplica)
+		pruneResult := runRetentionPrune(ctx, pruneControl, candidateID, leaseToken)
+		pruneWait := awaitReplicaLockWait(t, ctx, admin, pruneReplica)
+		if err := blocker.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+		policy := awaitRetentionPolicy(t, policyResult)
+		pruned := awaitRetentionPrune(t, pruneResult)
+		if policy.err != nil || policy.policy.Version != 2 || policy.policy.Enabled {
+			t.Fatalf("policy winner=%+v", policy)
+		}
+		if pruned.err != nil || pruned.outcome != "policy_disabled" {
+			t.Fatalf("prune loser=%+v", pruned)
+		}
+		assertRetentionRaceState(t, ctx, admin, fixture.sourceID, snapshotDigest, candidateID, "pending", "policy_disabled", 1, 0)
+		t.Logf("retention_race_evidence case=policy_first policy_wait=%s prune_wait=%s snapshot_retained=true prune_outcome=policy_disabled", policyWait, pruneWait)
+	})
+
+	t.Run("prune_commits_before_policy_revision", func(t *testing.T) {
+		fixture, snapshotDigest, candidateID, leaseToken := prepareRetentionRaceFixture(t, ctx, admin)
+		blocker := lockRetentionSource(t, ctx, admin, fixture)
+		defer blocker.Rollback(context.Background()) //nolint:errcheck
+
+		prunePool, pruneReplica := newApplyReplicaPool(t, ctx, "policy_prune_first")
+		policyPool, policyReplica := newApplyReplicaPool(t, ctx, "policy_second")
+		pruneControl := newApplyFailureControl(t, prunePool, noArtifactReader{})
+		policyControl := newApplyFailureControl(t, policyPool, noArtifactReader{})
+		pruneResult := runRetentionPrune(ctx, pruneControl, candidateID, leaseToken)
+		pruneWait := awaitReplicaLockWait(t, ctx, admin, pruneReplica)
+		policyResult := runRetentionPolicyDisable(ctx, policyControl, fixture, "policy-second")
+		policyWait := awaitReplicaLockWait(t, ctx, admin, policyReplica)
+		if err := blocker.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+		pruned := awaitRetentionPrune(t, pruneResult)
+		policy := awaitRetentionPolicy(t, policyResult)
+		if pruned.err != nil || pruned.outcome != "pruned" {
+			t.Fatalf("prune winner=%+v", pruned)
+		}
+		if policy.err != nil || policy.policy.Version != 2 || policy.policy.Enabled {
+			t.Fatalf("late policy revision=%+v", policy)
+		}
+		assertRetentionRaceState(t, ctx, admin, fixture.sourceID, snapshotDigest, candidateID, "completed", "pruned", 0, 0)
+		t.Logf("retention_race_evidence case=prune_before_policy prune_wait=%s policy_wait=%s snapshot_deleted=true late_policy_version=2", pruneWait, policyWait)
 	})
 
 	t.Run("task_pin_commits_before_prune", func(t *testing.T) {
@@ -175,6 +233,11 @@ type retentionRaceLegalHoldResult struct {
 type retentionRacePruneResult struct {
 	outcome string
 	err     error
+}
+
+type retentionRacePolicyResult struct {
+	policy RetentionPolicy
+	err    error
 }
 
 func prepareRetentionRaceFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (applyFailureFixture, string, pgtype.UUID, pgtype.UUID) {
@@ -283,6 +346,19 @@ func runRetentionPrune(ctx context.Context, control *ControlPlane, candidateID, 
 	return result
 }
 
+func runRetentionPolicyDisable(ctx context.Context, control *ControlPlane, fixture applyFailureFixture, requestSuffix string) <-chan retentionRacePolicyResult {
+	result := make(chan retentionRacePolicyResult, 1)
+	go func() {
+		policy, err := control.UpdateRetentionPolicy(ctx, UpdateRetentionPolicyInput{
+			WorkspaceID: fixture.workspaceID.String(), SourceID: fixture.sourceID.String(), ActorUserID: fixture.actorID.String(),
+			RequestKey: "retention-race-" + requestSuffix, ExpectedVersion: 1, Enabled: false,
+			MinimumAgeDays: 90, KeepSuccessfulSnapshots: 10,
+		})
+		result <- retentionRacePolicyResult{policy: policy, err: err}
+	}()
+	return result
+}
+
 func runRetentionTaskPin(ctx context.Context, pool *pgxpool.Pool, fixture applyFailureFixture, snapshotDigest string) <-chan error {
 	result := make(chan error, 1)
 	go func() {
@@ -316,6 +392,17 @@ func awaitRetentionPrune(t *testing.T, result <-chan retentionRacePruneResult) r
 	case <-time.After(15 * time.Second):
 		t.Fatal("retention-prune contender did not finish")
 		return retentionRacePruneResult{}
+	}
+}
+
+func awaitRetentionPolicy(t *testing.T, result <-chan retentionRacePolicyResult) retentionRacePolicyResult {
+	t.Helper()
+	select {
+	case value := <-result:
+		return value
+	case <-time.After(15 * time.Second):
+		t.Fatal("retention-policy contender did not finish")
+		return retentionRacePolicyResult{}
 	}
 }
 

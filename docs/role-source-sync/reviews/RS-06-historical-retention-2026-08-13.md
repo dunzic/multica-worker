@@ -26,7 +26,7 @@ evidence are recorded**
   permanent-purge state machine.
 - A disposable PostgreSQL 17 database now proves the destructive lock protocol
   in both legal-hold/prune and task-pin/prune commit orders. Open objections are
-  EXPLAIN/large-inventory SLO, policy-change/failover races, and independent
+  EXPLAIN/large-inventory SLO, candidate-topology failover races, and independent
   retention policy for plan, apply and scan metadata.
 
 ## Product expert — 2/3
@@ -52,12 +52,12 @@ evidence are recorded**
   delete affordance.
 - The PostgreSQL end-to-end test executes direct-delete rejection, legal-hold
   fencing, release, candidate claim, transactional prune and one audit event.
-- The four-case deterministic matrix passed three consecutive runs: hold-first
-  and pin-first defer prune, while prune-first makes a later hold invalid and a
-  later pin fail with SQLSTATE `23000`; no orphan pin/snapshot state remains.
-- Open objections: replica competition during primary failover, concurrent
-  stricter-policy changes, large inventories, versioned-object purge and restore
-  are not measured.
+- The six-case deterministic matrix passed three consecutive runs: hold-first,
+  policy-disable-first and pin-first defer prune; prune-first makes a later hold
+  invalid, permits only the later append-only policy revision, and rejects a
+  later pin with SQLSTATE `23000`; no orphan pin/snapshot state remains.
+- Open objections: replica competition during primary failover, large
+  inventories, versioned-object purge and restore are not measured.
 
 ## CEO / rollout owner — 2/3
 
