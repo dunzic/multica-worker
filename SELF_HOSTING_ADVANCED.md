@@ -52,7 +52,16 @@ STARTTLS is used automatically when advertised by the server. Port 465 (SMTPS / 
 
 > **Note:** If neither Resend nor SMTP is configured, generated verification codes are printed to backend logs — copy them from there to log in. A fixed local testing code (e.g. `888888`) is **opt-in only**: set `MULTICA_DEV_VERIFICATION_CODE=888888` in `.env` and keep `APP_ENV` non-production. The Docker self-host stack pins `APP_ENV=production`, so the shortcut is ignored there. **Never enable a fixed code on a publicly reachable instance.**
 
-### Google OAuth (Optional)
+### Google OAuth (Managed / non-private deployments only)
+
+The Docker Compose and Helm self-host paths set `MULTICA_PRIVATE_DEPLOYMENT=true`.
+In that mode the server does not publish a Google client ID and rejects the
+Google token-exchange endpoint, even if stale Google credentials are present in
+the environment. Private deployments use email verification through SMTP or
+Resend instead.
+
+Set private deployment mode to `false` only when deliberately operating a
+non-private distribution that requires Google OAuth.
 
 | Variable | Description |
 |----------|-------------|
@@ -66,6 +75,7 @@ Changes take effect after restarting the backend / compose stack. The web UI rea
 
 | Variable | Description |
 |----------|-------------|
+| `MULTICA_PRIVATE_DEPLOYMENT` | Canonical operator-owned deployment mode. Defaults to `true` in Docker Compose and Helm; disables Google OAuth and identifies the deployment to clients. |
 | `ALLOW_SIGNUP` | Set to `false` to disable new user signups on a private instance |
 | `ALLOWED_EMAIL_DOMAINS` | Optional comma-separated allowlist of email domains |
 | `ALLOWED_EMAILS` | Optional comma-separated allowlist of exact email addresses |

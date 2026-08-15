@@ -4,6 +4,7 @@ import {
   deriveWsUrl,
   parseRuntimeConfig,
   runtimeConfigFromDevEnv,
+  runtimeConfigFromTarget,
 } from "./runtime-config";
 
 describe("runtime config", () => {
@@ -47,6 +48,37 @@ describe("runtime config", () => {
 
   it("derives ws for http api URLs", () => {
     expect(deriveWsUrl("http://localhost:8080")).toBe("ws://localhost:8080/ws");
+  });
+
+  it("builds a private deployment target from one same-origin URL", () => {
+    expect(
+      runtimeConfigFromTarget({ apiUrl: "https://multica.corp.example/" }),
+    ).toEqual({
+      schemaVersion: 1,
+      apiUrl: "https://multica.corp.example",
+      wsUrl: "wss://multica.corp.example/ws",
+      appUrl: "https://multica.corp.example",
+    });
+  });
+
+  it("accepts a separate web origin for split-domain private deployments", () => {
+    expect(
+      runtimeConfigFromTarget({
+        apiUrl: "https://api.multica.corp.example",
+        appUrl: "https://app.multica.corp.example/",
+      }),
+    ).toEqual({
+      schemaVersion: 1,
+      apiUrl: "https://api.multica.corp.example",
+      wsUrl: "wss://api.multica.corp.example/ws",
+      appUrl: "https://app.multica.corp.example",
+    });
+  });
+
+  it("rejects an unsafe private deployment target scheme", () => {
+    expect(() =>
+      runtimeConfigFromTarget({ apiUrl: "file:///tmp/multica" }),
+    ).toThrow(/apiUrl must use http or https/);
   });
 
   it("accepts explicit appUrl and wsUrl", () => {

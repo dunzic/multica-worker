@@ -25,6 +25,10 @@ type AppConfig struct {
 	// toggle signup or wire Google OAuth.
 	AllowSignup    bool   `json:"allow_signup"`
 	GoogleClientID string `json:"google_client_id,omitempty"`
+	// PrivateDeployment identifies an operator-owned installation. Clients use
+	// it to keep managed-cloud-only authentication and integrations out of the
+	// private deployment surface.
+	PrivateDeployment bool `json:"private_deployment,omitempty"`
 	// WorkspaceCreationDisabled mirrors the server-side
 	// DISABLE_WORKSPACE_CREATION env var so the UI can hide every
 	// "Create workspace" affordance on self-hosted instances. Omitted
@@ -72,9 +76,15 @@ type AppConfig struct {
 // sign-in button and signup UI. Only add fields here that are safe to expose
 // to anonymous callers — never user- or tenant-scoped data.
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
+	privateDeployment := privateDeploymentEnabled()
+	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
+	if privateDeployment {
+		googleClientID = ""
+	}
 	config := AppConfig{
 		AllowSignup:               os.Getenv("ALLOW_SIGNUP") != "false",
-		GoogleClientID:            os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientID:            googleClientID,
+		PrivateDeployment:         privateDeployment,
 		WorkspaceCreationDisabled: os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
 	}
 	if h.Storage != nil {
@@ -103,6 +113,11 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, config)
+}
+
+func privateDeploymentEnabled() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("MULTICA_PRIVATE_DEPLOYMENT")))
+	return value == "true" || value == "1"
 }
 
 func daemonSetupURLsFromEnv() (string, string) {

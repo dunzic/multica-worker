@@ -1,10 +1,11 @@
 import { app } from "electron";
-import { readFile } from "fs/promises";
-import { join } from "path";
+import { mkdir, readFile, rename, writeFile } from "fs/promises";
+import { dirname, join } from "path";
 import {
   DEFAULT_RUNTIME_CONFIG,
   parseRuntimeConfig,
   runtimeConfigFromDevEnv,
+  runtimeConfigFromTarget,
   type RuntimeConfig,
   type RuntimeConfigEnv,
   type RuntimeConfigResult,
@@ -42,6 +43,22 @@ export async function loadRuntimeConfig(options: {
 
 export function desktopConfigPath(): string {
   return join(app.getPath("home"), ".multica", "desktop.json");
+}
+
+/** Persist a validated deployment target without ever exposing a partial file. */
+export async function saveRuntimeConfig(
+  input: unknown,
+  configPath = desktopConfigPath(),
+): Promise<RuntimeConfig> {
+  const config = runtimeConfigFromTarget(input);
+  await mkdir(dirname(configPath), { recursive: true });
+  const temporaryPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  await rename(temporaryPath, configPath);
+  return config;
 }
 
 function isMissingFileError(err: unknown): boolean {

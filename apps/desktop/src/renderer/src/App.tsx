@@ -14,6 +14,7 @@ import { Toaster } from "@multica/ui/components/ui/sonner";
 import { DesktopLoginPage } from "./pages/login";
 import { DesktopShell } from "./components/desktop-layout";
 import { UpdateNotification } from "./components/update-notification";
+import { PrivateDeploymentTarget } from "./components/private-deployment-target";
 import { IssueWindow } from "./components/issue-window";
 import { useTabStore } from "./stores/tab-store";
 import { useWindowOverlayStore } from "./stores/window-overlay-store";
@@ -340,6 +341,9 @@ function BlockingRuntimeConfigError({ message }: { message: string }) {
         <pre className="mt-4 whitespace-pre-wrap rounded-md bg-muted p-3 text-caption text-muted-foreground">
           {message}
         </pre>
+        <div className="mt-5 border-t pt-5">
+          <PrivateDeploymentTarget initialOpen />
+        </div>
       </div>
     </div>
   );

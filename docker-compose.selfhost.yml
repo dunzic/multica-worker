@@ -98,6 +98,10 @@ services:
       MULTICA_DEV_VERIFICATION_CODE: ${MULTICA_DEV_VERIFICATION_CODE:-}
       MULTICA_APP_URL: ${MULTICA_APP_URL:-http://localhost:3000}
       MULTICA_SHUTDOWN_HOLD_DURATION: ${MULTICA_SHUTDOWN_HOLD_DURATION:-}
+      # Self-host is an operator-owned private deployment. This disables
+      # managed-cloud Google OAuth even if stale Google credentials remain in
+      # the calling environment; email verification remains the login path.
+      MULTICA_PRIVATE_DEPLOYMENT: ${MULTICA_PRIVATE_DEPLOYMENT:-true}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
       ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-}

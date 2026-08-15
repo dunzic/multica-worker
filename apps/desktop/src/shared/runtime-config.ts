@@ -33,6 +33,36 @@ export interface RuntimeConfigEnv {
   appUrl?: string;
 }
 
+export interface RuntimeTargetInput {
+  apiUrl: string;
+  appUrl?: string;
+}
+
+/**
+ * Validate a renderer-provided deployment target and expand it into the full
+ * Desktop runtime config. The WebSocket URL is deliberately derived from the
+ * API URL so the login screen cannot persist an unrelated socket endpoint.
+ */
+export function runtimeConfigFromTarget(input: unknown): RuntimeConfig {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Invalid private deployment target: expected an object");
+  }
+
+  const obj = input as Record<string, unknown>;
+  const apiUrl = normalizeHttpUrl(
+    requiredString(obj.apiUrl, "apiUrl"),
+    "apiUrl",
+  );
+  const appUrl = optionalString(obj.appUrl, "appUrl");
+
+  return {
+    schemaVersion: 1,
+    apiUrl,
+    wsUrl: deriveWsUrl(apiUrl),
+    appUrl: appUrl ? normalizeHttpUrl(appUrl, "appUrl") : deriveAppUrl(apiUrl),
+  };
+}
+
 export function runtimeConfigFromDevEnv(env: RuntimeConfigEnv): RuntimeConfig {
   const apiUrl = normalizeHttpUrl(
     env.apiUrl || LOCAL_DEV_RUNTIME_CONFIG.apiUrl,

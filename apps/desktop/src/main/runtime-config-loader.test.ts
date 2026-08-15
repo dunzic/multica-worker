@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { describe, expect, it } from "vitest";
-import { loadRuntimeConfig } from "./runtime-config-loader";
+import { loadRuntimeConfig, saveRuntimeConfig } from "./runtime-config-loader";
 
 describe("loadRuntimeConfig", () => {
   it("uses dev env and ignores desktop.json during electron-vite dev", async () => {
@@ -86,5 +86,37 @@ describe("loadRuntimeConfig", () => {
       expect(result.error.message).toContain(configPath);
       expect(result.error.message).toContain("Invalid desktop runtime config JSON");
     }
+  });
+
+  it("atomically persists and reloads a private deployment target", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "multica-desktop-config-"));
+    const configPath = join(dir, ".multica", "desktop.json");
+
+    await expect(
+      saveRuntimeConfig(
+        {
+          apiUrl: "https://api.internal.example/",
+          appUrl: "https://multica.internal.example/",
+        },
+        configPath,
+      ),
+    ).resolves.toEqual({
+      schemaVersion: 1,
+      apiUrl: "https://api.internal.example",
+      wsUrl: "wss://api.internal.example/ws",
+      appUrl: "https://multica.internal.example",
+    });
+
+    await expect(
+      loadRuntimeConfig({ isDev: false, configPath, env: {} }),
+    ).resolves.toEqual({
+      ok: true,
+      config: {
+        schemaVersion: 1,
+        apiUrl: "https://api.internal.example",
+        wsUrl: "wss://api.internal.example/ws",
+        appUrl: "https://multica.internal.example",
+      },
+    });
   });
 });
