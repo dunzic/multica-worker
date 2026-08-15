@@ -514,14 +514,61 @@ conditions.
 
 ## Gate C — configured S3-compatible backend
 
-The opt-in probe writes a unique small object, reads back the exact bytes, permanently purges the current object plus every retained version/delete marker, verifies the version inventory is empty and requires a not-found read. Ordinary CI skips it. The test identity needs `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucketVersions` and `s3:DeleteObjectVersion` for the validation prefix. Object Lock or legal hold must cause a visible failure unless the approved retention policy explicitly owns that block.
+The opt-in suite exercises the configured provider through the same storage
+implementation used by role-source GC. Ordinary CI skips every test. Use a
+dedicated versioned bucket, a separate Object Lock-enabled bucket and a unique
+validation prefix. The application identity must not be allowed to create
+buckets or change legal holds.
+
+The suite proves four separate contracts:
+
+1. two content versions plus a pre-existing delete marker are byte-read and
+   permanently purged, provider evidence reports the deleted version bytes and
+   the final exact-key inventory is empty;
+2. a PUT after one verified purge is visible and a later reconciliation purge
+   converges to an empty inventory;
+3. an admin-applied legal hold makes the application purge fail with the held
+   version still readable, and only an admin may release the hold; and
+4. a second identity explicitly denied `s3:DeleteObjectVersion` fails without
+   claiming `VerifiedAbsent`, while a privileged verifier can still read the
+   retained version.
+
+The least-privilege application identity needs `s3:GetBucketVersioning`,
+`s3:ListBucket`, `s3:ListBucketVersions`, `s3:PutObject`, `s3:GetObject`,
+`s3:GetObjectVersion`, `s3:DeleteObject` and `s3:DeleteObjectVersion`, scoped to
+the validation buckets/prefix. A separate setup identity needs the provider's
+bucket-versioning/Object-Lock administration and legal-hold actions. The
+negative identity must carry an explicit version-delete deny; do not infer a
+deny merely from policy omission on an S3-compatible implementation.
 
 ```bash
 MULTICA_LIVE_ROLE_SOURCE_STORAGE_TEST=1 \
-  go -C server test -count=1 -run '^TestS3StorageLiveRoleSourceRoundTrip$' ./internal/storage
+MULTICA_LIVE_ROLE_SOURCE_LOCK_BUCKET='VALIDATION_LOCK_BUCKET' \
+MULTICA_LIVE_ROLE_SOURCE_ADMIN_ACCESS_KEY='SETUP_ACCESS_KEY' \
+MULTICA_LIVE_ROLE_SOURCE_ADMIN_SECRET_KEY='SETUP_SECRET_KEY' \
+MULTICA_LIVE_ROLE_SOURCE_DENIED_ACCESS_KEY='DENIED_ACCESS_KEY' \
+MULTICA_LIVE_ROLE_SOURCE_DENIED_SECRET_KEY='DENIED_SECRET_KEY' \
+  go -C server test -count=1 -run '^TestS3StorageLiveRoleSource' -v ./internal/storage
 ```
 
-Pass criteria: fixed-length streaming upload, byte-exact readback, zero retained versions/delete markers and verified current absence. Any transport/authentication error after purge is a failure, not proof of absence.
+Set `MULTICA_LIVE_ROLE_SOURCE_STORAGE_PROVISION=1` only for a disposable
+provider where the setup identity is authorized to create the two buckets and
+enable versioning/Object Lock. Keep it unset/zero for an approved candidate
+environment provisioned through infrastructure as code.
+
+Pass criteria: all four tests pass under the intended identities; the final
+independent provider listing contains zero validation versions/delete markers;
+the held and IAM-denied negative cases return errors and retain byte-readable
+versions. Any transport/authentication error or incomplete inventory after
+purge is a failure, not proof of absence.
+
+The recorded 2026-08-15 local gate used an exact source-built MinIO
+`RELEASE.2025-10-15T17-29-55Z` server in an isolated, unexposed, one-drive
+Docker network. All four least-privilege/negative tests passed and both final
+validation-prefix version listings were empty. See
+[`RS-02-RS-06-versioned-s3-fail-closed-2026-08-15.md`](reviews/RS-02-RS-06-versioned-s3-fail-closed-2026-08-15.md).
+This closes the local protocol gate only; the one-drive service, local network
+and absence of PostgreSQL failover are not candidate production evidence.
 
 For receipt-backed rollout evidence, run the GC state machine against that same
 versioned prefix and retain the provider version inventory/request IDs outside

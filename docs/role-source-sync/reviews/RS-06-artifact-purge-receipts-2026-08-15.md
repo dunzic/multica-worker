@@ -2,6 +2,12 @@
 
 Scope: receipt-bearing permanent deletion after the four-pass tombstone tail
 
+Evidence addendum: the same-day
+[`RS-02-RS-06-versioned-s3-fail-closed-2026-08-15.md`](RS-02-RS-06-versioned-s3-fail-closed-2026-08-15.md)
+closes the local versioned-provider late-PUT, legal-hold and explicit IAM-deny
+probe. Candidate-provider, topology, receipt-correlation and recovery gates
+remain open.
+
 Decision: **GO for merge behind the existing default-off artifact-GC gate;
 NO-GO for customer deletion or storage-savings claims until the candidate
 versioned-object-store, failover and provider-accounting gates pass.**
@@ -36,7 +42,8 @@ It proves logical exact-key absence, not a provider invoice or cost reduction.
   both reject integers outside JavaScript's exact range instead of silently
   rounding audit totals.
 - Open objections: no two-replica/primary-failover execution, no candidate S3
-  Object Lock/version-race proof, no provider request-ID commitment and no
+  Object Lock/version-race proof (the local isolated MinIO protocol gate now
+  passes), no provider request-ID commitment and no
   partition/retention policy for long-lived receipt volume.
 
 ## Product expert — 2/3
@@ -73,9 +80,11 @@ It proves logical exact-key absence, not a provider invoice or cost reduction.
   Go tests and vet, Core 87 tests, Views 30 tests and changed-file ESLint pass.
   Full Core/Views typecheck remains red only on the three pre-existing Chat
   Quick Actions errors outside this slice.
-- Open objections: real versioned S3 late PUT, >10,000 versions, partial delete,
-  Object Lock, transport ambiguity, process death, primary failover, restore and
-  fleet/backlog SLO injection remain external gates.
+- Open objections: the local real versioned-provider late-PUT, legal-hold and
+  explicit version-delete-deny probes now pass; candidate-store >10,000
+  versions, partial delete, transport ambiguity, process death, primary
+  failover, receipt correlation, restore and fleet/backlog SLO injection remain
+  external gates.
 
 ## CEO / rollout owner — 2/3
 
@@ -96,8 +105,9 @@ production cohort additionally requires:
 
 1. two replicas and PostgreSQL primary failover while the final receipt query
    owns the lease;
-2. versioned S3-compatible late-PUT, partial-delete, Object Lock, permission and
-   inventory-limit fault injection with retained provider evidence;
+2. candidate versioned S3-compatible late-PUT, partial-delete, Object Lock,
+   permission and inventory-limit fault injection with retained provider
+   request/inventory evidence (the local protocol subset already passes);
 3. Gate F backup/restore proving every receipt commitment and absence of purged
    bodies, with measured RPO/RTO;
 4. named SRE, security, product and data-retention owners plus alert/quarantine
