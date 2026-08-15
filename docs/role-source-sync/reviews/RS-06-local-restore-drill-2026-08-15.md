@@ -84,6 +84,15 @@ Every run reported idempotent restore and refused all four corruption classes.
 A final post-adjustment smoke run also passed with a 437,806-byte bundle and a
 10-second complete gate.
 
+The same packaged backend was then rebuilt at commit
+`6fa6c7235bdefea937c70b573fd6e6fddf124a95` and installed into the standard
+self-host Compose environment. Independent inspection of the running binary
+found that exact embedded commit (rather than the previous image), migration
+398 remained applied with `idx_channel_delivery_retry_publish_due` present,
+and `/health`, `/readyz` and the existing frontend `/login` each returned 200.
+This proves local packaging and deployment continuity only; it does not turn
+the single-node self-host environment into candidate production evidence.
+
 These are coarse local timings for one 38-byte object. They establish behavior
 and packaging only; they are not capacity evidence, an RTO commitment or an RPO
 measurement. PostgreSQL's exported snapshot provides the local consistency

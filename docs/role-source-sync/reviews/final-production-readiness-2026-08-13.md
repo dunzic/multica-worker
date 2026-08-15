@@ -105,8 +105,11 @@ scores remain 2/3 and the NO-GO decision does not change.
   zero duplicates and zero cleanup residue. This is local single-primary
   database evidence, not two candidate backend images, provider acceptance,
   alert delivery or 10,000-user traffic.
-- the `deaf76966` local backend image applied migration 398 and returned 200
-  from `/health` and `/readyz`; the existing frontend `/login` returned 200. A
+- the standard self-host backend was rebuilt and recreated at exact embedded
+  commit `6fa6c7235`; it retained migration 398 and
+  `idx_channel_delivery_retry_publish_due`, returned 200 from `/health` and
+  `/readyz`, and the existing frontend `/login` returned 200. Independent
+  binary inspection excluded the previously running `deaf76966` image. A
   separate isolated RS-07 gate created a synchronous PostgreSQL 17 physical
   standby, HAProxy, shared Redis and two same-image backends three times. It
   hard-killed the primary, observed a client outage before promotion, converged
