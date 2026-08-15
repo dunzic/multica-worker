@@ -139,14 +139,16 @@ A final post-guard smoke after adding nil-storage refusal and provider-error
 redaction killed at 4,030,464 bytes and passed the same matrix in 12 seconds
 with a 67,548,340-byte bundle.
 
-The same packaged backend was then rebuilt at commit
-`6fa6c7235bdefea937c70b573fd6e6fddf124a95` and installed into the standard
+After the interruption-safe implementation and evidence were committed, the
+packaged backend was rebuilt at exact commit
+`f9bc54aa877d030ae54153e286814c99f60a0aea` and installed into the standard
 self-host Compose environment. Independent inspection of the running binary
-found that exact embedded commit (rather than the previous image), migration
-398 remained applied with `idx_channel_delivery_retry_publish_due` present,
-and `/health`, `/readyz` and the existing frontend `/login` each returned 200.
-This proves local packaging and deployment continuity only; it does not turn
-the single-node self-host environment into candidate production evidence.
+found that embedded commit rather than the previous `6fa6c7235` image,
+migration 398 remained applied with
+`idx_channel_delivery_retry_publish_due` present, and `/health`, `/readyz` and
+the existing frontend `/login` each returned 200. This proves local packaging
+and deployment continuity only; it does not turn the single-node self-host
+environment into candidate production evidence.
 
 These are coarse local timings for two objects and 64 MiB of bulk data. They
 establish packaging, interruption and retry behavior only; they are not
