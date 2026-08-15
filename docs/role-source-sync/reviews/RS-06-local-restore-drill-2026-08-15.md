@@ -185,6 +185,19 @@ the existing frontend `/login` each returned 200. This proves local packaging
 and deployment continuity only; it does not turn the single-node self-host
 environment into candidate production evidence.
 
+The workload-identity KMS and endpoint-isolation implementation was then
+committed as `13f91ea42fb015e2bda9b0de88cb7ab7a22237e6`. The standard
+`multica-backend:dev` image was rebuilt from that commit and the backend alone
+was force-recreated through the self-host Compose file. The running container
+and tag both resolved to
+`sha256:d65d78cc0b67630457ae8a698c9465bc8af5efe20b561a4e97a346bcbdcf2179`;
+independent binary inspection found the complete embedded commit. Host-network
+checks returned 200 for `/health`, `/readyz` and the existing frontend `/login`.
+Migration `398_channel_delivery_retry_publish_due_index` and
+`idx_channel_delivery_retry_publish_due` remained present, and the post-start
+log contained no panic, fatal or error entry. This is deployment continuity for
+the exact local code commit, not real KMS, multi-AZ or 10,000-user evidence.
+
 These are coarse local timings for two objects and 64 MiB of bulk data. They
 establish packaging, interruption and retry behavior only; they are not
 inventory-scale evidence, an RTO commitment or an RPO measurement. PostgreSQL's

@@ -129,8 +129,13 @@ four scores and the production NO-GO remain unchanged.
   commit `f9bc54aa8`; it retained migration 398 and
   `idx_channel_delivery_retry_publish_due`, returned 200 from `/health` and
   `/readyz`, and the existing frontend `/login` returned 200. Independent
-  binary inspection excluded the previously running `6fa6c7235` image. A
-  separate isolated RS-07 gate created a synchronous PostgreSQL 17 physical
+  binary inspection excluded the previously running `6fa6c7235` image. The
+  KMS/endpoint-isolation commit `13f91ea42fb015e2bda9b0de88cb7ab7a22237e6`
+  was then rebuilt and deployed with the same three 200 responses, exact binary
+  commit match, migration 398/index continuity and no recent panic/fatal/error;
+  the running container and tag both resolved to
+  `sha256:d65d78cc0b67630457ae8a698c9465bc8af5efe20b561a4e97a346bcbdcf2179`.
+  A separate isolated RS-07 gate created a synchronous PostgreSQL 17 physical
   standby, HAProxy, shared Redis and two same-image backends three times. It
   hard-killed the primary, observed a client outage before promotion, converged
   eight workers to one receipt in 5–6 seconds, kept both backends ready and left
