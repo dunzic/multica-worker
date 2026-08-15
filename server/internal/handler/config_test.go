@@ -104,6 +104,29 @@ func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	}
 }
 
+func TestGetConfigHidesGoogleAuthForPrivateDeployment(t *testing.T) {
+	t.Setenv("MULTICA_PRIVATE_DEPLOYMENT", "true")
+	t.Setenv("GOOGLE_CLIENT_ID", "must-not-leak")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	w := httptest.NewRecorder()
+	testHandler.GetConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var cfg AppConfig
+	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if !cfg.PrivateDeployment {
+		t.Fatal("private_deployment: want true")
+	}
+	if cfg.GoogleClientID != "" {
+		t.Fatalf("google_client_id must be hidden for private deployment, got %q", cfg.GoogleClientID)
+	}
+}
+
 func TestGetConfigHonorsVCSIntegrationSwitch(t *testing.T) {
 	origCfg := testHandler.cfg
 	t.Cleanup(func() { testHandler.cfg = origCfg })

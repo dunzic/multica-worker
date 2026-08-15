@@ -74,6 +74,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-25}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
       SMTP_TLS: ${SMTP_TLS:-}
       SMTP_TLS_INSECURE: ${SMTP_TLS_INSECURE:-false}
       SMTP_EHLO_NAME: ${SMTP_EHLO_NAME:-}
@@ -97,6 +98,10 @@ services:
       MULTICA_DEV_VERIFICATION_CODE: ${MULTICA_DEV_VERIFICATION_CODE:-}
       MULTICA_APP_URL: ${MULTICA_APP_URL:-http://localhost:3000}
       MULTICA_SHUTDOWN_HOLD_DURATION: ${MULTICA_SHUTDOWN_HOLD_DURATION:-}
+      # Self-host is an operator-owned private deployment. This disables
+      # managed-cloud Google OAuth even if stale Google credentials remain in
+      # the calling environment; email verification remains the login path.
+      MULTICA_PRIVATE_DEPLOYMENT: ${MULTICA_PRIVATE_DEPLOYMENT:-true}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
       ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-}

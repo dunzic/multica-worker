@@ -13,7 +13,7 @@ import { handleAppShortcut } from "./keyboard-shortcuts";
 import { installNavigationGestures } from "./navigation-gestures";
 import { installNavigationGuard } from "./navigation-guard";
 import { getAppVersion } from "./app-version";
-import { loadRuntimeConfig } from "./runtime-config-loader";
+import { loadRuntimeConfig, saveRuntimeConfig } from "./runtime-config-loader";
 import type { RuntimeConfigResult } from "../shared/runtime-config";
 import {
   RENDERER_ROUTE_CONTEXT_CHANNEL,
@@ -697,7 +697,7 @@ if (!gotTheLock) {
       optimizer.watchWindowShortcuts(window);
     });
 
-    // IPC: open URL in default browser (used by renderer for Google login).
+    // IPC: open a validated web URL in the default browser.
     // All scheme-allowlist enforcement lives in openExternalSafely — this
     // is the single audit point for renderer-controlled URLs reaching the
     // OS shell under the app's intentional webSecurity: false + sandbox:
@@ -765,6 +765,34 @@ if (!gotTheLock) {
     // blocking error and must not silently fall back to the cloud defaults.
     ipcMain.on("runtime-config:get", (event) => {
       event.returnValue = runtimeConfigResult;
+    });
+
+    ipcMain.handle("runtime-config:set-target", async (event, input: unknown) => {
+      const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+      if (!sourceWindow || sourceWindow !== mainWindow) {
+        return { ok: false, message: "Only the main window can change the deployment target" } as const;
+      }
+      if (is.dev) {
+        return {
+          ok: false,
+          message: "Packaged Desktop target configuration is unavailable in development mode",
+        } as const;
+      }
+
+      try {
+        const config = await saveRuntimeConfig(input);
+        runtimeConfigResult = { ok: true, config };
+        setTimeout(() => {
+          app.relaunch();
+          app.exit(0);
+        }, 150);
+        return { ok: true } as const;
+      } catch (err) {
+        return {
+          ok: false,
+          message: err instanceof Error ? err.message : String(err),
+        } as const;
+      }
     });
 
     ipcMain.on(RENDERER_ROUTE_CONTEXT_CHANNEL, (event, context: unknown) => {

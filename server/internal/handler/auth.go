@@ -462,6 +462,11 @@ type googleUserInfo struct {
 }
 
 func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
+	if privateDeploymentEnabled() {
+		writeError(w, http.StatusForbidden, "Google login is disabled for private deployments")
+		return
+	}
+
 	var req GoogleLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

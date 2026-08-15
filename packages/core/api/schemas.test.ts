@@ -871,6 +871,11 @@ describe("AppConfigSchema cdn_signed drift", () => {
     expect(AppConfigSchema.parse({ server_version: "1.2.3" }).server_version).toBe("1.2.3");
     expect(AppConfigSchema.parse({}).server_version).toBeUndefined();
   });
+
+  it("parses the private deployment boundary and defaults old servers to false", () => {
+    expect(AppConfigSchema.parse({ private_deployment: true }).private_deployment).toBe(true);
+    expect(AppConfigSchema.parse({}).private_deployment).toBeUndefined();
+  });
 });
 
 describe("InboxUnreadSummarySchema", () => {

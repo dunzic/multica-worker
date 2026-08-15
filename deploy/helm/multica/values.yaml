@@ -112,6 +112,9 @@ backend:
   # All non-secret backend env. Secret values come from `existingSecret`.
   config:
     appEnv: production
+    # The chart is for operator-owned installations. Private mode disables
+    # Google OAuth even if an old Secret still contains Google credentials.
+    privateDeployment: true
     appUrl: http://multica.dev.lan
     frontendOrigin: http://multica.dev.lan
     corsAllowedOrigins: ""

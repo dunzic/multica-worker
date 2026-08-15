@@ -117,6 +117,11 @@ const desktopAPI = {
   },
   /** Validated runtime endpoint config, or a blocking config error. */
   runtimeConfig,
+  /** Persist a private deployment target and relaunch into that environment. */
+  setRuntimeTarget: (target: { apiUrl: string; appUrl?: string }) =>
+    ipcRenderer.invoke("runtime-config:set-target", target) as Promise<
+      { ok: true } | { ok: false; message: string }
+    >,
   /** Identifies whether this renderer owns the main tabbed window or a
    *  dedicated issue window, parsed from validated launch arguments. */
   windowContext,
