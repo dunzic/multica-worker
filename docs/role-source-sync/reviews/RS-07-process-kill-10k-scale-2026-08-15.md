@@ -140,7 +140,12 @@ Accepted:
 - migration 398 follows the repository's concurrent-index rule and has an
   explicit rollback;
 - the default delivery package and both opt-in live gates pass under Go's race
-  detector; `go test ./...` and `go build ./...` pass with Go 1.26.
+  detector; `go build ./...` passes with Go 1.26. The all-package test attempt
+  passed every package except pre-existing environment-sensitive failures in
+  unmodified `pkg/agent` and `pkg/redact`, so it is not reported as green;
+- the `deaf76966` runtime image applied migration 398 and passed `/health` and
+  `/readyz`; a temporary second same-commit image sharing PostgreSQL skipped the
+  already-applied migration and also returned ready before being removed.
 
 Missing:
 
@@ -148,9 +153,10 @@ Missing:
 - primary/standby PostgreSQL failover and retry under lost commit responses;
 - real KMS/HSM signing, key rotation/revocation and signature audit export;
 - mixed 10,000-user workload, provider throttling and alert delivery;
-- the complete CI operating-system/service matrix and repository-wide race
-  execution; the all-package non-race suite and the changed live concurrency
-  paths are green, but Redis/provider/KMS/failover jobs are separate gates.
+- the complete green CI operating-system/service matrix and repository-wide
+  race execution; the changed delivery/live concurrency paths are green, but
+  the current Alpine full-suite failures and Redis/provider/KMS/failover jobs
+  remain separate release gates.
 
 ## CEO review
 

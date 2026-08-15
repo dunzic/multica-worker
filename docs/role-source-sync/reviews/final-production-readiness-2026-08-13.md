@@ -67,9 +67,11 @@ restore, RACI or provider reconciliation evidence.
   authoritative for that repository-wide release gate;
 - all role-source packages, daemon, handlers, migrations, realtime, storage,
   DR and capacity commands passed in the full Go run;
-- the current Go 1.26 Alpine `go test ./...` and `go build ./...` both passed;
-  the delivery package plus its process-kill and 10k scale gates also passed
-  under Go's race detector;
+- the current Go 1.26 Alpine `go build ./...` passed; the delivery package plus
+  its process-kill and 10k scale gates also passed under Go's race detector.
+  The attempted all-package test passed every package except pre-existing
+  environment-sensitive failures in unmodified `pkg/agent` and `pkg/redact`,
+  so it is not counted as a green release gate;
 - focused role-source race, fuzz, cross-build, migration-contract and Helm
   tests are recorded in `implementation-status.md` and the per-feature reviews.
 - the RS-07 PostgreSQL 17 gate passed six real OS-process kill chains across two
@@ -82,6 +84,11 @@ restore, RACI or provider reconciliation evidence.
   zero duplicates and zero cleanup residue. This is local single-primary
   database evidence, not two candidate backend images, provider acceptance,
   alert delivery or 10,000-user traffic.
+- the `deaf76966` local backend image applied migration 398 and returned 200
+  from `/health` and `/readyz`; the existing frontend `/login` returned 200. A
+  temporary second same-commit backend sharing PostgreSQL skipped migration 398
+  and returned ready, then was removed. This is two-image coexistence only, not
+  shared realtime/provider/failover evidence.
 - the RS-06 local PostgreSQL 17 scale gate ran the exact generated retention
   candidate query three times over 100 sources, 10,000 eligible immutable
   snapshots, 10,000 artifacts and 10,000 reachability edges; single-source

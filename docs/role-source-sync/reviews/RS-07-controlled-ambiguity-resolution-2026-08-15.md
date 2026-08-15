@@ -186,10 +186,12 @@ Passing evidence on 2026-08-15:
   complete Views suite passed 320 files / 3,812 tests. TypeScript reports only
   the three pre-existing Chat Quick Actions errors and no new channel-delivery
   error;
-- all changed Go packages and `go test ./...` passed, `go build ./...` passed,
-  and the delivery package plus both opt-in process/scale gates passed under
-  Go's race detector; Helm lint/config rendering passed, and both backend and
-  Web production images built. The
+- all changed Go packages and `go build ./...` passed, and the delivery package
+  plus both opt-in process/scale gates passed under Go's race detector; the
+  current non-root Go 1.26 Alpine all-package run passed every package except
+  pre-existing environment-sensitive failures in unmodified `pkg/agent` and
+  `pkg/redact`; Helm lint/config rendering passed, and both backend and Web
+  production images built. The
   backend image contains the executable reconciliation command and migration
   397; the Next.js production build completed its TypeScript, page-generation
   and trace phases.
@@ -203,9 +205,11 @@ Missing evidence:
 - 10,000-user mixed connector traffic and alert delivery under the candidate
   production topology; the passing 10,000-receipt local database gate is not a
   user-cardinality or provider-throughput result;
-- the complete CI operating-system/service and repository-wide race matrix;
-  the Go 1.26 Alpine all-package suite is green, but it does not provision real
-  Redis/provider/KMS/failover dependencies.
+- a green complete CI operating-system/service and repository-wide race matrix;
+  the Alpine all-package attempt is not a release green because unmodified
+  `pkg/agent` process-cleanup/tight-timeout cases and `pkg/redact`'s synthetic
+  HOME assertion failed; it also does not provision real Redis/provider/KMS/
+  failover dependencies.
 
 ## CEO review
 
@@ -230,18 +234,25 @@ external gate above has an owner, dated evidence and an accepted rollback drill.
 
 ## Local candidate deployment evidence
 
-The controlled-pilot implementation was committed as `cfb0f4f29` and installed
-in the local self-host Compose environment on 2026-08-15. The PostgreSQL volume
-was preserved while only backend and frontend were recreated.
+The controlled-pilot implementation was committed as `cfb0f4f29`; the process-
+kill/scale/index increment was committed as `deaf76966` and installed in the
+local self-host Compose environment on 2026-08-15. The PostgreSQL volume and
+existing frontend were preserved while the backend was recreated.
 
-- the running backend binary contains commit `cfb0f4f29`;
+- the running backend binary contains commit `deaf76966`;
 - `/health`, `/readyz` and the frontend `/login` route each returned HTTP 200;
-- backend startup applied migrations 390–397 once; `schema_migrations` reports
-  `397_chat_message_assistant_task_index` as the latest version;
+- the existing deployment had migrations 390–397; this startup applied 398
+  once, and `schema_migrations` records
+  `398_channel_delivery_retry_publish_due_index`;
 - all four channel-delivery constraints report `convalidated=true`, the four
-  reconciliation indexes exist, and `idx_chat_message_assistant_task` exists;
-- `/app/channel_delivery_reconcile` is executable and migration 397 is present
+  reconciliation indexes, `idx_chat_message_assistant_task` and
+  `idx_channel_delivery_retry_publish_due` exist;
+- `/app/channel_delivery_reconcile` is executable and migration 398 is present
   in the runtime image;
-- the environment is intentionally single-node/in-memory-realtime and has no
-  Slack/DingTalk key configured. It proves packaging, migration and local
-  runtime health, not the two-replica, real-provider or KMS/HSM external gates.
+- a temporary second `deaf76966` backend image joined the same Docker network
+  and PostgreSQL database, skipped already-applied migration 398 and returned
+  `/readyz` with both database and migrations `ok`; it was then removed to
+  restore the standard single-backend local environment;
+- connectors, Redis/shared realtime and PostgreSQL failover were not exercised.
+  This proves packaging, migration locking and local two-image coexistence, not
+  provider delivery, cross-replica event routing or the candidate topology.
