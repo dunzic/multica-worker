@@ -115,6 +115,8 @@ export const config = {
     "/uploads/:path*",
     "/docs/:path*",
     "/ws",
+    "/health/:path*",
+    "/readyz",
     "/((?!api|_next/static|_next/image|favicon.ico|.*\\.).*)",
   ],
 };

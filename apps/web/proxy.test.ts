@@ -189,6 +189,24 @@ describe("proxy runtime upstream rewrites", () => {
     }
   });
 
+  it("rewrites health requests to the runtime API origin", () => {
+    const previous = process.env.REMOTE_API_URL;
+    process.env.REMOTE_API_URL = "http://backend:8080";
+    try {
+      const health = proxy(makeRequest("/health"));
+      const ready = proxy(makeRequest("/readyz"));
+
+      expect(health.headers.get("x-middleware-rewrite")).toBe(
+        "http://backend:8080/health",
+      );
+      expect(ready.headers.get("x-middleware-rewrite")).toBe(
+        "http://backend:8080/readyz",
+      );
+    } finally {
+      restoreEnv("REMOTE_API_URL", previous);
+    }
+  });
+
   it("does not rewrite frontend auth callback pages", () => {
     const previous = process.env.REMOTE_API_URL;
     process.env.REMOTE_API_URL = "http://backend:8080";

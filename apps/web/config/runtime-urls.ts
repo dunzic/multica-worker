@@ -131,6 +131,13 @@ export function runtimeRewriteDestination(
   if (pathname === "/ws") {
     return appendPath(remoteApiUrl, "/ws");
   }
+  if (
+    pathname === "/health" ||
+    pathname.startsWith("/health/") ||
+    pathname === "/readyz"
+  ) {
+    return appendPath(remoteApiUrl, pathname);
+  }
   if (isBackendAuthPath(pathname)) {
     return appendPath(remoteApiUrl, pathname);
   }

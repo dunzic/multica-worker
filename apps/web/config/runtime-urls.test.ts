@@ -217,6 +217,8 @@ describe("runtimeRewriteDestination", () => {
       runtimeRewriteDestination("/uploads/workspaces/a.png", {}),
     ).toBeUndefined();
     expect(runtimeRewriteDestination("/ws", {})).toBeUndefined();
+    expect(runtimeRewriteDestination("/health", {})).toBeUndefined();
+    expect(runtimeRewriteDestination("/readyz", {})).toBeUndefined();
     expect(runtimeRewriteDestination("/docs/zh", {})).toBeUndefined();
   });
 
@@ -275,6 +277,20 @@ describe("runtimeRewriteDestination", () => {
         REMOTE_API_URL: "http://backend:8080",
       }),
     ).toBe("http://backend:8080/ws");
+  });
+
+  it("maps backend health paths to the runtime API origin", () => {
+    const env = { REMOTE_API_URL: "http://backend:8080" };
+
+    expect(runtimeRewriteDestination("/health", env)).toBe(
+      "http://backend:8080/health",
+    );
+    expect(runtimeRewriteDestination("/health/realtime", env)).toBe(
+      "http://backend:8080/health/realtime",
+    );
+    expect(runtimeRewriteDestination("/readyz", env)).toBe(
+      "http://backend:8080/readyz",
+    );
   });
 });
 
