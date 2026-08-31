@@ -43,6 +43,7 @@ const navigationState = { search: "" };
 vi.mock("../../navigation", () => ({
   useNavigation: () => ({
     searchParams: new URLSearchParams(navigationState.search),
+    hash: "",
     pathname: "/acme/settings",
     replace,
   }),
@@ -64,7 +65,7 @@ function NavStateProbe() {
 }
 
 function trigger() {
-  return screen.getByRole("button", { name: "Toggle Sidebar" });
+  return screen.getByRole("button", { name: "Toggle left sidebar" });
 }
 
 beforeEach(() => {
@@ -111,7 +112,7 @@ describe("SettingsPage nav trigger", () => {
     renderWithI18n(<SettingsPage />);
 
     expect(
-      screen.queryByRole("button", { name: "Toggle Sidebar" }),
+      screen.queryByRole("button", { name: "Toggle left sidebar" }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("Settings")).toBeInTheDocument();
   });

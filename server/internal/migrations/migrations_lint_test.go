@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,16 @@ import (
 
 const maxLegacyMigrationPrefix = 148
 
+const (
+	forkHistoricalMigrationStemCount   = 126
+	forkHistoricalMigrationStemsSHA256 = "304acc4c2add0ef54f82c212e0977b337be5341596c73f7f490a6bea0f7ed4df"
+)
+
+// legacyDuplicateMigrationStems lists prefixes that were already duplicated
+// before this lint existed. It is a frozen historical record, not an escape
+// hatch: a new collision must be renumbered instead of added here. Prefix 362
+// was briefly listed and is deliberately absent again — the later of the two
+// migrations was renumbered to 376, which its idempotent DDL made safe.
 var legacyDuplicateMigrationStems = map[string][]string{
 	"020": {"020_issue_number", "020_task_session"},
 	"026": {"026_comment_reactions", "026_task_messages"},
@@ -73,6 +84,7 @@ func TestMigrationFilesHaveMatchingDirections(t *testing.T) {
 
 func TestMigrationNumericPrefixesStayUniqueAfterLegacySet(t *testing.T) {
 	stemsByPrefix := migrationStemsByPrefix(t)
+	assertForkHistoricalMigrationSet(t, stemsByPrefix)
 
 	for prefix, stems := range stemsByPrefix {
 		sort.Strings(stems)
@@ -87,9 +99,84 @@ func TestMigrationNumericPrefixesStayUniqueAfterLegacySet(t *testing.T) {
 			continue
 		}
 
+		// This fork shipped Role Source and durable channel-delivery migrations
+		// 273–398 before merging the community line that independently reused
+		// those numeric prefixes. Migration identity is the complete stem, and
+		// deployed databases have already recorded the fork stems, so renumbering
+		// them would replay DDL. Permit exactly one frozen fork stem and at most
+		// one community stem at each affected prefix. The digest assertion above
+		// prevents this compatibility rule from becoming an escape hatch.
+		communityStems := make([]string, 0, len(stems))
+		forkStemCount := 0
+		for _, stem := range stems {
+			if isForkHistoricalMigrationStem(stem) {
+				forkStemCount++
+				continue
+			}
+			communityStems = append(communityStems, stem)
+		}
+		if forkStemCount > 0 {
+			if forkStemCount != 1 {
+				t.Errorf("fork migration prefix %s has %d frozen stems in %v; want exactly one", prefix, forkStemCount, stems)
+			}
+			if len(communityStems) > 1 {
+				t.Errorf("migration prefix %s is reused beyond its frozen fork stem: %v", prefix, stems)
+			}
+			continue
+		}
+
 		if len(stems) > 1 {
 			t.Errorf("migration prefix %s is reused by %v; use the next unique prefix instead", prefix, stems)
 		}
+	}
+}
+
+func assertForkHistoricalMigrationSet(t *testing.T, stemsByPrefix map[string][]string) {
+	t.Helper()
+
+	var stems []string
+	for _, candidates := range stemsByPrefix {
+		for _, stem := range candidates {
+			if isForkHistoricalMigrationStem(stem) {
+				stems = append(stems, stem)
+			}
+		}
+	}
+	sort.Strings(stems)
+	if len(stems) != forkHistoricalMigrationStemCount {
+		t.Fatalf("frozen fork migration set has %d stems, want %d", len(stems), forkHistoricalMigrationStemCount)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(stems, "\n")+"\n")))
+	if digest != forkHistoricalMigrationStemsSHA256 {
+		t.Fatalf("frozen fork migration set changed: sha256=%s, want %s; do not add to or rename the deployed 273-398 migration history", digest, forkHistoricalMigrationStemsSHA256)
+	}
+}
+
+func isForkHistoricalMigrationStem(stem string) bool {
+	match := migrationPrefixPattern.FindStringSubmatch(stem)
+	if match == nil {
+		return false
+	}
+	prefix, err := strconv.Atoi(match[1])
+	if err != nil {
+		return false
+	}
+
+	switch {
+	case prefix >= 273 && prefix <= 308:
+		return strings.HasPrefix(stem, fmt.Sprintf("%03d_role_source_", prefix))
+	case prefix >= 309 && prefix <= 315:
+		return strings.HasPrefix(stem, fmt.Sprintf("%03d_channel_delivery", prefix))
+	case prefix >= 316 && prefix <= 387:
+		return strings.HasPrefix(stem, fmt.Sprintf("%03d_role_source_", prefix))
+	case prefix >= 388 && prefix <= 396:
+		return strings.HasPrefix(stem, fmt.Sprintf("%03d_channel_delivery_", prefix))
+	case prefix == 397:
+		return stem == "397_chat_message_assistant_task_index"
+	case prefix == 398:
+		return stem == "398_channel_delivery_retry_publish_due_index"
+	default:
+		return false
 	}
 }
 

@@ -25,14 +25,16 @@ import (
 type outboundQueries interface {
 	GetAgentTask(ctx context.Context, id pgtype.UUID) (db.AgentTaskQueue, error)
 	TaskHasChannelIngestedMessages(ctx context.Context, taskID pgtype.UUID) (bool, error)
-	GetChannelChatSessionBindingBySession(ctx context.Context, arg db.GetChannelChatSessionBindingBySessionParams) (db.ChannelChatSessionBinding, error)
+	GetChannelTaskDelivery(ctx context.Context, taskID pgtype.UUID) (db.ChannelTaskDelivery, error)
 	GetChannelInstallation(ctx context.Context, arg db.GetChannelInstallationParams) (db.ChannelInstallation, error)
+	SetChatMessageChannelOutboundProvenanceByTask(ctx context.Context, arg db.SetChatMessageChannelOutboundProvenanceByTaskParams) (int64, error)
+	RecordChannelOutboundMessage(ctx context.Context, arg db.RecordChannelOutboundMessageParams) error
 }
 
 // replySender posts one reply. Satisfied by *slackSender, so the outbound path
 // reuses Send's Markdown->mrkdwn conversion, chunking, and threading.
 type replySender interface {
-	Send(ctx context.Context, out channel.OutboundMessage) (channel.SendResult, error)
+	SendWithMetadata(ctx context.Context, out channel.OutboundMessage, metadata slack.SlackMetadata) (channel.SendResult, error)
 }
 
 // Outbound delivers an agent's chat reply back to Slack — the outbound half of
@@ -97,16 +99,6 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		// Issue / autopilot tasks carry no chat_session.
 		return nil
 	}
-	binding, err := o.q.GetChannelChatSessionBindingBySession(ctx, db.GetChannelChatSessionBindingBySessionParams{
-		ChatSessionID: sessionID,
-		ChannelType:   string(TypeSlack),
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil // not a Slack session (Feishu / web-only)
-		}
-		return fmt.Errorf("lookup slack chat binding: %w", err)
-	}
 	content := eventContent(e)
 	if content == "" {
 		return nil // nothing to say (empty completion)
@@ -119,6 +111,17 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 	// tasks, so the discriminator is the immutable channel_ingested provenance
 	// of that batch, not chat_input_task_id presence (which #5645 originally
 	// used).
+	taskDelivery, err := o.q.GetChannelTaskDelivery(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // direct Chat or another channel
+		}
+		return fmt.Errorf("lookup slack task delivery: %w", err)
+	}
+	if taskDelivery.ChannelType != string(TypeSlack) {
+		return nil
+	}
+	binding := slackBindingFromTaskDelivery(taskDelivery)
 	task, err := o.q.GetAgentTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("load agent task: %w", err)
@@ -146,19 +149,54 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 	}
 	channelID, threadTS := outboundTarget(binding)
 	operation := delivery.OperationChatReply
+	outboundKind := "task_reply"
 	if e.Type == protocol.EventTaskFailed {
 		operation = delivery.OperationFailureNotice
+		outboundKind = "failure_notice"
 	}
-	_, err = delivery.Send(ctx, o.delivery, delivery.ClaimInput{
+	result, err := delivery.Send(ctx, o.delivery, delivery.ClaimInput{
 		WorkspaceID: inst.WorkspaceID, InstallationID: inst.ID, TaskID: taskID, ChatSessionID: sessionID,
 		ChannelType: TypeSlack, ChannelChatID: channelID, OperationKind: operation, Payload: content,
 	}, func(sendCtx context.Context) (channel.SendResult, error) {
-		return o.newSender(creds).Send(sendCtx, channel.OutboundMessage{
+		return o.newSender(creds).SendWithMetadata(sendCtx, channel.OutboundMessage{
 			ChatID: channelID, Text: content, ThreadID: threadTS,
-		})
+		}, outboundMetadata(taskDelivery.BindingID, taskDelivery.RouteRevision, outboundKind))
 	})
 	if err != nil {
 		return fmt.Errorf("post slack reply: %w", err)
+	}
+	messageIDs := result.MessageIDs
+	if len(messageIDs) == 0 && result.MessageID != "" {
+		messageIDs = []string{result.MessageID}
+	}
+	if len(messageIDs) == 0 {
+		return errors.New("post slack reply: provider returned no message id")
+	}
+	rows, err := o.q.SetChatMessageChannelOutboundProvenanceByTask(ctx, db.SetChatMessageChannelOutboundProvenanceByTaskParams{
+		ChannelType:    pgtype.Text{String: string(TypeSlack), Valid: true},
+		InstallationID: binding.InstallationID,
+		ChannelChatID:  pgtype.Text{String: channelID, Valid: true},
+		MessageIds:     messageIDs,
+		TaskID:         taskID,
+	})
+	if err != nil {
+		return fmt.Errorf("record slack reply provenance: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("record slack reply provenance: updated %d assistant rows, want 1", rows)
+	}
+	for _, messageID := range messageIDs {
+		if err := o.q.RecordChannelOutboundMessage(ctx, db.RecordChannelOutboundMessageParams{
+			OutboundInstallationID: taskDelivery.InstallationID,
+			OutboundChannelType:    taskDelivery.ChannelType,
+			OutboundMessageID:      messageID,
+			OutboundBindingID:      taskDelivery.BindingID,
+			OutboundRouteRevision:  taskDelivery.RouteRevision,
+			OutboundTaskID:         taskID,
+			OutboundKind:           outboundKind,
+		}); err != nil {
+			return fmt.Errorf("record slack outbound message: %w", err)
+		}
 	}
 	return nil
 }
@@ -194,6 +232,16 @@ func taskAndSessionFromEvent(e events.Event) (taskID, sessionID pgtype.UUID, ok 
 		}
 	}
 	return taskID, sessionID, taskID.Valid
+}
+
+func slackBindingFromTaskDelivery(delivery db.ChannelTaskDelivery) db.ChannelChatSessionBinding {
+	return db.ChannelChatSessionBinding{
+		ID: delivery.BindingID, InstallationID: delivery.InstallationID,
+		ChannelType: delivery.ChannelType, ChannelChatID: delivery.ChannelChatID,
+		ChatType:      delivery.ChatType,
+		LastMessageID: delivery.ChannelMessageID, LastThreadID: delivery.ChannelThreadID,
+		RouteRevision: delivery.RouteRevision, Config: delivery.Config,
+	}
 }
 
 // outboundTarget recovers the real send target from the chat binding. The
