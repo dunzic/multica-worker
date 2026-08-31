@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/slack-go/slack"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/delivery"
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 // TypeSlack is the channel discriminator for the Slack adapter. It is defined
@@ -35,19 +37,32 @@ type slackSender struct {
 // Send delivers a minimal text reply via chat.postMessage, threading into
 // out.ThreadID when set so a decoupled reply lands back in the originating
 // thread. Long bodies are chunked under Slack's per-message cap; the returned
-// SendResult carries the timestamp of the LAST posted chunk.
+// SendResult carries every posted chunk timestamp and keeps MessageID as the
+// timestamp of the last chunk for existing callers.
 func (c *slackSender) Send(ctx context.Context, out channel.OutboundMessage) (channel.SendResult, error) {
+	return c.send(ctx, out, slack.SlackMetadata{})
+}
+
+func (c *slackSender) SendWithMetadata(ctx context.Context, out channel.OutboundMessage, metadata slack.SlackMetadata) (channel.SendResult, error) {
+	return c.send(ctx, out, metadata)
+}
+
+func (c *slackSender) send(ctx context.Context, out channel.OutboundMessage, metadata slack.SlackMetadata) (channel.SendResult, error) {
 	if c.api == nil {
 		return channel.SendResult{}, delivery.DefiniteFailure("delivery_state_conflict", errors.New("slack: api client not configured"))
 	}
 	threadTS := outboundThreadTS(out)
 	var lastTS string
+	var messageIDs []string
 	// Convert the agent's standard Markdown to Slack mrkdwn before posting so
 	// bold/headers/links render instead of showing literal markup.
 	for _, chunk := range chunkMessage(formatMrkdwn(out.Text), maxMessageRunes) {
 		opts := []slack.MsgOption{
 			slack.MsgOptionText(chunk, false),
 			slack.MsgOptionDisableLinkUnfurl(),
+		}
+		if metadata.EventType != "" {
+			opts = append(opts, slack.MsgOptionMetadata(metadata))
 		}
 		if threadTS != "" {
 			opts = append(opts, slack.MsgOptionTS(threadTS))
@@ -58,8 +73,17 @@ func (c *slackSender) Send(ctx context.Context, out channel.OutboundMessage) (ch
 			return channel.SendResult{MessageID: lastTS}, classifySlackSendError(wrapped)
 		}
 		lastTS = ts
+		messageIDs = append(messageIDs, ts)
 	}
-	return channel.SendResult{MessageID: lastTS}, nil
+	return channel.SendResult{MessageID: lastTS, MessageIDs: messageIDs}, nil
+}
+
+const slackOutboundMetadataEvent = "multica_channel_outbound"
+
+func outboundMetadata(bindingID pgtype.UUID, routeRevision int64, kind string) slack.SlackMetadata {
+	return slack.SlackMetadata{EventType: slackOutboundMetadataEvent, EventPayload: map[string]any{
+		"binding_id": util.UUIDToString(bindingID), "route_revision": routeRevision, "kind": kind,
+	}}
 }
 
 func classifySlackSendError(err error) error {

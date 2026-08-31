@@ -36,18 +36,9 @@ const (
 	// counter-derived aggregation, not expanding this sampler over history.
 	windowFiveMinutes = "5m"
 
-	// Runtime is considered online if its last_seen_at is within this
-	// many seconds of `now()`. 60s matches the daemon heartbeat cadence
-	// (~15s) plus headroom for redis relay lag and clock skew.
-	runtimeOnlineWindowSeconds = 60
-
 	// A running task is considered "stuck" once started_at is older
 	// than this. Matches the Grafana board threshold from MUL-2328.
 	stuckRunningInterval = "30 minutes"
-
-	// refreshQueryCount must match the fixed runQuery calls in refreshFromDB.
-	// It bounds the outer scrape context without starving the last query.
-	refreshQueryCount = 9
 )
 
 // samplerWindows is the canonical list emitted on every scrape. The slice
@@ -58,6 +49,22 @@ var samplerWindows = []struct {
 	d     time.Duration
 }{
 	{windowFiveMinutes, 5 * time.Minute},
+}
+
+// samplerQueries is the canonical query registry. The refresh deadline and
+// execution loop both derive from it so adding or removing a query cannot
+// leave a stale hand-maintained timeout multiplier behind.
+var samplerQueries = []struct {
+	name string
+	run  func(*BusinessSamplerCollector, context.Context, pgx.Tx, *samplerSnapshot) error
+}{
+	{"active_users", (*BusinessSamplerCollector).queryActiveUsers},
+	{"active_workspaces", (*BusinessSamplerCollector).queryActiveWorkspaces},
+	{"task_queued", (*BusinessSamplerCollector).queryTaskQueued},
+	{"task_running", (*BusinessSamplerCollector).queryTaskRunning},
+	{"task_stuck", (*BusinessSamplerCollector).queryTaskStuck},
+	{"workspace_total", (*BusinessSamplerCollector).queryWorkspaceTotal},
+	{"role_source_runtime_availability", (*BusinessSamplerCollector).queryRoleSourceRuntimeAvailability},
 }
 
 // BusinessSamplerOptions configures the BusinessSamplerCollector. A nil
@@ -119,8 +126,6 @@ type BusinessSamplerCollector struct {
 	descTaskQueued                    *prometheus.Desc
 	descTaskRunning                   *prometheus.Desc
 	descTaskStuck                     *prometheus.Desc
-	descRuntimeOnline                 *prometheus.Desc
-	descHeartbeatAgeHist              *prometheus.Desc
 	descWorkspaceTotal                *prometheus.Desc
 	descRoleSourceRuntimeAvailability *prometheus.Desc
 
@@ -184,14 +189,6 @@ func NewBusinessSamplerCollector(opts *BusinessSamplerOptions) *BusinessSamplerC
 			"multica_agent_task_stuck_total",
 			"Current `running` agent_task_queue rows whose started_at is older than the stuck threshold. Sampled from the database.",
 			[]string{"source"}, nil),
-		descRuntimeOnline: prometheus.NewDesc(
-			"multica_runtime_online",
-			"Count of agent_runtime rows with last_seen_at within the online heartbeat window. Sampled from the database.",
-			[]string{"runtime_mode", "provider"}, nil),
-		descHeartbeatAgeHist: prometheus.NewDesc(
-			"multica_runtime_heartbeat_age_seconds",
-			"Distribution of (now() - agent_runtime.last_seen_at) for runtimes considered online by the sampler.",
-			[]string{"runtime_mode"}, nil),
 		descWorkspaceTotal: prometheus.NewDesc(
 			"multica_workspace_total",
 			"Lifetime workspace row count. Useful for sizing alerts and dashboards.",
@@ -226,8 +223,6 @@ func (c *BusinessSamplerCollector) Describe(ch chan<- *prometheus.Desc) {
 		c.descTaskQueued,
 		c.descTaskRunning,
 		c.descTaskStuck,
-		c.descRuntimeOnline,
-		c.descHeartbeatAgeHist,
 		c.descWorkspaceTotal,
 		c.descRoleSourceRuntimeAvailability,
 	} {
@@ -263,7 +258,10 @@ func (c *BusinessSamplerCollector) maybeRefresh() *samplerSnapshot {
 	// Bound the entire refresh to N×queryTimeout so an in-flight scrape
 	// can never block forever even if SET LOCAL is somehow ignored by a
 	// misconfigured Postgres.
-	ctx, cancel := context.WithTimeout(context.Background(), refreshQueryCount*c.queryTimeout)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		time.Duration(len(samplerQueries))*c.queryTimeout,
+	)
 	defer cancel()
 
 	next := c.refreshFn(ctx, now)
@@ -301,21 +299,6 @@ func (c *BusinessSamplerCollector) emit(ch chan<- prometheus.Metric, snap *sampl
 		}
 	}
 
-	for key, val := range snap.runtimeOnline {
-		ch <- prometheus.MustNewConstMetric(
-			c.descRuntimeOnline, prometheus.GaugeValue, val, key.runtimeMode, key.provider)
-	}
-
-	for mode, hist := range snap.heartbeatAge {
-		ch <- prometheus.MustNewConstHistogram(
-			c.descHeartbeatAgeHist,
-			hist.count,
-			hist.sum,
-			hist.buckets,
-			mode,
-		)
-	}
-
 	if snap.workspaceTotalKnown {
 		ch <- prometheus.MustNewConstMetric(
 			c.descWorkspaceTotal, prometheus.GaugeValue, snap.workspaceTotal)
@@ -345,29 +328,11 @@ func knownRoleSourceRuntimeAvailabilityLabels() []string {
 	return []string{"available", "runtime_unavailable"}
 }
 
-// heartbeatAgeBuckets matches the Grafana board's runtime-health view: a few
-// seconds for healthy heartbeats, then quickly out to "definitely stale".
-var heartbeatAgeBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 600}
-
 // taskRunningKey is the composite gauge label key for the running counter.
 // Defined here because it is shared between the snapshot and the emit path.
 type taskRunningKey struct {
 	source      string
 	runtimeMode string
-}
-
-type runtimeOnlineKey struct {
-	runtimeMode string
-	provider    string
-}
-
-// samplerHistogram is the in-memory representation of a single
-// prometheus.ConstHistogram for one runtime_mode. We bucketise in Go
-// because Postgres does not return histogram-shaped data directly.
-type samplerHistogram struct {
-	count   uint64
-	sum     float64
-	buckets map[float64]uint64
 }
 
 // samplerSnapshot is the cached output of one full refresh. All maps are
@@ -383,9 +348,6 @@ type samplerSnapshot struct {
 	taskRunning map[taskRunningKey]float64
 	taskStuck   map[string]float64
 
-	runtimeOnline map[runtimeOnlineKey]float64
-	heartbeatAge  map[string]samplerHistogram
-
 	workspaceTotal      float64
 	workspaceTotalKnown bool
 
@@ -400,8 +362,6 @@ func newSamplerSnapshot(t time.Time) *samplerSnapshot {
 		taskQueued:                    map[string]float64{},
 		taskRunning:                   map[taskRunningKey]float64{},
 		taskStuck:                     map[string]float64{},
-		runtimeOnline:                 map[runtimeOnlineKey]float64{},
-		heartbeatAge:                  map[string]samplerHistogram{},
 		roleSourceRuntimeAvailability: map[string]float64{},
 	}
 }
@@ -423,33 +383,11 @@ func (c *BusinessSamplerCollector) refreshFromDB(ctx context.Context, now time.T
 
 	snap := newSamplerSnapshot(now)
 
-	c.runQuery(ctx, conn, "active_users", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryActiveUsers(ctx, tx, snap)
-	})
-	c.runQuery(ctx, conn, "active_workspaces", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryActiveWorkspaces(ctx, tx, snap)
-	})
-	c.runQuery(ctx, conn, "task_queued", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryTaskQueued(ctx, tx, snap)
-	})
-	c.runQuery(ctx, conn, "task_running", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryTaskRunning(ctx, tx, snap)
-	})
-	c.runQuery(ctx, conn, "task_stuck", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryTaskStuck(ctx, tx, snap)
-	})
-	c.runQuery(ctx, conn, "runtime_online", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryRuntimeOnline(ctx, tx, snap)
-	})
-	c.runQuery(ctx, conn, "runtime_heartbeat_age", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryRuntimeHeartbeatAge(ctx, tx, snap)
-	})
-	c.runQuery(ctx, conn, "workspace_total", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryWorkspaceTotal(ctx, tx, snap)
-	})
-	c.runQuery(ctx, conn, "role_source_runtime_availability", func(ctx context.Context, tx pgx.Tx) error {
-		return c.queryRoleSourceRuntimeAvailability(ctx, tx, snap)
-	})
+	for _, query := range samplerQueries {
+		c.runQuery(ctx, conn, query.name, func(ctx context.Context, tx pgx.Tx) error {
+			return query.run(c, ctx, tx, snap)
+		})
+	}
 
 	return snap
 }

@@ -37,6 +37,8 @@ type Registry struct {
 	RoleSourceArtifactGC        *RoleSourceArtifactGCMetrics
 	RoleSourceArtifactIntegrity *RoleSourceArtifactIntegrityMetrics
 	RoleSourceRetention         *RoleSourceRetentionMetrics
+	ChannelLease                *ChannelLeaseMetrics
+	SeatCapacity                *SeatCapacityMetrics
 	// Sampler is non-nil only when RegistryOptions.BusinessSampler was
 	// supplied with a valid Pool. Exposed so the cmd/server entrypoint
 	// can plumb the same instance into health checks if it ever wants to.
@@ -65,6 +67,12 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	reg.MustRegister(channelMedia.Collectors()...)
 	channelDelivery := NewChannelDeliveryMetrics()
 	reg.MustRegister(channelDelivery.Collectors()...)
+
+	channelLease := NewChannelLeaseMetrics()
+	reg.MustRegister(channelLease.Collectors()...)
+
+	seatCapacity := NewSeatCapacityMetrics()
+	reg.MustRegister(seatCapacity.Collectors()...)
 
 	wecomMetrics := NewWecomMetrics()
 	reg.MustRegister(wecomMetrics.Collectors()...)
@@ -104,6 +112,8 @@ func NewRegistry(opts RegistryOptions) *Registry {
 		RoleSourceArtifactGC:        roleSourceArtifactGC,
 		RoleSourceArtifactIntegrity: roleSourceArtifactIntegrity,
 		RoleSourceRetention:         roleSourceRetention,
+		ChannelLease:                channelLease,
+		SeatCapacity:                seatCapacity,
 		Sampler:                     sampler,
 	}
 }

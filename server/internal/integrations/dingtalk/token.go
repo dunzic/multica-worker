@@ -198,7 +198,12 @@ func (c *Client) postJSON(ctx context.Context, path, accessToken string, body, o
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var apiErr apiError
 		_ = json.Unmarshal(respBody, &apiErr)
-		return &apiHTTPError{Path: path, StatusCode: resp.StatusCode, Code: apiErr.Code, Message: apiErr.Message}
+		return &apiRequestError{
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Code:       apiErr.Code,
+			Message:    apiErr.Message,
+		}
 	}
 	if out != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {

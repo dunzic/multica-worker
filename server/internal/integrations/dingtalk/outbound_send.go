@@ -128,7 +128,7 @@ func classifyDingTalkPostError(err error) error {
 	if errors.Is(err, errUnauthorized) {
 		return delivery.DefiniteFailure("authorization", err)
 	}
-	var statusErr *apiHTTPError
+	var statusErr *apiRequestError
 	if errors.As(err, &statusErr) {
 		if statusErr.StatusCode == http.StatusTooManyRequests {
 			return delivery.DefiniteFailure("rate_limited", err)

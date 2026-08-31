@@ -202,4 +202,23 @@ spec:
           annotations:
             summary: "An authorized channel-delivery retry is stalled"
             description: "A signed non-delivery reconciliation could not be loaded, reconstructed from the persisted terminal chat result, or consumed by the connector. The row remains retry_authorized and cannot bypass its one-shot claim fence. Repair the dependency or digest mismatch; never publish replacement content manually."
+        - alert: MulticaSeatCapacityOutboxDeadLettered
+          expr: |
+            sum by (action) (multica_seat_capacity_outbox_dead_lettered) > 0
+          for: {{ .Values.monitoring.prometheusRule.seatCapacityDeadLetteredFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.severity | quote }}
+          annotations:
+            summary: "Seat capacity intent requires repair"
+            description: "At least one {{ "{{ $labels.action }}" }} seat capacity intent exhausted automatic retries and entered the dead-letter state."
+        - alert: MulticaSeatCapacityOutboxStalled
+          expr: |
+            max by (action) (multica_seat_capacity_outbox_oldest_pending_age_seconds)
+              > {{ .Values.monitoring.prometheusRule.seatCapacityPendingAgeSeconds }}
+          for: {{ .Values.monitoring.prometheusRule.seatCapacityPendingFor | quote }}
+          labels:
+            severity: {{ .Values.monitoring.prometheusRule.severity | quote }}
+          annotations:
+            summary: "Seat capacity outbox is stalled"
+            description: "The oldest {{ "{{ $labels.action }}" }} seat capacity intent has remained unsettled beyond the configured age threshold. Repeated Cloud or proxy 429 deferrals intentionally remain pending and surface here instead of in the dead-letter alert."
 {{- end }}

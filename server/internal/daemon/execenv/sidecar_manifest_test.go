@@ -150,6 +150,7 @@ var allFileBasedProviders = []string{
 	"codex",
 	"copilot",
 	"opencode",
+	"codearts",
 	"openclaw",
 	"hermes",
 	"pi",
@@ -158,10 +159,13 @@ var allFileBasedProviders = []string{
 	"kimi",
 	"reasonix",
 	"dsh",
+	"dim",
+	"zeroclaw",
 	"kiro",
 	"antigravity",
 	"qwen",
 	"qwenpaw",
+	"mcode",
 }
 
 func TestRoleSourceCapabilityBundleSurvivesProviderSkillMaterialization(t *testing.T) {
@@ -697,6 +701,7 @@ var sameSlugSkillProviderCases = []struct {
 	{"codebuddy", filepath.Join(".codebuddy", "skills", "issue-review")},
 	{"copilot", filepath.Join(".github", "skills", "issue-review")},
 	{"opencode", filepath.Join(".opencode", "skills", "issue-review")},
+	{"codearts", filepath.Join(".codeartsdoer", "skills", "issue-review")},
 	{"openclaw", filepath.Join("skills", "issue-review")},
 	{"pi", filepath.Join(".pi", "skills", "issue-review")},
 	{"omp", filepath.Join(".omp", "skills", "issue-review")},
