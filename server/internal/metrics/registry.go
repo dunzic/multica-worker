@@ -12,17 +12,15 @@ import (
 )
 
 type RegistryOptions struct {
-	Pool     *pgxpool.Pool
-	Realtime *realtime.Metrics
-	DaemonWS *daemonws.Metrics
-	Version  string
-	Commit   string
+	Pool        *pgxpool.Pool
+	ReplicaPool *pgxpool.Pool
+	Realtime    *realtime.Metrics
+	DaemonWS    *daemonws.Metrics
+	Version     string
+	Commit      string
 
-	// BusinessSampler, when non-nil, opts the registry into the
-	// scrape-time SQL sampler from PR4 (MUL-2947). It is intentionally
-	// separate from Pool so existing tests (and any deployment without
-	// METRICS_ADDR) cannot accidentally start hitting the database on
-	// every /metrics scrape.
+	// BusinessSampler, when non-nil, enables the bounded scrape-time SQL
+	// sampler used by private-deployment operational alerts.
 	BusinessSampler *BusinessSamplerOptions
 }
 
@@ -39,6 +37,7 @@ type Registry struct {
 	RoleSourceRetention         *RoleSourceRetentionMetrics
 	ChannelLease                *ChannelLeaseMetrics
 	SeatCapacity                *SeatCapacityMetrics
+	DBRouting                   *DBRoutingMetrics
 	// Sampler is non-nil only when RegistryOptions.BusinessSampler was
 	// supplied with a valid Pool. Exposed so the cmd/server entrypoint
 	// can plumb the same instance into health checks if it ever wants to.
@@ -70,12 +69,13 @@ func NewRegistry(opts RegistryOptions) *Registry {
 
 	channelLease := NewChannelLeaseMetrics()
 	reg.MustRegister(channelLease.Collectors()...)
-
 	seatCapacity := NewSeatCapacityMetrics()
 	reg.MustRegister(seatCapacity.Collectors()...)
 
 	wecomMetrics := NewWecomMetrics()
 	reg.MustRegister(wecomMetrics.Collectors()...)
+	dbRoutingMetrics := NewDBRoutingMetrics()
+	reg.MustRegister(dbRoutingMetrics.Collectors()...)
 
 	roleSourceMetrics := NewRoleSourceMetrics()
 	reg.MustRegister(roleSourceMetrics.Collectors()...)
@@ -87,7 +87,7 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	reg.MustRegister(roleSourceRetention.Collectors()...)
 
 	if opts.Pool != nil {
-		reg.MustRegister(NewDBCollector(opts.Pool))
+		reg.MustRegister(NewDBCollector(opts.Pool, opts.ReplicaPool))
 	}
 	if opts.Realtime != nil {
 		reg.MustRegister(NewRealtimeCollector(opts.Realtime))
@@ -114,6 +114,7 @@ func NewRegistry(opts RegistryOptions) *Registry {
 		RoleSourceRetention:         roleSourceRetention,
 		ChannelLease:                channelLease,
 		SeatCapacity:                seatCapacity,
+		DBRouting:                   dbRoutingMetrics,
 		Sampler:                     sampler,
 	}
 }

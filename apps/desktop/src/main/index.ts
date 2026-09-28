@@ -27,6 +27,7 @@ import {
   type RendererRecoveryWindow,
 } from "./renderer-recovery";
 import { createBestEffortDevLog } from "./dev-log";
+import { appendMissingPathDirs } from "./path-fallback";
 import {
   writeFreezeBreadcrumb,
   readFreezeBreadcrumb,
@@ -53,6 +54,7 @@ import {
   MAIN_RENDERER_CHANNEL_STATE_CHANNEL,
   MainRendererMessageQueue,
   parseMainRendererChannelState,
+  TAB_SELECTION_SHORTCUT_CHANNEL,
   type MainRendererMessageChannel,
 } from "../shared/main-renderer-messages";
 import { AuthSessionCoordinator } from "./auth-session-coordinator";
@@ -138,15 +140,17 @@ if (process.platform !== "win32") {
   } catch {
     // The explicit fallback below still provides the normal GUI app paths.
   }
-  // Fallback: prepend common install locations in case fix-path came up
-  // short (broken shell rc, non-interactive $SHELL, missing entries). Safe
-  // to duplicate — PATH lookups short-circuit on first match.
-  const fallbackPaths = [
+  // Fallback: ensure common install locations are on PATH when the login shell
+  // lookup came up short (broken shell rc, non-interactive $SHELL, missing entries).
+  // Append only missing dirs — never prepend. Prepending /usr/local/bin over
+  // a recovered login PATH shadows nvm/fnm Node with a stale system binary
+  // (e.g. Node 12), which breaks shebang CLIs (`#!/usr/bin/env node`) such as
+  // CodeBuddy and OpenClaw during daemon --version probes.
+  process.env.PATH = appendMissingPathDirs(process.env.PATH ?? "", [
     "/opt/homebrew/bin",
     "/usr/local/bin",
     join(homedir(), ".local/bin"),
-  ];
-  process.env.PATH = `${fallbackPaths.join(":")}:${process.env.PATH ?? ""}`;
+  ]);
 }
 
 const PROTOCOL = "multica";
@@ -300,6 +304,11 @@ function installWindowShortcutHandler(window: BrowserWindow): void {
       // dedicated issue window — and from one that outlived the main window,
       // which is recreated and only then handed the request.
       dispatchToMainRenderer("settings:open", null);
+    } else if (typeof result === "object" && result.action === "select-tab") {
+      event.preventDefault();
+      // Product tabs only exist in the main window. Route there even when the
+      // chord came from a dedicated issue window, matching Settings behavior.
+      dispatchToMainRenderer(TAB_SELECTION_SHORTCUT_CHANNEL, result.key);
     } else if (result) {
       event.preventDefault();
     }
