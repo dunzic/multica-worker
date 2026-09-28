@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
 
@@ -69,17 +68,6 @@ type IssueStatusData struct {
 // Task represents a claimed task from the server.
 // Agent data (name, skills) is populated by the claim endpoint.
 type Task struct {
-<<<<<<< HEAD
-	ID                   string                      `json:"id"`
-	AgentID              string                      `json:"agent_id"`
-	RuntimeID            string                      `json:"runtime_id"`
-	IssueID              string                      `json:"issue_id"`
-	WorkspaceID          string                      `json:"workspace_id"`
-	WorkspaceSlug        string                      `json:"workspace_slug,omitempty"`
-	IssueIdentifier      string                      `json:"issue_identifier,omitempty"`
-	RoleSourcePin        *protocol.RoleSourceTaskPin `json:"role_source_pin,omitempty"`
-	RemoteMCPConnections []remotemcp.Connection      `json:"remote_mcp_connections,omitempty"`
-=======
 	// StartClaimSupported gates retries when talking to older servers.
 	StartClaimSupported  bool                   `json:"start_claim_supported,omitempty"`
 	DispatchedAt         string                 `json:"dispatched_at,omitempty"`
@@ -91,7 +79,6 @@ type Task struct {
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
->>>>>>> upstream/main
 	// RemoteMCPDaemonToken stays inside the daemon and authenticates the local
 	// broker's credential-resolution calls. It must never enter agent env/config.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`

@@ -3802,12 +3802,8 @@ func (s *TaskService) FinalizeTaskClaim(
 	token db.CreateTaskTokenParams,
 	deliveredCommentIDs []pgtype.UUID,
 	recordCommentReceipt bool,
-<<<<<<< HEAD
-	validateRoleSourcePin bool,
-=======
 	authorize func(qtx *db.Queries, token *db.CreateTaskTokenParams) error,
 	issueSnapshot []byte,
->>>>>>> upstream/main
 	daemonTokens ...db.CreateDaemonTokenParams,
 ) ([]pgtype.UUID, error) {
 	if len(daemonTokens) > 1 {
@@ -3815,34 +3811,11 @@ func (s *TaskService) FinalizeTaskClaim(
 	}
 	receipt := task.DeliveredCommentIds
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
-<<<<<<< HEAD
-		// Source-managed tasks lock their mutable role mapping before the task
-		// row, matching apply's mapping-update -> invalidation-trigger order.
-		// This closes the final check-to-token race without introducing an
-		// inverse lock order that could deadlock a concurrent apply.
-		if validateRoleSourcePin {
-			current, err := qtx.IsRoleSourceTaskPinCurrent(ctx, task.ID)
-			if err != nil {
-				return fmt.Errorf("validate role source task pin: %w", err)
-			}
-			if !current {
-				return errors.New("role source task pin is stale")
-			}
-		}
-		if _, err := qtx.LockAgentTaskClaim(ctx, db.LockAgentTaskClaimParams{
-			TaskID:       task.ID,
-			RuntimeID:    task.RuntimeID,
-			DispatchedAt: task.DispatchedAt,
-		}); err != nil {
-			return fmt.Errorf("lock task claim generation: %w", err)
-		}
-=======
 		if authorize != nil {
 			if err := authorize(qtx, &token); err != nil {
 				return fmt.Errorf("authorize claim delivery: %w", err)
 			}
 		}
->>>>>>> upstream/main
 		if _, err := qtx.CreateTaskToken(ctx, token); err != nil {
 			return fmt.Errorf("create task token: %w", err)
 		}

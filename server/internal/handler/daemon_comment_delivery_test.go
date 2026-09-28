@@ -1003,11 +1003,7 @@ func TestFinalizeTaskClaim_ReceiptCASFailureRollsBackInsertedToken(t *testing.T)
 		WorkspaceID: parseUUID(testWorkspaceID),
 		UserID:      parseUUID(testUserID),
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
-<<<<<<< HEAD
-	}, []pgtype.UUID{parseUUID("00000000-0000-0000-0000-000000000099")}, true, false, db.CreateDaemonTokenParams{
-=======
 	}, []pgtype.UUID{parseUUID("00000000-0000-0000-0000-000000000099")}, true, nil, nil, db.CreateDaemonTokenParams{
->>>>>>> upstream/main
 		TokenHash:   daemonTokenHash,
 		WorkspaceID: parseUUID(testWorkspaceID),
 		DaemonID:    "daemon-claim-rollback",
@@ -1060,11 +1056,7 @@ func TestFinalizeTaskClaim_TriggerDeletedAfterClaimRejectsStaleProvenance(t *tes
 		WorkspaceID: parseUUID(testWorkspaceID),
 		UserID:      parseUUID(testUserID),
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
-<<<<<<< HEAD
-	}, []pgtype.UUID{parseUUID(fixture.commentID[0]), parseUUID(fixture.commentID[1])}, true, false)
-=======
 	}, []pgtype.UUID{parseUUID(fixture.commentID[0]), parseUUID(fixture.commentID[1])}, true, nil, nil)
->>>>>>> upstream/main
 	if err == nil {
 		t.Fatalf("FinalizeTaskClaim accepted a receipt after persisted trigger changed")
 	}

@@ -21,24 +21,6 @@ type RegistryOptions struct {
 }
 
 type Registry struct {
-<<<<<<< HEAD
-	Gatherer                    prometheus.Gatherer
-	HTTP                        *HTTPMetrics
-	Business                    *BusinessMetrics
-	ChannelMedia                *ChannelMediaReconcilerMetrics
-	ChannelDelivery             *ChannelDeliveryMetrics
-	Wecom                       *WecomMetrics
-	RoleSource                  *RoleSourceMetrics
-	RoleSourceArtifactGC        *RoleSourceArtifactGCMetrics
-	RoleSourceArtifactIntegrity *RoleSourceArtifactIntegrityMetrics
-	RoleSourceRetention         *RoleSourceRetentionMetrics
-	ChannelLease                *ChannelLeaseMetrics
-	SeatCapacity                *SeatCapacityMetrics
-	// Sampler is non-nil only when RegistryOptions.BusinessSampler was
-	// supplied with a valid Pool. Exposed so the cmd/server entrypoint
-	// can plumb the same instance into health checks if it ever wants to.
-	Sampler *BusinessSamplerCollector
-=======
 	Gatherer     prometheus.Gatherer
 	HTTP         *HTTPMetrics
 	Business     *BusinessMetrics
@@ -46,7 +28,6 @@ type Registry struct {
 	ChannelLease *ChannelLeaseMetrics
 	Wecom        *WecomMetrics
 	DBRouting    *DBRoutingMetrics
->>>>>>> upstream/main
 }
 
 func NewRegistry(opts RegistryOptions) *Registry {
@@ -69,8 +50,6 @@ func NewRegistry(opts RegistryOptions) *Registry {
 
 	channelMedia := NewChannelMediaReconcilerMetrics()
 	reg.MustRegister(channelMedia.Collectors()...)
-	channelDelivery := NewChannelDeliveryMetrics()
-	reg.MustRegister(channelDelivery.Collectors()...)
 
 	channelLease := NewChannelLeaseMetrics()
 	reg.MustRegister(channelLease.Collectors()...)
@@ -79,15 +58,6 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	reg.MustRegister(wecomMetrics.Collectors()...)
 	dbRoutingMetrics := NewDBRoutingMetrics()
 	reg.MustRegister(dbRoutingMetrics.Collectors()...)
-
-	roleSourceMetrics := NewRoleSourceMetrics()
-	reg.MustRegister(roleSourceMetrics.Collectors()...)
-	roleSourceArtifactGC := NewRoleSourceArtifactGCMetrics()
-	reg.MustRegister(roleSourceArtifactGC.Collectors()...)
-	roleSourceArtifactIntegrity := NewRoleSourceArtifactIntegrityMetrics()
-	reg.MustRegister(roleSourceArtifactIntegrity.Collectors()...)
-	roleSourceRetention := NewRoleSourceRetentionMetrics()
-	reg.MustRegister(roleSourceRetention.Collectors()...)
 
 	if opts.Pool != nil {
 		reg.MustRegister(NewDBCollector(opts.Pool, opts.ReplicaPool))
@@ -100,21 +70,6 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	}
 
 	return &Registry{
-<<<<<<< HEAD
-		Gatherer:                    reg,
-		HTTP:                        httpMetrics,
-		Business:                    businessMetrics,
-		ChannelMedia:                channelMedia,
-		ChannelDelivery:             channelDelivery,
-		Wecom:                       wecomMetrics,
-		RoleSource:                  roleSourceMetrics,
-		RoleSourceArtifactGC:        roleSourceArtifactGC,
-		RoleSourceArtifactIntegrity: roleSourceArtifactIntegrity,
-		RoleSourceRetention:         roleSourceRetention,
-		ChannelLease:                channelLease,
-		SeatCapacity:                seatCapacity,
-		Sampler:                     sampler,
-=======
 		Gatherer:     reg,
 		HTTP:         httpMetrics,
 		Business:     businessMetrics,
@@ -122,7 +77,6 @@ func NewRegistry(opts RegistryOptions) *Registry {
 		ChannelLease: channelLease,
 		Wecom:        wecomMetrics,
 		DBRouting:    dbRoutingMetrics,
->>>>>>> upstream/main
 	}
 }
 

@@ -5,14 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-<<<<<<< HEAD
-	"net/http"
 	"strings"
-
-	"github.com/multica-ai/multica/server/internal/integrations/delivery"
-=======
-	"strings"
->>>>>>> upstream/main
 )
 
 // This file is the OUTBOUND send path shared by the EventChatDone subscriber
@@ -75,17 +68,11 @@ func (s *sender) send(ctx context.Context, target sendTarget, text string) (stri
 	for _, chunk := range chunks {
 		param, err := json.Marshal(markdownParam{Title: chunk.title, Text: chunk.text})
 		if err != nil {
-			return lastKey, delivery.DefiniteFailure("delivery_state_conflict", fmt.Errorf("marshal msgParam: %w", err))
+			return "", fmt.Errorf("marshal msgParam: %w", err)
 		}
 		lastKey, err = s.sendOne(ctx, target, string(param))
 		if err != nil {
-			return lastKey, err
-		}
-		if strings.TrimSpace(key) == "" {
-			if lastKey != "" {
-				return lastKey, errors.New("dingtalk: partial send returned no processQueryKey")
-			}
-			return "", nil
+			return "", err
 		}
 	}
 	return lastKey, nil
@@ -200,7 +187,7 @@ func escapeMarkdownLinkLabel(text string) string {
 func (s *sender) sendOne(ctx context.Context, target sendTarget, msgParam string) (string, error) {
 	path, body, err := s.request(target, msgParam)
 	if err != nil {
-		return "", delivery.DefiniteFailure("delivery_state_conflict", err)
+		return "", err
 	}
 	var resp struct {
 		ProcessQueryKey string `json:"processQueryKey"`
@@ -208,7 +195,7 @@ func (s *sender) sendOne(ctx context.Context, target sendTarget, msgParam string
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := s.client.accessToken(ctx, s.appKey, s.appSecret)
 		if err != nil {
-			return "", classifyDingTalkTokenError(fmt.Errorf("access token: %w", err))
+			return "", fmt.Errorf("access token: %w", err)
 		}
 		err = s.client.postJSON(ctx, path, token, body, &resp)
 		if err == nil {
@@ -218,46 +205,9 @@ func (s *sender) sendOne(ctx context.Context, target sendTarget, msgParam string
 			s.client.invalidate(s.appKey)
 			continue
 		}
-		return "", classifyDingTalkPostError(err)
+		return "", err
 	}
-	return "", delivery.DefiniteFailure("authorization", errUnauthorized)
-}
-
-func classifyDingTalkTokenError(err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return delivery.DefiniteFailure("timeout", err)
-	}
-	var statusErr *apiHTTPError
-	if errors.As(err, &statusErr) {
-		switch statusErr.StatusCode {
-		case http.StatusUnauthorized, http.StatusForbidden:
-			return delivery.DefiniteFailure("authorization", err)
-		case http.StatusTooManyRequests:
-			return delivery.DefiniteFailure("rate_limited", err)
-		}
-	}
-	// Token acquisition precedes the message request, so any failure here is
-	// safe to retry even when the token service transport outcome is unknown.
-	return delivery.DefiniteFailure("provider_error", err)
-}
-
-func classifyDingTalkPostError(err error) error {
-	if errors.Is(err, errUnauthorized) {
-		return delivery.DefiniteFailure("authorization", err)
-	}
-	var statusErr *apiRequestError
-	if errors.As(err, &statusErr) {
-		if statusErr.StatusCode == http.StatusTooManyRequests {
-			return delivery.DefiniteFailure("rate_limited", err)
-		}
-		if statusErr.StatusCode >= http.StatusBadRequest && statusErr.StatusCode < http.StatusInternalServerError {
-			return delivery.DefiniteFailure("provider_error", err)
-		}
-	}
-	// Transport failures, gateway/5xx responses, body-read failures and
-	// success-response decode failures can happen after DingTalk accepted the
-	// message and therefore stay ambiguous.
-	return err
+	return "", errUnauthorized
 }
 
 // request builds the endpoint + body for a target. A 1:1 send needs a recipient

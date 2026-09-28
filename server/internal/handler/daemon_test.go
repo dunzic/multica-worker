@@ -902,10 +902,6 @@ func TestHandleDaemonWSHeartbeat_RuntimeGoneReturnsAckNotError(t *testing.T) {
 	// A well-formed UUID that does NOT exist in agent_runtime.
 	missingRuntime := uuid.New().String()
 	ack, err := testHandler.HandleDaemonWSHeartbeat(context.Background(),
-<<<<<<< HEAD
-		daemonws.ClientIdentity{WorkspaceID: testWorkspaceID},
-		protocol.DaemonHeartbeatRequestPayload{RuntimeID: missingRuntime})
-=======
 		daemonws.ClientIdentity{
 			WorkspaceID: testWorkspaceID,
 			RuntimeLeases: map[string]*daemonws.RuntimeLease{
@@ -913,7 +909,6 @@ func TestHandleDaemonWSHeartbeat_RuntimeGoneReturnsAckNotError(t *testing.T) {
 			},
 		},
 		missingRuntime, false)
->>>>>>> upstream/main
 	if err != nil {
 		t.Fatalf("HandleDaemonWSHeartbeat: unexpected error %v", err)
 	}
@@ -951,10 +946,6 @@ func TestHandleDaemonWSHeartbeat_AllowsAnyAuthorizedWorkspace(t *testing.T) {
 	})
 
 	ack, err := testHandler.HandleDaemonWSHeartbeat(ctx,
-<<<<<<< HEAD
-		daemonws.ClientIdentity{WorkspaceIDs: []string{testWorkspaceID, workspaceID}},
-		protocol.DaemonHeartbeatRequestPayload{RuntimeID: runtimeID})
-=======
 		daemonws.ClientIdentity{
 			WorkspaceIDs: []string{testWorkspaceID, workspaceID},
 			RuntimeLeases: map[string]*daemonws.RuntimeLease{
@@ -962,7 +953,6 @@ func TestHandleDaemonWSHeartbeat_AllowsAnyAuthorizedWorkspace(t *testing.T) {
 			},
 		},
 		runtimeID, false)
->>>>>>> upstream/main
 	if err != nil {
 		t.Fatalf("HandleDaemonWSHeartbeat: unexpected error %v", err)
 	}

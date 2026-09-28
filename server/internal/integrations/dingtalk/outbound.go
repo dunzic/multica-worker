@@ -12,13 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/events"
-	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
-<<<<<<< HEAD
-	"github.com/multica-ai/multica/server/internal/integrations/delivery"
-=======
 	"github.com/multica-ai/multica/server/internal/util"
->>>>>>> upstream/main
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -41,19 +36,11 @@ type outboundQueries interface {
 // subscribers on the shared event bus. Registered only when DingTalk is
 // configured.
 type Outbound struct {
-<<<<<<< HEAD
-	q        outboundQueries
-	decrypt  Decrypter
-	client   *Client
-	logger   *slog.Logger
-	delivery delivery.Recorder
-=======
 	q       outboundQueries
 	decrypt Decrypter
 	client  *Client
 	ack     *ackNotifier
 	logger  *slog.Logger
->>>>>>> upstream/main
 }
 
 // NewOutbound builds the DingTalk outbound subscriber over the generated
@@ -69,21 +56,8 @@ func NewOutbound(q outboundQueries, decrypt Decrypter, client *Client, ack *ackN
 	return &Outbound{q: q, decrypt: decrypt, client: client, ack: ack, logger: logger}
 }
 
-<<<<<<< HEAD
-// WithDeliveryRecorder enables the shared delivery claim and evidence
-// contract without coupling the DingTalk transport to database details.
-func (o *Outbound) WithDeliveryRecorder(recorder delivery.Recorder) *Outbound {
-	o.delivery = recorder
-	return o
-}
-
-// Register subscribes to chat-done and task-failed. Task-failed keeps the DingTalk
-// conversation consistent with the web transcript — without it a failed run
-// leaves the user staring at the "👀 On it" ack forever.
-=======
 // Register subscribes to every chat-task terminal event. Task-cancelled carries
 // no reply content, but still has to clear the source-message reaction.
->>>>>>> upstream/main
 func (o *Outbound) Register(bus *events.Bus) {
 	bus.Subscribe(protocol.EventChatDone, o.handleEvent)
 	bus.Subscribe(protocol.EventTaskFailed, o.handleEvent)
@@ -155,17 +129,17 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 	if content == "" {
 		return nil
 	}
-	taskDelivery, err := o.q.GetChannelTaskDelivery(ctx, taskID)
+	delivery, err := o.q.GetChannelTaskDelivery(ctx, taskID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		return fmt.Errorf("lookup dingtalk task delivery: %w", err)
 	}
-	if taskDelivery.ChannelType != string(TypeDingTalk) {
+	if delivery.ChannelType != string(TypeDingTalk) {
 		return nil
 	}
-	binding := bindingFromTaskDelivery(taskDelivery)
+	binding := bindingFromTaskDelivery(delivery)
 	task, err := o.q.GetAgentTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("load agent task: %w", err)
@@ -210,24 +184,9 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		return fmt.Errorf("decode dingtalk credentials: %w", err)
 	}
 	s := &sender{client: o.client, robotCode: creds.RobotCode, appKey: creds.AppKey, appSecret: creds.AppSecret}
-<<<<<<< HEAD
-	operation := delivery.OperationChatReply
-	if e.Type == protocol.EventTaskFailed {
-		operation = delivery.OperationFailureNotice
-	}
-	_, err = delivery.Send(ctx, o.delivery, delivery.ClaimInput{
-		WorkspaceID: inst.WorkspaceID, InstallationID: inst.ID, TaskID: taskID, ChatSessionID: sessionID,
-		ChannelType: TypeDingTalk, ChannelChatID: binding.ChannelChatID, OperationKind: operation, Payload: content,
-	}, func(sendCtx context.Context) (channel.SendResult, error) {
-		key, sendErr := s.send(sendCtx, outboundTarget(binding), content)
-		return channel.SendResult{MessageID: key}, sendErr
-	})
-	if err != nil {
-=======
 	target := outboundTarget(binding)
 	target.QuoteText = sealedInputQuote(input.Content)
 	if _, err := s.send(ctx, target, content); err != nil {
->>>>>>> upstream/main
 		return fmt.Errorf("post dingtalk reply: %w", err)
 	}
 	// A failure notice is terminal, but it is not a successfully completed task.

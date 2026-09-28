@@ -358,20 +358,6 @@ type TaskCancellationActor struct {
 }
 
 type AgentTaskResponse struct {
-<<<<<<< HEAD
-	ID          string `json:"id"`
-	AgentID     string `json:"agent_id"`
-	RuntimeID   string `json:"runtime_id"`
-	IssueID     string `json:"issue_id"`
-	WorkspaceID string `json:"workspace_id"`
-	// RoleSourcePin is immutable execution provenance for source-managed
-	// agents. Daemon claims populate it; ordinary agents omit it. The pin
-	// contains no secret values or artifact bodies.
-	RoleSourcePin        *protocol.RoleSourceTaskPin `json:"role_source_pin,omitempty"`
-	WorkspaceSlug        string                      `json:"workspace_slug,omitempty"`
-	IssueIdentifier      string                      `json:"issue_identifier,omitempty"`
-	RemoteMCPConnections []remotemcp.Connection      `json:"remote_mcp_connections,omitempty"`
-=======
 	StartClaimSupported      bool                   `json:"start_claim_supported,omitempty"`
 	CancelledByCommentChange bool                   `json:"cancelled_by_comment_change,omitempty"`
 	CancelledBy              *TaskCancellationActor `json:"cancelled_by,omitempty"`
@@ -384,7 +370,6 @@ type AgentTaskResponse struct {
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
->>>>>>> upstream/main
 	// PluginHookTools are the workspace's agent-trigger plugin hooks, which the
 	// daemon renders as MCP tools for this task. Resolved at claim time so
 	// disabling or uninstalling a plugin takes effect on the next task rather

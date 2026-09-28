@@ -300,7 +300,7 @@ SELECT
     $11,
     COALESCE($12::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, email_agent_config_digest, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, email_agent_policy_version_id, email_agent_approval_id, issue_snapshot
 `
 
 type CreateAutopilotTaskParams struct {
@@ -408,10 +408,13 @@ func (q *Queries) CreateAutopilotTask(ctx context.Context, arg CreateAutopilotTa
 		&i.BranchName,
 		&i.DurableWorkDir,
 		&i.ChannelContextRevision,
+		&i.EmailAgentConfigDigest,
 		&i.CommentThreadID,
 		&i.CancelledByType,
 		&i.CancelledByID,
 		&i.CancelledByName,
+		&i.EmailAgentPolicyVersionID,
+		&i.EmailAgentApprovalID,
 		&i.IssueSnapshot,
 	)
 	return i, err
@@ -938,7 +941,7 @@ func (q *Queries) GetAutopilotRunByWebhookDelivery(ctx context.Context, webhookD
 }
 
 const getAutopilotTaskByRun = `-- name: GetAutopilotTaskByRun :one
-SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot FROM agent_task_queue
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, email_agent_config_digest, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, email_agent_policy_version_id, email_agent_approval_id, issue_snapshot FROM agent_task_queue
 WHERE autopilot_run_id = $1
 ORDER BY created_at
 LIMIT 1
@@ -1004,10 +1007,13 @@ func (q *Queries) GetAutopilotTaskByRun(ctx context.Context, autopilotRunID pgty
 		&i.BranchName,
 		&i.DurableWorkDir,
 		&i.ChannelContextRevision,
+		&i.EmailAgentConfigDigest,
 		&i.CommentThreadID,
 		&i.CancelledByType,
 		&i.CancelledByID,
 		&i.CancelledByName,
+		&i.EmailAgentPolicyVersionID,
+		&i.EmailAgentApprovalID,
 		&i.IssueSnapshot,
 	)
 	return i, err
@@ -1626,6 +1632,103 @@ func (q *Queries) LockAutopilotForUpdate(ctx context.Context, arg LockAutopilotF
 		&i.PauseReason,
 	)
 	return i, err
+}
+
+const materializeRoleSourceAutomations = `-- name: MaterializeRoleSourceAutomations :many
+WITH input AS MATERIALIZED (
+    SELECT
+        (item ->> 'id')::UUID AS id,
+        item ->> 'operation' AS operation,
+        item ->> 'title' AS title,
+        item ->> 'description' AS description,
+        (item ->> 'assignee_id')::UUID AS assignee_id,
+        (item ->> 'created_by_id')::UUID AS created_by_id,
+        (item ->> 'trigger_id')::UUID AS trigger_id,
+        item ->> 'cron_expression' AS cron_expression,
+        item ->> 'timezone' AS timezone,
+        item ->> 'label' AS label
+    FROM jsonb_array_elements($1::jsonb) AS item
+), updated AS (
+    UPDATE autopilot target
+    SET title = input.title,
+        description = input.description,
+        updated_at = now()
+    FROM input
+    WHERE input.operation = 'update'
+      AND target.id = input.id
+      AND target.workspace_id = $2
+      AND target.assignee_type = 'agent'
+      AND target.assignee_id = input.assignee_id
+      AND target.status <> 'archived'
+    RETURNING target.id
+), inserted AS (
+    INSERT INTO autopilot (
+        id, workspace_id, title, description, assignee_type, assignee_id,
+        status, execution_mode, created_by_type, created_by_id
+    )
+    SELECT
+        id, $2, title, description, 'agent', assignee_id,
+        'paused', 'run_only', 'member', created_by_id
+    FROM input
+    WHERE operation = 'create'
+    RETURNING autopilot.id
+), targets AS MATERIALIZED (
+    SELECT id FROM updated
+    UNION ALL
+    SELECT id FROM inserted
+), triggers AS (
+    INSERT INTO autopilot_trigger (
+        id, autopilot_id, kind, enabled, cron_expression, timezone,
+        label, provider, published_by_type, published_by_id
+    )
+    SELECT
+        input.trigger_id, input.id, 'schedule', false,
+        input.cron_expression, input.timezone, input.label,
+        'generic', 'member', input.created_by_id
+    FROM input
+    JOIN targets ON targets.id = input.id
+    ON CONFLICT (id) DO UPDATE SET
+        cron_expression = EXCLUDED.cron_expression,
+        timezone = EXCLUDED.timezone,
+        label = EXCLUDED.label,
+        published_by_type = EXCLUDED.published_by_type,
+        published_by_id = EXCLUDED.published_by_id,
+        updated_at = now()
+    WHERE autopilot_trigger.autopilot_id = EXCLUDED.autopilot_id
+      AND autopilot_trigger.kind = 'schedule'
+    RETURNING autopilot_id
+)
+SELECT autopilot_id FROM triggers
+ORDER BY autopilot_id
+`
+
+type MaterializeRoleSourceAutomationsParams struct {
+	Automations []byte      `json:"automations"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Create/update bounded paused Autopilots and their deterministic disabled
+// schedule triggers in one statement. Existing status, execution mode,
+// assignee and trigger enabled state are preserved. Only a trigger successfully
+// inserted or updated contributes an ID to the exact-set response.
+func (q *Queries) MaterializeRoleSourceAutomations(ctx context.Context, arg MaterializeRoleSourceAutomationsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, materializeRoleSourceAutomations, arg.Automations, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var autopilot_id pgtype.UUID
+		if err := rows.Scan(&autopilot_id); err != nil {
+			return nil, err
+		}
+		items = append(items, autopilot_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pauseAutopilotsByUnboundAgents = `-- name: PauseAutopilotsByUnboundAgents :many

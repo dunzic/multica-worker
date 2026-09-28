@@ -43,11 +43,7 @@ func TestFinalizeTaskClaimFailureRollsBackTokenThenRequeue(t *testing.T) {
 		WorkspaceID: util.MustParseUUID(workspaceID),
 		UserID:      util.MustParseUUID(userID),
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-<<<<<<< HEAD
-	}, []pgtype.UUID{bogus}, true, false)
-=======
 	}, []pgtype.UUID{bogus}, true, nil, nil)
->>>>>>> upstream/main
 	if ferr == nil {
 		t.Fatal("expected FinalizeTaskClaim to fail for an out-of-plan delivery receipt")
 	}

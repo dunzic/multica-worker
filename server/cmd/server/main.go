@@ -453,15 +453,6 @@ func main() {
 	// global Redis configuration.
 	relayCtx, relayCancel := context.WithCancel(context.Background())
 	var broadcaster realtime.Broadcaster = hub
-<<<<<<< HEAD
-	var durableBroadcaster realtime.DurableBroadcaster = hub
-	var storeRedis *redis.Client
-	var channelLeaseRedis *redis.Client
-	var relayWriteRedis *redis.Client
-	var relayReadRedis *redis.Client
-	var shardedReadRedis *redis.Client
-	var legacyReadRedis *redis.Client
-=======
 	var storeRedis redis.UniversalClient
 	var storeRedisPoolSize int
 	var channelLeaseRedis redis.UniversalClient
@@ -470,7 +461,6 @@ func main() {
 	var relayReadRedis redis.UniversalClient
 	var shardedReadRedis redis.UniversalClient
 	var legacyReadRedis redis.UniversalClient
->>>>>>> upstream/main
 	var relay realtime.ManagedRelay
 	// stopRelay halts the relay readers and drains the WeCom dispatcher. It is
 	// called from the shutdown BODY, before the channel supervisor is torn
@@ -582,17 +572,7 @@ func main() {
 			// open on a replay window, so anything registered after Start
 			// silently misses it.
 			relay.Start(relayCtx)
-<<<<<<< HEAD
-			dualWrite := realtime.NewDualWriteBroadcaster(hub, relay)
-			broadcaster = dualWrite
-			durableBroadcaster = dualWrite
-			storePoolSize := 0
-			if storeRedis != nil {
-				storePoolSize = storeRedis.Options().PoolSize
-			}
-=======
 			broadcaster = realtime.NewDualWriteBroadcaster(hub, relay)
->>>>>>> upstream/main
 			slog.Info(
 				"realtime: Redis relay enabled",
 				"node_id", relay.NodeID(),
@@ -641,17 +621,9 @@ func main() {
 	var httpMetrics *obsmetrics.HTTPMetrics
 	var businessMetrics *obsmetrics.BusinessMetrics
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
-	var channelDeliveryMetrics *obsmetrics.ChannelDeliveryMetrics
 	var channelLeaseMetrics *obsmetrics.ChannelLeaseMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
-<<<<<<< HEAD
-	var roleSourceMetrics *obsmetrics.RoleSourceMetrics
-	var roleSourceArtifactGCMetrics *obsmetrics.RoleSourceArtifactGCMetrics
-	var roleSourceArtifactIntegrityMetrics *obsmetrics.RoleSourceArtifactIntegrityMetrics
-	var roleSourceRetentionMetrics *obsmetrics.RoleSourceRetentionMetrics
-=======
 	var dbRoutingMetrics *obsmetrics.DBRoutingMetrics
->>>>>>> upstream/main
 	if metricsConfig.Enabled() {
 		metricsRegistry := obsmetrics.NewRegistry(obsmetrics.RegistryOptions{
 			Pool:        pool,
@@ -664,17 +636,9 @@ func main() {
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
 		channelMediaMetrics = metricsRegistry.ChannelMedia
-		channelDeliveryMetrics = metricsRegistry.ChannelDelivery
 		channelLeaseMetrics = metricsRegistry.ChannelLease
 		wecomMetrics = metricsRegistry.Wecom
-<<<<<<< HEAD
-		roleSourceMetrics = metricsRegistry.RoleSource
-		roleSourceArtifactGCMetrics = metricsRegistry.RoleSourceArtifactGC
-		roleSourceArtifactIntegrityMetrics = metricsRegistry.RoleSourceArtifactIntegrity
-		roleSourceRetentionMetrics = metricsRegistry.RoleSourceRetention
-=======
 		dbRoutingMetrics = metricsRegistry.DBRouting
->>>>>>> upstream/main
 		// Forward inbound daemon WS frames into the per-kind counter so
 		// dashboards can split heartbeat / unknown / invalid traffic.
 		if daemonHub != nil {
@@ -716,22 +680,6 @@ func main() {
 	}
 
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
-<<<<<<< HEAD
-		HTTPMetrics:            httpMetrics,
-		BusinessMetrics:        businessMetrics,
-		ChannelLeaseMetrics:    channelLeaseMetrics,
-		SeatCapacityMetrics:    seatCapacityMetrics,
-		ChannelLeaseRedis:      channelLeaseRedis,
-		WecomMetrics:           wecomMetrics,
-		RoleSourceMetrics:      roleSourceMetrics,
-		ChannelDeliveryMetrics: channelDeliveryMetrics,
-		DaemonHub:              daemonHub,
-		DaemonWakeup:           daemonWakeup,
-		FeatureFlags:           flags,
-		HeartbeatScheduler:     heartbeatScheduler,
-		DurableBroadcaster:     durableBroadcaster,
-		LLMMaxRetries:          llmMaxRetries,
-=======
 		HTTPMetrics:         httpMetrics,
 		BusinessMetrics:     businessMetrics,
 		ChannelLeaseMetrics: channelLeaseMetrics,
@@ -745,7 +693,6 @@ func main() {
 		HeartbeatScheduler:  heartbeatScheduler,
 		LLMMaxRetries:       llmMaxRetries,
 		LLMDisableThinking:  llmDisableThinking,
->>>>>>> upstream/main
 	})
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
@@ -852,24 +799,6 @@ func main() {
 	if h.ChannelMediaReconciler != nil {
 		h.ChannelMediaReconciler.Metrics = channelMediaMetrics
 		go h.ChannelMediaReconciler.Run(sweepCtx)
-	}
-	if h.RoleSourceArtifactReconciler != nil {
-		h.RoleSourceArtifactReconciler.Metrics = roleSourceArtifactGCMetrics
-		go h.RoleSourceArtifactReconciler.Run(sweepCtx)
-	}
-	if h.RoleSourceArtifactIntegrityReconciler != nil {
-		h.RoleSourceArtifactIntegrityReconciler.Metrics = roleSourceArtifactIntegrityMetrics
-		go h.RoleSourceArtifactIntegrityReconciler.Run(sweepCtx)
-	}
-	if h.RoleSourceRetentionReconciler != nil {
-		h.RoleSourceRetentionReconciler.Metrics = roleSourceRetentionMetrics
-		go h.RoleSourceRetentionReconciler.Run(sweepCtx)
-	}
-	if h.RoleSourceOutboxDispatcher != nil {
-		go h.RoleSourceOutboxDispatcher.Run(sweepCtx)
-	}
-	if h.ChannelDeliveryReconciler != nil {
-		go h.ChannelDeliveryReconciler.Run(sweepCtx)
 	}
 
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the

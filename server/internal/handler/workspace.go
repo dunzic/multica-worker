@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
-	"github.com/multica-ai/multica/server/internal/drlock"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -1137,24 +1136,6 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		failWorkspaceDelete(w, r, workspaceID, "lock workspace", err)
 		return
 	}
-<<<<<<< HEAD
-	if _, err := tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock_shared($1)", drlock.AdvisoryLockKey); err != nil {
-		failWorkspaceDelete(w, r, workspaceID, "lock role-source disaster recovery", err)
-		return
-	}
-
-	// Legal hold is a hard compliance fence, not another best-effort child
-	// cleanup. Check it after the workspace lock so a concurrent hold creation
-	// either commits first and blocks this deletion, or waits and then finds the
-	// workspace gone. No teardown mutation has run at this point.
-	activeLegalHolds, err := qtx.CountActiveRoleSourceLegalHoldsInWorkspace(r.Context(), requester.WorkspaceID)
-	if err != nil {
-		failWorkspaceDelete(w, r, workspaceID, "check legal holds", err)
-		return
-	}
-	if activeLegalHolds > 0 {
-		writeError(w, http.StatusConflict, "workspace deletion is blocked by active legal holds")
-=======
 	// Take a best-effort snapshot for post-commit daemon invalidation. Runtime
 	// registration does not participate in the workspace delete lock protocol,
 	// so PR1 retains the heartbeat lookup as the correctness fallback for a
@@ -1162,7 +1143,6 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	runtimeIDs, err := qtx.ListAgentRuntimeIDsByWorkspace(r.Context(), requester.WorkspaceID)
 	if err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list runtimes", err)
->>>>>>> upstream/main
 		return
 	}
 
@@ -1335,10 +1315,6 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		{
 			name: "delete agents",
 			run:  func() error { return qtx.DeleteWorkspaceAgents(ctx, requester.WorkspaceID) },
-		},
-		{
-			name: "delete role sources",
-			run:  func() error { return qtx.DeleteWorkspaceRoleSources(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete runtimes and projects",
