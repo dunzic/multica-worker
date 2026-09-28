@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/attributionbackfill"
 	"github.com/multica-ai/multica/server/internal/chatoriginbackfill"
@@ -58,6 +59,27 @@ var commentContentBigramIndex = usableIndexRequirement{
 	AccessMethod:  "gin",
 	OperatorClass: "gin_bigm_ops",
 	Expression:    "lower(content)",
+	Extension:     "pg_bigm",
+}
+
+// extensionOperatorClass names an operator class a migration writes literally
+// into a CREATE INDEX, together with the extension that must own it. A
+// migration cannot both build concurrently and swallow a missing extension in a
+// DO ... EXCEPTION block, so the ones that need an optional opclass are gated on
+// this instead.
+type extensionOperatorClass struct {
+	AccessMethod  string
+	OperatorClass string
+	Extension     string
+}
+
+// pgBigmOperatorClass gates migrations that build optional pg_bigm indexes.
+// pg_bigm ships with neither core Postgres nor the pgvector image CI and
+// self-hosted deployments run, so those migrations must remain safe when the
+// operator class is unavailable.
+var pgBigmOperatorClass = extensionOperatorClass{
+	AccessMethod:  "gin",
+	OperatorClass: "gin_bigm_ops",
 	Extension:     "pg_bigm",
 }
 
@@ -118,6 +140,44 @@ var commentContentBigramIndex = usableIndexRequirement{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"563_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
+	"562_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
+	"552_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
+	"535_github_pr_address_index":                               "idx_github_pull_request_pr_owner_repo",
+	"539_task_supplement_request_index":                         "task_supplement_task_request_uidx",
+	"540_task_supplement_capability_index":                      "task_supplement_capability_task_uidx",
+	"541_task_supplement_comment_index":                         "task_supplement_comment_uidx",
+	"546_issue_pr_automation_workspace_index":                   "idx_issue_pr_automation_workspace",
+	"547_issue_pull_request_exclusion_workspace_index":          "idx_issue_pull_request_exclusion_workspace",
+	"548_task_supplement_comment_task_index":                    "task_supplement_comment_task_uidx",
+	"554_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",
+	"556_wakeup_system_rule_index":                              "issue_wakeup_system_rule_idx",
+	"559_issue_child_event_id":                                  "issue_child_event_id_idx",
+	"560_issue_child_event_pending":                             "issue_child_event_pending_idx",
+	"510_wakeup_id":                                             "issue_wakeup_id_idx",
+	"511_wakeup_issue":                                          "issue_wakeup_issue_idx",
+	"512_wakeup_due":                                            "issue_wakeup_due_idx",
+	"513_wakeup_receipt_id":                                     "issue_wakeup_receipt_id_idx",
+	"514_wakeup_receipt_key":                                    "issue_wakeup_receipt_key_idx",
+	"515_wakeup_receipt_pending":                                "issue_wakeup_receipt_pending_idx",
+	"519_wakeup_event_issue":                                    "idx_wakeup_event_issue",
+	"521_wakeup_workspace_summary":                              "idx_wakeup_workspace_enabled",
+	"522_wakeup_run_lookup":                                     "agent_task_wakeup_lookup_idx",
+	"524_wakeup_workspace_history":                              "issue_wakeup_workspace_history_idx",
+	"525_wakeup_active_runs":                                    "agent_task_wakeup_active_idx",
+	"526_wakeup_terminal_runs":                                  "agent_task_wakeup_terminal_idx",
+	"527_wakeup_receipt_expiry":                                 "issue_wakeup_receipt_expiry_idx",
+	"529_wakeup_pending_event":                                  "issue_wakeup_pending_event_idx",
+	"503_channel_reply_delivery_turn_index":                     "idx_channel_reply_delivery_turn",
+	"504_channel_reply_delivery_installation_index":             "idx_channel_reply_delivery_installation",
+	"505_channel_reply_delivery_binding_index":                  "idx_channel_reply_delivery_binding",
+	"495_issue_to_label_label_id_index":                         "issue_to_label_label_idx",
+	"496_chat_session_agent_id_index":                           "idx_chat_session_agent_id",
+	"497_agent_task_queue_delegated_failure_evidence_index":     "idx_agent_task_queue_delegated_failure_evidence",
+	"498_chat_session_runtime_id_index":                         "idx_chat_session_runtime_id",
+	"486_maintenance_job_id_index":                              "idx_maintenance_job_id",
+	"487_maintenance_job_idempotency_index":                     "idx_maintenance_job_idempotency",
+	"488_maintenance_job_active_index":                          "idx_maintenance_job_active",
 	"035_task_queue_issue_id_index":                             "idx_agent_task_queue_issue_id",
 	"067_task_queue_claim_candidate_index":                      "idx_agent_task_queue_claim_candidates",
 	"074_task_usage_updated_at_index":                           "idx_task_usage_updated_at",
@@ -274,116 +334,20 @@ var concurrentIndexCleanups = map[string]string{
 	"438_agent_runtime_online_last_seen_index":                  "idx_agent_runtime_online_last_seen",
 	"439_agent_runtime_offline_last_seen_index":                 "idx_agent_runtime_offline_last_seen",
 	"440_github_pr_head_sha_index":                              "idx_github_pull_request_head_sha",
-	// The fork shipped these migrations before the upstream merge introduced
-	// overlapping numeric prefixes. Their full migration versions remain
-	// distinct and must not be renumbered: existing self-hosted databases have
-	// already recorded these exact stems in schema_migrations.
-	"274_role_source_id_unique":                                "role_source_id_unique",
-	"275_role_source_workspace_name_unique":                    "role_source_workspace_name_unique",
-	"276_role_source_workspace_index":                          "role_source_workspace_idx",
-	"277_role_source_snapshot_digest_unique":                   "role_source_snapshot_digest_unique",
-	"278_role_source_scan_request_id_unique":                   "role_source_scan_request_id_unique",
-	"279_role_source_snapshot_listing_index":                   "role_source_snapshot_listing_idx",
-	"280_role_source_plan_digest_unique":                       "role_source_plan_digest_unique",
-	"281_role_source_plan_listing_index":                       "role_source_plan_listing_idx",
-	"282_role_source_approval_id_unique":                       "role_source_approval_id_unique",
-	"283_role_source_approval_listing_index":                   "role_source_approval_listing_idx",
-	"284_role_source_apply_id_unique":                          "role_source_apply_id_unique",
-	"285_role_source_apply_request_unique":                     "role_source_apply_request_unique",
-	"286_role_source_apply_listing_index":                      "role_source_apply_listing_idx",
-	"287_role_source_audit_id_unique":                          "role_source_audit_id_unique",
-	"288_role_source_audit_sequence_unique":                    "role_source_audit_sequence_unique",
-	"289_role_source_audit_listing_index":                      "role_source_audit_listing_idx",
-	"290_role_source_scan_active_unique":                       "role_source_scan_active_unique",
-	"291_role_source_scan_queue_index":                         "role_source_scan_queue_idx",
-	"292_role_source_scan_listing_index":                       "role_source_scan_listing_idx",
-	"293_role_source_runtime_scan_index":                       "role_source_runtime_scan_idx",
-	"295_role_source_approval_request_unique":                  "role_source_plan_approval_request_unique",
-	"297_role_source_artifact_digest_unique":                   "role_source_artifact_digest_unique",
-	"299_role_source_mapping_identity_unique":                  "role_source_mapping_identity_unique",
-	"300_role_source_mapping_target_unique":                    "role_source_mapping_target_unique",
-	"301_role_source_mapping_listing_index":                    "role_source_mapping_listing_idx",
-	"302_role_source_capability_version_unique":                "role_source_capability_version_unique",
-	"303_role_source_capability_listing_index":                 "role_source_capability_listing_idx",
-	"305_role_source_secret_transfer_id_unique":                "role_source_secret_transfer_id_unique",
-	"306_role_source_secret_transfer_request_unique":           "role_source_secret_transfer_request_unique",
-	"307_role_source_secret_transfer_claim_index":              "role_source_secret_transfer_claim_idx",
-	"308_role_source_secret_transfer_expiry_index":             "role_source_secret_transfer_expiry_idx",
-	"310_channel_delivery_identity_unique":                     "idx_channel_delivery_identity",
-	"311_channel_delivery_external_unique":                     "idx_channel_delivery_external",
-	"312_channel_delivery_workspace_listing_index":             "idx_channel_delivery_workspace_listing",
-	"313_channel_delivery_recovery_index":                      "idx_channel_delivery_recovery",
-	"314_channel_delivery_id_unique":                           "idx_channel_delivery_id",
-	"315_channel_delivery_correlation_unique":                  "idx_channel_delivery_correlation",
-	"317_role_source_task_pin_unique":                          "role_source_task_pin_task_unique",
-	"318_role_source_task_pin_listing_index":                   "role_source_task_pin_listing_idx",
-	"322_role_source_mapping_target_unique_partial":            "role_source_mapping_target_unique",
-	"323_role_source_active_task_impact_index":                 "role_source_active_task_impact_idx",
-	"325_role_source_apply_failure_id_unique":                  "role_source_apply_failure_id_unique",
-	"326_role_source_apply_failure_listing_index":              "role_source_apply_failure_listing_idx",
-	"328_role_source_snapshot_artifact_unique":                 "role_source_snapshot_artifact_unique",
-	"329_role_source_snapshot_artifact_reachability_index":     "role_source_snapshot_artifact_reachability_idx",
-	"332_role_source_artifact_delete_intent_unique":            "role_source_artifact_delete_intent_unique",
-	"333_role_source_artifact_delete_intent_due_index":         "role_source_artifact_delete_intent_due_idx",
-	"335_role_source_runtime_attestation_unique":               "role_source_runtime_attestation_runtime_unique",
-	"336_role_source_runtime_attestation_observation_unique":   "role_source_runtime_attestation_observation_unique",
-	"337_role_source_runtime_attestation_workspace_index":      "role_source_runtime_attestation_workspace_index",
-	"338_role_source_runtime_attestation_observation_index":    "role_source_runtime_attestation_observation_index",
-	"340_role_source_legal_hold_id_unique":                     "role_source_legal_hold_id_unique",
-	"341_role_source_legal_hold_request_unique":                "role_source_legal_hold_request_unique",
-	"342_role_source_legal_hold_release_unique":                "role_source_legal_hold_release_unique",
-	"343_role_source_legal_hold_listing_index":                 "role_source_legal_hold_listing_idx",
-	"346_role_source_retention_policy_id_unique":               "role_source_retention_policy_id_unique",
-	"347_role_source_retention_policy_version_unique":          "role_source_retention_policy_version_unique",
-	"348_role_source_retention_policy_request_unique":          "role_source_retention_policy_request_unique",
-	"349_role_source_retention_candidate_id_unique":            "role_source_retention_candidate_id_unique",
-	"350_role_source_retention_candidate_snapshot_unique":      "role_source_retention_candidate_snapshot_unique",
-	"351_role_source_retention_candidate_claim_index":          "role_source_retention_candidate_claim_idx",
-	"355_role_source_artifact_integrity_unique":                "role_source_artifact_integrity_unique",
-	"356_role_source_artifact_integrity_due_index":             "role_source_artifact_integrity_due_idx",
-	"359_role_source_scan_request_unique":                      "role_source_scan_request_unique",
-	"360_role_source_secret_transfer_plan_index":               "role_source_secret_transfer_plan_idx",
-	"361_role_source_lifecycle_audit_listing_index":            "role_source_lifecycle_audit_listing_idx",
-	"363_role_source_outbox_id_unique":                         "role_source_outbox_id_unique",
-	"364_role_source_outbox_due_index":                         "role_source_outbox_due_idx",
-	"365_role_source_outbox_status_index":                      "role_source_outbox_status_idx",
-	"366_role_source_outbox_published_cleanup_index":           "role_source_outbox_published_cleanup_idx",
-	"367_role_source_outbox_dead_cleanup_index":                "role_source_outbox_dead_cleanup_idx",
-	"368_role_source_outbox_workspace_index":                   "role_source_outbox_workspace_idx",
-	"370_role_source_outbox_replay_id_unique":                  "role_source_outbox_replay_id_unique",
-	"371_role_source_outbox_replay_generation_unique":          "role_source_outbox_replay_generation_unique",
-	"372_role_source_outbox_replay_listing_index":              "role_source_outbox_replay_listing_idx",
-	"374_role_source_outbox_replay_authorization_unique":       "role_source_outbox_replay_authorization_unique",
-	"379_role_source_materialized_target_unique":               "role_source_mapping_materialized_target_unique",
-	"382_role_source_artifact_delete_intent_id_unique":         "role_source_artifact_delete_intent_id_unique",
-	"384_role_source_artifact_purge_receipt_intent_unique":     "role_source_artifact_purge_receipt_intent_unique",
-	"385_role_source_artifact_purge_receipt_workspace_index":   "role_source_artifact_purge_receipt_workspace_idx",
-	"391_channel_delivery_reconciliation_id_unique":            "channel_delivery_reconciliation_id_unique",
-	"392_channel_delivery_reconciliation_generation_unique":    "channel_delivery_reconciliation_generation_unique",
-	"393_channel_delivery_reconciliation_listing_index":        "channel_delivery_reconciliation_listing_idx",
-	"394_channel_delivery_reconciliation_authorization_unique": "channel_delivery_reconciliation_authorization_unique",
-	"397_chat_message_assistant_task_index":                    "idx_chat_message_assistant_task",
-	"398_channel_delivery_retry_publish_due_index":             "idx_channel_delivery_retry_publish_due",
-	"443_agent_email_policy_id_unique":                         "agent_email_policy_version_id_uidx",
-	"444_agent_email_policy_version_unique":                    "agent_email_policy_version_uidx",
-	"445_agent_email_policy_config_lookup":                     "agent_email_policy_config_idx",
-	"446_agent_email_policy_state_unique":                      "agent_email_policy_state_agent_uidx",
-	"447_agent_email_approval_id_unique":                       "agent_email_approval_id_uidx",
-	"448_agent_email_approval_latest_lookup":                   "agent_email_approval_latest_idx",
-	"449_email_message_id_unique":                              "email_message_id_uidx",
-	"450_email_message_idempotency_unique":                     "email_message_idempotency_uidx",
-	"451_email_message_queue":                                  "email_message_queue_idx",
-	"452_agent_email_quota_message_unique":                     "agent_email_quota_message_uidx",
-	"453_agent_email_quota_provider_window":                    "agent_email_quota_provider_window_idx",
-	"454_agent_email_quota_workspace_window":                   "agent_email_quota_workspace_window_idx",
-	"455_agent_email_quota_agent_window":                       "agent_email_quota_agent_window_idx",
-	"456_agent_email_quota_sender_window":                      "agent_email_quota_sender_window_idx",
-	"457_email_delivery_recipient_id_unique":                   "email_delivery_recipient_id_uidx",
-	"458_email_delivery_recipient_message_unique":              "email_delivery_recipient_message_uidx",
-	"459_agent_email_approval_request_unique":                  "agent_email_approval_request_uidx",
-	"460_email_message_expired_sending":                        "email_message_expired_sending_idx",
-	"462_agent_email_queue_workspace_v2":                       "email_message_queue_v2_idx",
-	"464_agent_email_expired_sending_workspace_v2":             "email_message_expired_sending_v2_idx",
+	"443_issue_project_status_index":                            "idx_issue_project_status",
+	"445_comment_delegated_failure_unsettled_index":             "idx_comment_delegated_failure_unsettled",
+	"446_issue_properties_bigm_index":                           "idx_issue_properties_bigm",
+	"452_agent_task_pending_thread_unique":                      "idx_one_pending_task_per_issue_agent_thread",
+	"459_chat_message_assistant_task_index":                     "idx_chat_message_assistant_task",
+	"460_agent_task_queue_autopilot_run_created_at_index":       "idx_agent_task_queue_autopilot_run_created_at",
+	"465_agent_task_queue_chat_with_session_index":              "idx_agent_task_queue_chat_with_session_created_at",
+	"466_activity_log_member_assignee_frequency_index":          "idx_activity_log_member_assignee_frequency",
+	"472_agent_task_queue_chat_session_index":                   "idx_agent_task_queue_chat_session",
+	"474_dingtalk_bot_identity_workspace_index":                 "idx_dingtalk_bot_identity_workspace",
+	"480_instance_telemetry_state_singleton_index":              "instance_telemetry_state_singleton_uidx",
+	"482_agent_task_queue_telemetry_started_index":              "idx_agent_task_queue_telemetry_started",
+	"484_issue_triage_state_index":                              "idx_issue_triage_state",
+	"537_issue_duplicate_of_index":                              "idx_issue_duplicate_of",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -407,10 +371,14 @@ var concurrentDownIndexCleanups = map[string]string{
 	"375_drop_issue_last_activity_index":                    "idx_issue_workspace_last_activity",
 	"391_drop_agent_task_queue_dispatched_prepare_index":    "idx_agent_task_queue_dispatched_prepare",
 	"437_drop_agent_runtime_last_seen_at_index":             "idx_agent_runtime_last_seen_at",
-	"321_role_source_mapping_target_unique_replace":         "role_source_mapping_target_unique",
-	"380_role_source_mapping_target_unique_relax":           "role_source_mapping_target_unique",
-	"463_drop_agent_email_queue_v1":                         "email_message_queue_idx",
-	"465_drop_agent_email_expired_sending_v1":               "email_message_expired_sending_idx",
+	"450_drop_comment_delegated_failure_pending_index":      "idx_comment_delegated_failure_pending",
+	"453_drop_pending_issue_agent_unique":                   "idx_one_pending_task_per_issue_agent_v2",
+	"548_task_supplement_comment_task_index":                "task_supplement_comment_uidx",
+	"454_drop_comment_content_bigm_index":                   "idx_comment_content_bigm",
+	"455_drop_comment_content_trgm_index":                   "idx_comment_content_trgm",
+	"463_drop_issue_description_bigm_index":                 "idx_issue_description_bigm",
+	"464_drop_issue_description_trgm_index":                 "idx_issue_description_trgm",
+	"473_drop_agent_task_queue_chat_with_session_index":     "idx_agent_task_queue_chat_with_session_created_at",
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {
@@ -484,13 +452,35 @@ func refuseChannelChatRouteHistoryRollbackWith(ctx context.Context, query rowQue
 }
 
 var upMigrationConditions = map[string]migrationCondition{
-	// Fresh databases that successfully built the CJK-friendly bigram index do
-	// not need to build the trigram fallback only to remove it at migration 371.
-	"140_comment_content_trgm_index": whenIndexNotUsable(commentContentBigramIndex),
+	// Preserve applied history; pending 469 is superseded by the bounded expand
+	// migration. SaaS backfills separately; self-host converges in 491.
+	"469_issue_status_lifecycle_categories": skipMigration("superseded by 478 expansion and 491 convergence (MUL-7365)"),
+	// Current search no longer consumes an issue-description GIN. Fresh installs
+	// should not build the historical fallback only to retire it at migration 464.
+	"139_issue_description_trgm_index": skipMigration("issue description search indexes are retired by migration 464"),
+	// Current search no longer consumes a comment-content GIN. Fresh installs
+	// should not build the historical fallback only to retire it at migration 455.
+	"140_comment_content_trgm_index": skipMigration("comment content search indexes are retired by migration 455"),
 	// Existing pg_bigm deployments already have both indexes. Remove the
 	// fallback only after proving the preferred index has the exact usable shape;
 	// pg_bigm-less self-hosted databases keep trgm and record 371 as a no-op.
 	"371_comment_content_search_index_strategy": whenIndexUsable(commentContentBigramIndex),
+	// The properties prefilter index is an optimization, not a correctness
+	// requirement: build it where pg_bigm exists and record a no-op everywhere
+	// else, rather than failing the run (and with it backend startup) on every
+	// database without the extension.
+	"446_issue_properties_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
+}
+
+// Migrations 454 and 455 restore the mutually exclusive comment search index
+// selected before its retirement: pg_bigm deployments get the preferred bigram
+// index, while pg_bigm-less self-hosted deployments get the trigram fallback.
+// Migration 463 independently restores the optional issue-description bigram;
+// migration 464's portable trigram rollback is unconditional.
+var downMigrationConditions = map[string]migrationCondition{
+	"454_drop_comment_content_bigm_index":   whenOperatorClassAvailable(pgBigmOperatorClass),
+	"455_drop_comment_content_trgm_index":   whenOperatorClassUnavailable(pgBigmOperatorClass),
+	"463_drop_issue_description_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
 }
 
 func hooksForDirection(direction string) map[string]preMigrationHook {
@@ -520,12 +510,20 @@ func ensureSourceContextRollbackSafe(ctx context.Context, pool *pgxpool.Pool) er
 }
 
 func conditionsForDirection(direction string) map[string]migrationCondition {
-	if direction == "up" {
+	switch direction {
+	case "up":
 		return upMigrationConditions
+	case "down":
+		return downMigrationConditions
+	default:
+		return nil
 	}
-	// Rollbacks intentionally ignore environment gates: they restore the
-	// portable pre-migration schema regardless of which up SQL actually ran.
-	return nil
+}
+
+func skipMigration(reason string) migrationCondition {
+	return func(context.Context, *pgxpool.Conn) (bool, string, error) {
+		return false, reason, nil
+	}
 }
 
 func whenIndexUsable(requirement usableIndexRequirement) migrationCondition {
@@ -549,6 +547,56 @@ func whenIndexNotUsable(requirement usableIndexRequirement) migrationCondition {
 		}
 		if usable {
 			return false, fmt.Sprintf("preferred index %s is ready", requirement.IndexRegclass), nil
+		}
+		return true, "", nil
+	}
+}
+
+// whenOperatorClassAvailable lets a migration's SQL run only where the operator
+// class it names is installed, owned by the expected extension, and visible on
+// the search_path the migration itself will resolve the unqualified name
+// against — the condition runs on the same pinned connection as the SQL.
+//
+// Checking the extension alone would be weaker: an opclass in a schema outside
+// the search_path still fails the CREATE INDEX, which would abort the run.
+func whenOperatorClassAvailable(opclass extensionOperatorClass) migrationCondition {
+	return func(ctx context.Context, conn *pgxpool.Conn) (bool, string, error) {
+		var available bool
+		if err := conn.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_opclass opc
+				JOIN pg_am am ON am.oid = opc.opcmethod
+				JOIN pg_depend dep
+				  ON dep.classid = 'pg_opclass'::regclass
+				 AND dep.objid = opc.oid
+				 AND dep.refclassid = 'pg_extension'::regclass
+				 AND dep.deptype = 'e'
+				JOIN pg_extension ext ON ext.oid = dep.refobjid
+				WHERE opc.opcname = $1
+				  AND am.amname = $2
+				  AND ext.extname = $3
+				  AND pg_opclass_is_visible(opc.oid)
+			)
+		`, opclass.OperatorClass, opclass.AccessMethod, opclass.Extension).Scan(&available); err != nil {
+			return false, "", fmt.Errorf("inspect operator class %q: %w", opclass.OperatorClass, err)
+		}
+		if !available {
+			return false, fmt.Sprintf("operator class %s (%s) is not installed", opclass.OperatorClass, opclass.Extension), nil
+		}
+		return true, "", nil
+	}
+}
+
+func whenOperatorClassUnavailable(opclass extensionOperatorClass) migrationCondition {
+	availableCondition := whenOperatorClassAvailable(opclass)
+	return func(ctx context.Context, conn *pgxpool.Conn) (bool, string, error) {
+		available, _, err := availableCondition(ctx, conn)
+		if err != nil {
+			return false, "", err
+		}
+		if available {
+			return false, fmt.Sprintf("operator class %s (%s) is installed", opclass.OperatorClass, opclass.Extension), nil
 		}
 		return true, "", nil
 	}
@@ -753,7 +801,13 @@ func main() {
 	}
 
 	startupSettings := dbstartup.SettingsFromEnv()
-	pool, err := dbstartup.NewPool(context.Background(), dbURL, startupSettings.ConnectTimeout)
+	poolConfig, err := dbstartup.ParsePoolConfig(dbURL, startupSettings.ConnectTimeout)
+	if err != nil {
+		slog.Error("unable to connect to database", "error", err)
+		os.Exit(1)
+	}
+	poolConfig.ConnConfig.OnNotice = logMigrationNotice
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		slog.Error("unable to connect to database", "error", err)
 		os.Exit(1)
@@ -814,6 +868,33 @@ func main() {
 	}
 
 	fmt.Println("Done.")
+}
+
+// migrationReportPrefix marks a notice a migration raises on purpose to say
+// what it changed, e.g.
+//
+//	RAISE NOTICE 'migration report: renamed % row(s)', n;
+//
+// Only these reach the migration log. The server's own notices cannot be told
+// apart from a deliberate RAISE by condition code — "does not exist, skipping"
+// and the rename notice of ADD CONSTRAINT ... USING INDEX both carry SQLSTATE
+// 00000 — so the marker is explicit.
+const migrationReportPrefix = "migration report: "
+
+// migrationReport returns the text of a notice raised with
+// migrationReportPrefix, and false for every other notice.
+func migrationReport(notice *pgconn.Notice) (string, bool) {
+	return strings.CutPrefix(notice.Message, migrationReportPrefix)
+}
+
+// logMigrationNotice forwards migration reports to the migration log. pgx
+// drops server notices unless a handler is set, so without it the per-row
+// report a data-repair migration prints (e.g. 476) never reached whoever ran
+// the deploy.
+func logMigrationNotice(_ *pgconn.PgConn, notice *pgconn.Notice) {
+	if report, ok := migrationReport(notice); ok {
+		slog.Info("migration report", "message", report)
+	}
 }
 
 // runMigrations applies (direction="up") or rolls back (direction="down")

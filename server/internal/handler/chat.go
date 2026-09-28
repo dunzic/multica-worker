@@ -613,6 +613,10 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 				writeError(w, http.StatusInternalServerError, "failed to cancel queued tasks for the archived session")
 				return
 			}
+			if err = service.SettleTerminalTaskState(r.Context(), qtx, cancelled...); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to settle terminal task state")
+				return
+			}
 		case errors.Is(bindingErr, pgx.ErrNoRows):
 			// A web-only chat has no room, no adapter and nowhere for a late
 			// answer to land, so there is nothing here to protect anyone from
@@ -716,6 +720,10 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	cancelled, err := qtx.CancelAgentTasksByChatSession(r.Context(), session.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to cancel chat session tasks")
+		return
+	}
+	if err := service.SettleTerminalTaskState(r.Context(), qtx, cancelled...); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to settle terminal task state")
 		return
 	}
 
@@ -883,7 +891,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// Shared verdict: an unbound agent and a machine whose CLI cannot run are
 	// both refusals here, with their own codes. A merely offline runtime is not
 	// checked at all — chat messages queue for it, as they always have.
-	if verdict, err := service.AgentReadiness(r.Context(), h.Queries, agent); err == nil && verdict.Blocked() {
+	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && verdict.Blocked() {
 		h.writeDispatchBlocked(w, http.StatusConflict, verdict.Reason)
 		return
 	}
@@ -931,9 +939,9 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// batch the instant it exists), attachment bindings, and the session touch
 	// all commit together, and the daemon is only notified after the commit. For
 	// web chat the sender is the authenticated request user (sessions are
-	// creator-only), so they are the task initiator — surfaced to the agent
-	// under `## Task Initiator`. actorType/actorID were resolved above for the
-	// invoke gate.
+	// creator-only), so they are the task initiator and the run's originator —
+	// surfaced to the agent under `## On Behalf Of`. actorType/actorID were
+	// resolved above for the invoke gate.
 	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
 	if err != nil {
 		switch {
@@ -1149,7 +1157,7 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 		case errors.Is(err, service.ErrChatQuickActionsNoTurn):
 			writeError(w, http.StatusConflict, "no assistant reply to refresh yet")
 		case errors.Is(err, service.ErrChatQuickActionsUnavailable):
-			writeError(w, http.StatusServiceUnavailable, "suggestions are not available on this deployment")
+			writeFeatureDisabled(w, "suggestions_not_available", "suggestions are not available on this deployment")
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to regenerate quick actions")
 		}
@@ -1793,6 +1801,7 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 
 	var (
 		queuedOnly      bool
@@ -1849,7 +1858,6 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "task not found")
 			return
 		}
-		actorType, actorID := h.resolveActor(r, userID, workspaceID)
 		if !h.canAccessPrivateAgent(r.Context(), agent, actorType, actorID, workspaceID) {
 			writeError(w, http.StatusForbidden, "you do not have access to this agent")
 			return
@@ -1861,6 +1869,7 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 		QueuedOnly:                 queuedOnly,
 		ExpectedChatSession:        expectedSession,
 		QueueAction:                queueAction,
+		CancelledBy:                h.taskCancellationActor(r.Context(), actorType, actorID),
 		UserInitiated:              true,
 	})
 	if errors.Is(err, service.ErrTaskNoLongerQueued) {

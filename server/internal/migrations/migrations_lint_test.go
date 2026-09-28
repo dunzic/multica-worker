@@ -4,8 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"path/filepath"
-	"reflect"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -13,8 +11,10 @@ import (
 	"testing"
 )
 
-const maxLegacyMigrationPrefix = 148
+func TestMigrationNumericPrefixesAreUnique(t *testing.T) {
+	files := migrationFilesForLint(t, "*.up.sql")
 
+<<<<<<< HEAD
 const (
 	forkHistoricalMigrationStemCount   = 126
 	forkHistoricalMigrationStemsSHA256 = "304acc4c2add0ef54f82c212e0977b337be5341596c73f7f490a6bea0f7ed4df"
@@ -56,9 +56,33 @@ var legacyDuplicateMigrationStems = map[string][]string{
 	"124": {"124_autopilot_run_planned_at", "124_channel_generalization", "124_task_prepare_lease"},
 	"127": {"127_issue_pull_request_reference_only", "127_task_squad_id", "127_user_composio_connection"},
 	"128": {"128_agent_task_queue_runtime_mcp_overlay", "128_autopilot_collaborator", "128_comment_routing_escalation"},
+=======
+	// Migrations through 128 contain historical duplicate numeric prefixes.
+	// From 129 onward, keep the numeric sequence unique so release tooling and
+	// operators can identify one schema change unambiguously by its number.
+	const firstUniqueMigrationNumber = 129
+	stemByNumber := make(map[int]string)
+	for _, file := range files {
+		stem, _, ok := splitMigrationFilename(filepath.Base(file))
+		if !ok {
+			continue
+		}
+		prefix, _, ok := strings.Cut(stem, "_")
+		if !ok {
+			continue
+		}
+		number, err := strconv.Atoi(prefix)
+		if err != nil || number < firstUniqueMigrationNumber {
+			continue
+		}
+		if previous, exists := stemByNumber[number]; exists {
+			t.Errorf("migrations %s and %s share numeric prefix %s", previous, stem, prefix)
+			continue
+		}
+		stemByNumber[number] = stem
+	}
+>>>>>>> upstream/main
 }
-
-var migrationPrefixPattern = regexp.MustCompile(`^(\d+)_`)
 
 func TestMigrationFilesHaveMatchingDirections(t *testing.T) {
 	files := migrationFilesForLint(t, "*.sql")
@@ -82,6 +106,7 @@ func TestMigrationFilesHaveMatchingDirections(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
 func TestMigrationNumericPrefixesStayUniqueAfterLegacySet(t *testing.T) {
 	stemsByPrefix := migrationStemsByPrefix(t)
 	assertForkHistoricalMigrationSet(t, stemsByPrefix)
@@ -210,6 +235,8 @@ func migrationStemsByPrefix(t *testing.T) map[string][]string {
 	return stemsByPrefix
 }
 
+=======
+>>>>>>> upstream/main
 func migrationFilesForLint(t *testing.T, pattern string) []string {
 	t.Helper()
 
@@ -243,28 +270,4 @@ func splitMigrationFilename(name string) (stem, direction string, ok bool) {
 		}
 	}
 	return "", "", false
-}
-
-func isKnownLegacyPrefix(prefix string) bool {
-	if _, ok := legacyDuplicateMigrationStems[prefix]; ok {
-		return true
-	}
-
-	switch prefix {
-	case "001", "002", "003", "004", "005", "006", "007", "008", "009", "010",
-		"011", "012", "013", "014", "015", "016", "017", "018", "019", "021",
-		"022", "023", "024", "025", "027", "028", "030", "031", "034", "036",
-		"037", "038", "039", "042", "044", "045", "047", "048", "049", "051",
-		"052", "053", "054", "055", "056", "057", "058", "059", "061", "062",
-		"063", "064", "066", "067", "068", "072", "073", "074", "075", "076",
-		"077", "078", "080", "081", "082", "085", "086", "087", "088", "089",
-		"090", "092", "093", "094", "097", "100", "101", "102", "103", "104",
-		"105", "106", "107", "108", "110", "114", "115", "116", "117", "118",
-		"119", "121", "123", "125", "126", "129", "130", "131", "132", "133",
-		"134", "135", "136", "137", "138", "139", "140", "141", "142", "143",
-		"144", "145", "146", "147", "148":
-		return true
-	default:
-		return false
-	}
 }

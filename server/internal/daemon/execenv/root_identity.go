@@ -119,15 +119,52 @@ func installTaskRootRecord(recordDir string, record taskRootRecord) error {
 	if err := os.WriteFile(filepath.Join(tmpDir, taskRootRecordFile), data, 0o644); err != nil {
 		return fmt.Errorf("execenv: write task root record: %w", err)
 	}
-	if err := os.Rename(tmpDir, recordDir); err != nil {
+	if err := renameTaskRootRecord(tmpDir, recordDir); err != nil {
+		return fmt.Errorf("execenv: install task root record: %w", err)
+	}
+	return nil
+}
+
+var taskRootRenameRetryDelays = [...]time.Duration{
+	25 * time.Millisecond,
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	200 * time.Millisecond,
+	400 * time.Millisecond,
+	800 * time.Millisecond,
+}
+
+func renameTaskRootRecord(tmpDir, recordDir string) error {
+	return renameTaskRootRecordWithRetry(
+		tmpDir,
+		recordDir,
+		os.Rename,
+		isRetryableTaskRootRenameError,
+		time.Sleep,
+	)
+}
+
+func renameTaskRootRecordWithRetry(
+	tmpDir, recordDir string,
+	rename func(string, string) error,
+	retryable func(error) bool,
+	sleep func(time.Duration),
+) error {
+	for attempt := 0; ; attempt++ {
+		err := rename(tmpDir, recordDir)
+		if err == nil {
+			return nil
+		}
 		// A complete non-empty directory is installed atomically. If it exists,
 		// another claimant won and its record is authoritative.
 		if _, readErr := readTaskRootRecord(recordDir); readErr == nil {
 			return nil
 		}
-		return fmt.Errorf("execenv: install task root record: %w", err)
+		if attempt == len(taskRootRenameRetryDelays) || !retryable(err) {
+			return err
+		}
+		sleep(taskRootRenameRetryDelays[attempt])
 	}
-	return nil
 }
 
 // validateTaskRootRecord fails closed on anything it cannot vouch for: a task
@@ -165,6 +202,40 @@ func validTaskRootSegment(segment, id string, workspace bool) bool {
 		return true
 	}
 	return strings.HasSuffix(segment, "-"+key)
+}
+
+// ValidateEnvRootOwnerPath proves that envRoot is the two-level task root
+// named by owner under workspacesRoot. GC callers use this before every
+// mutation: configuration may point WorkspacesRoot at an arbitrary user-owned
+// tree, and a directory's age or missing metadata is not proof that the daemon
+// created it.
+func ValidateEnvRootOwnerPath(workspacesRoot, envRoot string, owner EnvRootOwner) error {
+	if strings.TrimSpace(workspacesRoot) == "" || strings.TrimSpace(envRoot) == "" {
+		return errors.New("execenv: workspaces root and env root are required")
+	}
+	if owner.WorkspaceID == "" || owner.TaskID == "" {
+		return errors.New("execenv: env root owner must name both workspace and task")
+	}
+
+	relative, err := filepath.Rel(workspacesRoot, envRoot)
+	if err != nil {
+		return fmt.Errorf("execenv: make env root relative: %w", err)
+	}
+	relative = filepath.Clean(relative)
+	if relative == "." || filepath.IsAbs(relative) {
+		return fmt.Errorf("execenv: env root %s is not a task directory below %s", envRoot, workspacesRoot)
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || parts[0] == ".." || parts[1] == ".." {
+		return fmt.Errorf("execenv: env root %s is not exactly two levels below %s", envRoot, workspacesRoot)
+	}
+	if !validTaskRootSegment(parts[0], owner.WorkspaceID, true) {
+		return fmt.Errorf("execenv: workspace directory %q does not match owner %s", parts[0], owner.WorkspaceID)
+	}
+	if !validTaskRootSegment(parts[1], owner.TaskID, false) {
+		return fmt.Errorf("execenv: task directory %q does not match owner %s", parts[1], owner.TaskID)
+	}
+	return nil
 }
 
 // RemoveRootDirRecord removes the stable index after GC has reclaimed a
