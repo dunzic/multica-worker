@@ -159,3 +159,75 @@ func TestRequireHumanActor_AppliedViaChiRouterUse(t *testing.T) {
 		t.Fatalf("status = %d, want 403", w.Code)
 	}
 }
+
+func TestRequireStrictHumanActor_UsesAnExactAllowlist(t *testing.T) {
+	tests := []struct {
+		name        string
+		actorSource string
+		wantStatus  int
+	}{
+		{name: "jwt or human PAT", wantStatus: http.StatusNoContent},
+		{name: "task token", actorSource: "task_token", wantStatus: http.StatusForbidden},
+		{name: "cloud PAT", actorSource: "cloud_pat", wantStatus: http.StatusForbidden},
+		{name: "future credential kind", actorSource: "future_kind", wantStatus: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(http.MethodPost, "/email-control", nil)
+			if tt.actorSource != "" {
+				req.Header.Set("X-Actor-Source", tt.actorSource)
+			}
+			w := httptest.NewRecorder()
+			RequireStrictHumanActor(next).ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if called != (tt.wantStatus == http.StatusNoContent) {
+				t.Fatalf("inner handler called = %v", called)
+			}
+		})
+	}
+}
+
+func TestRequireTaskTokenActor_UsesAnExactAllowlist(t *testing.T) {
+	tests := []struct {
+		name        string
+		actorSource string
+		wantStatus  int
+	}{
+		{name: "task token", actorSource: "task_token", wantStatus: http.StatusNoContent},
+		{name: "jwt or human PAT", wantStatus: http.StatusForbidden},
+		{name: "cloud PAT", actorSource: "cloud_pat", wantStatus: http.StatusForbidden},
+		{name: "future credential kind", actorSource: "future_kind", wantStatus: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/emails/send", nil)
+			if tt.actorSource != "" {
+				req.Header.Set("X-Actor-Source", tt.actorSource)
+			}
+			w := httptest.NewRecorder()
+			RequireTaskTokenActor(next).ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if called != (tt.wantStatus == http.StatusNoContent) {
+				t.Fatalf("inner handler called = %v", called)
+			}
+		})
+	}
+}

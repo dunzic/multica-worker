@@ -364,6 +364,26 @@ var concurrentIndexCleanups = map[string]string{
 	"394_channel_delivery_reconciliation_authorization_unique": "channel_delivery_reconciliation_authorization_unique",
 	"397_chat_message_assistant_task_index":                    "idx_chat_message_assistant_task",
 	"398_channel_delivery_retry_publish_due_index":             "idx_channel_delivery_retry_publish_due",
+	"443_agent_email_policy_id_unique":                         "agent_email_policy_version_id_uidx",
+	"444_agent_email_policy_version_unique":                    "agent_email_policy_version_uidx",
+	"445_agent_email_policy_config_lookup":                     "agent_email_policy_config_idx",
+	"446_agent_email_policy_state_unique":                      "agent_email_policy_state_agent_uidx",
+	"447_agent_email_approval_id_unique":                       "agent_email_approval_id_uidx",
+	"448_agent_email_approval_latest_lookup":                   "agent_email_approval_latest_idx",
+	"449_email_message_id_unique":                              "email_message_id_uidx",
+	"450_email_message_idempotency_unique":                     "email_message_idempotency_uidx",
+	"451_email_message_queue":                                  "email_message_queue_idx",
+	"452_agent_email_quota_message_unique":                     "agent_email_quota_message_uidx",
+	"453_agent_email_quota_provider_window":                    "agent_email_quota_provider_window_idx",
+	"454_agent_email_quota_workspace_window":                   "agent_email_quota_workspace_window_idx",
+	"455_agent_email_quota_agent_window":                       "agent_email_quota_agent_window_idx",
+	"456_agent_email_quota_sender_window":                      "agent_email_quota_sender_window_idx",
+	"457_email_delivery_recipient_id_unique":                   "email_delivery_recipient_id_uidx",
+	"458_email_delivery_recipient_message_unique":              "email_delivery_recipient_message_uidx",
+	"459_agent_email_approval_request_unique":                  "agent_email_approval_request_uidx",
+	"460_email_message_expired_sending":                        "email_message_expired_sending_idx",
+	"462_agent_email_queue_workspace_v2":                       "email_message_queue_v2_idx",
+	"464_agent_email_expired_sending_workspace_v2":             "email_message_expired_sending_v2_idx",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -389,6 +409,8 @@ var concurrentDownIndexCleanups = map[string]string{
 	"437_drop_agent_runtime_last_seen_at_index":             "idx_agent_runtime_last_seen_at",
 	"321_role_source_mapping_target_unique_replace":         "role_source_mapping_target_unique",
 	"380_role_source_mapping_target_unique_relax":           "role_source_mapping_target_unique",
+	"463_drop_agent_email_queue_v1":                         "email_message_queue_idx",
+	"465_drop_agent_email_expired_sending_v1":               "email_message_expired_sending_idx",
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {

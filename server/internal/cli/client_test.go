@@ -166,6 +166,39 @@ func TestPostJSON(t *testing.T) {
 	})
 }
 
+func TestPostJSONWithHeadersPreservesClientOwnedHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/emails" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Idempotency-Key"); got != "message-123" {
+			t.Fatalf("Idempotency-Key = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer trusted-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("X-Workspace-ID"); got != "trusted-workspace" {
+			t.Fatalf("X-Workspace-ID = %q", got)
+		}
+		if values := r.Header.Values("Content-Type"); len(values) != 1 || values[0] != "application/json" {
+			t.Fatalf("Content-Type values = %#v", values)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := NewAPIClient(srv.URL, "trusted-workspace", "trusted-token")
+	headers := http.Header{
+		"Idempotency-Key": {"message-123"},
+		"Authorization":   {"Bearer untrusted-token"},
+		"X-Workspace-ID":  {"untrusted-workspace"},
+		"Content-Type":    {"text/plain"},
+	}
+	if err := client.PostJSONWithHeaders(context.Background(), "/emails", map[string]string{"subject": "test"}, headers, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDeleteJSONResponse(t *testing.T) {
 	type respBody struct {
 		ID string `json:"id"`

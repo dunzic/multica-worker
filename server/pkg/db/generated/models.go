@@ -62,6 +62,62 @@ type AgentBuilderDraft struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type AgentEmailApproval struct {
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	AgentID                 pgtype.UUID        `json:"agent_id"`
+	PolicyVersionID         pgtype.UUID        `json:"policy_version_id"`
+	ConfigDigest            string             `json:"config_digest"`
+	ApprovalAuthorityDigest string             `json:"approval_authority_digest"`
+	Decision                string             `json:"decision"`
+	RequestKeyDigest        string             `json:"request_key_digest"`
+	ActorUserID             pgtype.UUID        `json:"actor_user_id"`
+	ReasonCode              pgtype.Text        `json:"reason_code"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+}
+
+type AgentEmailPolicyState struct {
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	AgentID                 pgtype.UUID        `json:"agent_id"`
+	CurrentPolicyVersionID  pgtype.UUID        `json:"current_policy_version_id"`
+	CurrentConfigDigest     string             `json:"current_config_digest"`
+	AssignedApproverUserID  pgtype.UUID        `json:"assigned_approver_user_id"`
+	ApprovalAuthorityDigest pgtype.Text        `json:"approval_authority_digest"`
+	State                   string             `json:"state"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AgentEmailPolicyVersion struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	AgentID              pgtype.UUID        `json:"agent_id"`
+	Version              int64              `json:"version"`
+	ConfigDigest         string             `json:"config_digest"`
+	AgentPromptDigest    string             `json:"agent_prompt_digest"`
+	PluginReleaseID      pgtype.UUID        `json:"plugin_release_id"`
+	PluginArtifactDigest string             `json:"plugin_artifact_digest"`
+	PluginEntryDigest    string             `json:"plugin_entry_digest"`
+	InterfaceVersion     string             `json:"interface_version"`
+	ProviderRouteID      pgtype.UUID        `json:"provider_route_id"`
+	ProviderRouteDigest  string             `json:"provider_route_digest"`
+	SenderIdentityID     pgtype.UUID        `json:"sender_identity_id"`
+	FromAddress          string             `json:"from_address"`
+	RecipientPolicy      []byte             `json:"recipient_policy"`
+	RatePolicy           []byte             `json:"rate_policy"`
+	CreatedBy            pgtype.UUID        `json:"created_by"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+}
+
+type AgentEmailQuotaReservation struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	MessageID        pgtype.UUID        `json:"message_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	ProviderRouteID  pgtype.UUID        `json:"provider_route_id"`
+	SenderIdentityID pgtype.UUID        `json:"sender_identity_id"`
+	RecipientCount   int32              `json:"recipient_count"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
 // Allow-list of who may invoke a public_to agent (MUL-3963). One row per (agent, target_type, target); targets stack and canInvokeAgent OR-matches. workspace rows store the agent workspace_id in target_id; member rows store the user id; team rows are reserved and inert in V1. Rows only matter when agent.permission_mode = public_to. No DB foreign keys: agent_id / created_by / member target_id relationships are maintained in the application layer (see migration comment).
 type AgentInvocationTarget struct {
 	ID         pgtype.UUID        `json:"id"`
@@ -172,6 +228,9 @@ type AgentTaskQueue struct {
 	BranchName                pgtype.Text `json:"branch_name"`
 	DurableWorkDir            pgtype.Text `json:"durable_work_dir"`
 	ChannelContextRevision    pgtype.Int8 `json:"channel_context_revision"`
+	EmailAgentConfigDigest    pgtype.Text `json:"email_agent_config_digest"`
+	EmailAgentPolicyVersionID pgtype.UUID `json:"email_agent_policy_version_id"`
+	EmailAgentApprovalID      pgtype.UUID `json:"email_agent_approval_id"`
 }
 
 type AgentToLabel struct {
@@ -682,6 +741,55 @@ type DingtalkGroupRoute struct {
 	Revision          int64              `json:"revision"`
 	DiscoveredAt      pgtype.Timestamptz `json:"discovered_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type EmailDeliveryRecipient struct {
+	ID                    pgtype.UUID        `json:"id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	MessageID             pgtype.UUID        `json:"message_id"`
+	RecipientDigest       string             `json:"recipient_digest"`
+	EncryptedRecipientRef string             `json:"encrypted_recipient_ref"`
+	Status                string             `json:"status"`
+	ProviderRecipientID   pgtype.Text        `json:"provider_recipient_id"`
+	LastErrorCode         pgtype.Text        `json:"last_error_code"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+	CompletedAt           pgtype.Timestamptz `json:"completed_at"`
+}
+
+type EmailMessage struct {
+	ID                        pgtype.UUID        `json:"id"`
+	WorkspaceID               pgtype.UUID        `json:"workspace_id"`
+	AgentID                   pgtype.UUID        `json:"agent_id"`
+	TaskID                    pgtype.UUID        `json:"task_id"`
+	Mode                      string             `json:"mode"`
+	PolicyVersionID           pgtype.UUID        `json:"policy_version_id"`
+	ApprovalID                pgtype.UUID        `json:"approval_id"`
+	IdempotencyKeyDigest      string             `json:"idempotency_key_digest"`
+	RequestDigest             string             `json:"request_digest"`
+	ProviderRouteID           pgtype.UUID        `json:"provider_route_id"`
+	SenderIdentityID          pgtype.UUID        `json:"sender_identity_id"`
+	RecipientCount            int32              `json:"recipient_count"`
+	IntendedTo                []byte             `json:"intended_to"`
+	EffectiveTo               []byte             `json:"effective_to"`
+	SubjectDigest             string             `json:"subject_digest"`
+	BodyDigest                string             `json:"body_digest"`
+	EncryptedPayloadRef       string             `json:"encrypted_payload_ref"`
+	Status                    string             `json:"status"`
+	AttemptCount              int16              `json:"attempt_count"`
+	LeaseToken                pgtype.UUID        `json:"lease_token"`
+	LeaseGeneration           int64              `json:"lease_generation"`
+	LeaseExpiresAt            pgtype.Timestamptz `json:"lease_expires_at"`
+	NextAttemptAt             pgtype.Timestamptz `json:"next_attempt_at"`
+	ProviderMessageID         pgtype.Text        `json:"provider_message_id"`
+	ProviderStatus            pgtype.Text        `json:"provider_status"`
+	LastErrorCode             pgtype.Text        `json:"last_error_code"`
+	AuthorizedAt              pgtype.Timestamptz `json:"authorized_at"`
+	AuthorizedLeaseGeneration pgtype.Int8        `json:"authorized_lease_generation"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
+	AcceptedAt                pgtype.Timestamptz `json:"accepted_at"`
+	CompletedAt               pgtype.Timestamptz `json:"completed_at"`
 }
 
 type Feedback struct {

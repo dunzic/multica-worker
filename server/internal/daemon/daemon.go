@@ -6963,6 +6963,21 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			cursorMcpAuthSource = strings.TrimSpace(task.Agent.CustomEnv[execenv.CursorMcpAuthSourceEnv])
 		}
 	}
+	if builtinEmailMCPEnabled() {
+		switch {
+		case !providerSupportsBuiltinEmailMCP(provider):
+			taskLog.Warn("email MCP is enabled but the agent runtime has no managed MCP adapter", "provider", provider)
+		default:
+			selfBin, resolveErr := resolveSelfExecutable()
+			if resolveErr != nil {
+				taskLog.Error("email MCP: resolve multica executable", "error", resolveErr)
+			} else if injected, injectErr := buildBuiltinEmailMCPConfig(provider, effectiveMcpConfig, selfBin); injectErr != nil {
+				taskLog.Error("email MCP: build task-local MCP config", "error", injectErr)
+			} else {
+				effectiveMcpConfig = injected
+			}
+		}
+	}
 	// Decode openclaw-specific runtime_config knobs once so reuse / prepare /
 	// ExecOptions all see the same mode + gateway pin (issue #3260). Parse
 	// failures fail soft to local mode — a broken JSON blob must never block

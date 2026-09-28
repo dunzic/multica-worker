@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS email_delivery_recipient_id_uidx;

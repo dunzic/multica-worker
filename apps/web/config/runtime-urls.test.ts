@@ -285,8 +285,8 @@ describe("runtimeRewriteDestination", () => {
       }),
     ).toBe("http://backend:8080/health");
     expect(runtimeRewriteDestination("/health", {})).toBeUndefined();
-    // Probe variants stay unproxied: /healthz is the k8s alias and /readyz
-    // the deep check — both go to the backend directly in every topology.
+    // The Kubernetes-only /healthz alias stays unproxied, while /readyz is
+    // forwarded for same-origin self-hosted deployments.
     expect(
       runtimeRewriteDestination("/healthz", {
         REMOTE_API_URL: "http://backend:8080",
@@ -296,7 +296,7 @@ describe("runtimeRewriteDestination", () => {
       runtimeRewriteDestination("/readyz", {
         REMOTE_API_URL: "http://backend:8080",
       }),
-    ).toBeUndefined();
+    ).toBe("http://backend:8080/readyz");
   });
 
   it("maps websocket paths to the runtime API origin", () => {

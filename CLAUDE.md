@@ -235,6 +235,8 @@ Rules:
 
 For code changes, run the narrowest useful checks while iterating, then run broader verification when risk justifies it or when asked.
 
+Every feature and independently deployable feature slice follows the four-perspective architecture, product, test, and CEO gates in `docs/feature-review-strategy.md`. A slice cannot enter production until all four perspectives have rollout evidence for the stated cohort; Prompt or UI controls never count as evidence for a server-side security boundary.
+
 Useful checks:
 
 ```bash

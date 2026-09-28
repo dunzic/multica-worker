@@ -338,6 +338,24 @@ deleted_draft_restores AS (
 deleted_agent_builder_drafts AS (
     DELETE FROM agent_builder_draft WHERE workspace_id = $1
 ),
+deleted_email_delivery_recipients AS (
+    DELETE FROM email_delivery_recipient WHERE workspace_id = $1
+),
+deleted_agent_email_quota_reservations AS (
+    DELETE FROM agent_email_quota_reservation WHERE workspace_id = $1
+),
+deleted_email_messages AS (
+    DELETE FROM email_message WHERE workspace_id = $1
+),
+deleted_agent_email_approvals AS (
+    DELETE FROM agent_email_approval WHERE workspace_id = $1
+),
+deleted_agent_email_policy_state AS (
+    DELETE FROM agent_email_policy_state WHERE workspace_id = $1
+),
+deleted_agent_email_policy_versions AS (
+    DELETE FROM agent_email_policy_version WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),

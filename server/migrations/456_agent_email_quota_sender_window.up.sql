@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY agent_email_quota_sender_window_idx ON agent_email_quota_reservation (sender_identity_id, created_at);
