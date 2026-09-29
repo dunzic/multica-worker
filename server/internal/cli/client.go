@@ -367,6 +367,14 @@ func (c *APIClient) DeleteJSONWithBody(ctx context.Context, path string, body an
 
 // PostJSON performs a POST request with a JSON body.
 func (c *APIClient) PostJSON(ctx context.Context, path string, body any, out any) error {
+	return c.PostJSONWithHeaders(ctx, path, body, nil, out)
+}
+
+// PostJSONWithHeaders performs a POST request with a JSON body and additional
+// request headers. Callers should use this only for endpoint-specific protocol
+// headers such as Idempotency-Key; authentication and execution identity are
+// always populated by the client after these headers are applied.
+func (c *APIClient) PostJSONWithHeaders(ctx context.Context, path string, body any, headers http.Header, out any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -376,6 +384,13 @@ func (c *APIClient) PostJSON(ctx context.Context, path string, body any, out any
 	if err != nil {
 		return err
 	}
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	// Protocol headers may not override the JSON media type or authenticated
+	// execution identity managed by the client.
 	req.Header.Set("Content-Type", "application/json")
 	c.setHeaders(req)
 
