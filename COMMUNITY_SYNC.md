@@ -99,6 +99,43 @@ resolution rather than choosing an entire side:
 | 2026-09-28 | Hermes development chain `be10b427d`..`4bd1b3344` | Skipped as already equivalent to official squash `138134d34104` on `upstream/main`; combined stable patch ID matched. | Patch-equivalence and ancestry checks. |
 | 2026-09-28 | Attachment-viewer chain `f5c91a9e0`..`26e473c10` | Skipped as already equivalent to official squash `6dc6a0b9a2db` on `upstream/main`; combined stable patch ID matched. | Patch-equivalence and ancestry checks. |
 | 2026-09-28 | Persistent local-daemon launch `fe09778253d9` | Absorbed as `8db04400e751`; `make daemon` now launches a persistent binary with auto-update disabled, while existing role-source and delivery operator build targets remain intact. | Dry-run command inspection, complete `make build`, real `make multica --version`, and Go suite; process-tree packages were rerun serially in an init-enabled container. |
+| 2026-10-06 | `upstream/main`, `fa5d470ae40a`..`b4ca5b4a23e6` (15 commits; v0.6.0/v0.6.1 baseline) | Absorbed by merge `6759f9244` on `codex/integrate-upstream-20261006`, starting from fork `ffe3bbe9b`. No textual conflicts; reviewed overlapping realtime, daemon, task-service, and protocol changes. Retained role-source/DR/replay, delivery reconciliation, SQL/migrations, and persistent operator build targets. Original dirty `main` was not staged, committed, reset, or overwritten; integration is not yet landed there or pushed. | Go default test wrapper; core 2,222, views 5,995, desktop 670 unit tests; whole-workspace TypeScript check; focused PostgreSQL fixture tests for working-agent facets and builtin skills; five-language new-key parity; changed-file lint and build checks recorded below. |
+| 2026-10-06 | Legacy builtin skill redirect retirement `b4ca5b4a23e6` | Absorbed with the official baseline, not cherry-picked a second time. Current `multica-platform` skill replaces the old redirect; retained advertised `platform-skill-v1` capability. Do not reintroduce a legacy shim during future intake. Very old daemons whose briefs name the retired skill require an upgrade before deployment. | Database-backed inline and skill-reference claims tested both with and without the capability; skill routing/parser/scoping and fail-closed bundle-read tests passed. |
+
+## 2026-10-06 verification and landing boundary
+
+- The official tip was verified through GitHub's API and fetched through its
+  SSH-over-443 endpoint after HTTPS Git transport failed. No remote was pushed.
+- Core, views, and desktop ran their complete unit suites. The first broad views
+  run had one unchanged chat-queue test failure; its isolated rerun and the whole
+  suite at four workers passed. Desktop tests reused the installed Electron
+  distribution because the offline dependency install skipped install scripts.
+- The default Go wrapper passed, but database packages can skip when no database
+  is reachable. That is not database acceptance. Separately, repository scripts
+  generated `.env.worktree` and created the isolated
+  `multica_multica_worker_289` database. Its schema was initialized and the
+  affected handler/service fixture tests ran successfully over the PostgreSQL
+  container's local socket, without changing the shared database password.
+- Full frontend lint did not pass: three existing i18n placeholder errors remain
+  in the unchanged `packages/views/settings/components/role-sources-tab.tsx`.
+  Other pre-existing hook/disable warnings remain. This intake does not silently
+  alter those unrelated files.
+- Changed TypeScript files passed lint with five existing unused-disable
+  warnings. `make build` compiled the backend, CLI, migrator, role-source DR,
+  outbox replay, channel-delivery reconciliation, and capacity tools. Windows
+  util/daemon test binaries cross-compiled for both amd64 and arm64; they were
+  not executed on a Windows filesystem. These are build checks, not releases.
+- No SQL, migrations, sqlc output, mobile source, or operator Makefile targets
+  changed in this upstream range. No production login, real-agent smoke,
+  browser E2E, Windows filesystem execution, release publication, or new
+  installer packaging was performed.
+- The original `main` at `ffe3bbe9b` contains 45 pending installer/default-target
+  files. Preserve them byte-for-byte. They are not part of this merge commit.
+  Before landing or packaging this branch, incorporate the pending TuringOmni
+  target change deliberately: production service
+  `https://workers.turingomni.com`, releases `dunzic/multica-worker`.
+  Do not publish an installer from this code-only branch with community defaults.
+  The CLI program remains `multica` / `multica.exe`; this intake does not rename it.
 
 ## Ledger entry template
 
