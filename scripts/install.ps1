@@ -1,10 +1,10 @@
 # Multica installer for Windows - one command to get started.
 #
-# Install CLI (default): connects to multica.ai
-#   irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+# Install CLI (default): connects to workers.turingomni.com
+#   irm https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.ps1 | iex
 #
 # Self-host: starts a local Multica server + installs CLI + configures
-#   $env:MULTICA_MODE="local"; irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+#   $env:MULTICA_MODE="local"; irm https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.ps1 | iex
 #
 
 $ErrorActionPreference = "Stop"
@@ -12,8 +12,8 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-$RepoUrl       = "https://github.com/multica-ai/multica.git"
-$RepoWebUrl    = "https://github.com/multica-ai/multica"
+$RepoUrl       = "https://github.com/dunzic/multica-worker.git"
+$RepoWebUrl    = "https://github.com/dunzic/multica-worker"
 $DefaultInstallDir = Join-Path $env:USERPROFILE ".multica\server"
 $InstallDir    = if ($env:MULTICA_INSTALL_DIR) { $env:MULTICA_INSTALL_DIR } else { $DefaultInstallDir }
 
@@ -86,7 +86,7 @@ function Get-ComposePublishedPort {
 
 function Get-LatestVersion {
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/multica-ai/multica/releases/latest" -ErrorAction Stop
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/dunzic/multica-worker/releases/latest" -ErrorAction Stop
         return $release.tag_name
     } catch {
         return $null
@@ -247,10 +247,8 @@ function Install-CliBinary {
     }
 
     $version = $latest.TrimStart('v')
-    $url = "https://github.com/multica-ai/multica/releases/download/$latest/multica-cli-$version-windows-$arch.zip"
-    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "multica-install"
-
-    if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
+    $url = "https://github.com/dunzic/multica-worker/releases/download/$latest/multica-cli-$version-windows-$arch.zip"
+    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("multica-install-" + [guid]::NewGuid())
     New-Item -ItemType Directory -Path $tmpDir | Out-Null
 
     Write-Info "Downloading $url ..."
@@ -262,7 +260,7 @@ function Install-CliBinary {
     }
 
     # Verify SHA256 checksum
-    $checksumUrl = "https://github.com/multica-ai/multica/releases/download/$latest/checksums.txt"
+    $checksumUrl = "https://github.com/dunzic/multica-worker/releases/download/$latest/checksums.txt"
     try {
         $checksums = Invoke-WebRequest -Uri $checksumUrl -UseBasicParsing -ErrorAction Stop
         $checksumContent = if ($checksums.Content -is [byte[]]) {
@@ -273,11 +271,9 @@ function Install-CliBinary {
         $zipFile = Join-Path $tmpDir "multica.zip"
         $actualHash = (Get-FileHash -Path $zipFile -Algorithm SHA256).Hash.ToLower()
         $releaseAsset = "multica-cli-$version-windows-$arch.zip"
-        $legacyAsset = "multica_windows_$arch.zip"
         $expectedLine = ($checksumContent -split "`r?`n") |
             Where-Object {
-                $_ -match [regex]::Escape($releaseAsset) -or
-                $_ -match [regex]::Escape($legacyAsset)
+                $_ -match ("^[a-fA-F0-9]{64}\s+\*?" + [regex]::Escape($releaseAsset) + "$")
             } |
             Select-Object -First 1
         if ($expectedLine) {
@@ -288,10 +284,11 @@ function Install-CliBinary {
             }
             Write-Ok "Checksum verified"
         } else {
-            Write-Warn "Could not find checksum entry for $releaseAsset - skipping verification."
+            throw "Missing checksum entry for $releaseAsset."
         }
     } catch {
-        Write-Warn "Could not download checksums.txt - skipping verification."
+        Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Fail "Could not verify the CLI archive: $_"
     }
 
     Expand-Archive -Path (Join-Path $tmpDir "multica.zip") -DestinationPath $tmpDir -Force
@@ -320,48 +317,16 @@ function Install-CliBinary {
 function Add-ToUserPath {
     param([string]$Dir)
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($currentPath -and $currentPath.Split(";") -contains $Dir) {
-        return
-    }
-    $newPath = if ($currentPath) { "$currentPath;$Dir" } else { $Dir }
+    $otherPaths = @($currentPath -split ";" | Where-Object { $_ -and $_ -ne $Dir })
+    $newPath = (@($Dir) + $otherPaths) -join ";"
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
     # Also update current session
-    if ($env:Path -notlike "*$Dir*") {
-        $env:Path = "$Dir;$env:Path"
-    }
+    $env:Path = "$Dir;$env:Path"
     Write-Info "Added $Dir to user PATH (restart your terminal for other sessions to pick it up)."
 }
 
 function Install-Cli {
-    if (Test-CommandExists "multica") {
-        $currentVer = Get-InstalledCliVersion
-        $latestVer = Get-LatestVersion
-
-        $currentCmp = if ($currentVer) { $currentVer -replace '^v','' } else { $null }
-        $latestCmp = if ($latestVer) { $latestVer -replace '^v','' } else { $null }
-
-        $isUpToDate = $currentCmp -and -not $latestCmp
-        if (-not $isUpToDate) {
-            try {
-                $isUpToDate = $currentCmp -and $latestCmp -and ([System.Version]$currentCmp -ge [System.Version]$latestCmp)
-            } catch {
-                $isUpToDate = $currentCmp -and $latestCmp -and ($currentCmp -eq $latestCmp)
-            }
-        }
-
-        if ($isUpToDate) {
-            Write-Ok "Multica CLI is up to date ($currentVer)"
-            return
-        }
-
-        Write-Info "Multica CLI $currentVer installed, latest is $latestVer - upgrading..."
-        Install-CliBinary
-
-        $newVer = Get-InstalledCliVersion
-        Write-Ok "Multica CLI upgraded ($currentVer -> $newVer)"
-        return
-    }
-
+    # Version equality cannot distinguish a community binary from our fork.
     Install-CliBinary
 
     if (-not (Test-CommandExists "multica")) {
@@ -495,11 +460,11 @@ function Start-DefaultInstall {
     Write-Host ""
     Write-Host "  Next: configure your environment"
     Write-Host ""
-    Write-Host "     multica setup               " -NoNewline; Write-Host "# Connect to Multica Cloud (multica.ai)" -ForegroundColor DarkGray
+    Write-Host "     multica setup --profile turingomni      " -NoNewline; Write-Host "# Connect to TuringOmni (workers.turingomni.com)" -ForegroundColor DarkGray
     Write-Host "     multica setup self-host      " -NoNewline; Write-Host "# Connect to a self-hosted server" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Self-hosting? Install the server first:"
-    Write-Host '     $env:MULTICA_MODE="with-server"; irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex'
+    Write-Host '     $env:MULTICA_MODE="with-server"; irm https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.ps1 | iex'
     Write-Host ""
 }
 
@@ -533,7 +498,7 @@ function Start-LocalInstall {
     Write-Host "  or read the generated code from backend logs when Resend is unset."
     Write-Host ""
     Write-Host "  To stop all services:"
-    Write-Host '     $env:MULTICA_MODE="stop"; irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex'
+    Write-Host '     $env:MULTICA_MODE="stop"; irm https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.ps1 | iex'
     Write-Host ""
 }
 

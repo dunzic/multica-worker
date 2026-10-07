@@ -859,6 +859,13 @@ jobs:
         if: runner.os != 'Windows'
         run: bash scripts/install.test.sh
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Verify fork distribution targets
+        run: node --test scripts/distribution-targets.test.mjs scripts/package-windows-cli.test.mjs
+
       - name: Test installer with Windows PowerShell 5.1
         if: runner.os == 'Windows'
         shell: powershell

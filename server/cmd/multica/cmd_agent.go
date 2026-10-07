@@ -289,8 +289,8 @@ func newAPIClient(cmd *cobra.Command) (*cli.APIClient, error) {
 }
 
 const (
-	defaultCloudServerURL = "https://api.multica.ai"
-	defaultCloudAppURL    = "https://multica.ai"
+	defaultCloudServerURL = "https://workers.turingomni.com"
+	defaultCloudAppURL    = "https://workers.turingomni.com"
 )
 
 func tryResolveServerURL(cmd *cobra.Command) string {

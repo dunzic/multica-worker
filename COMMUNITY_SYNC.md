@@ -24,6 +24,11 @@ resolution rather than choosing an entire side:
 - private/self-hosted deployment behavior and configuration;
 - existing database migrations, generated sqlc code, and operator build targets;
 - desktop packaging, version provenance, and platform navigation behavior.
+- TuringOmni distribution targets: production service defaults remain
+  `https://workers.turingomni.com` and installer/update downloads remain in
+  `dunzic/multica-worker`. Community code intake must not restore upstream
+  login defaults, release feeds, bootstrap binaries, or installer snippets.
+  Preserve explicit private deployments and development/staging environments.
 
 ## Intake procedure
 
@@ -101,6 +106,8 @@ resolution rather than choosing an entire side:
 | 2026-09-28 | Persistent local-daemon launch `fe09778253d9` | Absorbed as `8db04400e751`; `make daemon` now launches a persistent binary with auto-update disabled, while existing role-source and delivery operator build targets remain intact. | Dry-run command inspection, complete `make build`, real `make multica --version`, and Go suite; process-tree packages were rerun serially in an init-enabled container. |
 | 2026-10-06 | `upstream/main`, `fa5d470ae40a`..`b4ca5b4a23e6` (15 commits; v0.6.0/v0.6.1 baseline) | Absorbed by merge `6759f9244` on `codex/integrate-upstream-20261006`, starting from fork `ffe3bbe9b`. No textual conflicts; reviewed overlapping realtime, daemon, task-service, and protocol changes. Retained role-source/DR/replay, delivery reconciliation, SQL/migrations, and persistent operator build targets. Original dirty `main` was not staged, committed, reset, or overwritten; integration is not yet landed there or pushed. | Go default test wrapper; core 2,222, views 5,995, desktop 670 unit tests; whole-workspace TypeScript check; focused PostgreSQL fixture tests for working-agent facets and builtin skills; five-language new-key parity; changed-file lint and build checks recorded below. |
 | 2026-10-06 | Legacy builtin skill redirect retirement `b4ca5b4a23e6` | Absorbed with the official baseline, not cherry-picked a second time. Current `multica-platform` skill replaces the old redirect; retained advertised `platform-skill-v1` capability. Do not reintroduce a legacy shim during future intake. Very old daemons whose briefs name the retired skill require an upgrade before deployment. | Database-backed inline and skill-reference claims tested both with and without the capability; skill routing/parser/scoping and fail-closed bundle-read tests passed. |
+| 2026-10-06 | Integration tip `46509903c` plus the primary checkout's pending TuringOmni distribution patch | Prepared together as uncommitted changes on `codex/prepare-packaging-20261006`, reusing the attached integration worktree. Kept the executable `multica` / `multica.exe`; omitted the alternate launcher, retained explicit `--profile turingomni` credential isolation, corrected the runtime update feed, and required a fresh Go CLI build for desktop packaging. Original 45 pending files remain unchanged; no new commit, main landing, tag, push, package, deployment, or publication in this preparation step. | Distribution/package/CI-scope Node tests, stubbed shell installer, complete desktop suite, focused views/web tests, non-mobile and mobile typechecks, default regular Go wrapper and fresh guarded CLI/update tests. Exact results and remaining release gates below. |
+| 2026-10-06 | Prepared worktree at `46509903c` plus uncommitted distribution changes | User authorized local Mac and Windows packaging. Built `0.6.1-119-g46509903c-dirty`: Mac ARM64/x64 DMG and ZIP, Windows ARM64/x64 desktop EXE, and Windows amd64/arm64 CLI offline ZIP. Delivered under the primary checkout's ignored `dist/installers/20261006-0.6.1-119-g46509903c-dirty/`; no new commit, main landing, push, tag, release upload or deployment. | Twelve packaging/distribution checks rerun; all four desktop bundles' versions/targets/CLI architectures/notices; mounted DMG and ZIP integrity; deep strict Mac signature verification; Windows PE metadata/icon/ASAR-header checks; EXE archive and extracted-payload equality; CLI ZIP/current desktop-binary equality; eight SHA-256 hashes. Signing/native-acceptance limits and workaround below. |
 
 ## 2026-10-06 verification and landing boundary
 
@@ -136,6 +143,92 @@ resolution rather than choosing an entire side:
   `https://workers.turingomni.com`, releases `dunzic/multica-worker`.
   Do not publish an installer from this code-only branch with community defaults.
   The CLI program remains `multica` / `multica.exe`; this intake does not rename it.
+
+## 2026-10-06 packaging preparation and remaining gates
+
+- The earlier integration branch was subsequently pushed, with user approval,
+  to `dunzic/multica-worker` as `codex/integrate-upstream-20261006` at
+  `46509903c`. That push did not change main. The preceding intake boundary
+  describes what was true when the merge was first verified.
+- Packaging preparation now lives on `codex/prepare-packaging-20261006` in the
+  same attached worktree, based on that integration tip. It combines the
+  community code and the pending distribution patch without changing the
+  primary checkout. These preparation changes are not committed or pushed.
+- Production defaults are `https://workers.turingomni.com`, WebSocket defaults
+  are `wss://workers.turingomni.com/ws`, and release/update/bootstrap downloads
+  use `dunzic/multica-worker`. Keep private overrides and development/staging
+  targets. Do not rewrite old credentials to a different service. The named
+  Windows profile uses the existing program's `--profile turingomni` option;
+  there is no renamed program or additional launcher.
+- The Windows ZIP producer validates both PE architectures before creating
+  output, carries LICENSE/NOTICE, and records binary/archive SHA-256. Offline
+  ZIP names end in `-installer.zip` so they do not collide with CLI-only
+  release assets. Desktop packaging requires Go before clearing old output
+  and compiles each target's embedded CLI; no stale-binary packaging fallback.
+- Verification: 51 Node tests (distribution targets, synthetic Windows ZIPs,
+  input rejection, and CI scopes); shell installer stub suite; 671 desktop
+  tests across 59 files; 21 focused views and 8 web release-source tests;
+  non-mobile typecheck (10 tasks) and separate mobile typecheck. The default
+  Go wrapper's regular suite and a fresh guarded CLI/update-module rerun
+  passed. Database cases may skip without a test database; this step did not
+  repeat the earlier database fixture or agent-package suites.
+- Full frontend lint still fails on three pre-existing placeholder errors in
+  unchanged `packages/views/settings/components/role-sources-tab.tsx`.
+  Changed views files passed focused lint; other existing warnings remain.
+  Address this separately before claiming an all-green release gate.
+- No new native installer was built. Windows PowerShell tests were not run
+  locally because no PowerShell host is available; CI retains Windows 5.1/7
+  checks. Synthetic PE ZIP tests are not physical Windows installation
+  acceptance. No mobile native build, browser E2E, production login, real-agent
+  smoke, signing/notarization, vulnerability scan, release upload, or server
+  deployment ran during preparation.
+- Before public release, review and commit the combined patch, deliberately
+  land it on the fork's main, resolve the lint gate, and select an approved
+  new release tag (default patch increment). Rebuild CLI and desktop from
+  that same clean source, preserve old deliverables before successful packaging
+  clears its output, and verify versions, architecture, embedded targets,
+  checksums, platform signatures and notarization. Use the fork release
+  runbook; pushing a tag publishes and requires separate authorization.
+
+## 2026-10-06 local package delivery
+
+- Eight deliverables are preserved in the primary checkout's ignored
+  `dist/installers/20261006-0.6.1-119-g46509903c-dirty/`. Its `SHA256SUMS.txt`,
+  `BUILD_QA.json`, and `PACKAGING_NOTES.txt` retain exact artifacts and checks.
+  Earlier CLI candidates and an unsigned first Intel Mac build were preserved
+  separately, not silently removed or published.
+- Versions derive from synchronized Git tags, retaining the dirty suffix rather
+  than pretending this uncommitted work is a new tagged release. Each CLI was
+  compiled from this source with Go 1.26.6. Windows offline ZIPs contain the
+  same final CLI bytes as their corresponding desktop bundles.
+- The normal GitHub download host failed. Fixed Electron assets were retrieved
+  from the same official repository's API and verified against official SHA-256.
+  NSIS/resources/winCodeSign assets matched the installed tool SHA-512 constants.
+  These are build dependencies, not community Multica distribution downloads.
+- The Mac host lacks x64 execution support. A fixed official Linux x64 build
+  image could run its tools, but Wine aborted under QEMU with a page-mapping
+  assertion. Final Windows packaging used the installed cross-platform resedit
+  library to write the same version/icon metadata, with architecture and all
+  non-icon/version resources preserved. Standard NSIS templates and the
+  installed native `UninstallerReader` produced installers without executing
+  them under Wine. The fixed image digest and temporary inspection scripts are
+  recorded in the delivery's notes/build-support; no product shim or host-system
+  installation was added. Native Windows acceptance remains required before
+  public release or adopting this local workaround as a standard workflow.
+- All desktop bundles contain TuringOmni production defaults and the fork's
+  GitHub update/bootstrap feeds. Windows PE metadata, icon count, manifest and
+  ASAR header integrity were checked. EXE payload application/ASAR/update/CLI/
+  license/notice bytes matched the prepared bundle. No nested previous build
+  artifacts were found in the Windows ASARs. Both Mac DMGs mounted read-only,
+  matched their built apps, and passed checksum/signature checks; both ZIPs
+  passed integrity checks. The Apple Silicon CLI version command ran; Intel
+  Mac and Windows binaries were not executed on their target OS.
+- This is a local test build: both Mac apps are ad-hoc signed, not Developer ID
+  signed or Apple-notarized; Windows desktop/CLI binaries are unsigned. There
+  was no physical Windows installation, GUI startup, production login,
+  browser E2E, real-agent smoke, public online-update test or deployment.
+  Existing lint errors and the clean-commit/tag/signing release gates remain.
+  The original primary checkout's 45 pending source files were not changed.
 
 ## Ledger entry template
 

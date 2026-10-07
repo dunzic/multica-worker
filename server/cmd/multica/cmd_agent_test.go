@@ -33,6 +33,31 @@ func freshAgentEnvSetCmd() *cobra.Command {
 	return c
 }
 
+func TestTuringOmniLoginDefaultPreservesPrivateProfile(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+	t.Setenv("MULTICA_SERVER_URL", "")
+	t.Setenv("MULTICA_PROFILE", "")
+	cmd := &cobra.Command{Use: "login"}
+	cmd.Flags().String("server-url", "", "")
+	cmd.Flags().String("profile", "turingomni", "")
+	const target = "https://workers.turingomni.com"
+	if got := resolveLoginTokenServerURL(cmd); got != target {
+		t.Fatalf("fresh login target = %q, want %q", got, target)
+	}
+	if defaultCloudAppURL != target {
+		t.Fatalf("default browser target = %q", defaultCloudAppURL)
+	}
+	cfg := cli.CLIConfig{ServerURL: "https://private.example", AppURL: "https://private-app.example"}
+	if err := cli.SaveCLIConfigForProfile(cfg, "turingomni"); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveLoginTokenServerURL(cmd); got != cfg.ServerURL {
+		t.Fatalf("private profile target changed to %q", got)
+	}
+}
+
 func newAgentTasksTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "tasks"}
 	cmd.Flags().String("output", "json", "")

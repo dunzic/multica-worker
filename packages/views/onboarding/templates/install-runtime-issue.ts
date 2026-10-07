@@ -45,7 +45,7 @@ That gives you the project-management layer first. Once a runtime is connected, 
 
 ## Install your first agent runtime
 
-Full guide: https://multica.ai/docs/install-agent-runtime
+Full guide: https://github.com/dunzic/multica-worker/blob/main/CLI_INSTALL.md
 
 For English users, the fastest first path is Codex:
 
@@ -87,7 +87,7 @@ const zh = `欢迎来到 Multica。
 
 ## 安装第一个 Agent 运行时
 
-完整文档:https://multica.ai/docs/install-agent-runtime
+完整文档:https://github.com/dunzic/multica-worker/blob/main/CLI_INSTALL.md
 
 中文用户建议先装 Kimi CLI:
 
@@ -128,7 +128,7 @@ runtime이 준비되기 전에는 다음을 해볼 수 있습니다:
 
 ## 첫 agent runtime 설치하기
 
-전체 가이드: https://multica.ai/docs/install-agent-runtime
+전체 가이드: https://github.com/dunzic/multica-worker/blob/main/CLI_INSTALL.md
 
 한국어 사용자는 Codex로 시작하는 것이 가장 빠릅니다:
 
@@ -170,7 +170,7 @@ runtime が準備できる前に、次のことを試せます:
 
 ## 最初の agent runtime をインストールする
 
-詳しいガイド: https://multica.ai/docs/install-agent-runtime
+詳しいガイド: https://github.com/dunzic/multica-worker/blob/main/CLI_INSTALL.md
 
 日本語ユーザーには、Codex で始めるのが最も速い経路です:
 

@@ -254,7 +254,7 @@ func verifyAssetSHA256(data []byte, expectedHex, assetName string) error {
 
 func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+"/repos/multica-ai/multica/releases/tags/"+url.PathEscape(tag), nil)
+	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+"/repos/dunzic/multica-worker/releases/tags/"+url.PathEscape(tag), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +280,7 @@ func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 // FetchLatestRelease fetches the latest release tag from the multica GitHub repo.
 func FetchLatestRelease() (*GitHubRelease, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+"/repos/multica-ai/multica/releases/latest", nil)
+	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+"/repos/dunzic/multica-worker/releases/latest", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -354,15 +354,10 @@ func GetBrewPrefix() string {
 	return strings.TrimSpace(string(out))
 }
 
-// UpdateViaBrew runs `brew upgrade multica-ai/tap/multica`.
-// Returns the combined output and any error.
+// UpdateViaBrew refuses to change a package-manager-owned binary. This fork
+// distributes release archives, not the community Homebrew formula.
 func UpdateViaBrew() (string, error) {
-	cmd := exec.Command("brew", "upgrade", "multica-ai/tap/multica")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("brew upgrade failed: %w", err)
-	}
-	return string(out), nil
+	return "", fmt.Errorf("Homebrew-managed CLI cannot be updated by this fork; install the TuringOmni CLI from https://github.com/dunzic/multica-worker/releases into a user-owned directory and put it first on PATH")
 }
 
 func updateDownloadTimeoutOrDefault(timeout time.Duration) time.Duration {

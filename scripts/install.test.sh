@@ -11,7 +11,7 @@ _setup_sandbox() {
   local stub_bin="$tmp/stub-bin"
   local install_bin="$tmp/install-bin"
   local payload_dir="$tmp/payload"
-  mkdir -p "$stub_bin" "$install_bin" "$payload_dir"
+  mkdir -p "$stub_bin" "$install_bin" "$payload_dir" "$tmp/home"
 
   cat >"$payload_dir/multica" <<'STUB'
 #!/usr/bin/env bash
@@ -23,16 +23,21 @@ STUB
   cat >"$stub_bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$*" == *"-sI"* ]]; then
-  printf 'HTTP/2 302\r\nlocation: https://github.com/multica-ai/multica/releases/tag/v0.3.2\r\n'
+  printf 'HTTP/2 302\r\nlocation: https://github.com/dunzic/multica-worker/releases/tag/v0.3.2\r\n'
   exit 0
 fi
 
 out=""
+url=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o)
       out="$2"
       shift 2
+      ;;
+    http*)
+      url="$1"
+      shift
       ;;
     *)
       shift
@@ -44,7 +49,21 @@ if [[ -z "$out" ]]; then
   echo "stub curl expected -o" >&2
   exit 2
 fi
-cp "$MULTICA_TEST_ARCHIVE" "$out"
+if [[ "$url" == *checksums.txt ]]; then
+  if command -v sha256sum >/dev/null; then
+    hash=$(sha256sum "$MULTICA_TEST_ARCHIVE" | awk '{print $1}')
+  else
+    hash=$(shasum -a 256 "$MULTICA_TEST_ARCHIVE" | awk '{print $1}')
+  fi
+  if [[ "${MULTICA_TEST_BAD_CHECKSUM:-}" == 1 ]]; then hash=invalid; fi
+  for os in darwin linux; do
+    for arch in amd64 arm64; do
+      printf '%s  multica-cli-0.3.2-%s-%s.tar.gz\n' "$hash" "$os" "$arch"
+    done
+  done >"$out"
+else
+  cp "$MULTICA_TEST_ARCHIVE" "$out"
+fi
 STUB
   chmod +x "$stub_bin/curl"
 }
@@ -54,6 +73,7 @@ _run_installer() {
   local out="$tmp/install.out"
   local err="$tmp/install.err"
   if ! PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
+    HOME="$tmp/home" \
     MULTICA_BIN_DIR="$tmp/install-bin" \
     MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
     bash "$ROOT_DIR/scripts/install.sh" >"$out" 2>"$err"; then
@@ -70,14 +90,18 @@ _run_installer() {
     return 1
   fi
 
-  if ! grep -q "Homebrew output (last 80 lines):" "$err"; then
-    echo "expected diagnostic tail in stderr" >&2
+  if ! grep -q "https://github.com/dunzic/multica-worker/releases/download/" "$out"; then
+    echo "expected the owned release channel" >&2
     cat "$err" >&2 || true
+    return 1
+  fi
+  if grep -q "via Homebrew" "$out"; then
+    echo "installer must not select a community Homebrew package" >&2
     return 1
   fi
 }
 
-test_brew_install_failure_falls_back_to_release_binary() {
+test_installs_owned_binary_without_homebrew() {
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -106,7 +130,7 @@ STUB
   _run_installer "$tmp"
 }
 
-test_brew_tap_failure_falls_back_to_release_binary() {
+test_replaces_same_version_community_binary() {
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -127,7 +151,28 @@ esac
 STUB
   chmod +x "$tmp/stub-bin/brew"
 
+  cp "$tmp/payload/multica" "$tmp/stub-bin/multica"
   _run_installer "$tmp"
+}
+
+test_corrupted_archive_is_not_installed() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_sandbox "$tmp"
+  if PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
+    HOME="$tmp/home" \
+    MULTICA_BIN_DIR="$tmp/install-bin" \
+    MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
+    MULTICA_TEST_BAD_CHECKSUM=1 \
+    bash "$ROOT_DIR/scripts/install.sh" >"$tmp/install.out" 2>"$tmp/install.err"; then
+    echo "installer accepted an invalid checksum" >&2
+    return 1
+  fi
+  if [ -e "$tmp/install-bin/multica" ] || ! grep -q "incorrect archive checksum" "$tmp/install.err"; then
+    echo "checksum failure must stop before installing" >&2
+    return 1
+  fi
 }
 
 test_remote_ssh_install_prints_token_login_hint() {
@@ -166,7 +211,7 @@ STUB
     cat "$tmp/install.out" >&2 || true
     return 1
   fi
-  if ! grep -q "https://multica.ai/settings?tab=tokens" "$tmp/install.out"; then
+  if ! grep -q "https://workers.turingomni.com/settings?tab=tokens" "$tmp/install.out"; then
     echo "expected direct API Tokens settings URL in installer output" >&2
     cat "$tmp/install.out" >&2 || true
     return 1
@@ -176,7 +221,7 @@ STUB
     cat "$tmp/install.out" >&2 || true
     return 1
   fi
-  if ! grep -q "multica login --token <YOUR_TOKEN>" "$tmp/install.out"; then
+  if ! grep -q "multica --profile turingomni login --token <YOUR_TOKEN>" "$tmp/install.out"; then
     echo "expected token login command in installer output" >&2
     cat "$tmp/install.out" >&2 || true
     return 1
@@ -229,7 +274,7 @@ STUB
     cat "$tmp/install.out" >&2 || true
     return 1
   fi
-  if grep -q "multica login --token <YOUR_TOKEN>" "$tmp/install.out"; then
+  if grep -q "multica --profile turingomni login --token <YOUR_TOKEN>" "$tmp/install.out"; then
     echo "did not expect token login command in local installer output" >&2
     cat "$tmp/install.out" >&2 || true
     return 1
@@ -255,6 +300,8 @@ STUB
 # ---------------------------------------------------------------------------
 _setup_server_sandbox() {
   local tmp="$1"
+  _setup_sandbox "$tmp"
+  mv "$tmp/stub-bin/curl" "$tmp/stub-bin/release-curl"
   local stub_bin="$tmp/stub-bin"
   local server_dir="$tmp/server"
   mkdir -p "$stub_bin" "$server_dir/.git"
@@ -367,10 +414,10 @@ STUB
 set -uo pipefail
 for arg in "$@"; do
   case "$arg" in
-    http*) printf '%s\n' "$arg" >>"$MULTICA_TEST_CURL_LOG" ;;
+    http://localhost*) printf '%s\n' "$arg" >>"$MULTICA_TEST_CURL_LOG"; exit 0 ;;
   esac
 done
-exit 0
+exec "$(dirname "$0")/release-curl" "$@"
 STUB
   chmod +x "$stub_bin/curl"
 
@@ -392,6 +439,7 @@ _run_with_server() {
     MULTICA_INSTALL_DIR="$tmp/server" \
     MULTICA_SELFHOST_REF="main" \
     MULTICA_TEST_CURL_LOG="$tmp/curl.log" \
+    MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
     "$@" \
     bash "$ROOT_DIR/scripts/install.sh" --with-server \
     >"$tmp/install.out" 2>"$tmp/install.err"; then
@@ -509,8 +557,9 @@ STUB
   fi
 }
 
-test_brew_install_failure_falls_back_to_release_binary
-test_brew_tap_failure_falls_back_to_release_binary
+test_installs_owned_binary_without_homebrew
+test_replaces_same_version_community_binary
+test_corrupted_archive_is_not_installed
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
 test_with_server_uses_compose_published_ports

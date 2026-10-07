@@ -39,7 +39,7 @@ const wsEventState = vi.hoisted(() => ({
 }));
 
 const WINDOWS_CMD =
-  "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex";
+  "irm https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.ps1 | iex";
 
 vi.mock("@multica/core/realtime", () => ({
   useWSEvent: (_event: string, handler: (payload: unknown) => void) => {
@@ -92,10 +92,10 @@ describe("ConnectRemoteDialog", () => {
     expect(baseElement).toHaveTextContent("multica setup");
     expect(baseElement).not.toHaveTextContent("multica setup self-host");
     expect(baseElement).toHaveTextContent(
-      "multica config set server_url https://api.multica.ai",
+      "multica config set server_url https://workers.turingomni.com",
     );
     expect(baseElement).toHaveTextContent(
-      "multica config set app_url https://multica.ai",
+      "multica config set app_url https://workers.turingomni.com",
     );
   });
 

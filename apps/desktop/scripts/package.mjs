@@ -366,6 +366,15 @@ function main() {
     `[package] build matrix → ${buildMatrix.map(formatTarget).join(", ")}`,
   );
 
+  // Packaging must compile the CLI from this checkout, not reuse a stale binary.
+  // Check before clearing output so a missing toolchain preserves prior artifacts.
+  try {
+    execFileSync("go", ["version"], { stdio: "pipe", cwd: desktopRoot });
+  } catch {
+    console.error("[package] Go is required to build a fresh bundled CLI; packaging stopped.");
+    process.exit(1);
+  }
+
   // Step 0: start every release from an empty output directory. Stale
   // artifacts from a prior run would otherwise be repacked into this run's
   // app.asar (see the `!dist/**` note in electron-builder.yml). This clean
@@ -436,6 +445,7 @@ function main() {
       "node",
       [
         bundleCliScript,
+        "--require-go",
         "--target-platform",
         PLATFORM_CONFIG[target.platform].runtimePlatform,
         "--target-arch",

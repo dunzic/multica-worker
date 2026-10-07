@@ -33,7 +33,7 @@ func TestReleaseSourceOverridesGitHub(t *testing.T) {
 
 func TestFetchLatestReleaseUsesConfiguredAPI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/multica-ai/multica/releases/latest" {
+		if r.URL.Path != "/repos/dunzic/multica-worker/releases/latest" {
 			http.NotFound(w, r)
 			return
 		}
@@ -49,5 +49,29 @@ func TestFetchLatestReleaseUsesConfiguredAPI(t *testing.T) {
 	}
 	if got.TagName != "v9.8.7" {
 		t.Fatalf("release tag = %q, want v9.8.7", got.TagName)
+	}
+}
+
+func TestFetchTaggedReleaseUsesOwnedRepository(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/dunzic/multica-worker/releases/tags/v9.8.7" {
+			t.Errorf("unexpected release path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(GitHubRelease{TagName: "v9.8.7"})
+	}))
+	defer server.Close()
+	t.Setenv(releaseAPIBaseURLEnv, server.URL)
+	if _, err := fetchReleaseByTag("v9.8.7"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBrewUpdateRefusesCommunityChannel(t *testing.T) {
+	output, err := UpdateViaBrew()
+	if err == nil || output != "" {
+		t.Fatalf("package-managed update should stop, output=%q err=%v", output, err)
 	}
 }
