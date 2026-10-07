@@ -7,6 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/
 import { useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { useT } from "../../i18n";
+import { ReadonlyContent } from "../../editor";
 
 export function ReplyAnnotations({ draftKey, annotations, disabled, onEditAnnotation }: {
   draftKey: CommentDraftKey;
@@ -51,7 +52,7 @@ export function ReplyAnnotations({ draftKey, annotations, disabled, onEditAnnota
                 <blockquote className="max-h-28 overflow-y-auto whitespace-pre-wrap break-words border-l-2 border-border pl-2 text-muted-foreground">
                   {annotation.quote}
                 </blockquote>
-                {annotation.note && <p className="mt-1 whitespace-pre-wrap break-words">{annotation.note}</p>}
+                {annotation.note && <ReadonlyContent content={annotation.note} className="mt-1 break-words" />}
               </button>
               {unavailable === annotation.id && <p role="status" className="p-1 text-caption text-muted-foreground">
                 {t(($) => $.reply.annotations.source_changed)}

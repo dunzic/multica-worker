@@ -9,6 +9,36 @@ import { toast } from "sonner";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
+// The annotation hook is tested without a QueryClientProvider. Keep the
+// editor boundary lightweight here; the real ContentEditor owns mention
+// suggestion coverage in the editor extension tests, while this suite checks
+// selection, draft persistence, and popup lifecycle.
+vi.mock("../../editor", async () => {
+  const React = await import("react");
+  return {
+    ContentEditor: React.forwardRef(function MockAnnotationEditor({
+      defaultValue,
+      onUpdate,
+      placeholder,
+      ariaLabel,
+    }: {
+      defaultValue?: string;
+      onUpdate?: (markdown: string) => void;
+      placeholder?: string;
+      ariaLabel?: string;
+    }, ref) {
+      const valueRef = React.useRef(defaultValue ?? "");
+      const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+      React.useImperativeHandle(ref, () => ({
+        getMarkdown: () => valueRef.current,
+        focus: () => textareaRef.current?.focus(),
+      }));
+      return <textarea ref={textareaRef} aria-label={ariaLabel} placeholder={placeholder} defaultValue={defaultValue}
+        onChange={(event) => { valueRef.current = event.target.value; onUpdate?.(event.target.value); }} />;
+    }),
+  };
+});
+
 const entry: TimelineEntry = { type: "comment", id: "root", actor_type: "agent", actor_id: "emacs", content: "Selected text", created_at: "2026-09-10T00:00:00Z" };
 const key = "reply:issue:root" as const;
 

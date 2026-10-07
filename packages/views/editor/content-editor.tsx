@@ -128,6 +128,8 @@ interface ContentEditorBaseProps {
    */
   onUpdate?: (markdown: string, baseMarkdown: string) => void;
   placeholder?: string;
+  /** Accessible name for compact editors that do not render a visible label. */
+  ariaLabel?: string;
   className?: string;
   debounceMs?: number;
   onSubmit?: () => void;
@@ -363,6 +365,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       value,
       onUpdate,
       placeholder: placeholderText = "",
+      ariaLabel,
       className,
       debounceMs = 300,
       onSubmit,
@@ -1007,7 +1010,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
           className="relative flex flex-1 min-h-full flex-col"
           onMouseDown={handleContainerMouseDown}
         >
-          <EditorContent className="flex flex-1 flex-col" editor={editor} />
+          <EditorContent aria-label={ariaLabel} className="flex flex-1 flex-col" editor={editor} />
           {showBubbleMenu && (
             <EditorBubbleMenu editor={editor} currentIssueId={currentIssueId} selectionAction={selectionAction} />
           )}
