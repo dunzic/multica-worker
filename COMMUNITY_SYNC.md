@@ -26,6 +26,8 @@ resolution rather than choosing an entire side:
 - desktop packaging, version provenance, and platform navigation behavior.
 - workspace group conversations, participant-scoped messages/files/runs, and
   batch résumé drafts with original-file and follow-up Issue references;
+- shared attachment previews in issue descriptions, comments and replies,
+  including authenticated Office-to-PDF conversion and copied file links;
 - TuringOmni distribution targets: production service defaults remain
   `https://workers.turingomni.com` and installer/update downloads remain in
   `dunzic/multica-worker`. Community code intake must not restore upstream
@@ -112,6 +114,196 @@ resolution rather than choosing an entire side:
 | 2026-10-06 | Prepared worktree at `46509903c` plus uncommitted distribution changes | User authorized local Mac and Windows packaging. Built `0.6.1-119-g46509903c-dirty`: Mac ARM64/x64 DMG and ZIP, Windows ARM64/x64 desktop EXE, and Windows amd64/arm64 CLI offline ZIP. Delivered under the primary checkout's ignored `dist/installers/20261006-0.6.1-119-g46509903c-dirty/`; no new commit, main landing, push, tag, release upload or deployment. | Twelve packaging/distribution checks rerun; all four desktop bundles' versions/targets/CLI architectures/notices; mounted DMG and ZIP integrity; deep strict Mac signature verification; Windows PE metadata/icon/ASAR-header checks; EXE archive and extracted-payload equality; CLI ZIP/current desktop-binary equality; eight SHA-256 hashes. Signing/native-acceptance limits and workaround below. |
 
 | 2026-10-14 | Own repository `dunzic/aiwork`: `origin/devNew` at `6459e1c6f`, contained by `origin/feat/personal-global-assistant` at `26bc8ebeb`; workspace Chat v2 snapshot `8c056adb2`, batch attachments `4933639fd`, DOCX preview antecedent `0eecaf3c1` | Semantically adapted the workspace group/topic collaboration model, batch-file composer, and protected DOCX body-text preview as `4f87657cc` on `codex/restore-chat-collaboration-20261014`, based on `c3ab9a93e4d337f265ace65be49586b8ce6b670a`. User authorized commit and push to the fork; see publication scope below. No wholesale branch merge, main landing, release, installer or deployment. Rejected the superseded `feat/conversations-platform` schema at `ad74f43f9`; deferred unrelated personal/global assistant, voice and permission-overhaul changes. | Real isolated PostgreSQL fixtures cover upload, message binding, complete daemon claim, multiple agents, transactional completion, cancellation, privacy and cleanup. Four review fixes plus authenticated PDF preview and commit-ordered daemon wakeup are covered by the second-pass checks below. Real Chrome/Codex HR feedback and UI-sent follow-up passed; unrelated full-suite failures remain recorded separately. |
+| 2026-10-14 | Own repository `dunzic/aiwork`: Office preview `0eecaf3c1e9e`, current-modal port `aa599dd5fab5`, copied-file-card fix `a7628d0f9b0c`, slides-to-PDF `fee0d16b8da3` | Additive semantic adaptation committed as `a1bd2d551` on `codex/restore-chat-collaboration-20261014` after `535630ecc44f`; fork publication authorized on 2026-10-15 as recorded below. Keep the upstream viewer and original MD/CSV/JSON/PDF renderers; add private on-demand Word/Excel/PPT PDF rendering, shared across descriptions/comments/replies. Resolve copied references from trusted app/API origins through authenticated attachment ownership checks. Do not revive old browser parsers, synthesize attachment records, rewrite foreign/localhost hosts, create derived public files, or import the old FK/cascade migration/upload goroutines. | See Office preview verification and deployment gates below. No production access, migration, release, installer or deployment in this change. |
+
+## 2026-10-14 Office preview restoration
+
+### User-visible scope and constraints
+
+- Word (`.doc`, `.docx`), Excel (`.xls`, `.xlsx`) and PowerPoint (`.ppt`,
+  `.pptx`) open as PDF in the existing viewer. This replaces the recently
+  restored DOCX body-text-only **UI**, not the existing `/content` text API.
+  Existing MD, CSV, JSON, PDF, text, HTML and media renderers stay in place.
+- Descriptions, uploaded comment files and threaded replies use the same
+  `Attachment` dispatcher. Canonical `/api/attachments/<uuid>/download` links
+  copied into text or file cards open the authenticated preview page, including
+  when that comment has no attachment metadata of its own. Only relative or
+  same-deployment links qualify; external URLs are not silently rehosted.
+- Preview remains read-only. Original-file download is unchanged. Layout and
+  fonts can differ from Microsoft Office; slides do not play animations or
+  embedded videos. Each spreadsheet sheet is one PDF page, including hidden
+  sheets, regardless of print ranges. The viewer explicitly states this.
+  Large sheets may require zooming; this is not an editable spreadsheet grid.
+- Source files are limited to 20 MiB, derived PDFs to 40 MiB, OOXML expanded
+  entries to 100 MiB/4,096 entries, and a conversion to 60 seconds. Macro-enabled
+  filename extensions are not enabled. Damaged/encrypted/unsupported documents,
+  service congestion and missing server configuration have explicit errors;
+  retry and original download remain available. A transient converter failure
+  gets one automatic retry after 500 ms, never an unbounded retry loop.
+
+### Privacy, resource limits and deployment
+
+- `GET /api/attachments/{id}/office-preview` checks workspace membership and
+  the original attachment's group/topic ACL before reading storage. It sends
+  stored bytes, not user-supplied URLs, tokens or cookies, to an operator-owned
+  conversion service. Every attempt rechecks permissions, with `no-store`
+  responses and no persistent PDF cache or derived attachment record. Closing
+  the viewer discards Query bytes and revokes its blob URL. Revocation cannot
+  retroactively erase a document a user has already read/downloaded.
+- There are no database migrations, new browser-parser dependencies, or calls
+  to public Microsoft/Google online viewers. Two conversions per backend
+  process may be in flight; excess requests fail visibly instead of forming
+  an unbounded queue. Conversion receives cancellation and a deadline.
+- Optional `docker-compose.office-preview.yml` adds pinned Gotenberg 8.37.0
+  on an internal network, without host ports, source-storage mounts or app
+  credentials. It limits CPU/memory/PIDs and denies external document fetches,
+  API download-from, Chromium routes and webhook destinations. Do not expose
+  the converter directly through the public reverse proxy or loosen those
+  network restrictions to fix a connectivity issue.
+- First build/select **this fork's backend and frontend images containing this
+  change**, using the existing `MULTICA_BACKEND_IMAGE`,
+  `MULTICA_FRONTEND_IMAGE` and `MULTICA_IMAGE_TAG` settings. The base compose
+  file's community-image defaults do not contain this fork-only endpoint.
+  Then, with the existing production secrets/configuration supplied securely:
+
+  ```bash
+  docker compose -f docker-compose.selfhost.yml \
+    -f docker-compose.office-preview.yml up -d
+  ```
+
+  The overlay sets backend `MULTICA_OFFICE_PREVIEW_URL=http://office-preview:3000`.
+  A non-Compose operator may configure an equivalent private HTTP(S) origin
+  with the same isolation and resource limits; do not point it at a public
+  third-party conversion service. Empty configuration disables Office
+  conversion while leaving original downloads and other preview formats intact.
+  Existing files are converted on demand; re-upload/backfill is unnecessary.
+- Deploy the backend/converter before the new frontend. Already-installed
+  desktop clients retain their existing behavior with the newer API; the new
+  shared viewer needs a new desktop build if it is to appear there. Web users
+  need a web deployment, not a CLI reinstall. No installer was built here.
+- To disable: remove this overlay from the operator's compose invocation,
+  clear any separately set `MULTICA_OFFICE_PREVIEW_URL`, recreate the backend
+  using its base deployment configuration, and stop the dedicated converter.
+  Do not delete upload volumes or databases. Office falls back to an explicit
+  unavailable notice plus the unchanged original download, not a public viewer.
+- Conversion options and hardening were checked against the primary
+  [LibreOffice conversion documentation](https://gotenberg.dev/docs/convert-with-libreoffice/convert-to-pdf),
+  [configuration reference](https://gotenberg.dev/docs/configuration) and
+  [outbound URL filtering reference](https://gotenberg.dev/docs/outbound-url-filtering).
+
+### Office verification and release gates
+
+- Targeted core API tests and shared editor/rich-content/comment/preview-page
+  tests cover PDF response validation, disabled/error states, bounded retries,
+  blob cleanup, workspace separation, preserved original preview formats and
+  copied-link/card routing. Initial feature checks: 153 core API tests; 1,738 shared views
+  tests in 97 files (`editor`, `rich-content`, attachment preview page and
+  comment card); `pnpm typecheck` with 10 successful non-mobile tasks; changed
+  core/views lint; E2E TypeScript check; five-language parity (nine new keys
+  each); Compose configuration validation and `git diff --check` all passed.
+  These are scoped tests, not a rerun of the entire monorepo test suite.
+- Go tests use the dedicated managed PostgreSQL test database and fake
+  converter for deterministic ACL/revocation/size/invalid-input/error tests.
+  Separate real-converter acceptance uses synthetic OOXML and existing
+  synthetic résumé fixtures, never the user's production documents.
+  Seven converter and ten handler top-level tests passed, including bounded
+  concurrency, request cancellation, response-body timeout, zip expansion,
+  original content compatibility and revoked group participation. Converter
+  `go vet` passed. No SQL changed, so sqlc regeneration was not needed.
+- `MULTICA_OFFICE_PREVIEW_ACCEPTANCE=1 pnpm exec playwright test
+  e2e/office-preview.spec.ts` is opt-in and checks for a loopback API and an
+  isolated `multica_*` database. Start the managed API/web environment and
+  isolated converter first. The local acceptance helper uses a loopback-only
+  ingress proxy to the converter's internal network; the converter itself has
+  no external network. TestApiClient owns setup and exact fixture cleanup.
+- Real Chrome acceptance covers DOCX body links and copied comment links/cards,
+  XLSX comment attachments and two-page PPTX replies, plus original-file byte
+  equality. The spreadsheet fixture includes a hidden sheet and Chinese text.
+  An initial converter process crash after cancellation was observed; the
+  bounded recovery path and repeated/cancelled conversion regression cover
+  this failure mode. A converter failure must never be mistaken for success.
+  Initial real-converter Chrome run: **3 passed** against a freshly
+  restarted API built from the final Go source. It includes MD/CSV/JSON/PDF
+  regression and twelve further PPT conversions alternating with cancellation.
+  PDF assertions wait for the native viewer's nonzero page count, not only an
+  iframe or plugin shell. Screenshots were visually checked; local evidence
+  is under `.context/office-preview-acceptance-complete/` (ignored, no real
+  customer content). Earlier failed locator checks are not counted as passes.
+- Modern DOCX/XLSX/PPTX are the live acceptance fixtures. Legacy DOC/XLS/PPT
+  have allowlist/signature/unit coverage, not native Office format acceptance.
+  Native Windows/macOS desktop, mobile, complex customer Office documents,
+  production deployment and real-agent HR screening are not re-accepted by
+  these tests. Earlier HR results below describe a different completed run.
+
+### Review fixes: trusted origins and attachment ownership
+
+- Attachment links trust the app origin, the connected API base URL and the
+  server's additive `attachment_api_origin` config field, derived from the
+  same `MULTICA_PUBLIC_URL` used for markdown links. The daemon endpoint is
+  deliberately not an attachment-origin authority. Spoofed hosts,
+  credential-bearing URLs and arbitrary external deployments remain excluded.
+  Both native anchor hrefs and editor/hover-card/copy-card navigation use this
+  rule; missing config clears the prior deployment's origin.
+- `GET /api/attachments/{id}/preview-location` resolves the stored workspace
+  after the existing download membership and group/topic ACL checks. It returns
+  only workspace ID/slug with `no-store`; task tokens and cloud machine PATs
+  cannot inherit the owner's cross-workspace access. Header/query workspace
+  hints do not override ownership. The preview page uses the platform adapter
+  to switch workspace before fetching metadata/content; unresolved file cards
+  do not prefetch metadata in the wrong workspace. Original download endpoints
+  and their authorization behavior are unchanged.
+- Regression tests first reproduced the independent-origin failure and the
+  premature metadata request. Final checks: **1,751 views tests / 97 files**;
+  **360 core API/schema/config/auth-initializer tests / 4 files**; **60 handler
+  and 7 converter top-level Go tests**; converter `go vet`; `pnpm typecheck`
+  (**10 successful non-mobile tasks**); changed core/views lint; E2E TypeScript
+  check and `git diff --check` passed. This is scoped regression coverage,
+  not the entire repository's test suite.
+- Final real Chrome run: **4 passed**. It uses the actual backend-returned
+  absolute markdown URL with distinct web/API origins, covers Office files in
+  bodies/comments/replies, copied links/cards across two workspaces, misleading
+  workspace query hints, denial after removing membership, original download
+  preservation, MD/CSV/JSON/PDF and repeated/cancelled PPT conversion.
+  Synthetic-only evidence is retained under
+  `.context/office-preview-routing-acceptance/`; cross-workspace preview and
+  denial screenshots were visually checked.
+- The acceptance setup must emit protected `/api/attachments/.../download`
+  links, not public `/uploads/...` storage URLs. The spec asserts this
+  prerequisite instead of manufacturing a relative URL. With managed local
+  storage, start the isolated environment with `LOCAL_UPLOAD_BASE_URL=/`
+  (normalized by LocalStorage to no public base) and the loopback test
+  converter URL. Earlier public-storage/locator failures are not passes.
+  External/public storage-link resolution is not widened by this change.
+- Deploy the new backend before the new viewer: its copied-link page needs
+  `preview-location`, and Office conversion still needs the private converter.
+  No production deployment or installer was performed. Git publication is
+  recorded separately below. Native desktop/mobile and real customer
+  documents remain outside this acceptance.
+
+### Authorized Office preview branch publication (2026-10-15)
+
+- Implementation, deployment configuration and tests are committed as
+  `a1bd2d55111241241b942e890ee49a8fb0c2f343`
+  (`feat(attachments): add private Office previews and safe copied-link routing`),
+  based on `535630ecc44f42d37a4add9e930f1209b7a87b2b`. This documentation
+  follow-up records provenance, review fixes, acceptance and release gates.
+- The user authorized commit and push to our own repository. The verified
+  destination is `origin`, `git@github.com:dunzic/multica-worker.git`, branch
+  `codex/restore-chat-collaboration-20261014`. The remote branch matched the
+  parent before committing. Use an explicit non-force push of this branch and
+  compare the remote SHA with local HEAD at handoff. The community `upstream`
+  repository is not a publication target.
+- Pre-commit repeat checks passed: **360 core tests / 4 files**, **159 focused
+  preview/link views tests / 5 files**, and the staged whitespace check.
+  The broader regression and four real Chrome acceptance results above are
+  from the preceding implementation/review stage; they were not rerun during
+  this Git-only publication step.
+- Only this worktree's Office preview source, synthetic test fixtures, tests,
+  deployment configuration and decision record are included. `.env.worktree`,
+  `.context` evidence, credentials, daemon profiles and installation artifacts
+  remain excluded. The primary checkout's 43 unrelated pending distribution
+  files remain untouched. Publishing this branch does not land `main`, deploy
+  the converter/backend, build an installer or publish a release.
 
 ## 2026-10-14 collaboration restoration and future intake gates
 
