@@ -119,6 +119,24 @@ resolution rather than choosing an entire side:
 | 2026-10-14 | Own repository `dunzic/aiwork`: `origin/devNew` at `6459e1c6f`, contained by `origin/feat/personal-global-assistant` at `26bc8ebeb`; workspace Chat v2 snapshot `8c056adb2`, batch attachments `4933639fd`, DOCX preview antecedent `0eecaf3c1` | Semantically adapted the workspace group/topic collaboration model, batch-file composer, and protected DOCX body-text preview as `4f87657cc` on `codex/restore-chat-collaboration-20261014`, based on `c3ab9a93e4d337f265ace65be49586b8ce6b670a`. User authorized commit and push to the fork; see publication scope below. No wholesale branch merge, main landing, release, installer or deployment. Rejected the superseded `feat/conversations-platform` schema at `ad74f43f9`; deferred unrelated personal/global assistant, voice and permission-overhaul changes. | Real isolated PostgreSQL fixtures cover upload, message binding, complete daemon claim, multiple agents, transactional completion, cancellation, privacy and cleanup. Four review fixes plus authenticated PDF preview and commit-ordered daemon wakeup are covered by the second-pass checks below. Real Chrome/Codex HR feedback and UI-sent follow-up passed; unrelated full-suite failures remain recorded separately. |
 | 2026-10-14 | Own repository `dunzic/aiwork`: Office preview `0eecaf3c1e9e`, current-modal port `aa599dd5fab5`, copied-file-card fix `a7628d0f9b0c`, slides-to-PDF `fee0d16b8da3` | Additive semantic adaptation committed as `a1bd2d551` on `codex/restore-chat-collaboration-20261014` after `535630ecc44f`; fork publication authorized on 2026-10-15 as recorded below. Keep the upstream viewer and original MD/CSV/JSON/PDF renderers; add private on-demand Word/Excel/PPT PDF rendering, shared across descriptions/comments/replies. Resolve copied references from trusted app/API origins through authenticated attachment ownership checks. Do not revive old browser parsers, synthesize attachment records, rewrite foreign/localhost hosts, create derived public files, or import the old FK/cascade migration/upload goroutines. | See Office preview verification and deployment gates below. No production access, migration, release, installer or deployment in this change. |
 
+## 2026-10-15 Generic composer main integration
+
+| Date | Source | Decision and local result | Verification |
+| --- | --- | --- | --- |
+| 2026-10-15 | Fork `origin/main` at `ff59571ee` and composer correction `bea521a84` | Integrated as merge `efebb9997` on `codex/restore-chat-collaboration-20261014`. Resolved the two composer/test conflicts semantically: retain main's one-click conversation-starter sends and draft/upload guards, while preserving multi-file paste, generic append requests, adaptive height, and removal of HR-only controls. User authorized main integration and pushing all local branches to `dunzic/multica-worker`; no upstream push, force push, tag, installer or deployment is included. | Post-merge views regression: 139 tests across 7 files; core uploads/drafts: 42 tests across 4 files. All non-mobile workspace TypeScript project checks (including both desktop configs), changed-view-file ESLint, and the diff check against `origin/main` passed. |
+
+- These checks used the existing installed dependencies. A frozen-lockfile
+  reinstall, production build, full frontend/Go suites, mobile checks, real-agent
+  smoke and native installer acceptance were not repeated for this publication.
+  The patch relative to the fetched fork main is limited to the composer,
+  regression fixtures, translations and this record; backend and migration
+  contents remain identical to that main baseline.
+- The primary checkout's 43 pre-existing dirty entries were not staged,
+  committed or included in the publication. They are separate from the reviewed
+  composer correction. Updating that dirty local main checkout requires a
+  separate preservation decision; publishing the integrated tip to remote main
+  does not require overwriting those local files.
+
 ## 2026-10-15 Generic composer correction
 
 User-authorized local correction on `codex/restore-chat-collaboration-20261014`,
