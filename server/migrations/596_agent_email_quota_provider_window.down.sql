@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS agent_email_quota_provider_window_idx;

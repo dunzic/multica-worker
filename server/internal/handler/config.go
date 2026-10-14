@@ -12,6 +12,9 @@ import (
 
 type AppConfig struct {
 	CdnDomain string `json:"cdn_domain"`
+	// The origin used for durable private-attachment Markdown links. Clients
+	// use it only to recognize links belonging to this deployment.
+	AttachmentPublicURL string `json:"attachment_public_url,omitempty"`
 	// AttachmentAPIOrigin identifies the operator-owned origin used by
 	// buildMarkdownURL. It may differ from both the app and daemon endpoints.
 	AttachmentAPIOrigin string `json:"attachment_api_origin,omitempty"`
@@ -134,6 +137,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	if h.Storage != nil {
 		config.CdnDomain = h.Storage.CdnDomain()
 	}
+	config.AttachmentPublicURL = h.cfg.PublicURL
 	config.CdnSigned = h.CFSigner != nil
 	config.AttachmentAPIOrigin = attachmentAPIOrigin(h.cfg.PublicURL)
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()

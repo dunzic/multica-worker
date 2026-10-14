@@ -122,6 +122,19 @@ afterEach(() => {
 });
 
 describe("AuthInitializer recovery", () => {
+  it("publishes the API origin used by persisted attachment links", async () => {
+    const api = makeApi({
+      getConfig: vi.fn().mockResolvedValue({
+        attachment_public_url: "https://api.example.test",
+      }),
+    });
+    renderInitializer({ api });
+
+    await waitFor(() => {
+      expect(configStore.getState().attachmentPublicUrl).toBe("https://api.example.test");
+    });
+  });
+
   it("loads the attachment API origin and clears a previous deployment's origin when absent", async () => {
     const first = renderInitializer({ api: makeApi({
       getConfig: vi.fn().mockResolvedValue({ attachment_api_origin: "https://api.example.test" }),

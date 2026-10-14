@@ -59,6 +59,7 @@ export function AuthInitializer({
     const request = getApi()
       .getConfig()
       .then((cfg) => {
+        configStore.getState().setAttachmentPublicUrl(cfg.attachment_public_url);
         configStore.getState().setAttachmentApiOrigin(cfg.attachment_api_origin);
         if (cfg.cdn_domain) {
           configStore.getState().setCdnConfig({

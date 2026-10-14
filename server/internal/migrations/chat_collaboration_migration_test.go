@@ -41,7 +41,7 @@ func TestChatCollaborationHistoryBackfillPreservesLegacyOwnership(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	sql := readMigrationFile(t, "573_chat_history_backfill.up.sql")
+	sql := readMigrationFile(t, "582_chat_history_backfill.up.sql")
 	for i := 0; i < 2; i++ {
 		if _, err := tx.Exec(ctx, sql); err != nil {
 			t.Fatal(err)

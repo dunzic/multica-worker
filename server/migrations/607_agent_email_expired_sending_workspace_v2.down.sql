@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS email_message_expired_sending_v2_idx;

@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY agent_email_quota_provider_window_idx ON agent_email_quota_reservation (provider_route_id, created_at);

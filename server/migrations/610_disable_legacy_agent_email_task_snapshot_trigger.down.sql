@@ -1,0 +1,3 @@
+CREATE TRIGGER trg_agent_email_task_authorization_snapshot
+AFTER INSERT ON agent_task_queue
+FOR EACH ROW EXECUTE FUNCTION capture_agent_email_task_authorization_snapshot();

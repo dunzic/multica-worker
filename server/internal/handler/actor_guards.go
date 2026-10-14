@@ -103,6 +103,32 @@ func RequireHumanActor(next http.Handler) http.Handler {
 	})
 }
 
+// RequireStrictHumanActor protects control-plane routes whose authorization
+// must fail closed when a new credential kind is introduced. Auth leaves the
+// actor source empty only for today's interactive JWT and mul_ PAT paths.
+func RequireStrictHumanActor(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Actor-Source") != "" {
+			writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireTaskTokenActor protects Agent data-plane routes. The general Auth
+// middleware strips caller-supplied actor headers before stamping this exact
+// value for a validated mat_ task token.
+func RequireTaskTokenActor(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Actor-Source") != "task_token" {
+			writeError(w, http.StatusForbidden, "this endpoint requires an Agent task token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // isMachineCredentialActor centralizes the authoritative actor-source check so
 // sensitive handlers can keep a fail-closed backstop in addition to their
 // router middleware. Unknown actor sources intentionally remain human-equivalent

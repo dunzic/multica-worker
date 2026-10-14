@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS agent_email_policy_version_id_uidx;

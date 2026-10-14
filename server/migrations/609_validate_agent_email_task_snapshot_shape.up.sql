@@ -1,0 +1,1 @@
+ALTER TABLE agent_task_queue VALIDATE CONSTRAINT agent_task_email_authorization_snapshot_shape;

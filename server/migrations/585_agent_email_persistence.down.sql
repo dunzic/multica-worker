@@ -1,0 +1,13 @@
+DROP FUNCTION IF EXISTS reserve_agent_email_quota(UUID, UUID, UUID, UUID, UUID, INTEGER, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT);
+DROP TRIGGER IF EXISTS trg_agent_email_task_pin_immutable ON agent_task_queue;
+DROP FUNCTION IF EXISTS enforce_agent_email_task_pin_immutable();
+DROP TRIGGER IF EXISTS trg_agent_email_approval_append_only ON agent_email_approval;
+DROP TRIGGER IF EXISTS trg_agent_email_policy_version_append_only ON agent_email_policy_version;
+DROP FUNCTION IF EXISTS reject_agent_email_append_only_update();
+DROP TABLE IF EXISTS email_delivery_recipient;
+DROP TABLE IF EXISTS agent_email_quota_reservation;
+DROP TABLE IF EXISTS email_message;
+DROP TABLE IF EXISTS agent_email_approval;
+DROP TABLE IF EXISTS agent_email_policy_state;
+DROP TABLE IF EXISTS agent_email_policy_version;
+ALTER TABLE agent_task_queue DROP COLUMN IF EXISTS email_agent_config_digest;
