@@ -377,6 +377,23 @@ describe("useRealtimeSync — queued chat promotion", () => {
   });
 });
 
+describe("useRealtimeSync — group collaboration", () => {
+  it("scopes message refreshes and never fetches a different workspace with current headers", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const ws = createMockWs();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    renderHook(() => useRealtimeSync(ws, createStores()), { wrapper: createWrapper(qc) });
+    const message = vi.mocked(ws.on).mock.calls.find(([event]) => event === "message:sent")?.[1];
+    expect(message).toBeDefined();
+    invalidate.mockClear();
+    (message as (payload: unknown) => void)({ workspace_id: "ws-1", topic_id: "topic-a" });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["chat-collaboration", "ws-1"] });
+    invalidate.mockClear();
+    (message as (payload: unknown) => void)({ workspace_id: "ws-2", topic_id: "topic-b" });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["chat-collaboration", "ws-2"], refetchType: "none" });
+  });
+});
+
 describe("useRealtimeSync — Table server membership invalidation", () => {
   let qc: QueryClient;
   let stores: RealtimeSyncStores;

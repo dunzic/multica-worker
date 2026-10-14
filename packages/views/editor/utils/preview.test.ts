@@ -56,8 +56,9 @@ describe("getPreviewKind", () => {
     ["application/octet-stream", "service.dockerfile", "text"],
     ["application/octet-stream", "rules.makefile", "text"],
 
+    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "report.docx", "docx"],
+    ["application/octet-stream", "résumé.DOCX", "docx"],
     // Out of scope
-    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "report.docx", null],
     ["application/octet-stream", "blob.bin", null],
     ["application/zip", "archive.zip", null],
   ];

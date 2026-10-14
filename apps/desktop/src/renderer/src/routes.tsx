@@ -28,7 +28,7 @@ import {
 } from "@multica/views/agents";
 import { SquadsPage, SquadDetailPage as SquadDetailPageView } from "@multica/views/squads/components";
 import { InboxPage } from "@multica/views/inbox";
-import { ChatPage } from "@multica/views/chat";
+import { ChatPage, ChatGroupsPage } from "@multica/views/chat";
 import { SettingsPage } from "@multica/views/settings";
 import { useT } from "@multica/views/i18n";
 import { Download, Server } from "lucide-react";
@@ -222,6 +222,7 @@ export const appRoutes: RouteObject[] = [
           },
           { path: "inbox", element: <InboxPage />, handle: { title: "Inbox" } },
           { path: "chat", element: <ChatPage />, handle: { title: "Chat" } },
+          { path: "chat/groups", element: <ChatGroupsPage />, handle: { title: "Chat" } },
           {
             path: "attachments/:id/preview",
             element: <AttachmentPreviewRoute />,

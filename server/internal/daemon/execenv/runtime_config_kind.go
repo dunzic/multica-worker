@@ -44,7 +44,7 @@ const (
 // change and the prompt cache is lost from messages[0] onward (MUL-5377).
 func classifyTask(ctx TaskContextForEnv) taskKind {
 	switch {
-	case ctx.ChatSessionID != "":
+	case ctx.ChatSessionID != "" || ctx.TopicID != "":
 		return kindChat
 	case ctx.QuickCreatePrompt != "":
 		return kindQuickCreate

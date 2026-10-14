@@ -358,6 +358,7 @@ type TaskCancellationActor struct {
 }
 
 type AgentTaskResponse struct {
+	TopicID                  string                 `json:"topic_id,omitempty"`
 	StartClaimSupported      bool                   `json:"start_claim_supported,omitempty"`
 	CancelledByCommentChange bool                   `json:"cancelled_by_comment_change,omitempty"`
 	CancelledBy              *TaskCancellationActor `json:"cancelled_by,omitempty"`
@@ -2732,7 +2733,8 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	tasks, err := h.Queries.ListAgentTasks(r.Context(), db.ListAgentTasksParams{
 		AgentID: agent.ID, BeforeCreatedAt: beforeCreatedAt, BeforeID: beforeID,
-		PageLimit: int32(limit + 1),
+		PageLimit:         int32(limit + 1),
+		ViewerWorkspaceID: agent.WorkspaceID, PrincipalType: actorType, PrincipalID: parseUUID(actorID),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list agent tasks")
@@ -3031,13 +3033,16 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 		return
 	}
 
-	tasks, err := h.Queries.ListWorkspaceAgentTaskSnapshot(r.Context(), parseUUID(workspaceID))
+	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+	tasks, err := h.Queries.ListWorkspaceAgentTaskSnapshot(r.Context(), db.ListWorkspaceAgentTaskSnapshotParams{
+		WorkspaceID: parseUUID(workspaceID), ViewerWorkspaceID: parseUUID(workspaceID),
+		PrincipalType: actorType, PrincipalID: parseUUID(actorID),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list agent task snapshot")
 		return
 	}
 
-	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 	allowed, ok := h.accessibleAgentIDs(r.Context(), workspaceID, actorType, actorID, member.Role)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "failed to resolve agent access")

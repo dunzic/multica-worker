@@ -92,6 +92,9 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 	}
 
 	// Helper: marshal event and send to a specific user.
+	markChatV2EventsNonBroadcast(personalEvents)
+	registerChatV2BusListener(bus, b)
+
 	sendToRecipient := func(b realtime.Broadcaster, e events.Event, recipientID string) {
 		if recipientID == "" {
 			return
@@ -255,6 +258,13 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		data, err := json.Marshal(msg)
 		if err != nil {
 			slog.Error("failed to marshal event", "event_type", e.Type, "error", err)
+			return
+		}
+
+		if e.RecipientUserIDs != nil {
+			for _, userID := range e.RecipientUserIDs {
+				b.SendToUser(userID, data)
+			}
 			return
 		}
 

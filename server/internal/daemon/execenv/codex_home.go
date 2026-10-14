@@ -404,10 +404,15 @@ func codexSessionStoreKey(profile string, task TaskContextForEnv) string {
 	storeID := sanitizePathSegment(task.IssueID)
 	if storeID == "" {
 		chatID := sanitizePathSegment(task.ChatSessionID)
-		if chatID == "" {
+		topicID := sanitizePathSegment(task.TopicID)
+		switch {
+		case chatID != "":
+			storeID = "chat_" + chatID
+		case topicID != "":
+			storeID = "topic_" + topicID
+		default:
 			return ""
 		}
-		storeID = "chat_" + chatID
 	}
 	agent := sanitizePathSegment(task.AgentID)
 	if agent == "" {

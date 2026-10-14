@@ -53,6 +53,7 @@
     "zoom_actual": "Actual size"
   },
   "attachment": {
+    "preview_docx_notice": "Body text preview only. Download the original for layout, headers, footers and images.",
     "download_failed": "Couldn't fetch a download link. Try again in a moment.",
     "preview": "Preview",
     "preview_loading": "Loading preview…",

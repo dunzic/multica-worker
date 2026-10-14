@@ -53,6 +53,7 @@
     "zoom_actual": "실제 크기"
   },
   "attachment": {
+    "preview_docx_notice": "본문 텍스트만 미리 봅니다. 서식, 머리글, 바닥글과 이미지는 원본을 다운로드하세요.",
     "download_failed": "다운로드 링크를 가져오지 못했습니다. 잠시 후 다시 시도하세요.",
     "preview": "미리보기",
     "preview_loading": "미리보기 불러오는 중...",

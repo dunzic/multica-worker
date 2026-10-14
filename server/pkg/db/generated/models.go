@@ -178,6 +178,7 @@ type AgentTaskQueue struct {
 	CancelledByID             pgtype.UUID `json:"cancelled_by_id"`
 	CancelledByName           pgtype.Text `json:"cancelled_by_name"`
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
+	TopicID                   pgtype.UUID `json:"topic_id"`
 }
 
 type AgentToLabel struct {
@@ -202,6 +203,7 @@ type Attachment struct {
 	ChatMessageID   pgtype.UUID        `json:"chat_message_id"`
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
+	TopicID         pgtype.UUID        `json:"topic_id"`
 }
 
 type Autopilot struct {
@@ -565,6 +567,9 @@ type ChatMessage struct {
 	ChannelOutboundInstallationID pgtype.UUID        `json:"channel_outbound_installation_id"`
 	ChannelOutboundChatID         pgtype.Text        `json:"channel_outbound_chat_id"`
 	ChannelOutboundMessageIds     []string           `json:"channel_outbound_message_ids"`
+	TopicID                       pgtype.UUID        `json:"topic_id"`
+	SenderType                    pgtype.Text        `json:"sender_type"`
+	SenderID                      pgtype.UUID        `json:"sender_id"`
 }
 
 type ChatPinnedAgent struct {
@@ -664,6 +669,29 @@ type ContactSalesInquiry struct {
 	SubmitterIp     *netip.Addr        `json:"submitter_ip"`
 	UserAgent       string             `json:"user_agent"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type Conversation struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Kind        string             `json:"kind"`
+	Title       pgtype.Text        `json:"title"`
+	DmSignature pgtype.Text        `json:"dm_signature"`
+	CreatedBy   pgtype.UUID        `json:"created_by"`
+	ArchivedAt  pgtype.Timestamptz `json:"archived_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ConversationParticipant struct {
+	ConversationID  pgtype.UUID        `json:"conversation_id"`
+	PrincipalType   string             `json:"principal_type"`
+	PrincipalID     pgtype.UUID        `json:"principal_id"`
+	Role            string             `json:"role"`
+	JoinedAt        pgtype.Timestamptz `json:"joined_at"`
+	LeftAt          pgtype.Timestamptz `json:"left_at"`
+	LastReadTopicID pgtype.UUID        `json:"last_read_topic_id"`
+	LastReadAt      pgtype.Timestamptz `json:"last_read_at"`
 }
 
 type DaemonConnection struct {
@@ -2035,6 +2063,19 @@ type TaskUsageHourlyRollupState struct {
 	LastRunFinishedAt pgtype.Timestamptz `json:"last_run_finished_at"`
 	LastRunRows       int64              `json:"last_run_rows"`
 	LastError         pgtype.Text        `json:"last_error"`
+}
+
+type Topic struct {
+	LegacyChatSessionID pgtype.UUID        `json:"legacy_chat_session_id"`
+	ID                  pgtype.UUID        `json:"id"`
+	ConversationID      pgtype.UUID        `json:"conversation_id"`
+	Title               pgtype.Text        `json:"title"`
+	CreatedByType       string             `json:"created_by_type"`
+	CreatedByID         pgtype.UUID        `json:"created_by_id"`
+	ArchivedAt          pgtype.Timestamptz `json:"archived_at"`
+	LastMessageAt       pgtype.Timestamptz `json:"last_message_at"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
 type User struct {

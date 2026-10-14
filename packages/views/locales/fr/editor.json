@@ -53,6 +53,7 @@
     "zoom_actual": "Taille réelle"
   },
   "attachment": {
+    "preview_docx_notice": "Aperçu du corps du texte uniquement. Téléchargez l’original pour la mise en page, les en-têtes, les pieds de page et les images.",
     "download_failed": "Impossible d'obtenir un lien de téléchargement. Réessayez dans un instant.",
     "preview": "Aperçu",
     "preview_loading": "Chargement de l'aperçu…",

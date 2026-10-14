@@ -1,4 +1,6 @@
 import type { ZodType } from "zod";
+import type { Conversation, Topic, MessageV2, Principal, SendMessageV2Response } from "../types/chat-v2";
+import { ConversationSchema, TopicSchema, ParticipantSchema, ConversationListSchema, TopicListSchema, MessageListSchema, SendMessageSchema, TopicRunListSchema, type TopicRun } from "../chat-v2/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters } from "../types/issue-wakeup";
 import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema } from "./schemas";
@@ -808,6 +810,48 @@ function isReplayableBody(body: BodyInit | null | undefined): boolean {
 }
 
 export class ApiClient {
+  async listConversationsV2(): Promise<Conversation[]> {
+    return parseWithFallback(await this.fetch<unknown>("/api/v2/conversations"), ConversationListSchema, [] as Conversation[], { endpoint: "listConversationsV2" });
+  }
+  async updateConversationV2(id: string, title: string): Promise<Conversation> {
+    const result = parseWithFallback<Conversation | null>(await this.fetch<unknown>(`/api/v2/conversations/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }), ConversationSchema, null, { endpoint: "updateConversationV2" });
+    if (!result) throw new Error("Invalid conversation response");
+    return result;
+  }
+  async leaveConversationV2(id: string): Promise<void> {
+    await this.fetch(`/api/v2/conversations/${id}`, { method: "DELETE" });
+  }
+  async addConversationParticipantV2(id: string, principal: Principal, role = "member"): Promise<void> {
+    const result = parseWithFallback(await this.fetch<unknown>(`/api/v2/conversations/${id}/participants`, { method: "POST", body: JSON.stringify({ ...principal, role }) }), ParticipantSchema, null, { endpoint: "addConversationParticipantV2" });
+    if (!result) throw new Error("Invalid participant response");
+  }
+  async removeConversationParticipantV2(id: string, principal: Principal): Promise<void> {
+    await this.fetch(`/api/v2/conversations/${id}/participants/${principal.type}/${principal.id}`, { method: "DELETE" });
+  }
+  async createConversationV2(data: { kind: "group" | "dm"; title?: string; participants: Principal[] }): Promise<Conversation> {
+    const result = parseWithFallback<Conversation | null>(await this.fetch<unknown>("/api/v2/conversations", { method: "POST", body: JSON.stringify(data) }), ConversationSchema, null, { endpoint: "createConversationV2" });
+    if (!result) throw new Error("Invalid conversation response");
+    return result;
+  }
+  async listTopicsV2(id: string): Promise<Topic[]> {
+    return parseWithFallback(await this.fetch<unknown>(`/api/v2/conversations/${id}/topics`), TopicListSchema, [] as Topic[], { endpoint: "listTopicsV2" });
+  }
+  async listTopicRunsV2(id: string): Promise<TopicRun[]> {
+    return parseWithFallback<TopicRun[]>(await this.fetch<unknown>(`/api/v2/topics/${id}/runs`), TopicRunListSchema, [], { endpoint: "listTopicRunsV2" });
+  }
+  async createTopicV2(id: string, title: string): Promise<Topic> {
+    const result = parseWithFallback<Topic | null>(await this.fetch<unknown>(`/api/v2/conversations/${id}/topics`, { method: "POST", body: JSON.stringify({ title }) }), TopicSchema, null, { endpoint: "createTopicV2" });
+    if (!result) throw new Error("Invalid topic response");
+    return result;
+  }
+  async listTopicMessagesV2(id: string): Promise<MessageV2[]> {
+    return parseWithFallback(await this.fetch<unknown>(`/api/v2/topics/${id}/messages`), MessageListSchema, [] as MessageV2[], { endpoint: "listTopicMessagesV2" });
+  }
+  async sendTopicMessageV2(id: string, content: string, attachmentIds?: string[]): Promise<SendMessageV2Response> {
+    const result = parseWithFallback<SendMessageV2Response | null>(await this.fetch<unknown>(`/api/v2/topics/${id}/messages`, { method: "POST", body: JSON.stringify({ content, attachment_ids: attachmentIds }) }), SendMessageSchema, null, { endpoint: "sendTopicMessageV2" });
+    if (!result) throw new Error("Invalid message response");
+    return result;
+  }
   private baseUrl: string;
   private token: string | null = null;
   private logger: Logger;
@@ -4048,7 +4092,7 @@ export class ApiClient {
   // File Upload & Attachments
   async uploadFile(
     file: File,
-    opts?: { issueId?: string; commentId?: string; chatSessionId?: string },
+    opts?: { issueId?: string; commentId?: string; chatSessionId?: string; topicId?: string },
     // Optional abort signal so a module-level upload coordinator (MUL-5181)
     // can cancel an in-flight upload on logout. When aborted, `fetch` rejects
     // with an AbortError, which the coordinator distinguishes from a real
@@ -4057,6 +4101,7 @@ export class ApiClient {
   ): Promise<Attachment> {
     const formData = new FormData();
     formData.append("file", file);
+    if (opts?.topicId) formData.append("topic_id", opts.topicId);
     if (opts?.issueId) formData.append("issue_id", opts.issueId);
     if (opts?.commentId) formData.append("comment_id", opts.commentId);
     if (opts?.chatSessionId) formData.append("chat_session_id", opts.chatSessionId);

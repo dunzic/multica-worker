@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_message_sender_v2;

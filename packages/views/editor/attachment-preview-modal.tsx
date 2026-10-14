@@ -646,6 +646,7 @@ export function AttachmentPreviewModal({
 const KIND_ICONS: Record<PreviewKind, LucideIcon> = {
   image: ImageIcon,
   pdf: FileText,
+  docx: FileText,
   video: FileVideo,
   audio: FileAudio,
   markdown: FileText,
@@ -789,7 +790,7 @@ function PreviewPanel({
   const resigned = useResignedInlineMedia(
     state.attachmentId ?? undefined,
     state.mediaUrl,
-    kind === "image",
+    kind === "image" || kind === "pdf",
   );
   // Until that upgrade lands the picked URL may be one this client cannot
   // load natively (desktop, split-origin web); handed to <img> it would fail
@@ -1091,6 +1092,7 @@ function PreviewPanel({
               kind={kind}
               source={source}
               state={state}
+              mediaUrl={mediaUrl}
               view={view}
               onDownload={onDownload}
               onBackdropClick={closeOnBackdrop}
@@ -1347,6 +1349,7 @@ interface StageView {
 }
 
 const TEXT_BACKED_KINDS: ReadonlySet<PreviewKind> = new Set<PreviewKind>([
+  "docx",
   "markdown",
   "html",
   "table",
@@ -1366,6 +1369,7 @@ function PreviewContent({
   kind,
   source,
   state,
+  mediaUrl,
   view,
   onDownload,
   onBackdropClick,
@@ -1373,6 +1377,7 @@ function PreviewContent({
   kind: Exclude<PreviewKind, "image"> | null;
   source: PreviewSource;
   state: PreviewState;
+  mediaUrl: string;
   view: StageView;
   onDownload: () => void;
   onBackdropClick: (e: React.MouseEvent) => void;
@@ -1415,11 +1420,29 @@ function PreviewContent({
   );
 
   switch (kind) {
+    case "docx":
+      return (
+        <TextBackedPreview
+          attachmentId={state.attachmentId!}
+          onDownload={onDownload}
+          render={(text) => <DocumentSheet width="prose" onBackdropClick={onBackdropClick}><p className="px-6 pt-4 text-caption text-muted-foreground">{t(($) => $.attachment.preview_docx_notice)}</p><pre className="whitespace-pre-wrap p-6 text-body">{text}</pre></DocumentSheet>}
+        />
+      );
     case "pdf":
+      // A native iframe cannot attach the bearer token to private downloads.
+      // Wait for the shared authenticated media loader before mounting it.
+      if (!mediaUrl) {
+        return (
+          <div className="dark flex h-full items-center justify-center gap-2 text-body text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            {t(($) => $.attachment.preview_loading)}
+          </div>
+        );
+      }
       return (
         <div className="h-full pb-4">
           <iframe
-            src={state.mediaUrl}
+            src={mediaUrl}
             className="h-full w-full rounded-lg bg-background"
             title={state.filename}
           />

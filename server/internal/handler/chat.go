@@ -1803,6 +1803,10 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 	}
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 
+	if task.TopicID.Valid && !h.ownsTopicTask(r.Context(), task, userID, workspaceID) {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
 	var (
 		queuedOnly      bool
 		expectedSession pgtype.UUID

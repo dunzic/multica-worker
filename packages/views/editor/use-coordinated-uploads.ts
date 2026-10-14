@@ -254,6 +254,8 @@ export function useCoordinatedUploads(
      * is selected by the time the request finishes. Defaults to `binding`.
      */
     resolveUploadTarget?: () => UploadDraftBinding;
+    /** Upload ownership must follow the document held by a pinned editor. */
+    resolveUploadContext?: () => UploadContext;
     /**
      * Registry key to register this mount's editor under, when it differs
      * from `binding.registryKey`. Same divergence as above: a write-back must
@@ -268,6 +270,8 @@ export function useCoordinatedUploads(
   // Latest-value ref: handleUpload snapshots the target at invocation time.
   const resolveUploadTargetRef = useRef(opts?.resolveUploadTarget);
   resolveUploadTargetRef.current = opts?.resolveUploadTarget;
+  const resolveUploadContextRef = useRef(opts?.resolveUploadContext);
+  resolveUploadContextRef.current = opts?.resolveUploadContext;
 
   // Liveness of THIS mount, read by settle closures it created: while true,
   // the editor that started the upload will do the inline swap itself; once
@@ -363,6 +367,7 @@ export function useCoordinatedUploads(
   const issueId = ctx.issueId;
   const commentId = ctx.commentId;
   const chatSessionId = ctx.chatSessionId;
+  const topicId = ctx.topicId;
 
   const handleUpload = useCallback(
     (file: File, uploadId?: string): Promise<UploadResult | null> => {
@@ -416,7 +421,7 @@ export function useCoordinatedUploads(
           clientUploadId,
           file,
           api,
-          ctx: { issueId, commentId, chatSessionId },
+          ctx: resolveUploadContextRef.current?.() ?? { issueId, commentId, chatSessionId, topicId },
           onSettled: (outcome) => {
             if (outcome.status === "uploaded") {
               if (target) {
@@ -481,7 +486,7 @@ export function useCoordinatedUploads(
         });
       });
     },
-    [binding, editorRef, issueId, commentId, chatSessionId, t],
+    [binding, editorRef, issueId, commentId, chatSessionId, topicId, t],
   );
 
   const removeUpload = useCallback(

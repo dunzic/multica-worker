@@ -34,6 +34,7 @@ vi.mock("sonner", () => ({ toast: toastMock }));
 const {
   getAttachmentTextContentMock,
   getAttachmentMock,
+  getAttachmentBlobMock,
   downloadMock,
   getBaseUrlMock,
   FakePreviewTooLargeError,
@@ -56,6 +57,7 @@ const {
     // Re-sign metadata. Rejects by default: a deployment with nothing to
     // upgrade to, so the picked URL stands.
     getAttachmentMock: vi.fn((): Promise<Attachment> => Promise.reject(new Error("no re-sign"))),
+    getAttachmentBlobMock: vi.fn(),
     downloadMock: vi.fn(),
     // Default to the web shape (empty base, same-origin). Tests covering
     // the desktop-renderer / standalone-shell case override per-test.
@@ -69,6 +71,7 @@ vi.mock("@multica/core/api", () => ({
   api: {
     getAttachmentTextContent: getAttachmentTextContentMock,
     getAttachment: getAttachmentMock,
+    getAttachmentBlob: getAttachmentBlobMock,
     getBaseUrl: getBaseUrlMock,
   },
   PreviewTooLargeError: FakePreviewTooLargeError,
@@ -177,6 +180,7 @@ import {
 } from "./attachment-preview-modal";
 import { withFragmentNavShim } from "./utils/iframe-fragment-nav";
 import { withLocationBridge } from "./utils/iframe-location-bridge";
+import { __resetInlineMediaBlobCacheForTests } from "./hooks/use-inline-media-url";
 import { renderHook, act as hookAct } from "@testing-library/react";
 
 // Fresh QueryClient per render — no retries (preview errors are typed,
@@ -222,6 +226,9 @@ function ClosablePreview({ attachment }: { attachment: Attachment }) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetInlineMediaBlobCacheForTests();
+  getAttachmentMock.mockRejectedValue(new Error("no re-sign"));
+  getAttachmentBlobMock.mockReset();
   // Drops any body a test queued but never consumed (a media kind skips the
   // text fetch), so it cannot answer the next test's request.
   getAttachmentTextContentMock.mockReset();
@@ -500,7 +507,7 @@ describe("AttachmentPreviewModal — server-relative download_url resolution (MU
     expect(onImageError).not.toHaveBeenCalled();
   });
 
-  it("prefixes the configured API base for PDF previews when download_url is server-relative", () => {
+  it("prefixes the configured API base for PDF previews when download_url is server-relative", async () => {
     getBaseUrlMock.mockReturnValue("https://api.example.test");
     const att = makeAttachment({
       filename: "manual.pdf",
@@ -514,10 +521,34 @@ describe("AttachmentPreviewModal — server-relative download_url resolution (MU
         onClose={() => {}}
       />,
     );
-    const iframe = document.querySelector("iframe");
-    expect(iframe?.getAttribute("src")).toBe(
+    await waitFor(() => expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
       "https://api.example.test/api/attachments/att-1/download",
-    );
+    ));
+  });
+
+  it("waits for authenticated PDF bytes when private attachments have no signed URL", async () => {
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    const id = "11111111-1111-4111-8111-111111111111";
+    const att = makeAttachment({ id, filename: "private.pdf", content_type: "application/pdf", download_url: `/api/attachments/${id}/download` });
+    getAttachmentMock.mockResolvedValue(att);
+    let resolveBlob!: (blob: Blob) => void;
+    getAttachmentBlobMock.mockImplementation(() => new Promise<Blob>((resolve) => { resolveBlob = resolve; }));
+    const blobURL = "blob:http://localhost:3000/authenticated-pdf";
+    const createObjectURL = vi.fn(() => blobURL);
+    const original = URL.createObjectURL;
+    URL.createObjectURL = createObjectURL;
+    try {
+      render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+      await waitFor(() => expect(getAttachmentBlobMock).toHaveBeenCalledWith(att.id));
+      expect(document.querySelector("iframe")).toBeNull();
+      expect(screen.getByText("Loading preview…")).toBeInTheDocument();
+      const blob = new Blob(["%PDF-1.7"], { type: "application/pdf" });
+      await act(async () => resolveBlob(blob));
+      await waitFor(() => expect(document.querySelector("iframe")?.getAttribute("src")).toBe(blobURL));
+      expect(createObjectURL).toHaveBeenCalledWith(blob);
+    } finally {
+      URL.createObjectURL = original;
+    }
   });
 
   it("keeps a same-origin relative URL untouched when the configured base is empty (web)", () => {

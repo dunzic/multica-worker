@@ -53,6 +53,7 @@
     "zoom_actual": "实际大小"
   },
   "attachment": {
+    "preview_docx_notice": "仅预览正文文本。原始排版、页眉页脚和图片请下载查看。",
     "download_failed": "下载链接获取失败，请稍后重试。",
     "preview": "预览",
     "preview_loading": "加载预览中…",

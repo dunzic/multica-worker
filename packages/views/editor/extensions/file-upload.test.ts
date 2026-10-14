@@ -153,6 +153,35 @@ function firstImageAttrs(editor: Editor): Record<string, unknown> | null {
   return attrs;
 }
 
+describe("batch résumé placeholders", () => {
+  it("retains all three files when concurrent uploads settle in reverse order", async () => {
+    const editor = makeEditor();
+    const files = ["one.pdf", "two.docx", "three.pdf"].map((name) => new File(["resume"], name));
+    const pending = files.map(() => deferred<UploadResult | null>());
+    const runs = files.map((file, i) => uploadAndInsertFile(editor, file, () => pending[i]!.promise, editor.state.doc.content.size));
+    const cards = () => {
+      const result: Array<Record<string, unknown>> = [];
+      editor.state.doc.descendants((node) => { if (node.type.name === "fileCard") result.push(node.attrs); });
+      return result;
+    };
+    expect(cards().map((card) => card.filename)).toEqual(files.map((file) => file.name));
+    for (const i of [2, 1, 0]) pending[i]!.resolve(makeUpload({ id: `att-${i}`, link: `/api/attachments/att-${i}/download`, filename: files[i]!.name, content_type: "application/pdf" }));
+    await Promise.all(runs);
+    expect(cards()).toHaveLength(3);
+    expect(cards().every((card) => card.uploading === false)).toBe(true);
+    expect(cards().map((card) => card.filename)).toEqual(files.map((file) => file.name));
+  });
+  it("does not discard successful files when another upload fails", async () => {
+    const editor = makeEditor();
+    const files = ["one.pdf", "failed.pdf", "three.pdf"].map((name) => new File(["resume"], name));
+    const runs = files.map((file, i) => uploadAndInsertFile(editor, file, async () => i === 1 ? null : makeUpload({ id: `att-${i}`, link: `/api/attachments/att-${i}/download`, filename: file.name, content_type: "application/pdf" }), editor.state.doc.content.size));
+    await Promise.all(runs);
+    const names: string[] = [];
+    editor.state.doc.descendants((node) => { if (node.type.name === "fileCard") names.push(node.attrs.filename); });
+    expect(names).toEqual(["one.pdf", "three.pdf"]);
+  });
+});
+
 describe("uploadAndInsertFile", () => {
   it("lets typing continue in the trailing paragraph after pasted image upload preview", async () => {
     const editor = makeEditor();

@@ -6887,7 +6887,7 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] != "workdir" {
 		return "", false
 	}
-	if task.AgentID == "" || (task.IssueID == "" && task.ChatSessionID == "") {
+	if task.AgentID == "" || (task.IssueID == "" && task.ChatSessionID == "" && task.TopicID == "") {
 		return "", false
 	}
 	// Managed-env provenance is written only for non-local resumable envs, so
@@ -6909,12 +6909,24 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 		AgentID       string `json:"agent_id"`
 		IssueID       string `json:"issue_id"`
 		ChatSessionID string `json:"chat_session_id"`
+		TopicID       string `json:"topic_id"`
 	}
 	if json.Unmarshal(data, &marker) != nil {
 		return "", false
 	}
 	if marker.ManagedBy != execenv.TaskContextMarkerManagedBy || marker.AgentID != task.AgentID {
 		return "", false
+	}
+	// A topic is an independent conversation scope, never an alias for a DM
+	// or issue. Both Prepare-time proofs must name exactly this topic.
+	if prov.TopicID != task.TopicID || marker.TopicID != task.TopicID {
+		return "", false
+	}
+	if task.TopicID != "" {
+		if task.IssueID != "" || task.ChatSessionID != "" || prov.IssueID != "" || prov.ChatSessionID != "" || marker.IssueID != "" || marker.ChatSessionID != "" {
+			return "", false
+		}
+		return workdir, true
 	}
 	if task.IssueID != "" {
 		if prov.IssueID != task.IssueID || marker.IssueID != task.IssueID {
@@ -7852,6 +7864,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ProjectDescription:               task.ProjectDescription,
 		ProjectResources:                 convertProjectResourcesForEnv(task.ProjectResources),
 		ChatSessionID:                    task.ChatSessionID,
+		TopicID:                          task.TopicID,
 		ChatChannelType:                  task.ChatChannelType,
 		ChatChannelDeliversFiles:         task.ChatChannelDeliversFiles,
 		AutopilotRunID:                   task.AutopilotRunID,

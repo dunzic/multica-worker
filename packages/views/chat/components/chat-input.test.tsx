@@ -92,6 +92,7 @@ vi.mock("../../editor", async () => ({
       placeholder?: string;
       onUploadFile?: (file: File, uploadId: string) => Promise<UploadResult | null>;
       onUploadingChange?: (uploading: boolean) => void;
+      onReady?: () => void;
       mentionMode?: string;
       mentionContextItems?: unknown[];
     },
@@ -108,6 +109,8 @@ vi.mock("../../editor", async () => ({
     editorProps.last = props as unknown as Record<string, unknown>;
     const valueRef = useRef<string>(value ?? defaultValue ?? "");
     const uploadingRef = useRef(0);
+    const onReadyRef = useRef(props.onReady);
+    useEffect(() => { onReadyRef.current?.(); }, []);
     useEffect(() => {
       if (value !== undefined) valueRef.current = value;
     }, [value]);
@@ -502,6 +505,14 @@ describe("ChatInput focusRequest", () => {
 });
 
 describe("ChatInput conversation starter prefill", () => {
+  it("appends a batch-review request without replacing existing résumé links", () => {
+    const { rerender } = renderInput();
+    const files = "!file[one.pdf](/api/attachments/att-1/download)\n\n!file[two.docx](/api/attachments/att-2/download)";
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: files } });
+    rerender(element({ conversationStarterRequest: { id: 5, mode: "append", content: "Screen the entire batch against the supplied JD." } }));
+    expect(editorState.adopted.at(-1)).toBe(files + "\n\nScreen the entire batch against the supplied JD.");
+    expect(useChatStore.getState().setInputDraft).toHaveBeenLastCalledWith("__draft_new__", files + "\n\nScreen the entire batch against the supplied JD.");
+  });
   it("replaces live editor text and the stored draft", () => {
     const onConversationStarterApplied = vi.fn();
     const { rerender } = renderInput();

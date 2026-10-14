@@ -19,6 +19,8 @@ type Event struct {
 	// without re-deserializing Payload. See MUL-1138 phase 1.
 	TaskID        string
 	ChatSessionID string
+	// Non-nil means participant-only fanout; an empty list must never broadcast.
+	RecipientUserIDs []string
 }
 
 // Handler is a function that processes an event.
