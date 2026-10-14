@@ -10,6 +10,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import pg from "pg";
 import { TestApiClient } from "./fixtures";
+import { hrBatchReviewForAgent } from "./fixtures/hr-batch/review-prompt";
 
 test.use({ channel: "chrome", viewport: { width: 1440, height: 1000 }, actionTimeout: 30_000 });
 test.skip(process.env.MULTICA_RUN_REAL_AGENT_SMOKE !== "1" || process.env.MULTICA_HR_ACCEPTANCE !== "1", "Explicit real-agent acceptance only");
@@ -77,8 +78,14 @@ test("HR uploads three resumes, previews originals, receives linked feedback and
     await page.locator('input[type="file"][multiple]').last().setInputFiles(files.map((file) => resolve("e2e/fixtures/hr-batch", file)));
     await expect.poll(() => uploaded.length, { timeout: 30_000 }).toBe(3);
     await expect(editor.locator(".file-card-node")).toHaveCount(3);
-    await page.getByRole("button", { name: "Screen a batch of résumés", exact: true }).click();
-    await page.getByRole("menuitem", { name: "HR synthetic reviewer", exact: true }).click();
+    // HR instructions belong to this agent/task, not the generic input toolbar.
+    await editor.press("ControlOrMeta+End");
+    await editor.press("Enter");
+    await editor.evaluate((element, content) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData("text/plain", content);
+      element.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+    }, hrBatchReviewForAgent(agent.id, "HR synthetic reviewer"));
     await expect(editor).toContainText("逐份读取所有附件");
     await expect(editor.locator(".file-card-node")).toHaveCount(3);
     await page.screenshot({ path: resolve(evidence, "01-batch-draft.png") });

@@ -21,7 +21,6 @@ interface ChatAddMenuProps {
   /** Called with each selected file — the caller routes it through the
    *  editor's upload extension, same path as paste / drag-drop. */
   onSelectFile?: (file: File) => void;
-  onPrepareBatchReview?: () => void;
   projects?: Project[];
   projectId?: string | null;
   onSelectProject?: (projectId: string | null) => void;
@@ -40,7 +39,6 @@ interface ChatAddMenuProps {
  */
 export function ChatAddMenu({
   onSelectFile,
-  onPrepareBatchReview,
   projects = [],
   projectId,
   onSelectProject,
@@ -82,7 +80,6 @@ export function ChatAddMenu({
               {t(($) => $.input.upload_file)}
             </DropdownMenuItem>
           )}
-          {onPrepareBatchReview && <DropdownMenuItem onClick={onPrepareBatchReview} className="flex-col items-start"><span>{t(($) => $.groups.review_batch)}</span><span className="text-caption text-muted-foreground">{t(($) => $.groups.review_hint)}</span></DropdownMenuItem>}
           {onSelectProject && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>

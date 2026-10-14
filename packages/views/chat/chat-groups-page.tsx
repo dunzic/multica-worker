@@ -12,14 +12,13 @@ import type { Principal } from "@multica/core/chat-v2";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@multica/ui/components/ui/dialog";
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@multica/ui/components/ui/dropdown-menu";
 import { useT } from "../i18n";
 import { AppLink, useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { ReadonlyContent } from "../editor";
 import { Attachment } from "../editor/attachment";
 import { ChatInput } from "./components/chat-input";
-import { hrBatchReviewForAgent } from "./hr-batch-review";
+import { CHAT_COLUMN, CHAT_GUTTER } from "./components/chat-column";
 import { GroupInfoDialog } from "./group-info-dialog";
 
 export function ChatGroupsPage() {
@@ -50,7 +49,6 @@ export function ChatGroupsPage() {
   const send = useSendTopicMessage(wsId);
   const createTopic = useCreateTopic(wsId);
   const [error, setError] = useState<string | null>(null);
-  const [reviewRequest, setReviewRequest] = useState<{ id: number; content: string; mode: "append"; topicId: string } | null>(null);
   const choose = (convId: string, topic?: string) => {
     const query = new URLSearchParams({ conversation: convId });
     if (topic) query.set("topic", topic);
@@ -70,7 +68,7 @@ export function ChatGroupsPage() {
         <nav aria-label={t(($) => $.groups.title)} className="max-h-48 w-full shrink-0 overflow-y-auto p-2 md:max-h-none md:w-64">
           {conversations.filter((conv) => conv.kind === "group").map((conv) => <AppLink key={conv.id} href={`${paths.chatGroups()}?conversation=${conv.id}`} aria-current={id === conv.id ? "page" : undefined} className={buttonVariants({ variant: id === conv.id ? "secondary" : "ghost", className: "mb-1 w-full justify-start truncate" })}>{name(conv) || t(($) => $.groups.untitled)}</AppLink>)}
         </nav>
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <main className="@container flex min-h-0 min-w-0 flex-1 flex-col">
           {conversation ? <>
             <div className="flex flex-wrap items-center gap-2 px-4 py-2">
               <h2 className="min-w-0 flex-1 truncate text-body font-semibold">{name(conversation)}</h2>
@@ -97,22 +95,13 @@ export function ChatGroupsPage() {
                 {(message.attachments ?? []).filter((att) => !message.content.includes(`/attachments/${att.id}/download`) && !message.content.includes(att.url)).map((att) => <Attachment key={att.id} attachment={{ kind: "record", attachment: att }} />)}
               </article>)}
             </div>
-            {topicId && <div className="shrink-0 p-3">
+            {topicId && <>
               <ChatInput
                 draftKeyOverride={`group:${topicId}`}
                 editorKeyOverride="group-composer"
                 uploadEnabled
                 uploadTopicId={topicId}
                 disabled={send.isPending}
-                leftAdornment={<DropdownMenu>
-                  <DropdownMenuTrigger render={<Button variant="ghost" disabled={!conversation.participants.some((p) => p.principal_type === "agent")} />}>{t(($) => $.groups.review_batch)}</DropdownMenuTrigger>
-                  <DropdownMenuContent>
-                    <p className="max-w-64 px-2 py-1 text-caption text-muted-foreground">{t(($) => $.groups.review_hint)}</p>
-                    {conversation.participants.filter((p) => p.principal_type === "agent").map((p) => <DropdownMenuItem key={p.principal_id} onClick={() => setReviewRequest({ id: Date.now(), topicId, mode: "append", content: hrBatchReviewForAgent(p.principal_id, getName("agent", p.principal_id)) })}>{getName("agent", p.principal_id)}</DropdownMenuItem>)}
-                  </DropdownMenuContent>
-                </DropdownMenu>}
-                conversationStarterRequest={reviewRequest?.topicId === topicId ? reviewRequest : null}
-                onConversationStarterApplied={() => setReviewRequest(null)}
                 onSend={async (content, attachmentIds, commit) => {
                   setError(null);
                   if ((attachmentIds?.length ?? 0) > 20) { setError(t(($) => $.groups.attachment_limit)); return false; }
@@ -120,9 +109,13 @@ export function ChatGroupsPage() {
                   catch { setError(t(($) => $.groups.send_failed)); return false; }
                 }}
               />
-              {conversation.kind === "group" && <p className="mt-1 text-caption text-muted-foreground">{t(($) => $.groups.mention_hint)}</p>}
-              <p className="text-caption text-muted-foreground">{t(($) => $.groups.attachment_limit)}</p>
-            </div>}
+              <div className={`${CHAT_GUTTER} shrink-0 pb-3 text-caption text-muted-foreground`}>
+                <div className={CHAT_COLUMN}>
+                  {conversation.kind === "group" && <p>{t(($) => $.groups.mention_hint)}</p>}
+                  <p>{t(($) => $.groups.attachment_limit)}</p>
+                </div>
+              </div>
+            </>}
           </> : <p className="m-auto p-4 text-body text-muted-foreground">{t(($) => $.groups.choose)}</p>}
         </main>
       </div>

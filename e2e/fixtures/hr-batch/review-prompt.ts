@@ -1,4 +1,4 @@
-// Explicitly inserted by the user. No automatic issue creation on attachment upload.
+// Synthetic HR acceptance fixture; never a built-in action in the generic composer.
 export const HR_BATCH_REVIEW_PROMPT = `请按我提供的岗位 JD 筛选本批简历。
 如果尚未提供 JD，请先询问，不要自行编造筛选标准。
 只依据岗位相关的技能、经验等可核验信息评估；不要推断敏感个人属性，不以性别、年龄或婚育情况作为筛选标准。

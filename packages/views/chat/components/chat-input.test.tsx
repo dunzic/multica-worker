@@ -505,13 +505,13 @@ describe("ChatInput focusRequest", () => {
 });
 
 describe("ChatInput conversation starter prefill", () => {
-  it("appends a batch-review request without replacing existing résumé links", () => {
+  it("appends an agent-provided request without replacing existing attachment links", () => {
     const { rerender } = renderInput();
     const files = "!file[one.pdf](/api/attachments/att-1/download)\n\n!file[two.docx](/api/attachments/att-2/download)";
     fireEvent.change(screen.getByTestId("editor"), { target: { value: files } });
-    rerender(element({ conversationStarterRequest: { id: 5, mode: "append", content: "Screen the entire batch against the supplied JD." } }));
-    expect(editorState.adopted.at(-1)).toBe(files + "\n\nScreen the entire batch against the supplied JD.");
-    expect(useChatStore.getState().setInputDraft).toHaveBeenLastCalledWith("__draft_new__", files + "\n\nScreen the entire batch against the supplied JD.");
+    rerender(element({ conversationStarterRequest: { id: 5, mode: "append", content: "Compare these documents." } }));
+    expect(editorState.adopted.at(-1)).toBe(files + "\n\nCompare these documents.");
+    expect(useChatStore.getState().setInputDraft).toHaveBeenLastCalledWith("__draft_new__", files + "\n\nCompare these documents.");
   });
   it("replaces live editor text and the stored draft", () => {
     const onConversationStarterApplied = vi.fn();

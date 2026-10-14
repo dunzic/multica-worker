@@ -1,7 +1,6 @@
 {
   "groups": {
-    "attachment_limit": "每条消息最多 20 个文件，更多简历请分批发送。",
-    "review_hint": "需提供岗位 JD。发送后逐份筛选，并建立批次任务及子任务。",
+    "attachment_limit": "每条消息最多 20 个文件，更多文件请分批发送。",
     "info": "群组信息",
     "save": "保存",
     "promote": "设为 admin",
@@ -24,7 +23,6 @@
     "untitled": "未命名",
     "topics": "话题",
     "new_topic": "新建话题",
-    "review_batch": "批量筛选简历",
     "mention_hint": "@ 群内智能体启动运行。回复和附件对群组参与者可见。",
     "choose": "选择对话或新建群组。",
     "load_failed": "无法加载对话。",

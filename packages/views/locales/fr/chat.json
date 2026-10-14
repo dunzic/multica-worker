@@ -1,7 +1,6 @@
 {
   "groups": {
     "attachment_limit": "20 fichiers maximum par message. Répartissez les lots plus importants sur plusieurs messages.",
-    "review_hint": "Une fiche de poste est requise. L’envoi demande une évaluation de chaque CV et la création d’une tâche de lot avec sous-tâches.",
     "info": "Informations du groupe",
     "save": "Enregistrer",
     "promote": "Nommer admin",
@@ -24,7 +23,6 @@
     "untitled": "Sans titre",
     "topics": "Sujets",
     "new_topic": "Nouveau sujet",
-    "review_batch": "Évaluer un lot de CV",
     "mention_hint": "Mentionnez un agent du groupe avec @ pour lancer une exécution. Les réponses et fichiers sont visibles par les participants.",
     "choose": "Sélectionnez une discussion ou créez un groupe.",
     "load_failed": "Impossible de charger les discussions.",

@@ -25,7 +25,9 @@ resolution rather than choosing an entire side:
 - existing database migrations, generated sqlc code, and operator build targets;
 - desktop packaging, version provenance, and platform navigation behavior.
 - workspace group conversations, participant-scoped messages/files/runs, and
-  batch résumé drafts with original-file and follow-up Issue references;
+  generic multi-file drafts with original-file and follow-up Issue references;
+  business-specific prompts belong to agent/user instructions, not built-in
+  actions in the shared composer;
 - shared attachment previews in issue descriptions, comments and replies,
   including authenticated Office-to-PDF conversion and copied file links;
 - TuringOmni distribution targets: production service defaults remain
@@ -115,6 +117,54 @@ resolution rather than choosing an entire side:
 
 | 2026-10-14 | Own repository `dunzic/aiwork`: `origin/devNew` at `6459e1c6f`, contained by `origin/feat/personal-global-assistant` at `26bc8ebeb`; workspace Chat v2 snapshot `8c056adb2`, batch attachments `4933639fd`, DOCX preview antecedent `0eecaf3c1` | Semantically adapted the workspace group/topic collaboration model, batch-file composer, and protected DOCX body-text preview as `4f87657cc` on `codex/restore-chat-collaboration-20261014`, based on `c3ab9a93e4d337f265ace65be49586b8ce6b670a`. User authorized commit and push to the fork; see publication scope below. No wholesale branch merge, main landing, release, installer or deployment. Rejected the superseded `feat/conversations-platform` schema at `ad74f43f9`; deferred unrelated personal/global assistant, voice and permission-overhaul changes. | Real isolated PostgreSQL fixtures cover upload, message binding, complete daemon claim, multiple agents, transactional completion, cancellation, privacy and cleanup. Four review fixes plus authenticated PDF preview and commit-ordered daemon wakeup are covered by the second-pass checks below. Real Chrome/Codex HR feedback and UI-sent follow-up passed; unrelated full-suite failures remain recorded separately. |
 | 2026-10-14 | Own repository `dunzic/aiwork`: Office preview `0eecaf3c1e9e`, current-modal port `aa599dd5fab5`, copied-file-card fix `a7628d0f9b0c`, slides-to-PDF `fee0d16b8da3` | Additive semantic adaptation committed as `a1bd2d551` on `codex/restore-chat-collaboration-20261014` after `535630ecc44f`; fork publication authorized on 2026-10-15 as recorded below. Keep the upstream viewer and original MD/CSV/JSON/PDF renderers; add private on-demand Word/Excel/PPT PDF rendering, shared across descriptions/comments/replies. Resolve copied references from trusted app/API origins through authenticated attachment ownership checks. Do not revive old browser parsers, synthesize attachment records, rewrite foreign/localhost hosts, create derived public files, or import the old FK/cascade migration/upload goroutines. | See Office preview verification and deployment gates below. No production access, migration, release, installer or deployment in this change. |
+
+## 2026-10-15 Generic composer correction
+
+User-authorized local correction on `codex/restore-chat-collaboration-20261014`,
+based on `036c65a8545fa60517cdb670e951cca2d89bccd1`; no new upstream intake,
+commit, push, deployment or installer in this step.
+
+- A three-file clipboard paste was reproduced with three successful uploads
+  but only the final file card retained. Inserting an atomic file card left it
+  selected; the next sequential insertion replaced it, and draft reconciliation
+  discarded the now-unreferenced attachment record. Move the caret into a
+  paragraph after each upload placeholder before awaiting upload completion.
+  Retain separate paste, picker and drop regressions: successful picker-based
+  HR acceptance did not cover this clipboard path. Do not infer production
+  storage deletion or recovery from this local reproduction.
+- Remove the HR-only action from group and generic composers. Keep generic
+  conversation starters and mentions; the HR prompt now lives solely in the
+  explicitly gated acceptance fixture. Multi-file work remains available to
+  any agent/task without a built-in business workflow.
+- Let editor content determine input height, capped by the available chat
+  height and the existing 384 px maximum. Keep the toolbar in normal flow and
+  scroll long content internally. Group inputs must remain direct children of
+  the height-constrained conversation, not an indefinite-height wrapper.
+- The existing 20-attachment group message limit is unchanged. A 21-file draft
+  retains all files and receives the existing visible send rejection; automatic
+  batching and backend-limit changes are not part of this fix.
+- The displayed "Untitled" chip is a topic title, not the group title. Group
+  creation and the current new-topic action both create an empty topic title;
+  the backend rename endpoint has no corresponding frontend control or
+  automatic naming. This was diagnosed only; no topic data or naming workflow
+  was changed.
+
+Verification: 129 focused views tests and 42 focused core tests passed. The
+broader editor/chat run passed 1,947 tests and failed three existing
+`chat-message-list.test.tsx` cases missing `NavigationProvider`; the same three
+failures were reproduced against the immutable pre-change `036c65a85` source.
+Views, web and both official desktop TypeScript targets passed, as did
+changed-file ESLint and whitespace checks.
+
+Real Chrome with the shared components, actual editor and synthetic HTTP
+upload responses retained 3/20/21 pasted files in both group and compact inputs.
+Group sends carried all 3/20 attachment IDs; 21 was rejected without clearing
+the draft. Compact input callbacks received all IDs. Height grew from 74.75 px
+to 271.25 px for seven lines, capped at 384 px, and shrank after clearing;
+small-window toolbar visibility and internal scrolling passed. Evidence lives
+in the worktree's ignored `.context/composer-investigation/` directory. These
+are browser integration checks with synthetic uploads, not production data,
+real-agent HR acceptance, native Windows/macOS acceptance or a release.
 
 ## 2026-10-14 Office preview restoration
 

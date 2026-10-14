@@ -175,21 +175,17 @@ async function applyImageDimensions(editor: any, file: File, src: string) {
   editor.view.dispatch(tr);
 }
 
-function moveSelectionToParagraphAfterImage(editor: any, src: string) {
-  const imagePos = findImagePosBySrc(editor, src);
-  if (imagePos === null) return;
-
-  const imageNode = editor.state.doc.nodeAt(imagePos);
-  if (!imageNode) return;
-
-  const afterImagePos = imagePos + imageNode.nodeSize;
-  const $afterImage = editor.state.doc.resolve(afterImagePos);
-  if ($afterImage.nodeAfter?.type.name !== "paragraph") return;
-
-  const paragraphStart = afterImagePos + 1;
-  const tr = editor.state.tr
-    .setSelection(TextSelection.create(editor.state.doc, paragraphStart))
-    .scrollIntoView();
+function moveSelectionAfterUpload(editor: any, uploadId: string) {
+  const hit = findUploadNode(editor, uploadId);
+  if (!hit) return;
+  const afterPos = hit.pos + hit.node.nodeSize;
+  const tr = editor.state.tr;
+  if (tr.doc.resolve(afterPos).nodeAfter?.type.name !== "paragraph") {
+    tr.insert(afterPos, editor.schema.nodes.paragraph.create());
+  }
+  // An atom remains selected after insertContent. The next file (or typed
+  // character) would replace it unless the caret moves outside that node.
+  tr.setSelection(TextSelection.create(tr.doc, afterPos + 1)).scrollIntoView();
   editor.view.dispatch(tr);
 }
 
@@ -217,8 +213,8 @@ export async function uploadAndInsertFile(
       editor.chain().focus().insertContentAt(pos, { type: "image", attrs: imgAttrs }).run();
     } else {
       editor.chain().focus().setImage(imgAttrs).run();
-      moveSelectionToParagraphAfterImage(editor, blobUrl);
     }
+    moveSelectionAfterUpload(editor, uploadId);
 
     // Reserve the image box ASAP so the async decode doesn't shift layout.
     // Fire-and-forget: must not delay the handler() call below, which the
@@ -248,6 +244,7 @@ export async function uploadAndInsertFile(
     } else {
       editor.chain().focus().insertContent(insertContent).run();
     }
+    moveSelectionAfterUpload(editor, uploadId);
 
     try {
       const result = await handler(file, uploadId);

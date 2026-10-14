@@ -1,7 +1,6 @@
 {
   "groups": {
     "attachment_limit": "Up to 20 files per message. Split larger batches across messages.",
-    "review_hint": "Requires a job description. Sending requests per-file screening and creates a batch Issue with child Issues.",
     "info": "Group info",
     "save": "Save",
     "promote": "Make admin",
@@ -24,7 +23,6 @@
     "untitled": "Untitled",
     "topics": "Topics",
     "new_topic": "New topic",
-    "review_batch": "Screen a batch of résumés",
     "mention_hint": "@ a group agent to start a run. Replies and files are visible to group participants.",
     "choose": "Select a conversation or create a group.",
     "load_failed": "Could not load conversations.",

@@ -154,6 +154,37 @@ function firstImageAttrs(editor: Editor): Record<string, unknown> | null {
 }
 
 describe("batch résumé placeholders", () => {
+  it.each([3, 20, 21])("retains every file from a %i-file clipboard paste", async (count) => {
+    const files = Array.from({ length: count }, (_, i) => `[Sample] candidate-${i + 1}(1).pdf`).map(
+      (name) => new File(["synthetic resume"], name, { type: "application/pdf" }),
+    );
+    const handler = vi.fn(async (file: File) => makeUpload({
+      id: file.name,
+      link: `/api/attachments/${file.name}/download`,
+      filename: file.name,
+      content_type: file.type,
+    }));
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: [StarterKit, ImageExtension, FileCardExtension, Markdown,
+        createFileUploadExtension({ current: handler })],
+    });
+    editors.push(editor);
+    const event = { clipboardData: { files, getData: () => "" } } as unknown as ClipboardEvent;
+    let handled = false;
+    editor.view.someProp("handlePaste", (fn) => {
+      handled = fn(editor.view, event, Slice.empty) === true;
+      return handled;
+    });
+    expect(handled).toBe(true);
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(count));
+    await Promise.resolve();
+    const names: string[] = [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "fileCard") names.push(node.attrs.filename);
+    });
+    expect(names).toEqual(files.map((file) => file.name));
+  });
   it("retains all three files when concurrent uploads settle in reverse order", async () => {
     const editor = makeEditor();
     const files = ["one.pdf", "two.docx", "three.pdf"].map((name) => new File(["resume"], name));
@@ -183,6 +214,36 @@ describe("batch résumé placeholders", () => {
 });
 
 describe("uploadAndInsertFile", () => {
+  it("keeps a pending file when the user continues typing after pasting it", async () => {
+    const editor = makeEditor();
+    const pending = deferred<UploadResult | null>();
+    const run = uploadAndInsertFile(editor, new File(["document"], "document.pdf"), () => pending.promise);
+    expect(editor.state.selection.$from.parent.type.name).toBe("paragraph");
+    editor.commands.insertContent("Additional instructions");
+    pending.resolve(makeUpload({ id: "file-1", link: "/api/attachments/file-1/download", filename: "document.pdf", content_type: "application/pdf" }));
+    await run;
+    expect(editor.getMarkdown()).toContain("/api/attachments/file-1/download");
+    expect(editor.getMarkdown()).toContain("Additional instructions");
+  });
+
+  it("retains all files dropped directly into the editor", async () => {
+    const files = ["first.pdf", "second.docx", "third.xlsx"].map((name) => new File(["synthetic"], name));
+    const handler = vi.fn(async (file: File) => makeUpload({ id: file.name, link: `/api/attachments/${file.name}/download`, filename: file.name, content_type: "application/octet-stream" }));
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: [StarterKit, ImageExtension, FileCardExtension, Markdown, createFileUploadExtension({ current: handler })],
+    });
+    editors.push(editor);
+    vi.spyOn(editor.view, "posAtCoords").mockReturnValue({ pos: 1, inside: 0 });
+    const event = { dataTransfer: { files }, clientX: 0, clientY: 0 } as unknown as DragEvent;
+    editor.view.someProp("handleDrop", (fn) => fn(editor.view, event, Slice.empty, false));
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(files.length));
+    await Promise.resolve();
+    const names: string[] = [];
+    editor.state.doc.descendants((node) => { if (node.type.name === "fileCard") names.push(node.attrs.filename); });
+    expect(names).toEqual(files.map((file) => file.name));
+  });
+
   it("lets typing continue in the trailing paragraph after pasted image upload preview", async () => {
     const editor = makeEditor();
     const upload = deferred<UploadResult | null>();

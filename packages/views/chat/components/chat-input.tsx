@@ -13,7 +13,6 @@ import {
   useComposerSubmit,
 } from "../../editor";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
-import { HR_BATCH_REVIEW_PROMPT } from "../hr-batch-review";
 import {
   useCoordinatedUploads,
   type UploadDraftBinding,
@@ -152,7 +151,7 @@ interface ChatInputProps {
 export function ChatInput({
   onSend,
   restoreDraftRequest,
-  conversationStarterRequest: externalStarterRequest,
+  conversationStarterRequest,
   onConversationStarterApplied,
   onRestoreDraftApplied,
   uploadEnabled: uploadAllowed,
@@ -179,8 +178,6 @@ export function ChatInput({
 }: ChatInputProps) {
   const { t } = useT("chat");
   const { t: tEditor } = useT("editor");
-  const [batchReviewRequest, setBatchReviewRequest] = useState<{ id: number; content: string; mode: "append" } | null>(null);
-  const conversationStarterRequest = externalStarterRequest ?? batchReviewRequest;
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -406,14 +403,12 @@ export function ChatInput({
     commitDraft(draftKey, content);
     editorRef.current?.adoptContent(content);
     setIsEmpty(!content.trim());
-    if (conversationStarterRequest === batchReviewRequest) setBatchReviewRequest(null);
     onConversationStarterApplied?.();
   }, [
     commitDraft,
     draftKey,
     onConversationStarterApplied,
     conversationStarterRequest,
-    batchReviewRequest,
     readyEditorKey,
     editorKey,
     inputDraft,
@@ -633,7 +628,7 @@ export function ChatInput({
         // user resizes or expands the window. The wrapper must be a flex
         // column for the card below to shrink into that cap instead of
         // spilling out of it.
-        "flex max-h-[50%] min-h-0 flex-col pb-3 pt-0",
+        "flex max-h-[50%] min-h-0 shrink-0 flex-col pb-3 pt-0",
         CHAT_GUTTER,
         // Static elevation, NOT queue-conditional: ChatQueue tucks its bottom
         // edge under this surface (z-0 + negative margin on its side), and the
@@ -656,7 +651,7 @@ export function ChatInput({
           // composer without a definite height (percentage max-height would
           // then resolve to none).
           CHAT_COLUMN,
-          "relative flex min-h-16 max-h-96 flex-col rounded-lg border border-surface-border bg-surface pb-9 transition-[border-color,box-shadow] focus-within:border-brand focus-within:ring-2 focus-within:ring-ring/20",
+          "relative flex min-h-16 max-h-96 flex-col rounded-lg border border-surface-border bg-surface transition-[border-color,box-shadow] focus-within:border-brand focus-within:ring-2 focus-within:ring-ring/20",
           // Visual + interaction lock when there's no agent. We don't
           // toggle ContentEditor's editable mode (Tiptap can't switch
           // cleanly post-mount, and the prop has been removed); instead
@@ -699,7 +694,7 @@ export function ChatInput({
             )}
           </div>
         )}
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+        <div data-slot="chat-input-content" className="min-h-0 flex-auto overflow-y-auto overscroll-contain px-3 py-2">
           {draftUploads.length > 0 && <p role="status" className="mb-1 text-caption text-muted-foreground">{t(($) => $.input.attachment_count, { count: draftUploads.length })}</p>}
           <ContentEditor
             // See the editorKey / draftKey split note above — editor identity
@@ -734,11 +729,10 @@ export function ChatInput({
             showBubbleMenu
           />
         </div>
-        {(uploadEnabled || projectSelectionEnabled || leftAdornment) && (
-          <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">
+        <div data-slot="chat-input-toolbar" className="flex shrink-0 items-end justify-between gap-2 px-1.5 pb-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
             {(uploadEnabled || projectSelectionEnabled) && (
               <ChatAddMenu
-                onPrepareBatchReview={uploadEnabled && !uploadTopicId ? () => setBatchReviewRequest({ id: Date.now(), content: HR_BATCH_REVIEW_PROMPT, mode: "append" }) : undefined}
                 onSelectFile={uploadEnabled
                   ? (file) => editorRef.current?.uploadFile(file)
                   : undefined}
@@ -750,8 +744,6 @@ export function ChatInput({
             )}
             {leftAdornment}
           </div>
-        )}
-        <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
           <SubmitButton
             onClick={submit}
             disabled={hasNothingToSend || submitting || !!disabled || !!noAgent}

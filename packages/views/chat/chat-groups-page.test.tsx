@@ -67,6 +67,15 @@ beforeEach(() => {
   mocks.send.mockResolvedValue({ message: { id: "m" }, task_ids: ["run"] });
 });
 describe("group chat wiring", () => {
+  it("keeps the composer generic and directly in the height-constrained conversation", async () => {
+    mount();
+    const input = await screen.findByRole("button", { name: "Send batch" });
+    expect(input.parentElement?.tagName).toBe("MAIN");
+    expect(mocks.inputProps?.leftAdornment).toBeUndefined();
+    expect(mocks.inputProps?.conversationStarterRequest).toBeUndefined();
+    expect(screen.queryByText("Screen a batch of résumés")).not.toBeInTheDocument();
+  });
+
   it("rejects a topic link from another group without reading, uploading or sending there", async () => {
     mocks.query = "conversation=group&topic=another-group-topic";
     mount();
