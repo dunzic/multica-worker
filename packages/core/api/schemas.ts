@@ -1271,6 +1271,7 @@ export const EMPTY_ISSUE_PROPERTIES_RESPONSE: IssuePropertiesResponse = {
 
 export interface AppConfigResponse {
   cdn_domain: string;
+  attachment_api_origin?: string;
   // True when the CDN domain serves private content via time-bounded signed
   // URLs (CloudFront signing) — raw storage URLs on that domain are NOT
   // publicly fetchable and must not be used as native media sources
@@ -1393,6 +1394,17 @@ export const ChatMessagesPageSchema = z.object({
     id: z.string(),
   }).loose().nullable().optional(),
 }).loose();
+
+// Only a validated, server-authorized workspace may drive a preview redirect.
+export const AttachmentPreviewLocationSchema = z.object({
+  workspace_id: z.string().uuid(),
+  workspace_slug: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/),
+}).transform((value) => ({
+  workspaceId: value.workspace_id,
+  workspaceSlug: value.workspace_slug,
+}));
+
+export type AttachmentPreviewLocation = z.infer<typeof AttachmentPreviewLocationSchema>;
 
 // Standalone attachment lookup (`GET /api/attachments/{id}`) is the source of
 // truth for click-time download URLs. The two fields the download flow opens
@@ -1555,6 +1567,7 @@ export const EMPTY_REFRESH_SESSION_RESPONSE: RefreshSessionResponse = {
 
 export const AppConfigSchema = z.object({
   cdn_domain: z.string().default(""),
+  attachment_api_origin: z.string().default("").catch(""),
   cdn_signed: BooleanWithDefaultSchema(false),
   allow_signup: BooleanWithDefaultSchema(true),
   google_client_id: OptionalStringSchema,
@@ -1576,6 +1589,7 @@ export const AppConfigSchema = z.object({
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
   cdn_domain: "",
+  attachment_api_origin: "",
   cdn_signed: false,
   allow_signup: true,
   google_client_id: "",

@@ -18,6 +18,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { useWorkspaceSlug } from "@multica/core/paths";
 import { useAppOrigin } from "../navigation";
+import { useAttachmentApiOrigins } from "./hooks/use-attachment-api-origins";
 import { useT } from "../i18n";
 import { openLink, isMentionHref } from "./utils/link-handler";
 
@@ -146,6 +147,7 @@ function LinkHoverCard({
   const [positioned, setPositioned] = useState(false);
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
+  const apiOrigins = useAttachmentApiOrigins();
   const { t } = useT("editor");
 
   // Position the card when the portal div is mounted (ref callback).
@@ -190,7 +192,7 @@ function LinkHoverCard({
   const handleOpen = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    openLink(href, slug, appOrigin);
+    openLink(href, slug, appOrigin, "push", apiOrigins);
   };
 
   return createPortal(

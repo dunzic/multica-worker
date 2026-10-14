@@ -53,7 +53,15 @@
     "zoom_actual": "Taille réelle"
   },
   "attachment": {
-    "preview_docx_notice": "Aperçu du corps du texte uniquement. Téléchargez l’original pour la mise en page, les en-têtes, les pieds de page et les images.",
+    "preview_office_loading": "Préparation de l’aperçu PDF…",
+    "preview_office_notice": "La mise en page du PDF peut différer de l’original. Le téléchargement fournit le fichier original.",
+    "preview_office_sheets": "Chaque feuille, y compris les feuilles masquées, occupe une page PDF.",
+    "preview_office_not_configured": "L’aperçu Office n’est pas activé sur ce serveur. Demandez à un administrateur de configurer le service de conversion.",
+    "preview_office_too_large": "Le fichier Office est limité à 20 Mo et le PDF converti à 40 Mo. Téléchargez l’original pour le consulter.",
+    "preview_office_invalid": "Ce document n’a pas pu être converti. Vérifiez qu’il n’est ni endommagé ni protégé par un mot de passe.",
+    "preview_office_busy": "Le service d’aperçu est occupé. Réessayez dans un instant.",
+    "preview_office_timeout": "La conversion a expiré. Réessayez ou téléchargez l’original.",
+    "preview_retry": "Réessayer",
     "download_failed": "Impossible d'obtenir un lien de téléchargement. Réessayez dans un instant.",
     "preview": "Aperçu",
     "preview_loading": "Chargement de l'aperçu…",

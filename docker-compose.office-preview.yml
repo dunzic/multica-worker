@@ -1,0 +1,37 @@
+# Optional overlay: docker compose -f docker-compose.selfhost.yml
+#   -f docker-compose.office-preview.yml up -d
+# No host port, storage mount, credentials or external network on the converter.
+services:
+  backend:
+    environment:
+      MULTICA_OFFICE_PREVIEW_URL: http://office-preview:3000
+    networks:
+      - default
+      - office-preview
+
+  office-preview:
+    image: gotenberg/gotenberg:8.37.0@sha256:f29984bd1e226bf1b93ba90af06000afa8b315853e99d27b9aaa41b93f15c769
+    restart: unless-stopped
+    networks:
+      - office-preview
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 256
+    environment:
+      API_TIMEOUT: 55s
+      API_BODY_LIMIT: 22MB
+      LIBREOFFICE_MAX_QUEUE_SIZE: "2"
+      LIBREOFFICE_DENY_LIST: ".*"
+      API_DOWNLOAD_FROM_DENY_LIST: ".*"
+      API_DISABLE_DOWNLOAD_FROM: "true"
+      WEBHOOK_DENY_LIST: ".*"
+      CHROMIUM_DISABLE_ROUTES: "true"
+      LIBREOFFICE_RESTART_AFTER: "10"
+
+networks:
+  office-preview:
+    internal: true

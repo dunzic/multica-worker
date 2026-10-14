@@ -67,6 +67,7 @@ import { configStore } from "@multica/core/config";
 import { preprocessMarkdown } from "./utils/preprocess";
 import { repairEmptyListItems } from "./utils/repair-list-items";
 import { resolveClickIntent, useAppOrigin } from "../navigation";
+import { useAttachmentApiOrigins } from "./hooks/use-attachment-api-origins";
 import { openLink, isMentionHref } from "./utils/link-handler";
 import { EditorBubbleMenu } from "./bubble-menu";
 import { posFromAnchor, type TextAnchor } from "./text-anchor";
@@ -502,6 +503,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const appOrigin = useAppOrigin();
     const appOriginRef = useRef(appOrigin);
     appOriginRef.current = appOrigin;
+    const apiOrigins = useAttachmentApiOrigins();
+    const apiOriginsRef = useRef(apiOrigins);
+    apiOriginsRef.current = apiOrigins;
 
     // Keep refs in sync without recreating editor
     onUpdateRef.current = onUpdate;
@@ -662,6 +666,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
               workspaceSlugRef.current,
               appOriginRef.current,
               resolveClickIntent(event),
+              apiOriginsRef.current,
             );
             return true;
           },
@@ -680,6 +685,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
               workspaceSlugRef.current,
               appOriginRef.current,
               "background-tab",
+              apiOriginsRef.current,
             );
             return true;
           },

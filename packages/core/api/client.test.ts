@@ -2291,6 +2291,39 @@ describe("ApiClient", () => {
     );
   });
 
+  describe("resolveAttachmentPreview", () => {
+    it("parses ownership, encodes the ID and forwards cancellation", async () => {
+      const workspaceId = "01a11279-2c56-7781-8cf6-166f9315aae7";
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        workspace_id: workspaceId, workspace_slug: "source",
+      })));
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const client = new ApiClient("https://api.example.test");
+      await expect(client.resolveAttachmentPreview("id/unsafe", controller.signal)).resolves.toEqual({
+        workspaceId, workspaceSlug: "source",
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.example.test/api/attachments/id%2Funsafe/preview-location",
+        expect.objectContaining({ signal: controller.signal }),
+      );
+    });
+
+    it.each([
+      null, {}, { workspace_id: "not-a-uuid", workspace_slug: "source" },
+      { workspace_id: "01a11279-2c56-7781-8cf6-166f9315aae7", workspace_slug: "//evil.test" },
+      { workspace_id: "01a11279-2c56-7781-8cf6-166f9315aae7", workspace_slug: "" },
+    ])("fails closed for malformed ownership: %j", async (response) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(response))));
+      await expect(new ApiClient("").resolveAttachmentPreview("att-1")).resolves.toBeNull();
+    });
+
+    it("does not hide permission failures", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not found", { status: 404 })));
+      await expect(new ApiClient("").resolveAttachmentPreview("att-1")).rejects.toBeInstanceOf(ApiError);
+    });
+  });
+
   describe("getAttachment", () => {
     it("returns the parsed attachment for a well-formed response", async () => {
       vi.stubGlobal(
@@ -2397,6 +2430,36 @@ describe("ApiClient", () => {
       await expect(client.getAttachmentTextContent("att-1")).rejects.toBeInstanceOf(
         PreviewUnsupportedError,
       );
+    });
+  });
+
+  describe("getAttachmentOfficePreview", () => {
+    it("validates the PDF response and forwards cancellation", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("%PDF-test", { headers: { "Content-Type": "application/pdf" } }));
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new ApiClient("https://api.example.test");
+      const controller = new AbortController();
+      expect(await (await client.getAttachmentOfficePreview("att-1", controller.signal)).text()).toBe("%PDF-test");
+      expect(fetchMock).toHaveBeenCalledWith("https://api.example.test/api/attachments/att-1/office-preview", expect.objectContaining({ signal: controller.signal }));
+    });
+
+    it.each([
+      [403, "office_preview_not_configured", "not-configured"],
+      [413, "", "too-large"], [415, "", "unsupported"], [422, "", "invalid"],
+      [502, "", "unavailable"], [503, "", "busy"], [504, "", "timeout"],
+    ])("maps actionable errors: %s", async (status, code, reason) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "internal detail", code }), { status: Number(status), headers: { "Content-Type": "application/json" } })));
+      await expect(new ApiClient("").getAttachmentOfficePreview("att-1")).rejects.toMatchObject({ name: "OfficePreviewError", reason });
+    });
+
+    it.each([["text/html", "%PDF-wrong-type"], ["application/pdf", "<html>not a PDF</html>"]])("rejects malformed success bodies: %s", async (mime, body) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { headers: { "Content-Type": mime } })));
+      await expect(new ApiClient("").getAttachmentOfficePreview("att-1")).rejects.toMatchObject({ name: "OfficePreviewError", reason: "invalid" });
+    });
+
+    it("keeps a permission error distinct from missing conversion configuration", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "Content-Type": "application/json" } })));
+      await expect(new ApiClient("").getAttachmentOfficePreview("att-1")).rejects.toBeInstanceOf(ApiError);
     });
   });
 

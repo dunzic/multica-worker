@@ -19,8 +19,9 @@
  * desktop tab switch puts the reader back where they were.
  *
  * The route is workspace-scoped (`/{slug}/attachments/{id}/preview`) for
- * tenancy isolation; the attachment endpoints themselves are auth-checked, so
- * the slug is purely a URL contract.
+ * tenancy isolation. Copied download links first resolve ownership through
+ * the authenticated preview-location endpoint, then switch workspace through
+ * the platform adapter before loading any metadata or content.
  *
  * An HTML file opens at the `loc` the viewer handed over (its address bar,
  * MUL-7737). On desktop the address the reader left is kept in the tab's
@@ -31,6 +32,9 @@ import { useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { api } from "@multica/core/api";
+import { useWorkspaceId } from "@multica/core/hooks";
+import { paths } from "@multica/core/paths";
+import { useNavigation } from "../navigation";
 import { useT } from "../i18n";
 import { useRestoredViewState, useViewStateWriter } from "../platform";
 import {
@@ -58,17 +62,40 @@ export function AttachmentPreviewPage({
   initialAddress,
 }: AttachmentPreviewPageProps) {
   const { t } = useT("editor");
-  const query = useQuery({
-    queryKey: ["attachment-preview-page", attachmentId] as const,
-    queryFn: () => api.getAttachment(attachmentId),
-    // The record carries signed media URLs. Refetching would re-sign them and
-    // reload a playing video or an open PDF under the reader; one fetch per
-    // page view is enough.
-    staleTime: Infinity,
+  const wsId = useWorkspaceId();
+  const { replace } = useNavigation();
+  const location = useQuery({
+    queryKey: ["attachment-preview-location", wsId, attachmentId] as const,
+    queryFn: ({ signal }) => api.resolveAttachmentPreview(attachmentId, signal),
+    staleTime: 0,
+    gcTime: 0,
     refetchOnWindowFocus: false,
     retry: false,
   });
-  const attachment = query.data?.id ? query.data : null;
+  const owner = location.isSuccess ? location.data : null;
+  const inOwningWorkspace = !!owner && owner.workspaceId === wsId;
+  useEffect(() => {
+    if (!owner || inOwningWorkspace) return;
+    const params = new URLSearchParams();
+    if (filename) params.set("name", filename);
+    if (initialAddress) params.set("loc", initialAddress);
+    const suffix = params.size ? `?${params}` : "";
+    // The platform adapter owns cross-workspace switching on desktop.
+    replace(paths.workspace(owner.workspaceSlug).attachmentPreview(attachmentId) + suffix);
+  }, [owner, inOwningWorkspace, replace, attachmentId, filename, initialAddress]);
+  const query = useQuery({
+    queryKey: ["attachment-preview-page", wsId, attachmentId] as const,
+    queryFn: ({ signal }) => api.getAttachment(attachmentId, signal),
+    enabled: inOwningWorkspace,
+    // The record carries signed media URLs. Refetching would re-sign them and
+    // reload a playing video or an open PDF under the reader; one fetch per
+    // page view is enough.
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const attachment = inOwningWorkspace && query.data?.id ? query.data : null;
 
   // Set document.title so desktop's MutationObserver-based tab title picks
   // up the filename. Web shows the same string in the browser tab.
@@ -99,7 +126,7 @@ export function AttachmentPreviewPage({
 
   return (
     <div className="dark flex h-full w-full items-center justify-center gap-2 bg-black/95 px-4 text-body text-muted-foreground">
-      {query.isLoading ? (
+      {location.isPending || (!!owner && !inOwningWorkspace) || (inOwningWorkspace && query.isPending) ? (
         <>
           <Loader2 className="size-4 animate-spin" />
           {t(($) => $.attachment.preview_loading)}

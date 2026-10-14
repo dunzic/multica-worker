@@ -17,7 +17,7 @@ import { isImageAttachment } from "@multica/core/attachments/image-sequence";
 export type PreviewKind =
   | "image"
   | "pdf"
-  | "docx"
+  | "office"
   | "video"
   | "audio"
   | "markdown"
@@ -172,6 +172,18 @@ const VIDEO_EXTS = new Set<string>([
 const AUDIO_EXTS = new Set<string>([
   "mp3", "wav", "m4a", "ogg", "oga", "flac", "aac", "opus",
 ]);
+
+// Keep in sync with server/internal/officepreview/client.go. Office previews
+// require a stored attachment and the authenticated server conversion endpoint.
+const OFFICE_TYPES: Record<string, string> = {
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+};
+const OFFICE_EXTS = new Set(Object.values(OFFICE_TYPES));
 // Image detection lives in @multica/core/attachments/image-sequence — the
 // gallery sequence builder needs the same answer and is shared with mobile,
 // which cannot import from packages/views.
@@ -214,7 +226,7 @@ export function getPreviewKind(
   const ext = extOf(filename);
 
   if (ct === "application/pdf" || ext === "pdf") return "pdf";
-  if (ct === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext === "docx") return "docx";
+  if (OFFICE_EXTS.has(ext) || (!ext && OFFICE_TYPES[ct])) return "office";
   if (ct.startsWith("video/") || (ext && VIDEO_EXTS.has(ext))) return "video";
   if (ct.startsWith("audio/") || (ext && AUDIO_EXTS.has(ext))) return "audio";
 

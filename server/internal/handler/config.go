@@ -12,6 +12,9 @@ import (
 
 type AppConfig struct {
 	CdnDomain string `json:"cdn_domain"`
+	// AttachmentAPIOrigin identifies the operator-owned origin used by
+	// buildMarkdownURL. It may differ from both the app and daemon endpoints.
+	AttachmentAPIOrigin string `json:"attachment_api_origin,omitempty"`
 	// CdnSigned tells clients that the CDN domain above serves PRIVATE
 	// content through time-bounded signed URLs (CloudFront signing is
 	// enabled). When true, a raw storage URL on the CDN domain is NOT
@@ -132,6 +135,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		config.CdnDomain = h.Storage.CdnDomain()
 	}
 	config.CdnSigned = h.CFSigner != nil
+	config.AttachmentAPIOrigin = attachmentAPIOrigin(h.cfg.PublicURL)
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()
 	config.VCSIntegrationAvailable = h.cfg.VCSIntegrationEnabled
 	config.FeatureFlags = featureflags.EvaluateFrontendPublicFlags(r.Context(), h.FeatureFlags)
@@ -194,6 +198,14 @@ func resolveFrontendAppURL() string {
 
 func normalizePublicURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+func attachmentAPIOrigin(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // isOfficialCloudDaemonConfig reports whether this deployment is the official

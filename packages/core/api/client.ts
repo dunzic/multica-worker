@@ -284,6 +284,8 @@ import {
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  AttachmentPreviewLocationSchema,
+  type AttachmentPreviewLocation,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
@@ -702,6 +704,15 @@ export class PreviewUnsupportedError extends Error {
   constructor() {
     super("attachment type not supported for inline preview");
     this.name = "PreviewUnsupportedError";
+  }
+}
+
+export type OfficePreviewFailure = "not-configured" | "too-large" | "unsupported" | "invalid" | "busy" | "timeout" | "unavailable";
+
+export class OfficePreviewError extends Error {
+  constructor(public readonly reason: OfficePreviewFailure) {
+    super(`Office preview: ${reason}`);
+    this.name = "OfficePreviewError";
   }
 }
 
@@ -4422,12 +4433,20 @@ export class ApiClient {
     return this.fetch(`/api/issues/${issueId}/attachments`);
   }
 
+  // Resolve copied links without treating the current workspace as the owner.
+  async resolveAttachmentPreview(id: string, signal?: AbortSignal): Promise<AttachmentPreviewLocation | null> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${encodeURIComponent(id)}/preview-location`, { signal });
+    return parseWithFallback<AttachmentPreviewLocation | null>(raw, AttachmentPreviewLocationSchema, null, {
+      endpoint: "GET /api/attachments/{id}/preview-location",
+    });
+  }
+
   // Fetches a fresh attachment metadata record. The server re-signs
   // `download_url` on every call (30 min expiry), so the click-time
   // download flow uses this endpoint to avoid handing the user a stale
   // signed URL cached in TanStack Query.
-  async getAttachment(id: string): Promise<Attachment> {
-    const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
+  async getAttachment(id: string, signal?: AbortSignal): Promise<Attachment> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}`, { signal });
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
     });
@@ -4490,6 +4509,32 @@ export class ApiClient {
   async getAttachmentBlob(id: string): Promise<Blob> {
     const res = await this.fetchRaw(`/api/attachments/${id}/download`);
     return res.blob();
+  }
+
+  /** Authenticated Office-to-PDF response. The original download is unchanged. */
+  async getAttachmentOfficePreview(id: string, signal?: AbortSignal): Promise<Blob> {
+    let res: Response;
+    try {
+      res = await this.fetchRaw(`/api/attachments/${encodeURIComponent(id)}/office-preview`, { signal });
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (errorCode(err) === "office_preview_not_configured") throw new OfficePreviewError("not-configured");
+        const failures: Partial<Record<number, OfficePreviewFailure>> = {
+          413: "too-large", 415: "unsupported", 422: "invalid",
+          502: "unavailable", 503: "busy", 504: "timeout",
+        };
+        const reason = failures[err.status];
+        if (reason) throw new OfficePreviewError(reason);
+      }
+      throw err;
+    }
+    if (res.headers.get("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/pdf") {
+      throw new OfficePreviewError("invalid");
+    }
+    const blob = await res.blob();
+    if (blob.size > 40 * 1024 * 1024) throw new OfficePreviewError("too-large");
+    if (await blob.slice(0, 5).text() !== "%PDF-") throw new OfficePreviewError("invalid");
+    return blob;
   }
 
   // Projects

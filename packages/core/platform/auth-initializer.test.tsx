@@ -13,6 +13,7 @@ import {
 } from "../auth";
 import type { StorageAdapter, User, Workspace } from "../types";
 import { workspaceKeys } from "../workspace/queries";
+import { configStore } from "../config";
 import {
   registerDraftCleanup,
   __clearDraftCleanupRegistryForTest,
@@ -121,6 +122,16 @@ afterEach(() => {
 });
 
 describe("AuthInitializer recovery", () => {
+  it("loads the attachment API origin and clears a previous deployment's origin when absent", async () => {
+    const first = renderInitializer({ api: makeApi({
+      getConfig: vi.fn().mockResolvedValue({ attachment_api_origin: "https://api.example.test" }),
+    }) });
+    await waitFor(() => expect(configStore.getState().attachmentApiOrigin).toBe("https://api.example.test"));
+    first.unmount();
+    renderInitializer({ api: makeApi() });
+    await waitFor(() => expect(configStore.getState().attachmentApiOrigin).toBe(""));
+  });
+
   it("keeps the token and recovers on the online event after a network failure", async () => {
     const storage = makeStorage({ multica_token: "token-1" });
     const getMe = vi

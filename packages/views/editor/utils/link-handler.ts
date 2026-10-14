@@ -5,7 +5,8 @@
  * (react-markdown link component), and link-hover-card (Open button).
  */
 
-import { isGlobalPath, isReservedSlug } from "@multica/core/paths";
+import { isGlobalPath, isReservedSlug, paths } from "@multica/core/paths";
+import { attachmentIdFromDownloadURL } from "@multica/core/types/attachment-url";
 import { isIssueIdentifier } from "@multica/ui/markdown";
 import type { LinkClickIntent } from "../../navigation/click-intent";
 
@@ -185,6 +186,40 @@ function toSameOriginPath(
   return `${target.pathname}${target.search}${target.hash}`;
 }
 
+/** The current workspace is only an entry route, not an ownership assertion.
+ * The preview page resolves the owning workspace before requesting content.
+ * Never treat another deployment's attachment ID as a local attachment. */
+export function toAttachmentPreviewPath(
+  href: string,
+  currentSlug?: string | null,
+  appOrigin?: string | null,
+  apiOrigins: readonly string[] = [],
+): string | null {
+  if (!currentSlug) return null;
+  let target: URL;
+  try {
+    target = new URL(href, appOrigin || RELATIVE_BASE);
+  } catch {
+    return null;
+  }
+  if (!["https:", "http:"].includes(target.protocol) || target.username || target.password) return null;
+  const trusted = [appOrigin, ...apiOrigins].some((origin) => {
+    if (!origin) return false;
+    try {
+      const parsed = new URL(origin);
+      return !parsed.username && !parsed.password && target.origin === parsed.origin;
+    } catch {
+      return false;
+    }
+  });
+  // With no app origin, permit relative links but never the stand-in host as
+  // an absolute URL. URL parsing still rejects protocol-relative foreign hosts.
+  const relative = !appOrigin && target.origin === RELATIVE_BASE && !/^[a-z][a-z0-9+.-]*:/i.test(href.trim());
+  if (!trusted && !relative) return null;
+  const id = attachmentIdFromDownloadURL(target.pathname);
+  return id ? paths.workspace(currentSlug).attachmentPreview(id) : null;
+}
+
 /**
  * Parse a link that addresses exactly one issue or project page on this
  * deployment; `null` for everything else — external URLs, list pages, deeper
@@ -257,10 +292,12 @@ export function openLink(
   currentSlug?: string | null,
   appOrigin?: string | null,
   intent: LinkClickIntent = "push",
+  apiOrigins: readonly string[] = [],
 ): void {
-  const internalPath = href.startsWith("/")
+  const previewPath = toAttachmentPreviewPath(href, currentSlug, appOrigin, apiOrigins);
+  const internalPath = previewPath ?? (href.startsWith("/")
     ? href
-    : toInternalAppPath(href, appOrigin);
+    : toInternalAppPath(href, appOrigin));
   if (internalPath) {
     let path = internalPath;
     if (currentSlug && !isGlobalPath(path)) {

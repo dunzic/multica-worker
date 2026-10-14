@@ -11,7 +11,7 @@
  * rather than looked at (Markdown, text) render on a centered sheet that
  * keeps the app's own theme.
  *
- * Single viewer for every previewable kind. Handles 9 PreviewKinds:
+ * Single viewer for every previewable kind:
  *
  *   - image : <img> on the shared ZoomCanvas — fit on open, then wheel /
  *             drag / pinch / double-click / keyboard zoom, same controls as
@@ -19,6 +19,8 @@
  *   - pdf   : <iframe src={download_url}> — relies on Chromium's PDFium
  *             plugin. On desktop, requires webPreferences.plugins=true
  *             (see apps/desktop/src/main/index.ts).
+ *   - office: authenticated, on-demand Office-to-PDF conversion; the original
+ *             attachment remains the source for the Download action.
  *   - video : <video controls src={download_url}>
  *   - audio : <audio controls src={download_url}>
  *
@@ -133,6 +135,7 @@ import {
 import { CodeBlockStatic } from "./code-block-static";
 import { TablePreview } from "./table-preview";
 import { StructuredTree } from "./structured-tree";
+import { OfficePreview } from "./office-preview";
 import {
   HTML_VIEWPORTS,
   HtmlViewportFrame,
@@ -646,7 +649,7 @@ export function AttachmentPreviewModal({
 const KIND_ICONS: Record<PreviewKind, LucideIcon> = {
   image: ImageIcon,
   pdf: FileText,
-  docx: FileText,
+  office: FileText,
   video: FileVideo,
   audio: FileAudio,
   markdown: FileText,
@@ -1349,7 +1352,6 @@ interface StageView {
 }
 
 const TEXT_BACKED_KINDS: ReadonlySet<PreviewKind> = new Set<PreviewKind>([
-  "docx",
   "markdown",
   "html",
   "table",
@@ -1420,13 +1422,12 @@ function PreviewContent({
   );
 
   switch (kind) {
-    case "docx":
+    case "office":
+      if (source.kind !== "full") {
+        return <UnsupportedFallback message={t(($) => $.attachment.preview_unsupported)} onDownload={onDownload} />;
+      }
       return (
-        <TextBackedPreview
-          attachmentId={state.attachmentId!}
-          onDownload={onDownload}
-          render={(text) => <DocumentSheet width="prose" onBackdropClick={onBackdropClick}><p className="px-6 pt-4 text-caption text-muted-foreground">{t(($) => $.attachment.preview_docx_notice)}</p><pre className="whitespace-pre-wrap p-6 text-body">{text}</pre></DocumentSheet>}
-        />
+        <OfficePreview attachment={source.attachment} onDownload={onDownload} />
       );
     case "pdf":
       // A native iframe cannot attach the bearer token to private downloads.

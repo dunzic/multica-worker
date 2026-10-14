@@ -1257,6 +1257,18 @@ describe("dashboard + runtime usage schema drift", () => {
 // An older server deletes a comment's replies with it and omits this field,
 // so absent or malformed must parse as false: the client then promises nothing
 // about replies and keeps the legacy delete route (#8296).
+describe("AppConfigSchema attachment_api_origin", () => {
+  it("accepts the independent API origin", () => {
+    expect(AppConfigSchema.parse({ attachment_api_origin: "https://api.example.test" }).attachment_api_origin)
+      .toBe("https://api.example.test");
+  });
+  it.each([{}, { attachment_api_origin: null }, { attachment_api_origin: 42 }])("defaults missing or malformed origin without dropping other config: %j", (config) => {
+    const parsed = AppConfigSchema.parse({ ...config, cdn_domain: "cdn.example.test" });
+    expect(parsed.attachment_api_origin).toBe("");
+    expect(parsed.cdn_domain).toBe("cdn.example.test");
+  });
+});
+
 describe("AppConfigSchema comment_delete_keep_replies_supported drift", () => {
   it.each([
     [undefined, false],

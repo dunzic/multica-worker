@@ -58,10 +58,12 @@ import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
+import { useAttachmentApiOrigins } from "../editor/hooks/use-attachment-api-origins";
 import {
   openLink,
   isMentionHref,
   parseWorkspaceEntityLink,
+  toAttachmentPreviewPath,
   type WorkspaceEntityRef,
 } from "../editor/utils/link-handler";
 import { preprocessMarkdown } from "../editor/utils/preprocess";
@@ -209,6 +211,7 @@ function unfurlableEntityLink(
 function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
+  const apiOrigins = useAttachmentApiOrigins();
   // Platform probe only: `openInNewTab` present means desktop, where native
   // anchor behavior is a dead end and every click must be intercepted. Absent
   // (web), modified clicks are left to the browser — the only way to get a
@@ -247,7 +250,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   // URL cannot be resolved.
   const plainLink = (
     <a
-      href={href}
+      href={href ? toAttachmentPreviewPath(href, slug, appOrigin, apiOrigins) ?? href : undefined}
       onClick={(e) => {
         if (!href) {
           e.preventDefault();
@@ -255,7 +258,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
         }
         if (!desktopTabs && (e.metaKey || e.ctrlKey || e.shiftKey)) return;
         e.preventDefault();
-        openLink(href, slug, appOrigin, resolveClickIntent(e));
+        openLink(href, slug, appOrigin, resolveClickIntent(e), apiOrigins);
       }}
       onAuxClick={(e) => {
         if (e.button !== 1 || !href) return;
@@ -264,7 +267,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
         // (denied, then dropped by the http/https allowlist), so route it.
         if (!desktopTabs) return;
         e.preventDefault();
-        openLink(href, slug, appOrigin, "background-tab");
+        openLink(href, slug, appOrigin, "background-tab", apiOrigins);
       }}
     >
       {children}

@@ -53,6 +53,7 @@ export class TestApiClient {
   private createdIssueIds: string[] = [];
   private createdProjectIds: string[] = [];
   private seededIssueIds: string[] = [];
+  private createdAttachmentIds: string[] = [];
 
   async login(email: string, name: string) {
     const client = new pg.Client(DATABASE_URL);
@@ -335,15 +336,30 @@ export class TestApiClient {
     await this.authedFetch(`/api/issues/${id}`, { method: "DELETE" });
   }
 
-  async createComment(issueId: string, content: string) {
+  async createComment(issueId: string, content: string, opts?: { parent_id?: string; attachment_ids?: string[] }) {
     const res = await this.authedFetch(`/api/issues/${issueId}/comments`, {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...opts }),
     });
     if (!res.ok) {
       throw new Error(`create comment failed: ${res.status} ${await res.text()}`);
     }
     return (await res.json()) as { id: string };
+  }
+
+  async uploadAttachment(filename: string, bytes: Uint8Array, issueId: string) {
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(bytes)]), filename);
+    form.append("issue_id", issueId);
+    const res = await this.authedFetch("/api/upload-file", { method: "POST", body: form });
+    if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+    const attachment = await res.json() as { id: string; filename: string; markdown_url: string };
+    this.createdAttachmentIds.push(attachment.id);
+    return attachment;
+  }
+
+  async attachmentResponse(id: string, action: "download" | "office-preview" | "preview-location", signal?: AbortSignal) {
+    return this.authedFetch(`/api/attachments/${id}/${action}`, { signal });
   }
 
   /** Adds an existing user to this client's workspace and returns the member id. */
@@ -404,6 +420,10 @@ export class TestApiClient {
 
   /** Clean up all issues created during this test. */
   async cleanup() {
+    for (const id of this.createdAttachmentIds) {
+      await this.authedFetch(`/api/attachments/${id}`, { method: "DELETE" });
+    }
+    this.createdAttachmentIds = [];
     if (this.seededIssueIds.length > 0 && this.workspaceId) {
       const client = new pg.Client(DATABASE_URL);
       await client.connect();
@@ -450,7 +470,7 @@ export class TestApiClient {
 
   private async authedFetch(path: string, init?: RequestInit) {
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
+      ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       ...((init?.headers as Record<string, string>) ?? {}),
     };
     if (this.token) headers["Authorization"] = `Bearer ${this.token}`;

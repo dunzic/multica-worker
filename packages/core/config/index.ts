@@ -3,6 +3,8 @@ import { useStore } from "zustand";
 
 interface ConfigState {
   cdnDomain: string;
+  attachmentApiOrigin: string;
+  setAttachmentApiOrigin: (origin?: string) => void;
   // True when cdnDomain serves private content via time-bounded signed URLs
   // (CloudFront signing enabled server-side). Renderers must not treat a raw
   // storage URL on that domain as a loadable media source (MUL-3254).
@@ -68,6 +70,8 @@ interface ConfigState {
 
 export const configStore = createStore<ConfigState>((set) => ({
   cdnDomain: "",
+  attachmentApiOrigin: "",
+  setAttachmentApiOrigin: (origin = "") => set({ attachmentApiOrigin: origin }),
   cdnSigned: false,
   allowSignup: true,
   googleClientId: "",

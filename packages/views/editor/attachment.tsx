@@ -39,8 +39,10 @@ import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { api } from "@multica/core/api";
 import { useConfigStore } from "@multica/core/config";
+import { useWorkspaceSlug } from "@multica/core/paths";
 import type { Attachment as AttachmentRecord } from "@multica/core/types";
 import { useT } from "../i18n";
+import { useNavigation } from "../navigation";
 import { useAttachmentDownloadResolver } from "./attachment-download-context";
 import { useAttachmentPreview } from "./attachment-preview-modal";
 import { usePreviewSequence } from "./preview-sequence-context";
@@ -51,6 +53,8 @@ import {
 import { useDownloadAttachment } from "./use-download-attachment";
 import { AttachmentCard, AttachmentFileCard } from "./attachment-card";
 import { canOpenPreview, getPreviewKind, type PreviewKind } from "./utils/preview";
+import { toAttachmentPreviewPath } from "./utils/link-handler";
+import { useAttachmentApiOrigins } from "./hooks/use-attachment-api-origins";
 import "./styles/attachment.css";
 
 // ---------------------------------------------------------------------------
@@ -338,6 +342,9 @@ export function Attachment({
   const download = useDownloadAttachment();
   const preview = useAttachmentPreview();
   const sequence = usePreviewSequence();
+  const navigation = useNavigation();
+  const slug = useWorkspaceSlug();
+  const apiOrigins = useAttachmentApiOrigins();
 
   const state = normalize(attachment, resolveAttachment, cdnDomain, cdnSigned);
   const forceKind =
@@ -353,14 +360,24 @@ export function Attachment({
   // on deployments that have no signed URL to give — to an object URL built
   // from the authenticated byte fetch. Only the image branch renders a native
   // resource load, so only it opts into that byte fetch.
-  const { url: mediaUrl } = useResignedInlineMedia(
+  // An unresolved file card may belong to another workspace. Do not re-sign
+  // it using the current workspace before the preview page resolves ownership.
+  const { url: resignedUrl } = useResignedInlineMedia(
     state.attachmentId,
-    state.url,
+    kind === "image" || state.record ? state.url : "",
     kind === "image",
   );
+  const mediaUrl = resignedUrl || state.url;
   // Object URLs are session-local, so anything that hands a URL to the user or
   // to another surface keeps the durable pick instead.
   const shareUrl = isObjectURL(mediaUrl) ? state.url : mediaUrl;
+  // A file card copied into another comment may carry only the canonical
+  // download link. Resolve its real record on the authenticated preview page;
+  // never fabricate attachment metadata or reinterpret another host's URL.
+  const unresolvedPreviewPath = !state.record && attachment.kind === "url" && kind
+    ? toAttachmentPreviewPath(attachment.url, slug, navigation.getShareableUrl("/"), apiOrigins)
+    : null;
+  const canPreview = !!shareUrl && (canOpenPreview(kind, !!state.attachmentId) || !!unresolvedPreviewPath);
 
   // Identity this attachment has in the surrounding surface's sequence: the
   // attachment id once the URL resolves to a record, otherwise the URL exactly
@@ -369,6 +386,10 @@ export function Attachment({
     state.attachmentId ?? (attachment.kind === "url" ? attachment.url : "");
 
   const openPreview = () => {
+    if (unresolvedPreviewPath) {
+      navigation.push(unresolvedPreviewPath);
+      return;
+    }
     // Inside an issue / chat, a file opens the surface's shared viewer at its
     // real position so the reader can page through the rest. Anything the
     // sequence doesn't know — a composer's in-flight upload, a surface with no
@@ -436,8 +457,7 @@ export function Attachment({
           filename={state.filename}
           contentType={state.contentType}
           sizeBytes={state.record?.size_bytes}
-          // Same gate as the row's Eye button: text kinds need the record.
-          canPreview={!!shareUrl && canOpenPreview(kind, !!state.attachmentId)}
+          canPreview={canPreview}
           canDownload={!!shareUrl || !!state.attachmentId}
           uploading={state.uploading}
           badge={badge}
@@ -456,6 +476,7 @@ export function Attachment({
         filename={state.filename}
         contentType={state.contentType}
         attachmentId={state.attachmentId}
+        canPreview={canPreview}
         href={shareUrl || undefined}
         uploading={state.uploading}
         onPreview={openPreview}

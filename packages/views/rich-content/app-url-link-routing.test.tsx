@@ -12,6 +12,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { configStore } from "@multica/core/config";
 
 const APP_ORIGIN = "https://app.example";
 
@@ -55,6 +56,7 @@ let navigatedPaths: string[] = [];
 let openSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
+  configStore.getState().setAttachmentApiOrigin("");
   navigatedPaths = [];
   window.addEventListener("multica:navigate", captureNavigate);
   openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
@@ -82,6 +84,19 @@ function renderContent(content: string) {
 }
 
 describe("RichContent link routing", () => {
+  it("routes the server's absolute markdown URL from a separate API origin", () => {
+    configStore.getState().setAttachmentApiOrigin("https://api.example.test");
+    const id = "01a11279-2c56-7781-8cf6-166f9315aae7";
+    const url = `https://api.example.test/api/attachments/${id}/download?workspace_slug=source`;
+    renderContent(`[Review original](${url})`);
+    const link = screen.getByRole("link", { name: "Review original" });
+    // The native href (including modifier clicks) must use the resolver page too.
+    expect(link).toHaveAttribute("href", `/test/attachments/${id}/preview`);
+    link.click();
+    expect(navigatedPaths).toEqual([`/test/attachments/${id}/preview`]);
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
   it("routes a link to this deployment into the app instead of the browser", () => {
     renderContent(`[MUL-1](${APP_ORIGIN}/acme/issues/MUL-1)`);
 
@@ -105,7 +120,26 @@ describe("RichContent link routing", () => {
     );
   });
 
-  it("keeps an attachment download URL on the app origin external", () => {
+  it("previews a bare attachment link even without an attachment record on the comment", () => {
+    const id = "01a11279-2c56-7781-8cf6-166f9315aae7";
+    const url = `${APP_ORIGIN}/api/attachments/${id}/download`;
+    renderContent(`Review this file: ${url}`);
+
+    const link = screen.getByRole("link", { name: url });
+    expect(link).toHaveAttribute("href", `/test/attachments/${id}/preview`);
+    link.click();
+    expect(navigatedPaths).toEqual([`/test/attachments/${id}/preview`]);
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
+  it("preserves the author's label on an inline attachment link", () => {
+    const id = "01a11279-2c56-7781-8cf6-166f9315aae7";
+    renderContent(`[Review the spreadsheet](/api/attachments/${id}/download)`);
+    screen.getByRole("link", { name: "Review the spreadsheet" }).click();
+    expect(navigatedPaths).toEqual([`/test/attachments/${id}/preview`]);
+  });
+
+  it("keeps an invalid attachment download URL on the app origin external", () => {
     const download = `${APP_ORIGIN}/api/attachments/abc/download`;
     renderContent(`[report.pdf](${download})`);
 

@@ -1,7 +1,8 @@
 /**
  * Explicit real-provider acceptance. Run only through the agentintegration Go
  * test, which starts/stops this checkout's isolated managed daemon.
- * All resumes are fictional; no real recruiting decisions are made.
+ * All resumes are fictional; no real recruiting decisions are made. The API
+ * must have its private Office preview service configured for DOCX preview.
  */
 import "./env";
 import { test, expect } from "@playwright/test";
@@ -84,7 +85,11 @@ test("HR uploads three resumes, previews originals, receives linked feedback and
 
     const word = editor.locator(".file-card-node").filter({ hasText: "candidate-b.docx" });
     await word.getByRole("button", { name: "Preview", exact: true }).click();
-    await expect(page.getByRole("dialog")).toContainText("Three years designing user interfaces", { timeout: 20_000 });
+    await expect(page.locator('iframe[title="candidate-b.docx"]')).toHaveAttribute("src", /^blob:/, { timeout: 60_000 });
+    await expect.poll(async () => {
+      const viewers = await Promise.all(page.frames().map((frame) => frame.locator("pdf-viewer").count()));
+      return viewers.some((count) => count > 0);
+    }, { timeout: 20_000 }).toBe(true);
     await page.screenshot({ path: resolve(evidence, "02-docx-preview.png") });
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByRole("dialog")).not.toBeVisible();

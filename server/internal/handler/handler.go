@@ -37,6 +37,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/officepreview"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
@@ -242,6 +243,7 @@ type Handler struct {
 	LivenessStore      LivenessStore
 	HeartbeatScheduler HeartbeatScheduler
 	Storage            storage.Storage
+	OfficePreview      *officepreview.Client
 	CFSigner           *auth.CloudFrontSigner
 	Analytics          analytics.Client
 	// DaemonPendingWork pushes "heartbeat now" hints for queued

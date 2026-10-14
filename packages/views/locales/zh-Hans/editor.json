@@ -53,7 +53,15 @@
     "zoom_actual": "实际大小"
   },
   "attachment": {
-    "preview_docx_notice": "仅预览正文文本。原始排版、页眉页脚和图片请下载查看。",
+    "preview_office_loading": "正在生成 PDF 预览...",
+    "preview_office_notice": "PDF 预览排版可能与原文件不同，下载获取的是原文件。",
+    "preview_office_sheets": "每个工作表显示为一页 PDF，包括隐藏的工作表。",
+    "preview_office_not_configured": "服务器尚未启用 Office 预览，请联系管理员配置转换服务。",
+    "preview_office_too_large": "Office 原文件需不超过 20 MB，转换后的 PDF 需不超过 40 MB。请下载原文件查看。",
+    "preview_office_invalid": "无法转换此文档，请检查文件是否损坏或设置了打开密码。",
+    "preview_office_busy": "预览服务繁忙，请稍后重试。",
+    "preview_office_timeout": "预览转换超时，请重试或下载原文件。",
+    "preview_retry": "重试",
     "download_failed": "下载链接获取失败，请稍后重试。",
     "preview": "预览",
     "preview_loading": "加载预览中…",
