@@ -163,6 +163,9 @@ func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r 
 	if !h.requireDaemonWorkspaceAccess(w, r, wsID) {
 		return db.AgentTaskQueue{}, "", false
 	}
+	if !h.requireTopicTaskAccess(w, r, task, wsID, true) {
+		return db.AgentTaskQueue{}, "", false
+	}
 	return task, wsID, true
 }
 
@@ -3546,6 +3549,24 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
+	// Group topic tasks retain their pinned input and participant boundaries.
+	if task.TopicID.Valid {
+		if !requestHasClientCapability(r, protocol.DaemonCapabilityGroupTopicsV1) {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.failClaimedTaskBeforeLaunch(
+				r.Context(), task,
+				"Upgrade the Multica daemon/CLI before running group conversation tasks, then resend the request.",
+				taskfailure.ReasonAgentRuntimeVersionUnsupported,
+				"error_group_topics_unsupported", http.StatusConflict, "daemon does not support group topic tasks",
+			)
+		}
+		if err := h.enrichTopicClaim(r.Context(), *task, &resp); err != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, &claimBuildFailure{outcome: "error_topic_context", status: http.StatusInternalServerError, message: "failed to load topic context"}
+		}
+		if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, resp.WorkspaceID, runtimeID, runtimeWorkspaceID, false); failure != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+		}
+	}
+
 	// Autopilot run_only task: resolve workspace from autopilot_run →
 	// autopilot, and include the autopilot instructions because there is no
 	// issue for the agent to fetch.
@@ -4283,9 +4304,16 @@ func (h *Handler) ListPendingTasksByRuntime(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	resp := make([]AgentTaskResponse, len(tasks))
-	for i, t := range tasks {
-		resp[i] = taskToResponse(t, workspaceID)
+	resp := make([]AgentTaskResponse, 0, len(tasks))
+	for _, t := range tasks {
+		allowed, err := h.canReadTopicTask(r, t, workspaceID, true)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to check task access")
+			return
+		}
+		if allowed {
+			resp = append(resp, taskToResponse(t, workspaceID))
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -5482,7 +5510,7 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 			// in order, so the conversion is checked by the compiler and breaks
 			// loudly if the query ever stops returning the whole row.
 			h.publishTask(protocol.EventTaskMessage, workspaceID, "system", "", taskID,
-				taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)))
+				taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)), task.TopicID)
 		}
 	}
 
@@ -6065,6 +6093,9 @@ func (h *Handler) ListTaskMessagesByUser(w http.ResponseWriter, r *http.Request)
 	// be indistinguishable from one that does not exist.
 	if wsID == "" || wsID != middleware.WorkspaceIDFromContext(r.Context()) {
 		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !h.requireTopicTaskAccess(w, r, task, wsID, false) {
 		return
 	}
 

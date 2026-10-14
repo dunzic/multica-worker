@@ -135,6 +135,10 @@ if (hasGo()) {
     },
   );
 } else {
+  if (process.argv.includes("--require-go")) {
+    console.error("[bundle-cli] Go is required for packaging; refusing to reuse an old CLI.");
+    process.exit(1);
+  }
   console.warn(
     "[bundle-cli] `go` not found in PATH — skipping CLI build. " +
       "Desktop will use whatever is already in resources/bin/, or fall back " +

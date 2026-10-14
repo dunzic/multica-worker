@@ -37,6 +37,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/officepreview"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/rolesource"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
@@ -242,6 +243,7 @@ type Handler struct {
 	LivenessStore      LivenessStore
 	HeartbeatScheduler HeartbeatScheduler
 	Storage            storage.Storage
+	OfficePreview      *officepreview.Client
 	CFSigner           *auth.CloudFrontSigner
 	Analytics          analytics.Client
 	// DaemonPendingWork pushes "heartbeat now" hints for queued
@@ -820,15 +822,24 @@ func (h *Handler) NotifyRuntimeRecovered(_ context.Context, workspaceID string) 
 
 // publishTask is publish() plus a TaskID hint so the realtime layer can route
 // the event to the per-task scope rather than the whole workspace.
-func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID, taskID string, payload any) {
-	h.Bus.Publish(events.Event{
+func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID, taskID string, payload any, topicIDs ...pgtype.UUID) {
+	e := events.Event{
 		Type:        eventType,
 		WorkspaceID: workspaceID,
 		ActorType:   actorType,
 		ActorID:     actorID,
 		TaskID:      taskID,
 		Payload:     payload,
-	})
+	}
+	if len(topicIDs) > 0 && topicIDs[0].Valid {
+		e.RecipientUserIDs = []string{}
+		if ids, err := h.Queries.ListTopicRecipientUsers(context.Background(), topicIDs[0]); err == nil {
+			for _, id := range ids {
+				e.RecipientUserIDs = append(e.RecipientUserIDs, uuidToString(id))
+			}
+		}
+	}
+	h.Bus.Publish(e)
 }
 
 // publishChat is publish() plus a ChatSessionID hint so the realtime layer

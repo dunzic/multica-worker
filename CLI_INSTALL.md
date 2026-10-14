@@ -7,7 +7,7 @@
 Give this instruction to your AI agent:
 
 ```
-Fetch https://github.com/multica-ai/multica/blob/main/CLI_INSTALL.md and follow the instructions to install Multica CLI, log in, and start the daemon on this machine.
+Fetch https://github.com/dunzic/multica-worker/blob/main/CLI_INSTALL.md and follow the instructions to install Multica CLI, log in, and start the daemon on this machine.
 ```
 
 ---
@@ -20,7 +20,7 @@ Run:
 multica version
 ```
 
-- **If it prints a version string** (e.g. `multica v0.x.x`): skip to **Step 3**.
+- **If it prints a version string**: continue to **Step 2** unless its fork provenance is known. A community version number does not prove that our defaults are installed.
 - **If command not found**: continue to **Step 2**.
 
 ---
@@ -29,77 +29,24 @@ multica version
 
 > **Windows users:** Skip to [Option C: Windows (PowerShell)](#option-c-windows-powershell) below.
 
-### Option A: Homebrew (preferred — macOS/Linux)
+### Option A: macOS / Linux
 
-Check if Homebrew is available:
-
-```bash
-which brew
-```
-
-If `brew` is found, install via Homebrew:
+Install only from this fork, even if another Multica CLI has the same version:
 
 ```bash
-brew install multica-ai/tap/multica
+curl -fsSL https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.sh | bash
 ```
 
-Then verify:
-
-```bash
-multica version
-```
-
-If the version prints successfully, skip to **Step 3**.
-
-To upgrade later, run:
-
-```bash
-brew upgrade multica-ai/tap/multica
-```
-
-### Option B: Download from GitHub Releases (macOS/Linux, no Homebrew)
-
-If Homebrew is not available, download the binary directly.
-
-Detect OS and architecture, then download the correct archive:
-
-```bash
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')   # "darwin" or "linux"
-ARCH=$(uname -m)                                # "x86_64" or "arm64"
-
-# Normalize architecture name
-if [ "$ARCH" = "x86_64" ]; then
-  ARCH="amd64"
-fi
-
-# Get the latest release tag from GitHub
-LATEST=$(curl -sI https://github.com/multica-ai/multica/releases/latest | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n')
-
-# Download and extract
-VERSION="${LATEST#v}"
-curl -sL "https://github.com/multica-ai/multica/releases/download/${LATEST}/multica-cli-${VERSION}-${OS}-${ARCH}.tar.gz" -o /tmp/multica.tar.gz
-tar -xzf /tmp/multica.tar.gz -C /tmp multica
-sudo mv /tmp/multica /usr/local/bin/multica
-rm /tmp/multica.tar.gz
-```
-
-Verify:
-
-```bash
-multica version
-```
-
-**If this fails:**
-- Check that `/usr/local/bin` is in `$PATH`.
-- On Linux, you may need `chmod +x /usr/local/bin/multica`.
-- If `sudo` is not available, install to a user-writable directory: `mv /tmp/multica ~/.local/bin/multica` and ensure `~/.local/bin` is in `$PATH`.
+The installer verifies SHA-256 and installs to `~/.local/bin`, outside Homebrew.
+Open a new terminal before using the CLI. Do not use the community Homebrew tap.
+If no owned release is published, installation fails; it does not fall back to community binaries.
 
 ### Option C: Windows (PowerShell)
 
 Run in PowerShell (no admin required):
 
 ```powershell
-irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.ps1 | iex
 ```
 
 This downloads the latest Windows binary from GitHub Releases, installs it to `%USERPROFILE%\.multica\bin\`, and adds it to your user PATH.
@@ -112,17 +59,19 @@ multica version
 
 **If this fails:**
 - Restart your terminal so the updated PATH takes effect.
-- If you use Scoop, the installer will use it automatically: `scoop bucket add multica https://github.com/multica-ai/scoop-bucket.git && scoop install multica`
-- If your execution policy blocks the script: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` then re-run.
+- For an offline ZIP, extract it and double-click `install.cmd`; then run `multica --profile turingomni login`.
+- If your execution policy blocks the script: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1` then re-run.
 
 ---
 
 ## Step 3: Log in
 
+Service: `https://workers.turingomni.com`. Community accounts do not automatically exist here. Use the isolated `turingomni` profile below so existing default/private configurations and credentials remain untouched.
+
 Run:
 
 ```bash
-multica login
+multica setup --profile turingomni
 ```
 
 **Important:** This command opens a browser window for OAuth authentication. Tell the user:
@@ -130,18 +79,21 @@ multica login
 > "A browser window will open for Multica login. Please complete the authentication in your browser, then come back here."
 
 Wait for the command to complete. It will automatically discover and watch all workspaces the user belongs to.
+It also starts the daemon. If the `turingomni` profile already exists, setup
+asks before resetting it; use `multica --profile turingomni login` to refresh
+authentication without resetting an already-correct profile.
 
 Verify:
 
 ```bash
-multica auth status
+multica --profile turingomni auth status
 ```
 
 Expected output should show the authenticated user and server URL.
 
 **If login fails:**
-- If no browser is available (headless environment), the user can generate a Personal Access Token at `https://multica.ai/settings?tab=tokens` and run: `multica login --token <mul_...>` (use `--token=` with an empty value to be prompted interactively).
-- If the server URL needs to be customized: `multica config set server_url <url>` before logging in.
+- If no browser is available (headless environment), the user can generate a Personal Access Token at `https://workers.turingomni.com/settings?tab=tokens` and run: `multica --profile turingomni login --token <mul_...>` (use `--token=` with an empty value to be prompted interactively).
+- If the server URL needs to be customized: `multica --profile turingomni config set server_url <url>` before logging in.
 
 ---
 
@@ -150,26 +102,26 @@ Expected output should show the authenticated user and server URL.
 First, check if the daemon is already running:
 
 ```bash
-multica daemon status
+multica --profile turingomni daemon status
 ```
 
 - **If status is "running"**: skip to **Step 5**.
 - **If status is "stopped"**: start it:
 
 ```bash
-multica daemon start
+multica --profile turingomni daemon start
 ```
 
 Wait 3 seconds, then verify:
 
 ```bash
-multica daemon status
+multica --profile turingomni daemon status
 ```
 
 Expected output should show `running` status with detected agents (e.g. `claude`, `codex`, `copilot`, `opencode`, `openclaw`, `hermes`, `pi`, `cursor-agent`, `grok`).
 
 **If daemon fails to start:**
-- Check logs: `multica daemon logs`
+- Check logs: `multica --profile turingomni daemon logs`
 - If a port conflict occurs, the daemon may already be running under a different profile.
 - If no agents are detected, ensure at least one AI CLI (`claude`, `codex`, `copilot`, `opencode`, `openclaw`, `hermes`, `pi`, `cursor-agent`, or `grok`) is installed and on the `$PATH`.
 
@@ -180,7 +132,7 @@ Expected output should show `running` status with detected agents (e.g. `claude`
 Run:
 
 ```bash
-multica daemon status
+multica --profile turingomni daemon status
 ```
 
 Confirm:
@@ -190,7 +142,7 @@ Confirm:
 
 If the agents list is empty, tell the user:
 
-> "The Multica daemon is running but no AI agent CLIs were detected. Please install at least one supported CLI (`claude`, `codex`, `copilot`, `opencode`, `openclaw`, `hermes`, `pi`, `cursor-agent`, or `grok`), then restart the daemon with `multica daemon stop && multica daemon start`."
+> "The Multica daemon is running but no AI agent CLIs were detected. Please install at least one supported CLI (`claude`, `codex`, `copilot`, `opencode`, `openclaw`, `hermes`, `pi`, `cursor-agent`, or `grok`), then restart the daemon with `multica --profile turingomni daemon stop && multica --profile turingomni daemon start`."
 
 ---
 
@@ -198,4 +150,4 @@ If the agents list is empty, tell the user:
 
 When all steps are complete, inform the user:
 
-> "Multica CLI is installed and the daemon is running. Agents in your workspaces can now execute tasks on this machine. You can manage workspaces with `multica workspace list` and view daemon logs with `multica daemon logs -f`."
+> "Multica CLI is installed and the daemon is running. Agents in your workspaces can now execute tasks on this machine. You can manage workspaces with `multica --profile turingomni workspace list` and view daemon logs with `multica --profile turingomni daemon logs -f`."

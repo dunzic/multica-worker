@@ -58,6 +58,14 @@ if ($parseErrors) {
     Fail-Test "install.ps1 has parse errors"
 }
 
+# Offline packages must also parse as Windows PowerShell 5.1, not only pwsh.
+$offlineInstaller = Join-Path $RepoRoot "scripts/windows-cli/install.ps1"
+[System.Management.Automation.Language.Parser]::ParseFile($offlineInstaller, [ref]$null, [ref]$parseErrors) | Out-Null
+if ($parseErrors) {
+    $parseErrors | ForEach-Object { Write-Host "  $($_.Message)" }
+    Fail-Test "offline install.ps1 has parse errors"
+}
+
 $installerSource = Get-Content -Raw -Path $InstallerPath
 foreach ($banned in @("Get-SelfHostBackendPort", "Get-SelfHostFrontendPort", "Get-EnvFileValue")) {
     if ($installerSource -match [regex]::Escape($banned)) {

@@ -117,6 +117,8 @@ export interface AttachmentCardProps {
    * the URL alone.
    */
   attachmentId?: string;
+  /** Dispatcher may resolve a copied reference through the preview page. */
+  canPreview?: boolean;
   /** Download URL — used as a non-null sentinel for the download button. */
   href?: string;
   /** True while a synchronous upload is in flight (file-card NodeView only). */
@@ -133,6 +135,7 @@ export function AttachmentCard({
   filename,
   contentType = "",
   attachmentId,
+  canPreview: previewAvailable,
   href,
   uploading,
   onPreview,
@@ -142,7 +145,7 @@ export function AttachmentCard({
   const kind = filename ? getPreviewKind(contentType, filename) : null;
   // Without an attachmentId only the URL-renderable kinds open — otherwise
   // the Eye button would call tryOpen, get rejected, and do nothing.
-  const canPreview = !!href && canOpenPreview(kind, !!attachmentId);
+  const canPreview = !!href && (previewAvailable ?? canOpenPreview(kind, !!attachmentId));
 
   return (
     <div className="my-1">

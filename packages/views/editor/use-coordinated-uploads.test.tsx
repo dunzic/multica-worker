@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, render } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { DraftUpload } from "@multica/core/drafts";
-import type { UploadResult } from "@multica/core/hooks/use-file-upload";
+import type { UploadContext, UploadResult } from "@multica/core/hooks/use-file-upload";
 import type { Attachment } from "@multica/core/types";
 import enCommon from "../locales/en/common.json";
 import enEditor from "../locales/en/editor.json";
@@ -134,12 +134,16 @@ function makeRecordingBinding(key: string) {
 function UploadHost({
   binding,
   expose,
+  selectedTopic,
+  resolveContext,
 }: {
   binding: UploadDraftBinding;
   expose: (upload: (file: File) => Promise<UploadResult | null>) => void;
+  selectedTopic?: string;
+  resolveContext?: () => UploadContext;
 }) {
   const editorRef = useRef<ContentEditorRef | null>(null);
-  const { handleUpload } = useCoordinatedUploads(binding, [], {}, inertGate, editorRef);
+  const { handleUpload } = useCoordinatedUploads(binding, [], { topicId: selectedTopic }, inertGate, editorRef, { resolveUploadContext: resolveContext });
   useEffect(() => {
     expose(handleUpload);
   }, [handleUpload, expose]);
@@ -200,5 +204,23 @@ describe("useCoordinatedUploads paste-as-file recovery", () => {
     // user can never recover.
     expect(state.body).toContain(pastedText);
     expect(state.uploads).toHaveLength(0);
+  });
+});
+
+describe("group upload ownership", () => {
+  it("uses the topic held by a pinned editor instead of the newly selected topic", async () => {
+    const { binding } = makeRecordingBinding("probe:group-a");
+    let upload!: (file: File) => Promise<UploadResult | null>;
+    const resolveContext = () => ({ topicId: "held-topic-a" });
+    const expose = (fn: typeof upload) => { upload = fn; };
+    mockApiUploadFile.mockResolvedValueOnce({
+      id: "attachment", workspace_id: "ws", filename: "resume.pdf",
+      url: "/api/attachments/attachment/download", content_type: "application/pdf", size_bytes: 1,
+    });
+    const view = render(<I18nProvider locale="en" resources={TEST_RESOURCES}><UploadHost binding={binding} expose={expose} selectedTopic="held-topic-a" resolveContext={resolveContext} /></I18nProvider>);
+    view.rerender(<I18nProvider locale="en" resources={TEST_RESOURCES}><UploadHost binding={binding} expose={expose} selectedTopic="selected-topic-b" resolveContext={resolveContext} /></I18nProvider>);
+    await act(async () => { await upload(new File(["resume"], "resume.pdf", { type: "application/pdf" })); });
+    expect(mockApiUploadFile).toHaveBeenLastCalledWith(expect.any(File), expect.objectContaining({ topicId: "held-topic-a" }), expect.any(AbortSignal));
+    view.unmount();
   });
 });

@@ -51,6 +51,10 @@ describe("UpdateSection read-only status", () => {
     renderSection({ runtimeId: null });
 
     expect(await screen.findByText("Latest")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/dunzic/multica-worker/releases/latest",
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
     expect(screen.queryByText("Read-only")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Update" }),

@@ -22,6 +22,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { useNavigation } from "../navigation";
+import { AppLink } from "../navigation";
 import { useT } from "../i18n";
 import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
@@ -231,6 +232,7 @@ export function ChatPage() {
   const listHeader = (
     <PageHeader>
       <h1 className="flex-1 text-body font-semibold">{t(($) => $.page.title)}</h1>
+      <AppLink href={wsPaths.chatGroups()}>{t(($) => $.groups.title)}</AppLink>
       {newChatButton}
     </PageHeader>
   );

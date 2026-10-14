@@ -6,6 +6,7 @@ export {
   errorCode,
   PreviewTooLargeError,
   PreviewUnsupportedError,
+  OfficePreviewError,
 } from "./client";
 export type {
   ApiClientOptions,

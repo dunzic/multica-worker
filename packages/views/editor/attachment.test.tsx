@@ -12,6 +12,7 @@ const {
   downloadMock,
   openExternalMock,
   openByUrlMock,
+  pushMock,
 } = vi.hoisted(() => ({
   getAttachmentTextContentMock: vi.fn(),
   getAttachmentMock: vi.fn(),
@@ -24,6 +25,7 @@ const {
   downloadMock: vi.fn(),
   openExternalMock: vi.fn(),
   openByUrlMock: vi.fn(),
+  pushMock: vi.fn(),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -73,7 +75,7 @@ vi.mock("../i18n", () => ({
 
 vi.mock("../navigation", () => ({
   useNavigation: () => ({
-    push: vi.fn(),
+    push: pushMock,
     replace: vi.fn(),
     back: vi.fn(),
     pathname: "/acme/issues",
@@ -171,7 +173,7 @@ let revokeObjectURLMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   vi.clearAllMocks();
   resolverState.attachments = [];
-  configStore.setState({ cdnDomain: "", cdnSigned: false });
+  configStore.setState({ cdnDomain: "", cdnSigned: false, attachmentApiOrigin: "" });
   // Default to "no proxy override" — site-relative URLs stay as-is, mirroring
   // the web app's same-origin proxy. Tests that simulate Desktop / mobile
   // webview override per-case via getBaseUrlMock.mockReturnValue(...).
@@ -789,6 +791,18 @@ describe("Attachment — image dispatch", () => {
 });
 
 describe("Attachment — html dispatch", () => {
+  it.each(["configured", "connected"])("previews a copied Office card from the %s API origin", (source) => {
+    if (source === "configured") configStore.getState().setAttachmentApiOrigin("https://api.example.test");
+    else getBaseUrlMock.mockReturnValue("https://api.example.test");
+    const id = "01a11279-2c56-7781-8cf6-166f9315aae7";
+    renderWithQuery(
+      <Attachment attachment={{ kind: "url", url: `https://api.example.test/api/attachments/${id}/download`, filename: "report.docx" }} />,
+    );
+    fireEvent.mouseDown(screen.getByTitle("Preview"));
+    expect(pushMock).toHaveBeenCalledWith(`/acme/attachments/${id}/preview`);
+    expect(getAttachmentMock).not.toHaveBeenCalled();
+  });
+
   // An HTML file is a file (MUL-7649): the row opens it in the viewer, and
   // nothing is fetched to embed it inline.
   it("record html renders the file-card row, not an embedded preview", () => {
@@ -824,6 +838,21 @@ describe("Attachment — html dispatch", () => {
 });
 
 describe("Attachment — file-card dispatch", () => {
+  it.each(["review.docx", "budget.xlsx", "slides.pptx", "notes.md"])("opens copied canonical %s cards through the authenticated preview page", (filename) => {
+    const id = "00000000-0000-4000-8000-000000000001";
+    renderWithQuery(<Attachment attachment={{ kind: "url", url: `/api/attachments/${id}/download`, filename }} />);
+    fireEvent.mouseDown(screen.getByTitle("Preview"), { button: 0 });
+    expect(pushMock).toHaveBeenCalledWith(`/acme/attachments/${id}/preview`);
+    expect(getAttachmentTextContentMock).not.toHaveBeenCalled();
+    expect(getAttachmentMock).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve foreign Office URLs as local attachments", () => {
+    renderWithQuery(<Attachment attachment={{ kind: "url", url: "https://foreign.test/api/attachments/00000000-0000-4000-8000-000000000001/download", filename: "review.docx" }} />);
+    expect(screen.queryByTitle("Preview")).toBeNull();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
   it("record pdf renders the file-card chrome (filename + Preview/Download)", () => {
     const att = makeRecord({
       filename: "manual.pdf",

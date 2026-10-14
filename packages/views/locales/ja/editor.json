@@ -53,6 +53,15 @@
     "zoom_actual": "実際のサイズ"
   },
   "attachment": {
+    "preview_office_loading": "PDF プレビューを作成中…",
+    "preview_office_notice": "PDF のレイアウトは元のファイルと異なる場合があります。ダウンロードでは元のファイルを取得します。",
+    "preview_office_sheets": "非表示シートを含む各シートを PDF の1ページとして表示します。",
+    "preview_office_not_configured": "このサーバーでは Office プレビューが有効になっていません。管理者に変換サービスの設定を依頼してください。",
+    "preview_office_too_large": "元の Office ファイルは20 MB、変換後の PDF は40 MB以下にしてください。元のファイルをダウンロードして確認してください。",
+    "preview_office_invalid": "変換できませんでした。ファイルの破損やパスワード保護をご確認ください。",
+    "preview_office_busy": "プレビューサービスが混雑しています。しばらくしてから再試行してください。",
+    "preview_office_timeout": "変換がタイムアウトしました。再試行するか元のファイルをダウンロードしてください。",
+    "preview_retry": "再試行",
     "download_failed": "ダウンロードリンクを取得できませんでした。しばらくしてからもう一度お試しください。",
     "preview": "プレビュー",
     "preview_loading": "プレビューを読み込み中…",

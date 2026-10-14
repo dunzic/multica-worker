@@ -14,6 +14,7 @@ import {
   useComposerSubmit,
 } from "../../editor";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
+import { HR_BATCH_REVIEW_PROMPT } from "../hr-batch-review";
 import {
   useCoordinatedUploads,
   type UploadDraftBinding,
@@ -80,6 +81,7 @@ interface ChatInputProps {
   conversationStarterRequest?: {
     id: number;
     content: string;
+    mode?: "replace" | "append";
   } | null;
   /** Consumes the request even when the composer cannot send right now. */
   onConversationStarterApplied?: () => void;
@@ -96,6 +98,7 @@ interface ChatInputProps {
    *  the owner only says whether the affordance exists. When false,
    *  paste/drag/button still type into the editor but no upload fires. */
   uploadEnabled?: boolean;
+  uploadTopicId?: string;
   onStop?: () => void;
   isRunning?: boolean;
   /** Enabled only after the server explicitly advertises follow-up queues. */
@@ -150,10 +153,11 @@ interface ChatInputProps {
 export function ChatInput({
   onSend,
   restoreDraftRequest,
-  conversationStarterRequest,
+  conversationStarterRequest: externalStarterRequest,
   onConversationStarterApplied,
   onRestoreDraftApplied,
   uploadEnabled: uploadAllowed,
+  uploadTopicId,
   onStop,
   isRunning,
   allowSubmitWhileRunning,
@@ -176,6 +180,8 @@ export function ChatInput({
 }: ChatInputProps) {
   const { t } = useT("chat");
   const { t: tEditor } = useT("editor");
+  const [batchReviewRequest, setBatchReviewRequest] = useState<{ id: number; content: string; mode: "append" } | null>(null);
+  const conversationStarterRequest = externalStarterRequest ?? batchReviewRequest;
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -231,6 +237,7 @@ export function ChatInput({
   const appliedRestoreIdRef = useRef<string | null>(null);
   const appliedConversationStarterIdRef = useRef<number | null>(null);
   const editorKey = editorKeyOverride ?? CHAT_COMPOSER_EDITOR_KEY;
+  const [readyEditorKey, setReadyEditorKey] = useState<string | null>(null);
 
   // The draft whose document the editor instance is currently HOLDING.
   //
@@ -313,8 +320,9 @@ export function ChatInput({
     attachments: draftAttachments,
     handleUpload,
     gate,
-  } = useCoordinatedUploads(uploadBinding, storeUploads, {}, uploadGate, editorRef, {
+  } = useCoordinatedUploads(uploadBinding, storeUploads, { topicId: uploadTopicId }, uploadGate, editorRef, {
     resolveUploadTarget: () => makeUploadBinding(editorDraftKeyRef.current),
+    resolveUploadContext: () => ({ topicId: uploadTopicId && editorDraftKeyRef.current.startsWith("group:") ? editorDraftKeyRef.current.slice("group:".length) : uploadTopicId }),
     liveRegistryKey: `chat:${loadedDraftKey}`,
   });
 
@@ -561,6 +569,27 @@ export function ChatInput({
   useLayoutEffect(() => {
     if (!conversationStarterRequest) return;
     if (appliedConversationStarterIdRef.current === conversationStarterRequest.id) return;
+
+    // Batch review is a deliberate draft append: preserve the uploaded-file
+    // links and let the user review the generated request before sending.
+    if (conversationStarterRequest.mode === "append") {
+      if (readyEditorKey !== editorKey) return;
+      if (editorDraftKeyRef.current !== draftKey) return;
+      if (editorRef.current?.hasActiveUploads() === true) return;
+      editorRef.current?.flushPendingUpdate();
+      appliedConversationStarterIdRef.current = conversationStarterRequest.id;
+      const content = [
+        editorRef.current?.getMarkdown() ?? inputDraft,
+        conversationStarterRequest.content,
+      ].filter(Boolean).join("\n\n");
+      commitDraft(draftKey, content);
+      editorRef.current?.adoptContent(content);
+      setIsEmpty(!content.trim());
+      if (conversationStarterRequest === batchReviewRequest) setBatchReviewRequest(null);
+      onConversationStarterApplied?.();
+      return;
+    }
+
     appliedConversationStarterIdRef.current = conversationStarterRequest.id;
     onConversationStarterApplied?.();
     if (
@@ -592,12 +621,16 @@ export function ChatInput({
     allowSubmitWhileRunning,
     commitDraft,
     conversationStarterRequest,
+    batchReviewRequest,
+    editorKey,
+    inputDraft,
     disabled,
     draftKey,
     gate,
     isRunning,
     noAgent,
     onConversationStarterApplied,
+    readyEditorKey,
     submit,
     submitting,
     t,
@@ -708,11 +741,13 @@ export function ChatInput({
           </div>
         )}
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+          {draftUploads.length > 0 && <p role="status" className="mb-1 text-caption text-muted-foreground">{t(($) => $.input.attachment_count, { count: draftUploads.length })}</p>}
           <ContentEditor
             // See the editorKey / draftKey split note above — editor identity
             // intentionally tracks neither the session nor the agent.
             key={editorKey}
             ref={editorRef}
+            onReady={() => setReadyEditorKey(editorKey)}
             value={inputDraft}
             placeholder={placeholder}
             onUpdate={(md) => {
@@ -744,6 +779,7 @@ export function ChatInput({
           <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">
             {(uploadEnabled || projectSelectionEnabled) && (
               <ChatAddMenu
+                onPrepareBatchReview={uploadEnabled && !uploadTopicId ? () => setBatchReviewRequest({ id: Date.now(), content: HR_BATCH_REVIEW_PROMPT, mode: "append" }) : undefined}
                 onSelectFile={uploadEnabled
                   ? (file) => editorRef.current?.uploadFile(file)
                   : undefined}

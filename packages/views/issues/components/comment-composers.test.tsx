@@ -106,6 +106,7 @@ vi.mock("../../editor", async () => ({
     "../../editor/use-composer-submit",
   )),
   useEditorUpload: () => ({ uploadWithToast, upload: vi.fn(), uploading: false }),
+  ReadonlyContent: ({ content }: { content: string }) => <div>{content}</div>,
   useFileDropZone: () => ({
     isDragOver: false,
     dropZoneProps: { "data-testid": "drop-zone" },

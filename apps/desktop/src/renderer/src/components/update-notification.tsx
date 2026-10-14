@@ -9,7 +9,7 @@ type UpdateState =
   | { status: "ready"; version: string };
 
 function changelogUrl(version: string): string {
-  return `https://multica.ai/changelog#release-${version.replace(/\./g, "-")}`;
+  return `https://github.com/dunzic/multica-worker/releases/tag/v${encodeURIComponent(version)}`;
 }
 
 export function UpdateNotification() {

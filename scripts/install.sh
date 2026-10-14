@@ -2,10 +2,10 @@
 # Multica installer — installs the CLI and optionally provisions a self-host server.
 #
 # Install / upgrade CLI only:
-#   curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.sh | bash
 #
 # Install CLI + provision self-host server:
-#   curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+#   curl -fsSL https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.sh | bash -s -- --with-server
 #
 # After installation, run `multica setup` to configure your environment.
 #
@@ -14,10 +14,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-REPO_URL="https://github.com/multica-ai/multica.git"
-REPO_WEB_URL="https://github.com/multica-ai/multica"  # without .git, for GitHub web APIs
+REPO_URL="https://github.com/dunzic/multica-worker.git"
+REPO_WEB_URL="https://github.com/dunzic/multica-worker"  # without .git, for GitHub web APIs
 INSTALL_DIR="${MULTICA_INSTALL_DIR:-$HOME/.multica/server}"
-BREW_PACKAGE="multica-ai/tap/multica"
 
 # Host ports Compose reported after `up -d`; set by setup_server and reused by
 # the summary so the health check and the printed URLs cannot diverge.
@@ -57,11 +56,11 @@ print_remote_server_token_hint() {
 
   printf "  ${BOLD}Looks like a remote/SSH session.${RESET} Browser login may not be able to call back to this machine's localhost.\n"
   printf "  Token login is usually simpler here:\n"
-  printf "     1. On your local computer, open ${CYAN}https://multica.ai/settings?tab=tokens${RESET}\n"
+  printf "     1. On your local computer, open ${CYAN}https://workers.turingomni.com/settings?tab=tokens${RESET}\n"
   printf "        and create a token under ${BOLD}Settings > API Tokens${RESET}.\n"
   printf "     2. On this server, run:\n"
-  printf "        ${CYAN}multica login --token <YOUR_TOKEN>${RESET}\n"
-  printf "        ${CYAN}multica daemon start${RESET}\n"
+  printf "        ${CYAN}multica --profile turingomni login --token <YOUR_TOKEN>${RESET}\n"
+  printf "        ${CYAN}multica --profile turingomni daemon start${RESET}\n"
   printf "\n"
 }
 
@@ -93,7 +92,7 @@ detect_os() {
     Linux)  OS="linux" ;;
     MINGW*|MSYS*|CYGWIN*)
             fail "This script does not support Windows. Use the PowerShell installer instead:
-  irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex" ;;
+  irm https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.ps1 | iex" ;;
     *)      fail "Unsupported operating system: $(uname -s). Multica supports macOS, Linux, and Windows." ;;
   esac
 
@@ -109,41 +108,6 @@ detect_os() {
 # ---------------------------------------------------------------------------
 # CLI Installation
 # ---------------------------------------------------------------------------
-_dump_brew_log() {
-  local log="$1"
-  if [ -s "$log" ]; then
-    warn "Homebrew output (last 80 lines):"
-    tail -n 80 "$log" | sed 's/^/  /' >&2
-  fi
-}
-
-install_cli_brew() {
-  info "Installing Multica CLI via Homebrew..."
-  local brew_log
-  brew_log=$(mktemp)
-  if ! brew tap multica-ai/tap >"$brew_log" 2>&1; then
-    warn "Failed to add Homebrew tap. Falling back to GitHub Releases binary install."
-    _dump_brew_log "$brew_log"
-    rm -f "$brew_log"
-    return 1
-  fi
-  # brew install exits non-zero if already installed on older Homebrew versions
-  if ! brew install "$BREW_PACKAGE" >"$brew_log" 2>&1; then
-    if brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
-      rm -f "$brew_log"
-      ok "Multica CLI already installed via Homebrew"
-    else
-      warn "Failed to install multica via Homebrew. Falling back to GitHub Releases binary install."
-      _dump_brew_log "$brew_log"
-      rm -f "$brew_log"
-      return 1
-    fi
-  else
-    rm -f "$brew_log"
-    ok "Multica CLI installed via Homebrew"
-  fi
-}
-
 install_cli_binary() {
   info "Installing Multica CLI from GitHub Releases..."
 
@@ -155,7 +119,7 @@ install_cli_binary() {
   fi
 
   local version="${latest#v}"
-  local url="https://github.com/multica-ai/multica/releases/download/${latest}/multica-cli-${version}-${OS}-${ARCH}.tar.gz"
+  local url="https://github.com/dunzic/multica-worker/releases/download/${latest}/multica-cli-${version}-${OS}-${ARCH}.tar.gz"
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
@@ -165,11 +129,32 @@ install_cli_binary() {
     fail "Failed to download CLI binary."
   fi
 
+  if ! curl -fsSL "$REPO_WEB_URL/releases/download/${latest}/checksums.txt" -o "$tmp_dir/checksums.txt"; then
+    rm -rf "$tmp_dir"
+    fail "Could not download checksums; refusing to install an unverified binary."
+  fi
+  local asset="multica-cli-${version}-${OS}-${ARCH}.tar.gz"
+  local expected actual
+  expected=$(awk -v name="$asset" '$2 == name {print $1}' "$tmp_dir/checksums.txt")
+  if command_exists sha256sum; then
+    actual=$(sha256sum "$tmp_dir/multica.tar.gz" | awk '{print $1}')
+  elif command_exists shasum; then
+    actual=$(shasum -a 256 "$tmp_dir/multica.tar.gz" | awk '{print $1}')
+  else
+    rm -rf "$tmp_dir"
+    fail "SHA-256 verification requires sha256sum or shasum."
+  fi
+  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    rm -rf "$tmp_dir"
+    fail "Missing or incorrect archive checksum; refusing to install."
+  fi
+
   tar -xzf "$tmp_dir/multica.tar.gz" -C "$tmp_dir" multica
 
-  # Try /usr/local/bin first, fall back to ~/.local/bin. Tests and scripted
-  # installs can override the first choice with MULTICA_BIN_DIR.
-  local bin_dir="${MULTICA_BIN_DIR:-/usr/local/bin}"
+  # Install outside Homebrew so a community package-manager upgrade cannot
+  # overwrite our binary. Scripted installs can override MULTICA_BIN_DIR.
+  local bin_dir="${MULTICA_BIN_DIR:-$HOME/.local/bin}"
+  mkdir -p "$bin_dir"
   if [ -w "$bin_dir" ]; then
     mv "$tmp_dir/multica" "$bin_dir/multica"
   elif command_exists sudo; then
@@ -186,6 +171,8 @@ install_cli_binary() {
     fi
   fi
 
+  export PATH="$bin_dir:$PATH"
+  add_to_path "$bin_dir"
   rm -rf "$tmp_dir"
   ok "Multica CLI installed to $bin_dir/multica"
 }
@@ -194,7 +181,7 @@ add_to_path() {
   local dir="$1"
   local line="export PATH=\"$dir:\$PATH\""
   for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc" ] && ! grep -qF "$dir" "$rc"; then
+    if ! grep -qF "$dir" "$rc" 2>/dev/null; then
       printf '\n# Added by Multica installer\n%s\n' "$line" >> "$rc"
     fi
   done
@@ -254,53 +241,10 @@ pull_official_selfhost_images() {
   exit 1
 }
 
-upgrade_cli_brew() {
-  info "Upgrading Multica CLI via Homebrew..."
-  brew update 2>/dev/null || true
-  if brew upgrade "$BREW_PACKAGE" 2>/dev/null; then
-    ok "Multica CLI upgraded via Homebrew"
-  else
-    # brew upgrade exits non-zero if already up to date
-    ok "Multica CLI is already the latest version"
-  fi
-}
-
 install_cli() {
-  if command_exists multica; then
-    local current_ver
-    # `multica version` outputs "multica 0.3.23 (commit: f46b929eb, built: 2026-06-16T10:11:56Z)" — extract just the version
-    current_ver=$(multica version 2>/dev/null | awk 'NR==1{print $2}' || echo "unknown")
-
-    local latest_ver
-    latest_ver=$(get_latest_version)
-
-    # Normalize: strip leading 'v' for comparison
-    local current_cmp="${current_ver#v}"
-    local latest_cmp="${latest_ver#v}"
-
-    if [ -z "$latest_ver" ] || [ "$current_cmp" = "$latest_cmp" ]; then
-      ok "Multica CLI is up to date ($current_ver)"
-      return 0
-    fi
-
-    info "Multica CLI $current_ver installed, latest is $latest_ver — upgrading..."
-    if command_exists brew && brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
-      upgrade_cli_brew
-    else
-      install_cli_binary
-    fi
-
-    local new_ver
-    new_ver=$(multica version 2>/dev/null | awk 'NR==1{print $2}' || echo "unknown")
-    ok "Multica CLI upgraded ($current_ver → $new_ver)"
-    return 0
-  fi
-
-  if command_exists brew; then
-    install_cli_brew || install_cli_binary
-  else
-    install_cli_binary
-  fi
+  # A matching community version does not prove that it is our fork.
+  # Always install from our release channel; never select a community tap.
+  install_cli_binary
 
   # Verify
   if ! command_exists multica; then
@@ -438,12 +382,12 @@ run_default() {
   printf "\n"
   printf "  ${BOLD}Next: configure your environment${RESET}\n"
   printf "\n"
-  printf "     ${CYAN}multica setup${RESET}                # Connect to Multica Cloud (multica.ai)\n"
+  printf "     ${CYAN}multica setup --profile turingomni${RESET}  # Connect to TuringOmni (workers.turingomni.com)\n"
   printf "     ${CYAN}multica setup self-host${RESET}       # Connect to a self-hosted server\n"
   printf "\n"
   print_remote_server_token_hint
   printf "  ${BOLD}Self-hosting?${RESET} Install the server first:\n"
-  printf "     curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server\n"
+  printf "     curl -fsSL https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.sh | bash -s -- --with-server\n"
   printf "\n"
 }
 
@@ -478,7 +422,7 @@ run_with_server() {
   printf "  or read the generated code from backend logs when Resend is unset.\n"
   printf "\n"
   printf "  ${BOLD}To stop all services:${RESET}\n"
-  printf "     curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --stop\n"
+  printf "     curl -fsSL https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.sh | bash -s -- --stop\n"
   printf "\n"
 }
 

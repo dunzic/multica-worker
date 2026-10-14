@@ -8,6 +8,8 @@ const (
 	DaemonCapabilityExecutionManifestV1 = "execution-manifest-v1"
 	DaemonCapabilityAgentSkillV1        = "agent-skill-v1"
 	DaemonCapabilityRemoteMCPV1         = "remote-mcp-v1"
+	// Topic tasks need dedicated prompt routing and participant-scoped attachments.
+	DaemonCapabilityGroupTopicsV1 = "group-topics-v1"
 	// DaemonCapabilityLocalWorktreeV1 advertises that the daemon implements
 	// worktree mode for local_directory resources (execution_mode=worktree).
 	//

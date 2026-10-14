@@ -29,6 +29,7 @@ export interface UploadCoordinatorContext {
   issueId?: string;
   commentId?: string;
   chatSessionId?: string;
+  topicId?: string;
 }
 
 export type UploadOutcome =
@@ -77,6 +78,7 @@ export function startUpload({
           issueId: ctx?.issueId,
           commentId: ctx?.commentId,
           chatSessionId: ctx?.chatSessionId,
+          topicId: ctx?.topicId,
         },
         controller.signal,
       );

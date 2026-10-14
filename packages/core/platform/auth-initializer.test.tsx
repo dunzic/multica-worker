@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "../api";
 import { ApiError, type ApiClient } from "../api/client";
-import { configStore } from "../config";
 import {
   createAuthStore,
   registerAuthStore,
@@ -14,6 +13,7 @@ import {
 } from "../auth";
 import type { StorageAdapter, User, Workspace } from "../types";
 import { workspaceKeys } from "../workspace/queries";
+import { configStore } from "../config";
 import {
   registerDraftCleanup,
   __clearDraftCleanupRegistryForTest,
@@ -133,6 +133,16 @@ describe("AuthInitializer recovery", () => {
     await waitFor(() => {
       expect(configStore.getState().attachmentPublicUrl).toBe("https://api.example.test");
     });
+  });
+
+  it("loads the attachment API origin and clears a previous deployment's origin when absent", async () => {
+    const first = renderInitializer({ api: makeApi({
+      getConfig: vi.fn().mockResolvedValue({ attachment_api_origin: "https://api.example.test" }),
+    }) });
+    await waitFor(() => expect(configStore.getState().attachmentApiOrigin).toBe("https://api.example.test"));
+    first.unmount();
+    renderInitializer({ api: makeApi() });
+    await waitFor(() => expect(configStore.getState().attachmentApiOrigin).toBe(""));
   });
 
   it("keeps the token and recovers on the online event after a network failure", async () => {

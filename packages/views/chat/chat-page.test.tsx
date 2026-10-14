@@ -84,7 +84,7 @@ vi.mock("@multica/ui/hooks/use-mobile", () => ({
 }));
 vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",
-  useWorkspacePaths: () => ({ chat: () => "/acme/chat" }),
+  useWorkspacePaths: () => ({ chat: () => "/acme/chat", chatGroups: () => "/acme/chat/groups" }),
 }));
 const platformWorkspace = vi.hoisted(() => ({ slug: "acme" }));
 vi.mock("@multica/core/platform", async (importOriginal) => ({

@@ -28,6 +28,7 @@ type taskContextMarkerFile struct {
 	AgentID       string `json:"agent_id,omitempty"`
 	IssueID       string `json:"issue_id,omitempty"`
 	ChatSessionID string `json:"chat_session_id,omitempty"`
+	TopicID       string `json:"topic_id,omitempty"`
 }
 
 // EnsureWorkspacesRootMarker writes a persistent daemon-task marker at
@@ -205,6 +206,7 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 		AgentID:       ctx.AgentID,
 		IssueID:       ctx.IssueID,
 		ChatSessionID: ctx.ChatSessionID,
+		TopicID:       ctx.TopicID,
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

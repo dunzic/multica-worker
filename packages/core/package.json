@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "exports": {
+    "./chat-v2": "./chat-v2/index.ts",
     ".": "./index.ts",
     "./markdown": "./markdown/index.ts",
     "./types": "./types/index.ts",

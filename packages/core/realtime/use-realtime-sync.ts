@@ -67,6 +67,7 @@ import {
   QUICK_ACTIONS_PENDING_TIMEOUT_MS,
 } from "../chat/queries";
 import { useChatStore } from "../chat";
+import { collaborationKeys } from "../chat-v2";
 import { upsertChatMessageToCaches } from "../chat/message-cache";
 import {
   promotePendingChatTask,
@@ -1822,7 +1823,19 @@ export function useRealtimeSync(
       }
     });
 
+    const collaborationUnsubscribes = (["conversation:created", "conversation:updated", "conversation:read", "participant:added", "participant:removed", "topic:created", "topic:updated", "message:sent", "message:done", "task:completed", "task:failed", "task:cancelled", "task:dispatch"] as const).map((event) =>
+      ws.on(event, (payload) => {
+        if (typeof payload !== "object" || payload === null) return;
+        if (event.startsWith("task:") && !("topic_id" in payload)) return;
+        const wsId = "workspace_id" in payload && typeof payload.workspace_id === "string" ? payload.workspace_id : null;
+        if (wsId) qc.invalidateQueries({
+          queryKey: collaborationKeys.all(wsId),
+          ...(wsId === getCurrentWsId() ? {} : { refetchType: "none" as const }),
+        });
+      }),
+    );
     return () => {
+      collaborationUnsubscribes.forEach((unsubscribe) => unsubscribe());
       unsubAny();
       unsubIssueUpdated();
       unsubIssueCreated();

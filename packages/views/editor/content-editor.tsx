@@ -67,6 +67,7 @@ import { configStore } from "@multica/core/config";
 import { preprocessMarkdown } from "./utils/preprocess";
 import { repairEmptyListItems } from "./utils/repair-list-items";
 import { resolveClickIntent, useAppOrigin } from "../navigation";
+import { useAttachmentApiOrigins } from "./hooks/use-attachment-api-origins";
 import { openLink, isMentionHref } from "./utils/link-handler";
 import { EditorBubbleMenu } from "./bubble-menu";
 import { posFromAnchor, type TextAnchor } from "./text-anchor";
@@ -128,6 +129,8 @@ interface ContentEditorBaseProps {
    */
   onUpdate?: (markdown: string, baseMarkdown: string) => void;
   placeholder?: string;
+  /** Accessible name for compact editors that do not render a visible label. */
+  ariaLabel?: string;
   className?: string;
   debounceMs?: number;
   onSubmit?: () => void;
@@ -363,6 +366,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       value,
       onUpdate,
       placeholder: placeholderText = "",
+      ariaLabel,
       className,
       debounceMs = 300,
       onSubmit,
@@ -499,6 +503,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const appOrigin = useAppOrigin();
     const appOriginRef = useRef(appOrigin);
     appOriginRef.current = appOrigin;
+    const apiOrigins = useAttachmentApiOrigins();
+    const apiOriginsRef = useRef(apiOrigins);
+    apiOriginsRef.current = apiOrigins;
 
     // Keep refs in sync without recreating editor
     onUpdateRef.current = onUpdate;
@@ -659,6 +666,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
               workspaceSlugRef.current,
               appOriginRef.current,
               resolveClickIntent(event),
+              apiOriginsRef.current,
             );
             return true;
           },
@@ -677,6 +685,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
               workspaceSlugRef.current,
               appOriginRef.current,
               "background-tab",
+              apiOriginsRef.current,
             );
             return true;
           },
@@ -1007,7 +1016,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
           className="relative flex flex-1 min-h-full flex-col"
           onMouseDown={handleContainerMouseDown}
         >
-          <EditorContent className="flex flex-1 flex-col" editor={editor} />
+          <EditorContent aria-label={ariaLabel} className="flex flex-1 flex-col" editor={editor} />
           {showBubbleMenu && (
             <EditorBubbleMenu editor={editor} currentIssueId={currentIssueId} selectionAction={selectionAction} />
           )}

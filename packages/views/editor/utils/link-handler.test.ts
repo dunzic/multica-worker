@@ -1,11 +1,62 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   openLink,
+  toAttachmentPreviewPath,
   parseWorkspaceEntityLink,
   toInternalAppPath,
 } from "./link-handler";
 
 const APP_ORIGIN = "https://app.multica.ai";
+const ATTACHMENT_ID = "01a11279-2c56-7781-8cf6-166f9315aae7";
+const ATTACHMENT_PATH = `/api/attachments/${ATTACHMENT_ID}/download`;
+
+describe("toAttachmentPreviewPath", () => {
+  it("recognizes the configured API origin when the frontend has another origin", () => {
+    expect(toAttachmentPreviewPath(
+      `https://api.example.test${ATTACHMENT_PATH}?workspace_slug=source`,
+      "destination", APP_ORIGIN, ["https://api.example.test"],
+    )).toBe(`/destination/attachments/${ATTACHMENT_ID}/preview`);
+  });
+
+  it.each([
+    `https://api.example.test.evil.test${ATTACHMENT_PATH}`,
+    `https://api.example.test@evil.test${ATTACHMENT_PATH}`,
+    `https://user:secret@api.example.test${ATTACHMENT_PATH}`,
+    `http://api.example.test${ATTACHMENT_PATH}`,
+    `file://api.example.test${ATTACHMENT_PATH}`,
+  ])("does not trust a spoofed or credential-bearing API URL: %s", (href) => {
+    expect(toAttachmentPreviewPath(href, "acme", APP_ORIGIN, ["https://api.example.test"])).toBeNull();
+  });
+
+  it.each([ATTACHMENT_PATH, `${APP_ORIGIN}${ATTACHMENT_PATH}?exp=123#page=1`])(
+    "routes an authorized local attachment reference through the preview page: %s",
+    (href) => {
+      expect(toAttachmentPreviewPath(href, "acme", APP_ORIGIN)).toBe(
+        `/acme/attachments/${ATTACHMENT_ID}/preview`,
+      );
+    },
+  );
+
+  it.each([
+    `https://other.example${ATTACHMENT_PATH}`,
+    `//other.example${ATTACHMENT_PATH}`,
+    `/\\other.example${ATTACHMENT_PATH}`,
+    `${APP_ORIGIN}/api/attachments/not-a-uuid/download`,
+    `${APP_ORIGIN}${ATTACHMENT_PATH}/extra`,
+    `${APP_ORIGIN}/uploads/report.pdf`,
+    "javascript:alert(1)",
+  ])("does not reinterpret unrelated URLs as local files: %s", (href) => {
+    expect(toAttachmentPreviewPath(href, "acme", APP_ORIGIN)).toBeNull();
+  });
+
+  it("requires a workspace and does not guess an unknown absolute origin", () => {
+    expect(toAttachmentPreviewPath(ATTACHMENT_PATH, null, APP_ORIGIN)).toBeNull();
+    expect(toAttachmentPreviewPath(`${APP_ORIGIN}${ATTACHMENT_PATH}`, "acme")).toBeNull();
+    expect(toAttachmentPreviewPath(ATTACHMENT_PATH, "acme")).toBe(
+      `/acme/attachments/${ATTACHMENT_ID}/preview`,
+    );
+  });
+});
 
 function navigatedPaths(): string[] {
   return dispatched.map((e) => (e as CustomEvent<{ path: string }>).detail.path);
@@ -74,6 +125,13 @@ describe("toInternalAppPath", () => {
 });
 
 describe("openLink", () => {
+  it("previews a copied attachment link with the requested desktop tab intent", () => {
+    openLink(`${APP_ORIGIN}${ATTACHMENT_PATH}`, "acme", APP_ORIGIN, "background-tab");
+    expect(navigatedPaths()).toEqual([`/acme/attachments/${ATTACHMENT_ID}/preview`]);
+    expect((dispatched[0] as CustomEvent).detail.disposition).toBe("background-tab");
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
   it("navigates in-app for a URL pointing back at this deployment (MUL-5208)", () => {
     openLink(`${APP_ORIGIN}/acme/issues/MUL-1`, "acme", APP_ORIGIN);
     expect(navigatedPaths()).toEqual(["/acme/issues/MUL-1"]);

@@ -100,6 +100,9 @@ func hermesConversationSegment(task TaskContextForEnv) string {
 	if chat := sanitizePathSegment(task.ChatSessionID); chat != "" {
 		return "chat_" + chat
 	}
+	if topic := sanitizePathSegment(task.TopicID); topic != "" {
+		return "topic_" + topic
+	}
 	return ""
 }
 

@@ -56,8 +56,18 @@ describe("getPreviewKind", () => {
     ["application/octet-stream", "service.dockerfile", "text"],
     ["application/octet-stream", "rules.makefile", "text"],
 
+    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "report.docx", "office"],
+    ["application/octet-stream", "résumé.DOCX", "office"],
+    ["application/octet-stream", "budget.xlsx", "office"],
+    ["application/octet-stream", "budget.xls", "office"],
+    ["application/octet-stream", "slides.pptx", "office"],
+    ["application/octet-stream", "slides.ppt", "office"],
+    ["application/octet-stream", "report.doc", "office"],
+    ["application/vnd.ms-excel", "workbook", "office"],
+    ["application/vnd.ms-powerpoint", "presentation", "office"],
+    ["application/msword", "renamed.exe", null],
+    ["application/octet-stream", "macro.docm", null],
     // Out of scope
-    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "report.docx", null],
     ["application/octet-stream", "blob.bin", null],
     ["application/zip", "archive.zip", null],
   ];

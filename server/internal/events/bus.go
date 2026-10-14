@@ -28,6 +28,8 @@ type Event struct {
 	TaskID                string
 	ChatSessionID         string
 	ChannelReactionTarget *ChannelReactionTarget `json:"-"`
+	// Non-nil means participant-only fanout; an empty list must never broadcast.
+	RecipientUserIDs []string
 }
 
 // Handler is a function that processes an event.

@@ -330,6 +330,17 @@ RETURNING *;
 -- name: ListAgentTasks :many
 SELECT * FROM agent_task_queue
 WHERE agent_id = @agent_id
+  AND (agent_task_queue.topic_id IS NULL OR EXISTS (
+    SELECT 1 FROM topic t
+    JOIN conversation c ON c.id = t.conversation_id
+    JOIN conversation_participant p ON p.conversation_id = c.id
+    WHERE t.id = agent_task_queue.topic_id AND c.workspace_id = @viewer_workspace_id::uuid
+      AND p.left_at IS NULL AND p.principal_type = @principal_type::text
+      AND p.principal_id = @principal_id::uuid
+      AND (p.principal_type <> 'member' OR EXISTS (
+        SELECT 1 FROM member m WHERE m.workspace_id = c.workspace_id AND m.user_id = p.principal_id
+      ))
+  ))
   -- Apply visibility before LIMIT so hidden fallbacks cannot end a page early.
   -- Keep this predicate in sync with handler.visibleTaskHistory.
   AND NOT (escalation_for_task_id IS NOT NULL AND started_at IS NULL
@@ -835,13 +846,16 @@ WHERE id = (
             AND (
               (atq.issue_id IS NOT NULL AND active.issue_id = atq.issue_id)
               OR (atq.chat_session_id IS NOT NULL AND active.chat_session_id = atq.chat_session_id)
+              OR (atq.topic_id IS NOT NULL AND active.topic_id = atq.topic_id)
               OR (
                 atq.issue_id IS NULL
                 AND atq.chat_session_id IS NULL
                 AND atq.autopilot_run_id IS NULL
+                AND atq.topic_id IS NULL
                 AND active.issue_id IS NULL
                 AND active.chat_session_id IS NULL
                 AND active.autopilot_run_id IS NULL
+                AND active.topic_id IS NULL
               )
             )
       )
@@ -2704,6 +2718,17 @@ ORDER BY atq.agent_id, bucket;
 SELECT atq.* FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE a.workspace_id = $1
+  AND (atq.topic_id IS NULL OR EXISTS (
+    SELECT 1 FROM topic t
+    JOIN conversation c ON c.id = t.conversation_id
+    JOIN conversation_participant p ON p.conversation_id = c.id
+    WHERE t.id = atq.topic_id AND c.workspace_id = @viewer_workspace_id::uuid
+      AND p.left_at IS NULL AND p.principal_type = @principal_type::text
+      AND p.principal_id = @principal_id::uuid
+      AND (p.principal_type <> 'member' OR EXISTS (
+        SELECT 1 FROM member m WHERE m.workspace_id = c.workspace_id AND m.user_id = p.principal_id
+      ))
+  ))
   AND (atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
     OR (atq.status='deferred' AND atq.context->>'wakeup_id' IS NOT NULL))
 
@@ -2715,6 +2740,17 @@ JOIN LATERAL (
   FROM agent_task_queue atq
   WHERE atq.agent_id = a.id
     AND atq.status IN ('completed', 'failed')
+    AND (atq.topic_id IS NULL OR EXISTS (
+    SELECT 1 FROM topic t
+    JOIN conversation c ON c.id = t.conversation_id
+    JOIN conversation_participant p ON p.conversation_id = c.id
+    WHERE t.id = atq.topic_id AND c.workspace_id = @viewer_workspace_id::uuid
+      AND p.left_at IS NULL AND p.principal_type = @principal_type::text
+      AND p.principal_id = @principal_id::uuid
+      AND (p.principal_type <> 'member' OR EXISTS (
+        SELECT 1 FROM member m WHERE m.workspace_id = c.workspace_id AND m.user_id = p.principal_id
+      ))
+  ))
   ORDER BY atq.completed_at DESC NULLS LAST, atq.created_at DESC, atq.id DESC
   LIMIT 1
 ) latest ON TRUE

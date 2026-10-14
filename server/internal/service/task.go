@@ -4436,6 +4436,7 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
+	var topicAssistantMsg *db.ChatMessage
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -4454,6 +4455,10 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 			return err
 		}
 		task = t
+		topicAssistantMsg, err = s.writeTopicCompletion(ctx, qtx, t, result)
+		if err != nil {
+			return fmt.Errorf("write topic assistant outcome: %w", err)
+		}
 
 		// Atomic with the status flip: a crash between the two would leave a
 		// finished obligation looking pending forever.
@@ -4634,6 +4639,9 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
+	if topicAssistantMsg != nil {
+		s.broadcastMessageDone(ctx, task, *topicAssistantMsg)
+	}
 
 	return &task, true, nil
 }
@@ -7268,17 +7276,24 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	if task.ChatSessionID.Valid {
 		payload["chat_session_id"] = util.UUIDToString(task.ChatSessionID)
 	}
+	var recipients []string
+	if task.TopicID.Valid {
+		payload["topic_id"] = util.UUIDToString(task.TopicID)
+		payload["workspace_id"] = s.ResolveTaskWorkspaceID(ctx, task)
+		recipients = s.TopicRecipients(ctx, task.TopicID)
+	}
 
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
 	if workspaceID == "" {
 		return
 	}
 	s.Bus.Publish(events.Event{
-		Type:        protocol.EventTaskDispatch,
-		WorkspaceID: workspaceID,
-		ActorType:   "system",
-		ActorID:     "",
-		Payload:     payload,
+		Type:             protocol.EventTaskDispatch,
+		RecipientUserIDs: recipients,
+		WorkspaceID:      workspaceID,
+		ActorType:        "system",
+		ActorID:          "",
+		Payload:          payload,
 	})
 }
 
@@ -7306,6 +7321,10 @@ func taskEvent(eventType, workspaceID string, task db.AgentTaskQueue, extra ...m
 		payload["chat_session_id"] = chatSessionID
 		e.ChatSessionID = chatSessionID
 	}
+	if task.TopicID.Valid {
+		payload["topic_id"] = util.UUIDToString(task.TopicID)
+		payload["workspace_id"] = workspaceID
+	}
 	for _, fields := range extra {
 		for key, value := range fields {
 			payload[key] = value
@@ -7318,7 +7337,11 @@ func (s *TaskService) publishTaskEvent(eventType, workspaceID string, task db.Ag
 	if workspaceID == "" {
 		return
 	}
-	s.Bus.Publish(taskEvent(eventType, workspaceID, task, extra...))
+	e := taskEvent(eventType, workspaceID, task, extra...)
+	if task.TopicID.Valid {
+		e.RecipientUserIDs = s.TopicRecipients(context.Background(), task.TopicID)
+	}
+	s.Bus.Publish(e)
 }
 
 func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue, extra ...map[string]any) {
@@ -7385,6 +7408,14 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 // keeps a task carrying several links working during a partial outage while
 // still refusing to call an unknown state "not found".
 func (s *TaskService) ResolveTaskWorkspaceIDChecked(ctx context.Context, task db.AgentTaskQueue) (string, error) {
+	if task.TopicID.Valid {
+		topic, err := s.Queries.GetTopic(ctx, task.TopicID)
+		if err != nil {
+			return "", err
+		}
+		ws, err := s.Queries.GetConversationWorkspaceID(ctx, topic.ConversationID)
+		return util.UUIDToString(ws), err
+	}
 	// isNotFound is the "genuinely absent" signal; every other error means the
 	// lookup itself did not complete. pgx.ErrNoRows is the only error the
 	// queries below use to say "this row does not exist".

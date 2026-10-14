@@ -15,7 +15,7 @@ assign it to a teammate — they pick up the issue, report progress, raise block
 back for review. Self-hostable, works with the agent CLIs you already use, no lock-in.
 
 [![CI](https://github.com/multica-ai/multica/actions/workflows/ci.yml/badge.svg)](https://github.com/multica-ai/multica/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/multica-ai/multica?style=flat)](https://github.com/multica-ai/multica/releases)
+[![Release](https://img.shields.io/github/v/release/dunzic/multica-worker?style=flat)](https://github.com/dunzic/multica-worker/releases)
 [![GitHub stars](https://img.shields.io/github/stars/multica-ai/multica?style=flat)](https://github.com/multica-ai/multica/stargazers)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/W8gYBn226t)
 
@@ -34,7 +34,13 @@ back for review. Self-hostable, works with the agent CLIs you already use, no lo
   </a>
 </p>
 
-[Website](https://multica.ai) · [Docs](https://multica.ai/docs) · [Quickstart](https://multica.ai/docs/cloud-quickstart) · [Download](https://multica.ai/download) · [Vision](VISION.md) · [Self-Hosting](SELF_HOSTING.md) · [Discord](https://discord.gg/W8gYBn226t) · [X](https://x.com/MulticaAI)
+[Website](https://workers.turingomni.com) · [Docs](https://multica.ai/docs) · [Quickstart](https://multica.ai/docs/cloud-quickstart) · [Download](https://github.com/dunzic/multica-worker/releases) · [Vision](VISION.md) · [Self-Hosting](SELF_HOSTING.md) · [Discord](https://discord.gg/W8gYBn226t) · [X](https://x.com/MulticaAI)
+
+This is the TuringOmni fork. Production installers connect to
+`https://workers.turingomni.com` and install/update from
+`dunzic/multica-worker` Releases. See [our CLI installation guide](CLI_INSTALL.md).
+Upstream documentation and attribution links below are references, not our
+login or distribution channel.
 
 **English | [简体中文](README.zh.md)**
 
@@ -110,8 +116,8 @@ issue — so nobody reconstructs context, and nothing ships without a human sayi
 
 ## Get started
 
-- **Cloud** — sign up at **[multica.ai](https://multica.ai)**. No terminal required.
-- **Desktop** — download **[Multica Desktop](https://multica.ai/download)** for macOS, Windows, or
+- **Cloud** — sign up at **[workers.turingomni.com](https://workers.turingomni.com)**. No terminal required.
+- **Desktop** — download **[Multica Desktop](https://github.com/dunzic/multica-worker/releases)** for macOS, Windows, or
   Linux. It connects the computer it runs on as a runtime automatically.
 - **Self-host** — run the whole stack on your own infrastructure; see below.
 
@@ -125,12 +131,12 @@ friends. Multica drives them; it doesn't ship them.
 <br/>
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+curl -fsSL https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.sh | bash -s -- --with-server
 multica setup self-host
 ```
 
 On Windows, set `$env:MULTICA_MODE="with-server"`, then run the PowerShell installer:
-`irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex`.
+`irm https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.ps1 | iex`.
 
 This pulls the official images from GHCR and requires Docker. See the
 [Self-Hosting Guide](SELF_HOSTING.md); if the selected GHCR tag has not been published yet,

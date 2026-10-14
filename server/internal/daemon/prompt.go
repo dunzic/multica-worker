@@ -13,6 +13,9 @@ import (
 // chat — an issue's comments, a Slack channel's history, and a web chat's /
 // Feishu's / WeCom's / DingTalk's chat_message transcript all are (MUL-5722).
 func sessionContinuityNoticeFor(task Task) string {
+	if task.TopicID != "" {
+		return "[SESSION CONTINUITY] Previous provider context may be unavailable. Use the supplied bounded topic history and current request; ask participants for missing context. Do not use issue comments or the single-chat history reader to reconstruct this group topic.\n\n"
+	}
 	if task.ChatSessionID == "" {
 		return execenv.SessionContinuityNoticeIssue
 	}
@@ -226,7 +229,7 @@ func buildPromptBody(task Task, provider string) string {
 		}
 		return b.String()
 	}
-	if task.ChatSessionID != "" {
+	if task.ChatSessionID != "" || task.TopicID != "" {
 		return buildChatPrompt(task)
 	}
 	if task.TriggerCommentID != "" {
@@ -623,6 +626,9 @@ func buildChatPrompt(task Task) string {
 		b.WriteString("Audience: unknown.\n\n")
 	default:
 		b.WriteString("Audience: direct room.\n\n")
+	}
+	if task.TopicID != "" {
+		b.WriteString("The request is pinned to one group topic message. The supplied recent context is bounded and may be truncated; ask the group for missing context instead of assuming it. The single-chat history command cannot read this topic.\n\n")
 	}
 	// Channel awareness (MUL-3871). When the session is backed by an IM channel,
 	// the agent must KNOW it is operating inside that channel — otherwise an ask

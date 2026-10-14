@@ -53,6 +53,15 @@
     "zoom_actual": "Actual size"
   },
   "attachment": {
+    "preview_office_loading": "Preparing PDF preview…",
+    "preview_office_notice": "PDF preview may differ from the original layout. Download returns the original file.",
+    "preview_office_sheets": "Every sheet, including hidden sheets, is shown on one PDF page.",
+    "preview_office_not_configured": "Office preview is not enabled on this server. Ask an administrator to configure the conversion service.",
+    "preview_office_too_large": "Office preview supports files up to 20 MB and a converted PDF up to 40 MB. Download the original to view it.",
+    "preview_office_invalid": "This document could not be converted. Check that it is valid and not password-protected.",
+    "preview_office_busy": "The preview service is busy. Try again in a moment.",
+    "preview_office_timeout": "Preview conversion timed out. Retry or download the original.",
+    "preview_retry": "Retry",
     "download_failed": "Couldn't fetch a download link. Try again in a moment.",
     "preview": "Preview",
     "preview_loading": "Loading preview…",

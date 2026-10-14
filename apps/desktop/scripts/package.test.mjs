@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { afterEach, describe, it, expect } from "vitest";
@@ -13,6 +13,34 @@ import {
   resolveBuildMatrix,
   stripLeadingSeparator,
 } from "./package.mjs";
+
+describe("packaging toolchain preflight", () => {
+  it("rejects missing Go before clearing previous output or reusing a stale CLI", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "multica-prepack-go-")));
+    try {
+      mkdirSync(join(root, "scripts"));
+      mkdirSync(join(root, "dist"));
+      const previous = join(root, "dist", "previous-artifact.txt");
+      writeFileSync(previous, "preserve");
+      copyFileSync(resolve("scripts", "package.mjs"), join(root, "scripts", "package.mjs"));
+      const env = { ...process.env };
+      for (const key of Object.keys(env)) {
+        if (key.toUpperCase() === "PATH") delete env[key];
+      }
+      env.PATH = join(root, "no-toolchain");
+      const result = spawnSync(process.execPath, [join(root, "scripts", "package.mjs"), "--mac", "--arm64"], {
+        cwd: root,
+        env,
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Go is required to build a fresh bundled CLI");
+      expect(readFileSync(previous, "utf8")).toBe("preserve");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("normalizeGitVersion", () => {
   it("returns null for empty / nullish input", () => {

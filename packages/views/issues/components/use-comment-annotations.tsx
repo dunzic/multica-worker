@@ -8,6 +8,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";
 import { MAX_ANNOTATION_QUOTE_LENGTH, MAX_REPLY_ANNOTATIONS, type ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { useT } from "../../i18n";
+import { ContentEditor, type ContentEditorRef } from "../../editor";
 import { annotationRange, captureCommentSelection, findAnnotationSource } from "./comment-annotation-selection";
 import { CommentSelectionBubble } from "./comment-selection-bubble";
 
@@ -24,7 +25,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
 }) {
   const { t } = useT("issues");
   const cardRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const noteEditorRef = useRef<ContentEditorRef>(null);
   const pendingFocusId = useRef<string | null>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
@@ -107,7 +108,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   const focusNote = useCallback(() => {
     if (!editingId || pendingFocusId.current !== editingId) return;
     pendingFocusId.current = null;
-    if (window.matchMedia("(pointer: fine)").matches) inputRef.current?.focus({ preventScroll: true });
+    if (window.matchMedia("(pointer: fine)").matches) noteEditorRef.current?.focus();
   }, [editingId]);
 
   useEffect(() => {
@@ -208,10 +209,16 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
   const addSelection = useCallback(() => add(readSelection()), [add, readSelection]);
 
   const confirmNote = () => {
-    if (!editing?.note.trim()) return;
+    if (!editing) return;
+    // The mention-aware editor serializes selected members/agents as the
+    // canonical `mention://` Markdown link. Read it synchronously so a save
+    // cannot race the editor's debounced onUpdate callback.
+    const note = noteEditorRef.current?.getMarkdown().trim() ?? editing.note.trim();
+    if (!note) return;
+    const savedAnnotation = { ...editing, note };
     const store = useCommentDraftStore.getState();
-    if (editingExisting) store.updateAnnotation(draftKey, editing.id, editing.note);
-    else if (!store.addAnnotation(draftKey, editing)) {
+    if (editingExisting) store.updateAnnotation(draftKey, editing.id, note);
+    else if (!store.addAnnotation(draftKey, savedAnnotation)) {
       setError(true);
       return;
     }
@@ -264,22 +271,34 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, edi
       })}
       {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
-          {editing ? <div className="flex w-80 max-w-[calc(100vw-26px)] flex-col gap-1"><textarea ref={inputRef} value={editing.note} rows={Math.min(4, Math.max(1, editing.note.split("\n").length))}
-            aria-label={t(($) => $.reply.annotations.note_label)}
-            placeholder={t(($) => $.reply.annotations.note_placeholder)}
-            className="min-h-8 max-h-[calc(4lh+0.75rem)] w-full min-w-0 resize-none field-sizing-content rounded-sm bg-transparent px-2 py-1.5 text-body outline-none placeholder:text-muted-foreground"
-            onChange={(event) => {
-              setEditor({ annotation: { ...editing, note: event.target.value }, existing: editingExisting });
-              setError(false);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !isImeComposing(event) &&
-                !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
-                event.preventDefault(); event.stopPropagation(); confirmNote();
-              } else if (event.key === "Escape" && !isImeComposing(event)) {
-                event.preventDefault(); event.stopPropagation(); close(true);
-              }
-            }} />
+          {editing ? <div className="flex w-80 max-w-[calc(100vw-26px)] flex-col gap-1">
+            <div
+              className="max-h-[calc(4lh+0.75rem)] min-h-8 overflow-y-auto px-2 py-1.5"
+              aria-label={t(($) => $.reply.annotations.note_label)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.defaultPrevented && !isImeComposing(event) &&
+                  !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+                  event.preventDefault(); event.stopPropagation(); confirmNote();
+                } else if (event.key === "Escape" && !isImeComposing(event)) {
+                  event.preventDefault(); event.stopPropagation(); close(true);
+                }
+              }}
+            >
+              <ContentEditor
+                key={editing.id}
+                ref={noteEditorRef}
+                defaultValue={editing.note}
+                ariaLabel={t(($) => $.reply.annotations.note_label)}
+                placeholder={t(($) => $.reply.annotations.note_placeholder)}
+                onUpdate={(markdown) => {
+                  setEditor({ annotation: { ...editing, note: markdown }, existing: editingExisting });
+                  setError(false);
+                }}
+                onSubmit={confirmNote}
+                showBubbleMenu={false}
+                debounceMs={0}
+              />
+            </div>
             <div className="flex items-center justify-end gap-1 px-1 pb-1">
               {editingExisting && <Button variant="ghost" size="icon-sm" className="mr-auto text-muted-foreground hover:text-destructive"
                 aria-label={t(($) => $.reply.annotations.remove, { number: annotations.findIndex((a) => a.id === editing.id) + 1 })}

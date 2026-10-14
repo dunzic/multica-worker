@@ -55,6 +55,7 @@ export type UploadResult = Attachment & {
 };
 
 export interface UploadContext {
+  topicId?: string;
   issueId?: string;
   commentId?: string;
   chatSessionId?: string;
@@ -125,6 +126,7 @@ export function useFileUpload(
           issueId: ctx?.issueId,
           commentId: ctx?.commentId,
           chatSessionId: ctx?.chatSessionId,
+          topicId: ctx?.topicId,
         });
         return toUploadResult(att);
       } finally {

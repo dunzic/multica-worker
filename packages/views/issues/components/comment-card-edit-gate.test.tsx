@@ -78,6 +78,7 @@ vi.mock("../../editor", async () => ({
       onUploadingChange,
       onSubmit,
       placeholder,
+      ariaLabel,
     }: {
       defaultValue?: string;
       onUpdate?: (markdown: string) => void;
@@ -85,6 +86,7 @@ vi.mock("../../editor", async () => ({
       onUploadingChange?: (uploading: boolean) => void;
       onSubmit?: () => void;
       placeholder?: string;
+      ariaLabel?: string;
     },
     ref: Ref<unknown>,
   ) {
@@ -135,6 +137,7 @@ vi.mock("../../editor", async () => ({
       <textarea
         ref={textareaRef}
         data-testid="editor"
+        aria-label={ariaLabel}
         defaultValue={defaultValue}
         placeholder={placeholder}
         onChange={(e) => {

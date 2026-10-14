@@ -10,6 +10,29 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
+func TestGetConfigAttachmentAPIOrigin(t *testing.T) {
+	// The daemon endpoint is not necessarily the attachment endpoint.
+	t.Setenv("MULTICA_DAEMON_SERVER_URL", "https://daemon.example.test")
+	for _, tc := range []struct{ raw, want string }{
+		{"https://api.example.test/path/", "https://api.example.test"},
+		{"http://localhost:18469", "http://localhost:18469"},
+		{"https://user:password@api.example.test", ""},
+		{"javascript:alert(1)", ""},
+		{"//api.example.test", ""},
+		{"", ""},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			h := *testHandler
+			h.cfg.PublicURL = tc.raw
+			var config AppConfig
+			testutil.Call(t, h.GetConfig, newRequest("GET", "/api/config", nil)).Want(http.StatusOK).JSON(&config)
+			if config.AttachmentAPIOrigin != tc.want {
+				t.Fatalf("origin = %q, want %q", config.AttachmentAPIOrigin, tc.want)
+			}
+		})
+	}
+}
+
 func TestGetConfigReportsCdnSignedMode(t *testing.T) {
 	origStorage := testHandler.Storage
 	origSigner := testHandler.CFSigner

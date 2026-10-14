@@ -1,4 +1,6 @@
 import type { ZodType } from "zod";
+import type { Conversation, Topic, MessageV2, Principal, SendMessageV2Response } from "../types/chat-v2";
+import { ConversationSchema, TopicSchema, ParticipantSchema, ConversationListSchema, TopicListSchema, MessageListSchema, SendMessageSchema, TopicRunListSchema, type TopicRun } from "../chat-v2/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters } from "../types/issue-wakeup";
 import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema } from "./schemas";
@@ -282,6 +284,8 @@ import {
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  AttachmentPreviewLocationSchema,
+  type AttachmentPreviewLocation,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
@@ -703,6 +707,15 @@ export class PreviewUnsupportedError extends Error {
   }
 }
 
+export type OfficePreviewFailure = "not-configured" | "too-large" | "unsupported" | "invalid" | "busy" | "timeout" | "unavailable";
+
+export class OfficePreviewError extends Error {
+  constructor(public readonly reason: OfficePreviewFailure) {
+    super(`Office preview: ${reason}`);
+    this.name = "OfficePreviewError";
+  }
+}
+
 function remapSkillImportError(err: unknown): unknown {
   if (!(err instanceof ApiError) || !err.body || typeof err.body !== "object") {
     return err;
@@ -808,6 +821,48 @@ function isReplayableBody(body: BodyInit | null | undefined): boolean {
 }
 
 export class ApiClient {
+  async listConversationsV2(): Promise<Conversation[]> {
+    return parseWithFallback(await this.fetch<unknown>("/api/v2/conversations"), ConversationListSchema, [] as Conversation[], { endpoint: "listConversationsV2" });
+  }
+  async updateConversationV2(id: string, title: string): Promise<Conversation> {
+    const result = parseWithFallback<Conversation | null>(await this.fetch<unknown>(`/api/v2/conversations/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }), ConversationSchema, null, { endpoint: "updateConversationV2" });
+    if (!result) throw new Error("Invalid conversation response");
+    return result;
+  }
+  async leaveConversationV2(id: string): Promise<void> {
+    await this.fetch(`/api/v2/conversations/${id}`, { method: "DELETE" });
+  }
+  async addConversationParticipantV2(id: string, principal: Principal, role = "member"): Promise<void> {
+    const result = parseWithFallback(await this.fetch<unknown>(`/api/v2/conversations/${id}/participants`, { method: "POST", body: JSON.stringify({ ...principal, role }) }), ParticipantSchema, null, { endpoint: "addConversationParticipantV2" });
+    if (!result) throw new Error("Invalid participant response");
+  }
+  async removeConversationParticipantV2(id: string, principal: Principal): Promise<void> {
+    await this.fetch(`/api/v2/conversations/${id}/participants/${principal.type}/${principal.id}`, { method: "DELETE" });
+  }
+  async createConversationV2(data: { kind: "group" | "dm"; title?: string; participants: Principal[] }): Promise<Conversation> {
+    const result = parseWithFallback<Conversation | null>(await this.fetch<unknown>("/api/v2/conversations", { method: "POST", body: JSON.stringify(data) }), ConversationSchema, null, { endpoint: "createConversationV2" });
+    if (!result) throw new Error("Invalid conversation response");
+    return result;
+  }
+  async listTopicsV2(id: string): Promise<Topic[]> {
+    return parseWithFallback(await this.fetch<unknown>(`/api/v2/conversations/${id}/topics`), TopicListSchema, [] as Topic[], { endpoint: "listTopicsV2" });
+  }
+  async listTopicRunsV2(id: string): Promise<TopicRun[]> {
+    return parseWithFallback<TopicRun[]>(await this.fetch<unknown>(`/api/v2/topics/${id}/runs`), TopicRunListSchema, [], { endpoint: "listTopicRunsV2" });
+  }
+  async createTopicV2(id: string, title: string): Promise<Topic> {
+    const result = parseWithFallback<Topic | null>(await this.fetch<unknown>(`/api/v2/conversations/${id}/topics`, { method: "POST", body: JSON.stringify({ title }) }), TopicSchema, null, { endpoint: "createTopicV2" });
+    if (!result) throw new Error("Invalid topic response");
+    return result;
+  }
+  async listTopicMessagesV2(id: string): Promise<MessageV2[]> {
+    return parseWithFallback(await this.fetch<unknown>(`/api/v2/topics/${id}/messages`), MessageListSchema, [] as MessageV2[], { endpoint: "listTopicMessagesV2" });
+  }
+  async sendTopicMessageV2(id: string, content: string, attachmentIds?: string[]): Promise<SendMessageV2Response> {
+    const result = parseWithFallback<SendMessageV2Response | null>(await this.fetch<unknown>(`/api/v2/topics/${id}/messages`, { method: "POST", body: JSON.stringify({ content, attachment_ids: attachmentIds }) }), SendMessageSchema, null, { endpoint: "sendTopicMessageV2" });
+    if (!result) throw new Error("Invalid message response");
+    return result;
+  }
   private baseUrl: string;
   private token: string | null = null;
   private logger: Logger;
@@ -4048,7 +4103,7 @@ export class ApiClient {
   // File Upload & Attachments
   async uploadFile(
     file: File,
-    opts?: { issueId?: string; commentId?: string; chatSessionId?: string },
+    opts?: { issueId?: string; commentId?: string; chatSessionId?: string; topicId?: string },
     // Optional abort signal so a module-level upload coordinator (MUL-5181)
     // can cancel an in-flight upload on logout. When aborted, `fetch` rejects
     // with an AbortError, which the coordinator distinguishes from a real
@@ -4057,6 +4112,7 @@ export class ApiClient {
   ): Promise<Attachment> {
     const formData = new FormData();
     formData.append("file", file);
+    if (opts?.topicId) formData.append("topic_id", opts.topicId);
     if (opts?.issueId) formData.append("issue_id", opts.issueId);
     if (opts?.commentId) formData.append("comment_id", opts.commentId);
     if (opts?.chatSessionId) formData.append("chat_session_id", opts.chatSessionId);
@@ -4377,12 +4433,20 @@ export class ApiClient {
     return this.fetch(`/api/issues/${issueId}/attachments`);
   }
 
+  // Resolve copied links without treating the current workspace as the owner.
+  async resolveAttachmentPreview(id: string, signal?: AbortSignal): Promise<AttachmentPreviewLocation | null> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${encodeURIComponent(id)}/preview-location`, { signal });
+    return parseWithFallback<AttachmentPreviewLocation | null>(raw, AttachmentPreviewLocationSchema, null, {
+      endpoint: "GET /api/attachments/{id}/preview-location",
+    });
+  }
+
   // Fetches a fresh attachment metadata record. The server re-signs
   // `download_url` on every call (30 min expiry), so the click-time
   // download flow uses this endpoint to avoid handing the user a stale
   // signed URL cached in TanStack Query.
-  async getAttachment(id: string): Promise<Attachment> {
-    const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
+  async getAttachment(id: string, signal?: AbortSignal): Promise<Attachment> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}`, { signal });
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
     });
@@ -4454,6 +4518,32 @@ export class ApiClient {
   async getAttachmentBlob(id: string): Promise<Blob> {
     const res = await this.fetchRaw(`/api/attachments/${id}/download`);
     return res.blob();
+  }
+
+  /** Authenticated Office-to-PDF response. The original download is unchanged. */
+  async getAttachmentOfficePreview(id: string, signal?: AbortSignal): Promise<Blob> {
+    let res: Response;
+    try {
+      res = await this.fetchRaw(`/api/attachments/${encodeURIComponent(id)}/office-preview`, { signal });
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (errorCode(err) === "office_preview_not_configured") throw new OfficePreviewError("not-configured");
+        const failures: Partial<Record<number, OfficePreviewFailure>> = {
+          413: "too-large", 415: "unsupported", 422: "invalid",
+          502: "unavailable", 503: "busy", 504: "timeout",
+        };
+        const reason = failures[err.status];
+        if (reason) throw new OfficePreviewError(reason);
+      }
+      throw err;
+    }
+    if (res.headers.get("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/pdf") {
+      throw new OfficePreviewError("invalid");
+    }
+    const blob = await res.blob();
+    if (blob.size > 40 * 1024 * 1024) throw new OfficePreviewError("too-large");
+    if (await blob.slice(0, 5).text() !== "%PDF-") throw new OfficePreviewError("invalid");
+    return blob;
   }
 
   // Projects

@@ -17,6 +17,7 @@ func (r CreateAttachmentRow) Attachment() Attachment {
 		CreatedAt:     r.CreatedAt,
 		ChatSessionID: r.ChatSessionID,
 		ChatMessageID: r.ChatMessageID,
+		TopicID:       r.TopicID,
 		TaskID:        r.TaskID,
 	}
 }

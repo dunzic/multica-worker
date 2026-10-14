@@ -42,7 +42,6 @@ import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceSlug } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
-import { api } from "@multica/core/api";
 import type { Attachment } from "@multica/core/types";
 import { attachmentIdFromDownloadURL } from "@multica/core/types";
 import {
@@ -60,10 +59,12 @@ import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
+import { useAttachmentApiOrigins } from "../editor/hooks/use-attachment-api-origins";
 import {
   openLink,
   isMentionHref,
   parseWorkspaceEntityLink,
+  toAttachmentPreviewPath,
   type WorkspaceEntityRef,
 } from "../editor/utils/link-handler";
 import { preprocessMarkdown } from "../editor/utils/preprocess";
@@ -211,12 +212,14 @@ function unfurlableEntityLink(
 
 function ownAttachmentDownloadId(
   href: string,
-  appOrigin: string | null,
-  attachmentPublicUrl: string,
+  attachmentOrigins: readonly string[],
 ): string | undefined {
   const id = attachmentIdFromDownloadURL(href);
   if (!id) return undefined;
-  if (href.startsWith("/") && !href.startsWith("//")) return id;
+  // Relative and app/API-origin links go through the authenticated preview
+  // route. The download hook is reserved for durable absolute links pinned to
+  // this deployment's configured public API origin.
+  if (href.startsWith("/") && !href.startsWith("//")) return undefined;
 
   // The path and UUID alone do not establish which deployment owns a link.
   // PublicURL can differ from both the web app origin and the browser's
@@ -224,7 +227,7 @@ function ownAttachmentDownloadId(
   try {
     const target = new URL(href);
     if (target.username || target.password) return undefined;
-    const ownOrigins = [appOrigin, api.getBaseUrl?.(), attachmentPublicUrl];
+    const ownOrigins = attachmentOrigins;
     return ownOrigins.some((base) => {
       if (!base) return false;
       try {
@@ -243,6 +246,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   const appOrigin = useAppOrigin();
   const attachmentPublicUrl = useConfigStore((s) => s.attachmentPublicUrl);
   const downloadAttachment = useDownloadAttachment("markdown-link");
+  const apiOrigins = useAttachmentApiOrigins();
   // Platform probe only: `openInNewTab` present means desktop, where native
   // anchor behavior is a dead end and every click must be intercepted. Absent
   // (web), modified clicks are left to the browser — the only way to get a
@@ -267,7 +271,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   // Also require this deployment's origin; another Multica instance may use
   // the same path shape with unrelated attachment IDs.
   const attachmentId = href
-    ? ownAttachmentDownloadId(href, appOrigin, attachmentPublicUrl)
+    ? ownAttachmentDownloadId(href, [attachmentPublicUrl])
     : undefined;
 
   if (isMentionHref(href)) {
@@ -298,7 +302,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   // URL cannot be resolved.
   const plainLink = (
     <a
-      href={href}
+      href={href ? toAttachmentPreviewPath(href, slug, appOrigin, apiOrigins) ?? href : undefined}
       onClick={(e) => {
         if (!href) {
           e.preventDefault();
@@ -320,7 +324,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
         }
         if (!desktopTabs && (e.metaKey || e.ctrlKey || e.shiftKey)) return;
         e.preventDefault();
-        openLink(href, slug, appOrigin, resolveClickIntent(e));
+        openLink(href, slug, appOrigin, resolveClickIntent(e), apiOrigins);
       }}
       onAuxClick={(e) => {
         if (e.button !== 1 || !href) return;
@@ -329,7 +333,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
         // (denied, then dropped by the http/https allowlist), so route it.
         if (!desktopTabs) return;
         e.preventDefault();
-        openLink(href, slug, appOrigin, "background-tab");
+        openLink(href, slug, appOrigin, "background-tab", apiOrigins);
       }}
     >
       {children}

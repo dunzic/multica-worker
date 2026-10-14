@@ -197,6 +197,10 @@ func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) 
 		s := uuidToString(a.ChatMessageID)
 		resp.ChatMessageID = &s
 	}
+	if a.TopicID.Valid {
+		resp.URL = util.AttachmentDownloadPath(id)
+		resp.DownloadURL = util.AttachmentDownloadPath(id)
+	}
 	return resp
 }
 
@@ -237,7 +241,7 @@ func (h *Handler) buildMarkdownURL(a db.Attachment, id string) string {
 	relPath := util.AttachmentDownloadPath(id)
 	publicURL := strings.TrimRight(h.cfg.PublicURL, "/")
 
-	if h.storageURLIsPubliclyReadable(a.Url) {
+	if !a.TopicID.Valid && h.storageURLIsPubliclyReadable(a.Url) {
 		return a.Url
 	}
 
@@ -463,6 +467,21 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			SizeBytes:    int64(len(data)),
 		}
 
+		if topicID := r.FormValue("topic_id"); topicID != "" {
+			tid, ok := parseUUIDOrBadRequest(w, topicID, "topic_id")
+			if !ok {
+				return
+			}
+			topic, err := h.Queries.GetTopic(r.Context(), tid)
+			if err != nil {
+				writeError(w, http.StatusNotFound, "topic not found")
+				return
+			}
+			if _, ok := h.requireActiveMember(w, r, topic.ConversationID, userID); !ok {
+				return
+			}
+			params.TopicID = tid
+		}
 		if issueID := r.FormValue("issue_id"); issueID != "" {
 			issueUUID, ok := parseUUIDOrBadRequest(w, issueID, "issue_id")
 			if !ok {
@@ -547,16 +566,23 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusForbidden, "task_id upload requires the task's own agent")
 				return
 			}
-			if !task.ChatSessionID.Valid {
+			if !task.ChatSessionID.Valid && !task.TopicID.Valid {
 				writeError(w, http.StatusBadRequest, "task_id upload requires a chat task")
 				return
 			}
 			params.TaskID = task.ID
+			params.TopicID = task.TopicID
 			// Bind the session too so reads (groupChatMessageAttachments) and
 			// GC classify the row consistently before it gains a message id.
 			params.ChatSessionID = task.ChatSessionID
 		}
 
+		if params.TopicID.Valid {
+			if _, local := h.Storage.(*storage.LocalStorage); !local && h.storageURLIsPubliclyReadable(h.Storage.ObjectURL(key)) {
+				writeError(w, http.StatusServiceUnavailable, "group files require private storage or signed CDN access")
+				return
+			}
+		}
 		link, err := h.Storage.Upload(r.Context(), key, data, contentType, header.Filename)
 		if err != nil {
 			slog.Error("file upload failed", "error", err)
@@ -587,6 +613,12 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			slog.Error("failed to create attachment record", "error", err)
+			if params.TopicID.Valid {
+				// Do not return a raw object URL when the access-control row failed.
+				h.Storage.Delete(r.Context(), key)
+				writeError(w, http.StatusInternalServerError, "failed to save group attachment; retry upload")
+				return
+			}
 			// S3 upload succeeded but DB record failed — still return the link
 			// so the file is usable. Log the error for investigation.
 		} else {
@@ -717,6 +749,7 @@ func (h *Handler) writeSignedAttachmentMetadata(w http.ResponseWriter, r *http.R
 		// panicking — the field is left empty and the client falls back to
 		// download_url, the same graceful degrade attachmentToResponse uses.
 		if h.CFSigner != nil {
+			resp.DownloadURL = h.CFSigner.SignedURL(att.Url, time.Now().Add(h.attachmentDownloadURLTTL()))
 			resp.AttachmentDownloadURL = h.CFSigner.SignedURLWithContentDisposition(
 				att.Url,
 				storage.AttachmentContentDisposition(att.Filename),
@@ -789,6 +822,9 @@ func (h *Handler) loadAttachmentForRequest(w http.ResponseWriter, r *http.Reques
 		return db.Attachment{}, false
 	}
 
+	if !h.authorizeTopicAttachment(w, r, att) {
+		return db.Attachment{}, false
+	}
 	return att, true
 }
 
@@ -836,6 +872,9 @@ func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Reque
 		return db.Attachment{}, false
 	}
 	if h.MembershipCache.Get(r.Context(), userID, workspaceID) {
+		if !h.authorizeTopicAttachment(w, r, att) {
+			return db.Attachment{}, false
+		}
 		return att, true
 	}
 	if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
@@ -843,6 +882,9 @@ func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Reque
 		return db.Attachment{}, false
 	}
 	h.MembershipCache.Set(r.Context(), userID, workspaceID)
+	if !h.authorizeTopicAttachment(w, r, att) {
+		return db.Attachment{}, false
+	}
 	return att, true
 }
 
@@ -983,6 +1025,22 @@ func (h *Handler) ServeLocalUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setAttachmentPreviewSecurityHeaders(w)
 	key := strings.TrimPrefix(r.URL.Path, "/uploads/")
+	// Check the same object identity that ServeFile will open. Reject aliases
+	// before the ACL lookup; filesystem cleaning must not turn an unchecked URL
+	// (for example a repeated slash) into a private topic attachment.
+	if key == "" || path.Clean(key) != key || strings.HasPrefix(key, "/") || strings.Contains(key, "\\") {
+		http.NotFound(w, r)
+		return
+	}
+	if h.Queries != nil {
+		if _, err := h.Queries.GetTopicAttachmentByStorageURL(r.Context(), local.ObjectURL(key)); err == nil {
+			http.NotFound(w, r)
+			return
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+	}
 	local.ServeFile(w, r, key)
 }
 
@@ -1305,7 +1363,7 @@ func (h *Handler) GetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	}
 	attachmentID := uuidToString(att.ID)
 
-	if !isTextPreviewable(att.ContentType, att.Filename) {
+	if !isTextPreviewable(att.ContentType, att.Filename) && !isDocxPreviewable(att.ContentType, att.Filename) {
 		writeError(w, http.StatusUnsupportedMediaType, "preview not supported for this file type")
 		return
 	}
@@ -1334,6 +1392,13 @@ func (h *Handler) GetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	if len(body) > maxPreviewTextSize {
 		writeError(w, http.StatusRequestEntityTooLarge, "file too large for inline preview")
 		return
+	}
+	if isDocxPreviewable(att.ContentType, att.Filename) {
+		body, err = docxPreviewText(body)
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, "cannot preview this Word document")
+			return
+		}
 	}
 
 	// Always reply as text/plain so a hostile HTML payload can't be

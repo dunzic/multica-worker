@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import { renderWithI18n } from "../../test/i18n";
 import { ReplyAnnotations } from "./reply-annotations";
@@ -10,7 +11,11 @@ const annotation = { id: "one", sourceCommentId: "source", sourceActorName: "Ema
 
 function Fixture({ onEdit = () => true }: { onEdit?: (id: string) => boolean }) {
   const annotations = useCommentDraftStore((s) => s.getAnnotations(draftKey));
-  return annotations.length ? <ReplyAnnotations draftKey={draftKey} annotations={annotations} disabled={false} onEditAnnotation={onEdit} /> : null;
+  if (!annotations.length) return null;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return <QueryClientProvider client={client}>
+    <ReplyAnnotations draftKey={draftKey} annotations={annotations} disabled={false} onEditAnnotation={onEdit} />
+  </QueryClientProvider>;
 }
 
 beforeEach(() => {

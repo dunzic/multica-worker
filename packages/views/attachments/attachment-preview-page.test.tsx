@@ -14,13 +14,22 @@ import { withLocationBridge } from "../editor/utils/iframe-location-bridge";
 
 const htmlText = "<html><body><h1>Report</h1></body></html>";
 
-const { getAttachmentMock, getAttachmentTextContentMock } = vi.hoisted(() => ({
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+
+const { getAttachmentMock, getAttachmentTextContentMock, resolvePreviewMock, replaceMock } = vi.hoisted(() => ({
   getAttachmentMock: vi.fn(),
   getAttachmentTextContentMock: vi.fn(),
+  resolvePreviewMock: vi.fn(),
+  replaceMock: vi.fn(),
+}));
+
+vi.mock("../navigation", () => ({
+  useNavigation: () => ({ replace: replaceMock }),
 }));
 
 vi.mock("@multica/core/api", () => ({
   api: {
+    resolveAttachmentPreview: resolvePreviewMock,
     getAttachment: getAttachmentMock,
     getAttachmentTextContent: getAttachmentTextContentMock,
     getBaseUrl: () => "",
@@ -75,6 +84,8 @@ function renderPage(ui: ReactElement) {
 }
 
 beforeEach(() => {
+  replaceMock.mockReset();
+  resolvePreviewMock.mockReset().mockResolvedValue({ workspaceId: "ws-1", workspaceSlug: "test" });
   getAttachmentMock.mockReset();
   getAttachmentTextContentMock.mockReset();
   getAttachmentMock.mockResolvedValue(makeAttachment({}));
@@ -85,6 +96,33 @@ beforeEach(() => {
 });
 
 describe("AttachmentPreviewPage", () => {
+  it("resolves the owning workspace before fetching any metadata or content", async () => {
+    resolvePreviewMock.mockResolvedValue({ workspaceId: "ws-source", workspaceSlug: "source" });
+    renderPage(<AttachmentPreviewPage attachmentId="att-1" filename="report.html" initialAddress="?s=ia#chapter" />);
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith(
+      "/source/attachments/att-1/preview?name=report.html&loc=%3Fs%3Dia%23chapter",
+    ));
+    expect(getAttachmentMock).not.toHaveBeenCalled();
+    expect(getAttachmentTextContentMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["denied", "malformed"])("fails closed when ownership cannot be resolved: %s", async (reason) => {
+    if (reason === "denied") resolvePreviewMock.mockRejectedValue(new Error("404"));
+    else resolvePreviewMock.mockResolvedValue(null);
+    renderPage(<AttachmentPreviewPage attachmentId="att-1" />);
+    expect(await screen.findByTestId("attachment-preview-page-error")).toBeTruthy();
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(getAttachmentMock).not.toHaveBeenCalled();
+    expect(getAttachmentTextContentMock).not.toHaveBeenCalled();
+  });
+
+  it("does not fetch a file while its location is pending", () => {
+    resolvePreviewMock.mockReturnValue(new Promise(() => {}));
+    renderPage(<AttachmentPreviewPage attachmentId="att-1" />);
+    expect(screen.getByText("Loading preview…")).toBeTruthy();
+    expect(getAttachmentMock).not.toHaveBeenCalled();
+  });
+
   it("shows the viewer's bar and stage — without a close button, since the tab is the frame", async () => {
     renderPage(<AttachmentPreviewPage attachmentId="att-1" filename="report.html" />);
 

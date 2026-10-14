@@ -15,6 +15,7 @@ func TestClassifyTask(t *testing.T) {
 		want taskKind
 	}{
 		{"chat", TaskContextForEnv{ChatSessionID: "c"}, kindChat},
+		{"group-topic", TaskContextForEnv{TopicID: "t"}, kindChat},
 		{"quick-create", TaskContextForEnv{QuickCreatePrompt: "p"}, kindQuickCreate},
 		{"autopilot", TaskContextForEnv{AutopilotRunID: "r"}, kindAutopilotRunOnly},
 		{"issue-comment-triggered", TaskContextForEnv{IssueID: "i", TriggerCommentID: "c"}, kindIssue},

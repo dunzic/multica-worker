@@ -134,6 +134,9 @@ func localWorktreeConversation(params PrepareParams) (key, id string) {
 	if params.Task.ChatSessionID != "" {
 		return "chat-" + taskKey(params.Task.ChatSessionID), params.Task.ChatSessionID
 	}
+	if params.Task.TopicID != "" {
+		return "topic-" + taskKey(params.Task.TopicID), "topic:" + params.Task.TopicID
+	}
 	return "", ""
 }
 

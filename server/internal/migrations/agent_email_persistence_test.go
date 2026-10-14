@@ -11,7 +11,7 @@ import (
 
 func TestAgentEmailPersistenceMigrationHasServerSideGates(t *testing.T) {
 	root := realMigrationsDir(t)
-	shapeBytes, err := os.ReadFile(filepath.Join(root, "442_agent_email_persistence.up.sql"))
+	shapeBytes, err := os.ReadFile(filepath.Join(root, "585_agent_email_persistence.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,10 +53,10 @@ func TestAgentEmailPersistenceMigrationHasServerSideGates(t *testing.T) {
 func TestAgentEmailIndexesAreConcurrentSingleStatementMigrations(t *testing.T) {
 	root := realMigrationsDir(t)
 	indexMigrations := make([]int, 0, 22)
-	for number := 443; number <= 460; number++ {
+	for number := 586; number <= 603; number++ {
 		indexMigrations = append(indexMigrations, number)
 	}
-	indexMigrations = append(indexMigrations, 462, 463, 464, 465)
+	indexMigrations = append(indexMigrations, 605, 606, 607, 608)
 	for _, number := range indexMigrations {
 		matches, err := filepath.Glob(filepath.Join(root, migrationNumberPattern(number)+"*.up.sql"))
 		if err != nil {
@@ -78,7 +78,7 @@ func TestAgentEmailIndexesAreConcurrentSingleStatementMigrations(t *testing.T) {
 
 func TestAgentEmailTaskAuthorizationSnapshotIsCapturedAtEnqueue(t *testing.T) {
 	root := realMigrationsDir(t)
-	body, err := os.ReadFile(filepath.Join(root, "461_agent_email_task_authorization_snapshot.up.sql"))
+	body, err := os.ReadFile(filepath.Join(root, "604_agent_email_task_authorization_snapshot.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,14 +95,14 @@ func TestAgentEmailTaskAuthorizationSnapshotIsCapturedAtEnqueue(t *testing.T) {
 			t.Fatalf("task authorization snapshot migration is missing %q", required)
 		}
 	}
-	validation, err := os.ReadFile(filepath.Join(root, "466_validate_agent_email_task_snapshot_shape.up.sql"))
+	validation, err := os.ReadFile(filepath.Join(root, "609_validate_agent_email_task_snapshot_shape.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(validation), "VALIDATE CONSTRAINT agent_task_email_authorization_snapshot_shape") {
 		t.Fatal("task authorization snapshot shape must be validated in its own low-lock migration")
 	}
-	disable, err := os.ReadFile(filepath.Join(root, "467_disable_legacy_agent_email_task_snapshot_trigger.up.sql"))
+	disable, err := os.ReadFile(filepath.Join(root, "610_disable_legacy_agent_email_task_snapshot_trigger.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
