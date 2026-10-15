@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -1566,6 +1568,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	// WebSocket
 	mc := &membershipChecker{queries: queries}
+	hub.SetMembershipChecker(mc)
 	pr := &patResolver{queries: queries, cache: patCache}
 	slugResolver := realtime.SlugResolver(func(ctx context.Context, slug string) (string, error) {
 		ws, err := queries.GetWorkspaceBySlug(ctx, slug)
@@ -1578,12 +1581,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		realtime.HandleWebSocket(hub, mc, pr, slugResolver, w, r)
 	})
 
-	// Local file serving (when using local storage). Served through the
-	// handler so /uploads/* carries the same preview security headers as the
-	// /api/attachments download endpoint; self-hosted split-origin/same-origin
-	// clients can then iframe-preview PDFs/HTML fetched straight from the
-	// static route instead of hitting the global frame-ancestors 'none' CSP.
-	// See MUL-3821 / #4477.
+	// Public local assets only. Protected workspace attachments must go through
+	// the authenticated or revocable-capability download routes.
 	if _, ok := store.(*storage.LocalStorage); ok {
 		r.Get("/uploads/*", h.ServeLocalUpload)
 	}
@@ -1592,11 +1591,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// necessity: a native download (Electron's webContents.downloadURL, a
 	// cross-site webview <img>) carries neither Authorization nor a session
 	// cookie, so there is nothing here for middleware.Auth to read. The
-	// short-lived, single-attachment signature in the query is the credential,
+	// short-lived, user-bound attachment signature in the query is the credential,
 	// and it is only ever minted by the AUTHENTICATED GET
 	// /api/attachments/{id} after that request's membership check passed.
-	// The authenticated /api/attachments/{id}/download route below is
-	// unchanged — this one is purely additive.
+	// Redemption rechecks the signed user's membership without a cache and
+	// streams the object in every storage mode, never redirecting to a CDN URL.
+	// The authenticated /api/attachments/{id}/download route below applies the
+	// same permission gate and streams bytes without a storage redirect.
 	r.Get("/api/attachments/{id}/signed-download", h.DownloadAttachmentWithCapability)
 
 	// Avatar serving. Public for the same reason as the capability download
@@ -1761,7 +1762,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner))
-		r.Use(middleware.RefreshCloudFrontCookies(cfSigner))
+		r.Use(middleware.ExpireCloudFrontCookies(cfSigner))
 
 		// Plugin Action API. Called by the HOST PAGE on the signed-in user's
 		// session after a surface asks for something over the postMessage
@@ -2725,12 +2726,65 @@ type membershipChecker struct {
 	queries *db.Queries
 }
 
-func (mc *membershipChecker) IsMember(ctx context.Context, userID, workspaceID string) bool {
+func (mc *membershipChecker) IsMember(ctx context.Context, userID, workspaceID string) (bool, error) {
 	_, err := mc.queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      parseUUID(userID),
 		WorkspaceID: parseUUID(workspaceID),
 	})
-	return err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (mc *membershipChecker) Members(ctx context.Context, identities []realtime.MembershipIdentity) (map[realtime.MembershipIdentity]bool, error) {
+	params := db.GetRealtimeMembershipsParams{}
+	for _, identity := range identities {
+		userID, err := util.ParseUUID(identity.UserID)
+		if err != nil {
+			return nil, err
+		}
+		workspaceID, err := util.ParseUUID(identity.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		params.UserIds = append(params.UserIds, userID)
+		params.WorkspaceIds = append(params.WorkspaceIds, workspaceID)
+		var conversationID pgtype.UUID
+		if identity.ConversationID != "" {
+			conversationID, err = util.ParseUUID(identity.ConversationID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		params.ConversationIds = append(params.ConversationIds, conversationID)
+		var topicID pgtype.UUID
+		if identity.TopicID != "" {
+			topicID, err = util.ParseUUID(identity.TopicID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		params.TopicIds = append(params.TopicIds, topicID)
+	}
+	rows, err := mc.queries.GetRealtimeMemberships(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	type pair struct{ workspaceID, userID, conversationID, topicID pgtype.UUID }
+	current := make(map[pair]bool, len(rows))
+	for _, row := range rows {
+		current[pair{row.WorkspaceID, row.UserID, row.ConversationID, row.TopicID}] = true
+	}
+	// Return the exact request keys, including valid UUID spellings that are
+	// different from the database's canonical lowercase rendering.
+	members := make(map[realtime.MembershipIdentity]bool, len(rows))
+	for i, identity := range identities {
+		if current[pair{params.WorkspaceIds[i], params.UserIds[i], params.ConversationIds[i], params.TopicIds[i]}] {
+			members[identity] = true
+		}
+	}
+	return members, nil
 }
 
 // patResolver implements realtime.PATResolver using database queries.

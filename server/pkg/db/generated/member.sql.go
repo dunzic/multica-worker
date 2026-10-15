@@ -86,6 +86,75 @@ func (q *Queries) GetMemberByUserAndWorkspace(ctx context.Context, arg GetMember
 	return i, err
 }
 
+const getRealtimeMemberships = `-- name: GetRealtimeMemberships :many
+SELECT m.user_id, m.workspace_id,
+       requested.conversation_id::uuid AS conversation_id,
+       requested.topic_id::uuid AS topic_id
+FROM member m
+JOIN (
+    SELECT unnest($1::uuid[]) AS user_id,
+           unnest($2::uuid[]) AS workspace_id,
+           unnest($3::uuid[]) AS conversation_id,
+           unnest($4::uuid[]) AS topic_id
+) AS requested
+    ON m.user_id = requested.user_id AND m.workspace_id = requested.workspace_id
+WHERE (requested.conversation_id IS NULL AND requested.topic_id IS NULL) OR EXISTS (
+    SELECT 1 FROM conversation c
+    JOIN conversation_participant p ON p.conversation_id = c.id
+    WHERE c.workspace_id = m.workspace_id
+      AND (requested.conversation_id IS NULL OR c.id = requested.conversation_id)
+      AND (requested.topic_id IS NULL OR EXISTS (
+          SELECT 1 FROM topic t WHERE t.id = requested.topic_id AND t.conversation_id = c.id
+      ))
+      AND p.principal_type = 'member' AND p.principal_id = m.user_id
+      AND p.left_at IS NULL
+)
+`
+
+type GetRealtimeMembershipsParams struct {
+	UserIds         []pgtype.UUID `json:"user_ids"`
+	WorkspaceIds    []pgtype.UUID `json:"workspace_ids"`
+	ConversationIds []pgtype.UUID `json:"conversation_ids"`
+	TopicIds        []pgtype.UUID `json:"topic_ids"`
+}
+
+type GetRealtimeMembershipsRow struct {
+	UserID         pgtype.UUID `json:"user_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ConversationID pgtype.UUID `json:"conversation_id"`
+	TopicID        pgtype.UUID `json:"topic_id"`
+}
+
+func (q *Queries) GetRealtimeMemberships(ctx context.Context, arg GetRealtimeMembershipsParams) ([]GetRealtimeMembershipsRow, error) {
+	rows, err := q.db.Query(ctx, getRealtimeMemberships,
+		arg.UserIds,
+		arg.WorkspaceIds,
+		arg.ConversationIds,
+		arg.TopicIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetRealtimeMembershipsRow{}
+	for rows.Next() {
+		var i GetRealtimeMembershipsRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.WorkspaceID,
+			&i.ConversationID,
+			&i.TopicID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMembers = `-- name: ListMembers :many
 SELECT id, workspace_id, user_id, role, created_at FROM member
 WHERE workspace_id = $1

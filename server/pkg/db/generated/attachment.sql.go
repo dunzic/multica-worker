@@ -11,6 +11,23 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const attachmentExistsAtStorageURL = `-- name: AttachmentExistsAtStorageURL :one
+SELECT EXISTS (
+  SELECT 1 FROM attachment
+  WHERE lower(regexp_replace(url, '^https?://[^/]+', '')) =
+        lower(regexp_replace($1::text, '^https?://[^/]+', ''))
+)
+`
+
+// Raw local paths must not bypass attachment authorization. Match the same
+// path across historical origins and case-insensitive local filesystems.
+func (q *Queries) AttachmentExistsAtStorageURL(ctx context.Context, storageUrl string) (bool, error) {
+	row := q.db.QueryRow(ctx, attachmentExistsAtStorageURL, storageUrl)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const bindChatAttachmentsToMessage = `-- name: BindChatAttachmentsToMessage :many
 UPDATE attachment
 SET chat_message_id = $1

@@ -521,7 +521,7 @@ describe("Attachment — image dispatch", () => {
     expect(getAttachmentMock).toHaveBeenCalledWith(id);
   });
 
-  it("falls back to an authenticated byte fetch when the deployment has no signed URL (MUL-5445)", async () => {
+  it.each(["stable", "capability"])("uses authenticated bytes for %s metadata URLs on token-mode clients", async (mode) => {
     // Proxy download mode — the default `auto` classification for a storage
     // endpoint on an internal host (docker-compose MinIO). GET
     // /api/attachments/{id} hands back the auth-gated API path again, so
@@ -540,7 +540,9 @@ describe("Attachment — image dispatch", () => {
     configStore.setState({ cdnDomain: "", cdnSigned: false });
     resolverState.attachments = [att];
     getAttachmentMock.mockResolvedValue(
-      makeRecord({ id, download_url: `/api/attachments/${id}/download` }),
+      makeRecord({ id, download_url: mode === "stable"
+        ? `/api/attachments/${id}/download`
+        : `/api/attachments/${id}/signed-download?uid=reader&exp=1800000060&sig=revocable` }),
     );
     const blob = new Blob(["png-bytes"], { type: "image/png" });
     getAttachmentBlobMock.mockResolvedValue(blob);

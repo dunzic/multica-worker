@@ -468,9 +468,9 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("failed to set auth cookies", "error", err)
 	}
 
-	// Set CloudFront signed cookies for CDN access.
+	// Retire broad CDN credentials; protected files use revocable API access.
 	if h.CFSigner != nil {
-		for _, cookie := range h.CFSigner.SignedCookies(time.Now().Add(auth.AuthTokenTTL())) {
+		for _, cookie := range h.CFSigner.ExpiredCookies() {
 			http.SetCookie(w, cookie)
 		}
 	}
@@ -737,7 +737,7 @@ func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.CFSigner != nil {
-		for _, cookie := range h.CFSigner.SignedCookies(time.Now().Add(72 * time.Hour)) {
+		for _, cookie := range h.CFSigner.ExpiredCookies() {
 			http.SetCookie(w, cookie)
 		}
 	}

@@ -69,6 +69,27 @@ func (q *Queries) DeleteTaskTokensByTask(ctx context.Context, taskID pgtype.UUID
 	return err
 }
 
+const getActiveTaskTokenByID = `-- name: GetActiveTaskTokenByID :one
+SELECT id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at FROM task_token
+WHERE id = $1 AND expires_at > now()
+`
+
+func (q *Queries) GetActiveTaskTokenByID(ctx context.Context, id pgtype.UUID) (TaskToken, error) {
+	row := q.db.QueryRow(ctx, getActiveTaskTokenByID, id)
+	var i TaskToken
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.TaskID,
+		&i.AgentID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getTaskTokenByHash = `-- name: GetTaskTokenByHash :one
 SELECT id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at FROM task_token
 WHERE token_hash = $1 AND expires_at > now()

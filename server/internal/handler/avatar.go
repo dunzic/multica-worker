@@ -281,7 +281,7 @@ func (h *Handler) avatarKeyIsPublishable(ctx context.Context, key string) bool {
 	if avatarContentType(key) == "" {
 		return false
 	}
-	if !strings.HasPrefix(key, workspaceUploadNamespace) {
+	if !strings.HasPrefix(strings.ToLower(key), workspaceUploadNamespace) {
 		// Outside the workspace namespace nothing can hold another user's
 		// content: UploadFile only ever writes `workspaces/…` or
 		// `users/<uploader>/…`, and the per-user branch creates no bindings.
@@ -313,7 +313,9 @@ func attachmentIsBound(att db.Attachment) bool {
 		att.CommentID.Valid ||
 		att.ChatSessionID.Valid ||
 		att.ChatMessageID.Valid ||
-		att.TaskID.Valid
+		att.TaskID.Valid ||
+		att.TopicID.Valid ||
+		att.SourceContextID.Valid
 }
 
 // attachmentIDFromStorageKey recovers the attachment id UploadFile embedded in

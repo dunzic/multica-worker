@@ -41,160 +41,105 @@ func testSigner(t *testing.T) *auth.CloudFrontSigner {
 	return signer
 }
 
-func TestRefreshCloudFrontCookies_UsesAuthTokenTTL(t *testing.T) {
-	// Set a short TTL (1 hour) so we can verify the middleware does NOT use
-	// the old hardcoded 30-day value.
-	t.Setenv("AUTH_TOKEN_TTL", "1h")
-
+func TestExpireCloudFrontCookies(t *testing.T) {
 	signer := testSigner(t)
-	handler := RefreshCloudFrontCookies(signer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	cookies := rec.Result().Cookies()
-	if len(cookies) == 0 {
-		t.Fatal("expected CloudFront cookies to be set")
-	}
-
-	for _, c := range cookies {
-		// Cookie expiry should be ~1 hour from now, not ~30 days.
-		untilExpiry := time.Until(c.Expires)
-		if untilExpiry > 2*time.Hour {
-			t.Errorf("cookie %q expires in %v; expected ~1h (AUTH_TOKEN_TTL), got what looks like 30-day hardcode", c.Name, untilExpiry)
-		}
+	for _, name := range []string{"", "CloudFront-Policy", "CloudFront-Signature", "CloudFront-Key-Pair-Id"} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if name != "" {
+				req.AddCookie(&http.Cookie{Name: name, Value: "old-broad-policy"})
+			}
+			rec := httptest.NewRecorder()
+			ExpireCloudFrontCookies(signer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatal("cleanup blocked the request")
+			}
+			if name == "" {
+				if len(rec.Result().Cookies()) != 0 {
+					t.Fatal("missing CDN cookies must not be issued")
+				}
+			} else {
+				wantExpiredCloudFrontCookies(t, rec)
+			}
+		})
 	}
 }
 
-func TestRefreshCloudFrontCookies_NilSigner(t *testing.T) {
-	handler := RefreshCloudFrontCookies(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+func TestExpireCloudFrontCookies_NilSigner(t *testing.T) {
 	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if len(rec.Result().Cookies()) != 0 {
-		t.Error("nil signer should not set any cookies")
+	ExpireCloudFrontCookies(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK || len(rec.Result().Cookies()) != 0 {
+		t.Fatal("nil signer changed the response")
 	}
 }
 
-func TestRefreshCloudFrontCookies_SkipsWhenCookiePresent(t *testing.T) {
-	signer := testSigner(t)
-	handler := RefreshCloudFrontCookies(signer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: "CloudFront-Policy", Value: "existing"})
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if len(rec.Result().Cookies()) != 0 {
-		t.Error("should not refresh cookies when CloudFront-Policy is already present")
-	}
-}
-
-// The CDN cookies are signed for the lifetime of the session that created
-// them. Once sessions slide, a renewal that did not re-sign would leave the
-// policy pinned to the original login — and a session that now never expires
-// would 403 every asset once that policy lapsed.
-func TestAuth_ReSignsCloudFrontCookiesOnRenewal(t *testing.T) {
-	signer := testSigner(t)
-
-	var served bool
-	handler := Auth(nil, nil, nil, signer)(
-		RefreshCloudFrontCookies(signer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			served = true
+// Both the normal API group and Auth-only routes can slide a session. Neither
+// may mint another deployment-wide CDN credential or duplicate cleanup headers.
+func TestAuth_ExpiresCloudFrontCookiesOnRenewal(t *testing.T) {
+	for _, withMiddleware := range []bool{false, true} {
+		signer := testSigner(t)
+		var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-		})),
-	)
-
-	req := cookieRequest(http.MethodGet, sessionToken(t, auth.AuthRenewThreshold()/2, "sid-cdn"))
-	// A live CloudFront policy is already present: without the renewal there
-	// would be nothing to do.
-	req.AddCookie(&http.Cookie{Name: "CloudFront-Policy", Value: "existing-policy"})
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if !served {
-		t.Fatal("request must still be served")
-	}
-	policies := cloudFrontPolicies(rec)
-	if len(policies) == 0 {
-		t.Fatal("a renewed session must re-sign the CloudFront cookies")
-	}
-	if policies[0].Value == "existing-policy" {
-		t.Error("CloudFront policy was not re-signed")
-	}
-	if !policies[0].Expires.After(time.Now().Add(auth.AuthRenewThreshold())) {
-		t.Errorf("re-signed CloudFront cookie expires at %s, which is not past the renewal threshold", policies[0].Expires)
-	}
-	// Exactly one: Auth re-signed, so RefreshCloudFrontCookies must stand down
-	// rather than put a second set on the same response.
-	if len(policies) != 1 {
-		t.Errorf("got %d CloudFront-Policy cookies, want exactly 1", len(policies))
+		})
+		if withMiddleware {
+			handler = ExpireCloudFrontCookies(signer)(handler)
+		}
+		handler = Auth(nil, nil, nil, signer)(handler)
+		req := cookieRequest(http.MethodGet, sessionToken(t, auth.AuthRenewThreshold()/2, "sid-cdn"))
+		req.AddCookie(&http.Cookie{Name: "CloudFront-Policy", Value: "old-broad-policy"})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || renewedAuthCookie(rec) == "" {
+			t.Fatal("CDN retirement must not break session renewal")
+		}
+		wantExpiredCloudFrontCookies(t, rec)
 	}
 }
 
-// Not every group that mounts Auth also mounts RefreshCloudFrontCookies — the
-// plugin bridge does not. Renewal lives in Auth, so a safe GET there can slide
-// the session forward; if the CDN sync lived in the other middleware, that
-// route would leave the policy behind and 403 assets at the original TTL.
-func TestAuth_ReSignsCloudFrontCookiesWithoutTheCDNMiddleware(t *testing.T) {
-	signer := testSigner(t)
-
-	handler := Auth(nil, nil, nil, signer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := cookieRequest(http.MethodGet, sessionToken(t, auth.AuthRenewThreshold()/2, "sid-bridge"))
-	req.AddCookie(&http.Cookie{Name: "CloudFront-Policy", Value: "existing-policy"})
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	policies := cloudFrontPolicies(rec)
-	if len(policies) != 1 || policies[0].Value == "existing-policy" {
-		t.Fatalf("a renewal on an Auth-only route must re-sign the CDN cookies, got %d cookie(s)", len(policies))
+func wantExpiredCloudFrontCookies(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	counts := map[string]int{
+		"CloudFront-Policy": 0, "CloudFront-Signature": 0, "CloudFront-Key-Pair-Id": 0,
 	}
-}
-
-// Without a renewal, an existing policy cookie is still left alone — this is
-// the pre-existing behaviour and the reason responses aren't full of
-// Set-Cookie headers.
-func TestRefreshCloudFrontCookies_LeavesLivePolicyAloneWithoutRenewal(t *testing.T) {
-	signer := testSigner(t)
-
-	handler := RefreshCloudFrontCookies(signer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: "CloudFront-Policy", Value: "existing-policy"})
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if len(rec.Result().Cookies()) != 0 {
-		t.Error("an unrenewed request with a live policy must not re-sign")
-	}
-}
-
-func cloudFrontPolicies(rec *httptest.ResponseRecorder) []*http.Cookie {
-	var out []*http.Cookie
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == "CloudFront-Policy" {
-			out = append(out, c)
+	for _, cookie := range rec.Result().Cookies() {
+		if _, ok := counts[cookie.Name]; !ok {
+			continue
+		}
+		counts[cookie.Name]++
+		if cookie.Value != "" || cookie.MaxAge >= 0 || cookie.Expires.After(time.Now()) ||
+			cookie.Domain != "example.com" || cookie.Path != "/" || !cookie.Secure || !cookie.HttpOnly {
+			t.Fatalf("legacy cookie not expired with matching scope: %+v", cookie)
 		}
 	}
-	return out
+	for name, count := range counts {
+		if count != 1 {
+			t.Fatalf("%s cleanup count=%d, want one", name, count)
+		}
+	}
+}
+
+func TestCloudFrontCookies_NoNewBroadPolicy(t *testing.T) {
+	signer := testSigner(t)
+	for _, existing := range []bool{false, true} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		if existing {
+			req.AddCookie(&http.Cookie{Name: "CloudFront-Policy", Value: "old-broad-policy"})
+		}
+		rec := httptest.NewRecorder()
+		ExpireCloudFrontCookies(signer)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rec, req)
+		for _, cookie := range rec.Result().Cookies() {
+			if cookie.Value != "" || cookie.MaxAge >= 0 || cookie.Expires.After(time.Now()) {
+				t.Fatalf("new broad CDN credential bypasses API revocation: %s", cookie.Name)
+			}
+		}
+		if existing && len(rec.Result().Cookies()) != 3 {
+			t.Fatal("existing broad credentials were not cleared")
+		}
+	}
 }

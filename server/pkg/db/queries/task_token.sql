@@ -7,6 +7,10 @@ RETURNING *;
 SELECT * FROM task_token
 WHERE token_hash = $1 AND expires_at > now();
 
+-- name: GetActiveTaskTokenByID :one
+SELECT * FROM task_token
+WHERE id = $1 AND expires_at > now();
+
 -- name: DeleteTaskTokensByTask :exec
 DELETE FROM task_token WHERE task_id = $1;
 

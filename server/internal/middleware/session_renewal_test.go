@@ -15,8 +15,7 @@ import (
 // Lifetimes are expressed as FRACTIONS of auth.AuthRenewThreshold(), never as
 // literal durations or offsets from it. AuthTokenTTL() is cached behind a
 // sync.Once for the life of the process, so whichever test in this package
-// touches it first decides the TTL every later test sees — currently
-// TestRefreshCloudFrontCookies_UsesAuthTokenTTL, which pins it to one hour.
+// touches it first decides the TTL every later test sees.
 // A fraction holds whatever that value turns out to be.
 func sessionToken(t *testing.T, remaining time.Duration, sid string) string {
 	t.Helper()

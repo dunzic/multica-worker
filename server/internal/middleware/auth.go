@@ -17,6 +17,15 @@ import (
 
 func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 
+type authenticatedTaskTokenKey struct{}
+
+// AuthenticatedTaskToken exposes only the token row verified by Auth. Callers
+// must not reconstruct this identity from client-supplied actor headers.
+func AuthenticatedTaskToken(ctx context.Context) (db.TaskToken, bool) {
+	token, ok := ctx.Value(authenticatedTaskTokenKey{}).(db.TaskToken)
+	return token, ok
+}
+
 func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userID, email, authPath string) bool {
 	if !auth.IsTemporarilyDisabledUser(userID, email) {
 		return false
@@ -43,13 +52,9 @@ func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userI
 // SELECT and the last_used_at UPDATE — last_used_at is therefore refreshed
 // at most once per TTL window per token, not per request.
 //
-// cfSigner is optional; when non-nil, a session renewed here also gets fresh
-// CloudFront cookies. It is wired into THIS middleware rather than left to
-// RefreshCloudFrontCookies because renewal is what makes the two clocks
-// diverge: every route group that can renew must re-sign, and only the
-// renewer knows it renewed. A group that mounts Auth without the CDN
-// middleware (the plugin bridge) would otherwise slide the session forward
-// while leaving the CDN policy pinned to the original login.
+// cfSigner is optional; when non-nil, session renewal expires legacy broad
+// CloudFront cookies. This also covers Auth-only routes such as the plugin
+// bridge; sliding an API session must never recreate a storage bypass.
 //
 // cloudPAT is optional; when non-nil, tokens with the mcn_ prefix are
 // validated by calling the Multica Cloud Fleet service rather than the
@@ -133,7 +138,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// this header is allowed to carry — strip anything else a
 				// client tried to send.
 				r.Header.Set("X-Actor-Source", "task_token")
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authenticatedTaskTokenKey{}, tt)))
 				return
 			}
 

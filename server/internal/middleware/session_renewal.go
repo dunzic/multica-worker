@@ -13,9 +13,8 @@ import (
 type sessionRenewedCtxKey struct{}
 
 // SessionRenewed reports whether the auth middleware re-issued this request's
-// session cookie. RefreshCloudFrontCookies reads it so the CDN cookies are
-// re-signed in lockstep with the session instead of drifting until they
-// expire on their own.
+// session cookie. ExpireCloudFrontCookies reads it to avoid duplicating the
+// legacy CDN cookie cleanup already performed by renewal.
 func SessionRenewed(r *http.Request) bool {
 	renewed, _ := r.Context().Value(sessionRenewedCtxKey{}).(bool)
 	return renewed
@@ -51,7 +50,7 @@ func renewCookieSession(w http.ResponseWriter, r *http.Request, claims jwt.MapCl
 		return r
 	}
 
-	token, expiresAt, err := auth.RenewSessionToken(claims)
+	token, _, err := auth.RenewSessionToken(claims)
 	if err != nil {
 		slog.Debug("auth: session renewal skipped", "path", r.URL.Path, "error", err)
 		return r
@@ -64,15 +63,10 @@ func renewCookieSession(w http.ResponseWriter, r *http.Request, claims jwt.MapCl
 		return r
 	}
 
-	// The CDN cookies are signed for the lifetime of the session that created
-	// them, so a renewal that did not re-sign would leave the policy pinned to
-	// the original login — and a session that now never expires would 403
-	// every image and attachment once that policy lapsed. Re-signing here,
-	// next to the renewal itself, is what keeps the two in lockstep on EVERY
-	// route group that can renew, not only the ones that also mount
-	// RefreshCloudFrontCookies.
+	// Broad CDN credentials bypass attachment permission checks. Do not extend
+	// their lifetime when the API session slides, including Auth-only routes.
 	if cfSigner != nil {
-		for _, cookie := range cfSigner.SignedCookies(expiresAt) {
+		for _, cookie := range cfSigner.ExpiredCookies() {
 			http.SetCookie(w, cookie)
 		}
 	}

@@ -70,75 +70,35 @@ type AttachmentResponse struct {
 	Filename      string  `json:"filename"`
 	URL           string  `json:"url"`
 	DownloadURL   string  `json:"download_url"`
-	// AttachmentDownloadURL is a credential-free URL that forces a
+	// AttachmentDownloadURL is a short-lived, principal-bound bearer URL forcing a
 	// Content-Disposition: attachment across every storage mode, for the
 	// download BUTTON — unlike DownloadURL, which is load-intent and keeps
 	// serving media inline so the preview path (resolvePreviewMediaUrl) can
-	// render it. Like DownloadURL it can be short-lived (a 60s proxy capability,
-	// a presigned URL) and therefore MUST NOT be persisted, and it is emitted
+	// render it. It MUST NOT be persisted, and it is emitted
 	// ONLY by the single-attachment endpoint (GetAttachmentByID), never in list
-	// responses. Empty when the server cannot mint one for the object's storage
-	// mode; clients fall back to DownloadURL. (MUL follow-up to #6092 / #6713.)
+	// responses. Every redemption rechecks workspace, group and task credentials.
 	AttachmentDownloadURL string `json:"attachment_download_url,omitempty"`
-	// MarkdownURL is the durable, absolute-when-possible URL the client
-	// SHOULD persist into markdown bodies (issue descriptions, comments,
-	// chat messages). It is computed per deployment policy by
-	// buildMarkdownURL — preferring the storage URL when it is already a
-	// public, durable absolute URL (public CDN / LocalStorage with
-	// MULTICA_LOCAL_UPLOAD_BASE_URL), and otherwise prefixing
-	// MULTICA_PUBLIC_URL onto the stable per-attachment endpoint that the
-	// server self-resigns / proxies on every request.
-	//
-	// Why a separate field from URL / DownloadURL:
-	//   - URL is the raw storage object URL — fine for avatar/logo
-	//     surfaces but may be private (S3 + CloudFront-signed mode) or
-	//     site-relative (LocalStorage with no base URL configured).
-	//   - DownloadURL is the URL the renderer uses for THIS response — it
-	//     can be a short-lived signed URL (CloudFront, S3 presign) and
-	//     therefore must NOT be persisted. It expires.
-	//   - MarkdownURL is contracted to be persistable: it never carries a
-	//     TTL, and on every supported deployment shape it is loadable as
-	//     a native browser resource fetch (no Authorization header required
-	//     beyond the cookies/credentials the client already has on the
-	//     resolved host).
-	//
-	// MUL-3192 — fixes the Desktop / mobile-webview regression where the
-	// previous site-relative `/api/attachments/<id>/download` link only
-	// resolved when the document origin proxied /api to the API host.
+	// MarkdownURL is the stable authenticated API URL to persist in descriptions,
+	// comments and messages, anchored on MULTICA_PUBLIC_URL when configured.
+	// URL also identifies the protected API resource, never the storage object.
+	// DownloadURL may contain a short-lived inline capability in single-item
+	// metadata; it must not be persisted. Native clients without session cookies
+	// fetch metadata or bytes through their authenticated API client.
 	MarkdownURL string `json:"markdown_url"`
 	ContentType string `json:"content_type"`
 	SizeBytes   int64  `json:"size_bytes"`
 	CreatedAt   string `json:"created_at"`
 }
 
-// attachmentURLMode selects how DownloadURL is rendered on a response.
-//
-// MUL-5372 / GitHub #5999. A CloudFront-signed DownloadURL is ~800 chars, of
-// which ~630 are a Policy+Signature pair that is re-minted on every request
-// (the policy embeds now+TTL at second granularity). Emitting it for every
-// attachment of every list response is expensive three times over: raw payload,
-// a fresh RSA sign per attachment per request, and — because the bytes differ on
-// each read — it defeats any cache keyed on response content. Agents pay all
-// three and use none of it: they fetch files through the single-attachment
-// endpoint, which needs only the id.
-//
-// The mode is a caller capability declaration, never a server-side default
-// flip, so a client that does not know about it is served byte-identically to
-// before. See attachmentURLModeFromRequest.
+// Existing callers may still advertise a URL mode. Both modes now emit stable
+// authenticated bulk URLs: storage signatures would outlive membership removal.
+// Single-item metadata mints revocable capabilities independently of this flag.
 type attachmentURLMode int
 
 const (
-	// attachmentURLModeSigned pre-binds authorization into DownloadURL so the
-	// caller can hand it straight to a native resource load (browser <img>,
-	// Linking.openURL) that cannot attach an Authorization header. This is the
-	// default for every caller that does not opt out.
+	// Historical default declaration; it no longer authorizes storage redirects.
 	attachmentURLModeSigned attachmentURLMode = iota
-	// attachmentURLModeStable renders DownloadURL as the stable
-	// /api/attachments/{id}/download path. That endpoint re-signs and 302s on
-	// every hit, so the value stays correct forever and costs ~95 chars instead
-	// of ~800. Callers that pick this mode must be able to follow an
-	// authenticated redirect, or fetch a fresh signature from the
-	// single-attachment endpoint before handing a URL to a native loader.
+	// Explicit stable-path declaration retained for existing API callers.
 	attachmentURLModeStable
 )
 
@@ -149,10 +109,7 @@ const (
 // the caller can process, not of the resource being requested.
 const ClientCapabilityStableAttachmentURLs = "stable_attachment_urls"
 
-// attachmentURLModeFromRequest resolves the mode a request asked for. Absent or
-// unrecognized declarations resolve to attachmentURLModeSigned, which is what
-// makes this change safe to ship ahead of any client: the server default never
-// moves, callers migrate on their own release cadence.
+// attachmentURLModeFromRequest preserves parsing of the existing capability.
 func attachmentURLModeFromRequest(r *http.Request) attachmentURLMode {
 	if r != nil && requestHasClientCapability(r, ClientCapabilityStableAttachmentURLs) {
 		return attachmentURLModeStable
@@ -160,7 +117,7 @@ func attachmentURLModeFromRequest(r *http.Request) attachmentURLMode {
 	return attachmentURLModeSigned
 }
 
-func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) AttachmentResponse {
+func (h *Handler) attachmentToResponse(a db.Attachment, _ attachmentURLMode) AttachmentResponse {
 	id := uuidToString(a.ID)
 	resp := AttachmentResponse{
 		ID:           id,
@@ -168,18 +125,19 @@ func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) 
 		UploaderType: a.UploaderType,
 		UploaderID:   uuidToString(a.UploaderID),
 		Filename:     a.Filename,
-		URL:          a.Url,
+		URL:          util.AttachmentDownloadPath(id),
 		DownloadURL:  util.AttachmentDownloadPath(id),
 		MarkdownURL:  h.buildMarkdownURL(a, id),
 		ContentType:  a.ContentType,
 		SizeBytes:    a.SizeBytes,
 		CreatedAt:    a.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
 	}
-	// Only CloudFront mode overrides the stable path here; the presign and proxy
-	// modes already leave DownloadURL as the stable path and resolve it at
-	// download time, so stable mode is a no-op for them.
-	if h.CFSigner != nil && mode != attachmentURLModeStable {
-		resp.DownloadURL = h.CFSigner.SignedURL(a.Url, time.Now().Add(h.attachmentDownloadURLTTL()))
+	// List responses never expose storage signatures or public storage URLs.
+	// Native clients obtain a fresh capability from the authenticated metadata API.
+	// Standalone image uploads also feed avatar setters, which persist the object
+	// identity. Bound files (including topic drafts) are never avatar-class.
+	if !attachmentIsBound(a) && strings.HasPrefix(strings.ToLower(a.ContentType), "image/") {
+		resp.URL = a.Url
 	}
 	if a.IssueID.Valid {
 		s := uuidToString(a.IssueID)
@@ -204,46 +162,12 @@ func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) 
 	return resp
 }
 
-// buildMarkdownURL chooses the durable URL the client persists into
-// markdown bodies. The contract is "absolute, no TTL, loadable as a native
-// browser resource fetch on every supported client" (MUL-3192).
-//
-// Decision:
-//
-//  1. Persist `a.Url` only when the deployment has signaled the storage
-//     backend serves URLs publicly without per-request auth:
-//     - `Storage.CdnDomain()` is non-empty (operator configured a
-//     public-facing base URL — `S3_CDN_DOMAIN` for the S3 backend or
-//     `LOCAL_UPLOAD_BASE_URL` for LocalStorage), AND
-//     - `h.CFSigner` is nil (no per-request CloudFront signing — when
-//     signing is on, the same CDN domain serves PRIVATE content via
-//     time-bounded signed URLs and the raw `a.Url` is unauth-deny),
-//     AND
-//     - `a.Url` is itself an absolute http(s) URL with no signature
-//     query — defends against legacy rows backfilled while baseURL
-//     was unset, and against a freshly-signed `download_url` ever
-//     leaking into `a.Url` (the original MUL-3130 bug).
-//
-//  2. Every other shape — CloudFront-signed mode, S3 presign /proxy
-//     against a private bucket without a CDN domain, raw S3 / R2 /
-//     MinIO, LocalStorage with no `LOCAL_UPLOAD_BASE_URL` — uses the
-//     stable per-attachment endpoint that the server self-signs /
-//     proxies on every request, anchored on `MULTICA_PUBLIC_URL` so the
-//     persisted URL keeps working for clients that don't share the
-//     document origin (Desktop / mobile webview).
-//
-//  3. Last-resort fallback (no `MULTICA_PUBLIC_URL` configured): emit
-//     the site-relative path. Web's Next.js rewrite handles this; non-
-//     web clients on a deployment without `PublicURL` configured were
-//     already broken before MUL-3192 and stay broken here, but we
-//     don't make them worse.
-func (h *Handler) buildMarkdownURL(a db.Attachment, id string) string {
+// Persist only stable API links. Even publicly configured storage must not
+// bypass attachment authorization. PublicURL preserves cross-origin references;
+// without it clients resolve the relative path against their API base.
+func (h *Handler) buildMarkdownURL(_ db.Attachment, id string) string {
 	relPath := util.AttachmentDownloadPath(id)
 	publicURL := strings.TrimRight(h.cfg.PublicURL, "/")
-
-	if !a.TopicID.Valid && h.storageURLIsPubliclyReadable(a.Url) {
-		return a.Url
-	}
 
 	if publicURL != "" {
 		return publicURL + relPath
@@ -251,10 +175,8 @@ func (h *Handler) buildMarkdownURL(a db.Attachment, id string) string {
 	return relPath
 }
 
-// storageURLIsPubliclyReadable returns true when the deployment has signaled
-// that `a.Url` can be loaded directly by an unauthenticated native browser
-// fetch — the only case where it is safe to persist `a.Url` into a markdown
-// body that will outlive the current session.
+// storageURLIsPubliclyReadable describes deployment policy for public assets
+// such as avatars. Protected attachments must not use it to bypass the API.
 func (h *Handler) storageURLIsPubliclyReadable(rawURL string) bool {
 	if h.Storage == nil || h.CFSigner != nil {
 		// CFSigner != nil is per-request signing; the CDN domain serves
@@ -721,78 +643,18 @@ func (h *Handler) GetAttachmentForDownload(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) writeSignedAttachmentMetadata(w http.ResponseWriter, r *http.Request, att db.Attachment) {
-
-	// Always signed, regardless of what the caller advertised: this endpoint is
-	// the single source of fresh, natively-loadable URLs. Stable-mode callers
-	// (CLI `attachment download`, the web inline-media re-sign hook) exchange a
-	// stable path for a signature HERE, so honoring the capability would break
-	// the very flow that makes stable mode safe elsewhere.
-	resp := h.attachmentToResponse(att, attachmentURLModeSigned)
-	// Token-mode clients use this authenticated endpoint to replace the
-	// auth-gated API path with a URL that native media elements can load.
-	// Assert the same storage.DownloadPresigner that resolveAttachmentDownloadMode
-	// keys its presign decision on, so the mode resolution and the presign call
-	// can never disagree. An empty content disposition inherits the object's
-	// stored Content-Disposition (inline for media, attachment otherwise), which
-	// keeps images renderable inline while preserving the original download
-	// filename.
-	switch mode := h.resolveAttachmentDownloadMode(att.Url); mode {
-	case attachmentDownloadModeCloudFront:
-		// CloudFront mode: attachmentToResponse already set DownloadURL to an
-		// inline-intent signed URL. The download button needs the forced-
-		// attachment sibling. response-content-disposition is folded into the
-		// signed Resource (SignedURLWithContentDisposition), so a client cannot
-		// strip or alter it without invalidating the signature. Keying on the
-		// resolved mode (not h.CFSigner != nil) lets an explicit proxy/presign
-		// override take effect even when a signer is configured; the nil guard
-		// keeps an explicit cloudfront mode without a configured signer from
-		// panicking — the field is left empty and the client falls back to
-		// download_url, the same graceful degrade attachmentToResponse uses.
-		if h.CFSigner != nil {
-			resp.DownloadURL = h.CFSigner.SignedURL(att.Url, time.Now().Add(h.attachmentDownloadURLTTL()))
-			resp.AttachmentDownloadURL = h.CFSigner.SignedURLWithContentDisposition(
-				att.Url,
-				storage.AttachmentContentDisposition(att.Filename),
-				time.Now().Add(h.attachmentDownloadURLTTL()),
-			)
-		}
-	case attachmentDownloadModePresign:
-		if presigner, ok := h.Storage.(storage.DownloadPresigner); ok {
-			key := h.Storage.KeyFromURL(att.Url)
-			signedURL, err := presigner.PresignGetWithContentDisposition(r.Context(), key, h.attachmentDownloadURLTTL(), "")
-			if err != nil {
-				slog.Warn("failed to presign inline attachment URL", "id", uuidToString(att.ID), "key", key, "error", err)
-			} else {
-				resp.DownloadURL = signedURL
-			}
-			// Download-intent sibling: the same presigned object, but with a
-			// forced attachment disposition so the download button saves the
-			// file instead of previewing it. Independent of DownloadURL's inline
-			// signature above; either may be present without the other.
-			if dlURL, err := presigner.PresignGetWithContentDisposition(r.Context(), key, h.attachmentDownloadURLTTL(), storage.AttachmentContentDisposition(att.Filename)); err != nil {
-				slog.Warn("failed to presign attachment download URL", "id", uuidToString(att.ID), "key", key, "error", err)
-			} else {
-				resp.AttachmentDownloadURL = dlURL
-			}
-		}
-	case attachmentDownloadModeProxy:
-		// Proxy mode has no signed storage URL to offer, so this response
-		// would otherwise hand back the auth-gated API path — which a
-		// native download on a token-mode client cannot authenticate,
-		// leaving the user with no file (MUL-5292). Mint a
-		// single-attachment, 60-second capability instead, so the same
-		// "replace the auth-gated path with something a native loader can
-		// fetch" contract holds in all three modes.
-		//
-		// Only here, never in attachmentToResponse: list responses are held
-		// far longer than the TTL, so a capability embedded in one would be
-		// expired by the time anything used it.
-		resp.DownloadURL = attachmentCapabilityPath(resp.ID, time.Now())
-		// Download-intent sibling capability (dl=1): the redemption route turns
-		// it into a Content-Disposition: attachment, for the download button.
-		resp.AttachmentDownloadURL = attachmentDownloadCapabilityPath(resp.ID, time.Now())
+	subject, ok := attachmentSubjectForRequest(w, r)
+	if !ok {
+		return
 	}
-
+	resp := h.attachmentToResponse(att, attachmentURLModeSigned)
+	now := time.Now()
+	// Both preview and forced-download requests redeem through the API. A
+	// storage redirect would outlive workspace or group revocation.
+	resp.DownloadURL = attachmentCapabilityPath(resp.ID, subject, now)
+	resp.AttachmentDownloadURL = attachmentDownloadCapabilityPath(resp.ID, subject, now)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -822,7 +684,7 @@ func (h *Handler) loadAttachmentForRequest(w http.ResponseWriter, r *http.Reques
 		return db.Attachment{}, false
 	}
 
-	if !h.authorizeTopicAttachment(w, r, att) {
+	if !h.authorizeAttachmentRequest(w, r, att) {
 		return db.Attachment{}, false
 	}
 	return att, true
@@ -842,47 +704,19 @@ func (h *Handler) loadAttachmentForRequest(w http.ResponseWriter, r *http.Reques
 // workspace. This helper keeps the URL clean (`/api/attachments/{id}/download`)
 // and treats the attachment id + cookie/Bearer auth as sufficient.
 //
-// Membership uses the same 404-on-deny shape as ServeLocalUpload so the
-// route does not act as an IDOR oracle for attachment IDs that happen to
-// belong to a different workspace. The membership cache fast path mirrors
-// canReadWorkspaceUpload exactly.
+// Authorization always queries current permissions and returns 404 on denial;
+// a stale positive membership cache must not authorize persisted links.
 func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Request) (db.Attachment, bool) {
-	attachmentID := chi.URLParam(r, "id")
-	attUUID, ok := parseUUIDOrBadRequest(w, attachmentID, "attachment id")
+	attUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "attachment id")
 	if !ok {
 		return db.Attachment{}, false
 	}
 	att, err := h.Queries.GetAttachmentByIDOnly(r.Context(), attUUID)
 	if err != nil {
-		// 404 (not 403/401) so non-member and non-existent look identical
-		// to outside callers. Same shape as ServeLocalUpload's
-		// canReadWorkspaceUpload deny path.
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
-
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return db.Attachment{}, false
-	}
-
-	workspaceID := uuidToString(att.WorkspaceID)
-	if workspaceID == "" {
-		writeError(w, http.StatusNotFound, "attachment not found")
-		return db.Attachment{}, false
-	}
-	if h.MembershipCache.Get(r.Context(), userID, workspaceID) {
-		if !h.authorizeTopicAttachment(w, r, att) {
-			return db.Attachment{}, false
-		}
-		return att, true
-	}
-	if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
-		writeError(w, http.StatusNotFound, "attachment not found")
-		return db.Attachment{}, false
-	}
-	h.MembershipCache.Set(r.Context(), userID, workspaceID)
-	if !h.authorizeTopicAttachment(w, r, att) {
+	if !h.authorizeAttachmentRequest(w, r, att) {
 		return db.Attachment{}, false
 	}
 	return att, true
@@ -905,6 +739,8 @@ func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Reque
 // shape so the route doesn't IDOR-leak attachment IDs to non-members.
 
 func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	att, ok := h.loadAttachmentForDownload(w, r)
 	if !ok {
 		return
@@ -913,49 +749,9 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeFeatureDisabled(w, "storage_not_configured", "storage not configured")
 		return
 	}
-
-	key := h.Storage.KeyFromURL(att.Url)
-	switch h.resolveAttachmentDownloadMode(att.Url) {
-	case attachmentDownloadModeCloudFront:
-		if h.CFSigner == nil {
-			writeError(w, http.StatusInternalServerError, "cloudfront attachment downloads are not configured")
-			return
-		}
-		h.setAttachmentPreviewSecurityHeaders(w)
-		http.Redirect(
-			w,
-			r,
-			h.CFSigner.SignedURLWithContentDisposition(
-				att.Url,
-				storage.AttachmentContentDisposition(att.Filename),
-				time.Now().Add(h.attachmentDownloadURLTTL()),
-			),
-			http.StatusFound,
-		)
-	case attachmentDownloadModePresign:
-		presigner, ok := h.Storage.(storage.DownloadPresigner)
-		if !ok {
-			writeError(w, http.StatusInternalServerError, "attachment storage does not support presigned downloads")
-			return
-		}
-		signedURL, err := presigner.PresignGetWithContentDisposition(
-			r.Context(),
-			key,
-			h.attachmentDownloadURLTTL(),
-			storage.AttachmentContentDisposition(att.Filename),
-		)
-		if err != nil {
-			slog.Error("failed to presign attachment download", "id", uuidToString(att.ID), "key", key, "error", err)
-			writeError(w, http.StatusBadGateway, "failed to create download URL")
-			return
-		}
-		h.setAttachmentPreviewSecurityHeaders(w)
-		http.Redirect(w, r, signedURL, http.StatusFound)
-	case attachmentDownloadModeProxy:
-		h.proxyAttachmentDownload(w, r, att, key, false)
-	default:
-		writeError(w, http.StatusInternalServerError, "invalid attachment download mode")
-	}
+	// Stable links in descriptions, comments and replies obey the same
+	// revocation boundary as short-lived capabilities, including Range reads.
+	h.proxyAttachmentDownload(w, r, att, h.Storage.KeyFromURL(att.Url), false)
 }
 
 func (h *Handler) resolveAttachmentDownloadMode(rawURL string) attachmentDownloadMode {
@@ -1010,13 +806,9 @@ func shouldProxyAttachmentURL(rawURL string) bool {
 	return false
 }
 
-// ServeLocalUpload serves a local-disk object from the public /uploads/*
-// route. It carries the same preview security headers as the authenticated
-// download endpoint so self-hosted deployments — same-origin or split
-// frontend/backend origins — can inline-render images and iframe-preview
-// documents (PDF/HTML) fetched straight from the static route. Without these
-// headers the global "frame-ancestors 'none'" policy blocks those previews.
-// See MUL-3821 / #4477.
+// ServeLocalUpload serves public assets only. Workspace files use authenticated
+// attachment routes even after their database row has disappeared. Standalone
+// avatar-class images retain the existing public avatar contract.
 func (h *Handler) ServeLocalUpload(w http.ResponseWriter, r *http.Request) {
 	local, ok := h.Storage.(*storage.LocalStorage)
 	if !ok {
@@ -1032,11 +824,14 @@ func (h *Handler) ServeLocalUpload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if h.Queries != nil {
-		if _, err := h.Queries.GetTopicAttachmentByStorageURL(r.Context(), local.ObjectURL(key)); err == nil {
+	if strings.HasPrefix(strings.ToLower(key), workspaceUploadNamespace) {
+		if h.Queries == nil || !h.avatarKeyIsPublishable(r.Context(), key) {
 			http.NotFound(w, r)
 			return
-		} else if !errors.Is(err, pgx.ErrNoRows) {
+		}
+	} else if h.Queries != nil {
+		attached, err := h.Queries.AttachmentExistsAtStorageURL(r.Context(), local.ObjectURL(key))
+		if err != nil || attached {
 			http.NotFound(w, r)
 			return
 		}
@@ -1045,8 +840,7 @@ func (h *Handler) ServeLocalUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 // proxyAttachmentDownload streams an attachment through the API instead of
-// redirecting to a signed storage URL (used for local-disk / private-host
-// backends, see resolveAttachmentDownloadMode).
+// redirecting to a signed storage URL, across all attachment storage modes.
 //
 // It supports HTTP Range requests so a download interrupted mid-stream can be
 // resumed with `Range: bytes=<resume>-` instead of restarting from byte 0
@@ -1348,9 +1142,8 @@ func normalizeFrameAncestorSource(raw string) (string, bool) {
 // Exists to (a) bypass CloudFront CORS (not configured) and (b) bypass
 // Content-Disposition: attachment which Chromium honors for iframe document
 // loads. Media types (image/video/audio/pdf) intentionally use download_url
-// instead. Metadata download_url keeps CloudFront/S3's media preview behavior;
-// the explicit /download route signs redirects as attachment downloads and
-// proxy mode streams with the same media-type policy as storage uploads.
+// instead. Media downloads now stream through revocable API endpoints with
+// the same inline-versus-attachment media-type policy as storage uploads.
 //
 // Hard cap: 2 MB. Larger files return 413. Anything outside the text
 // whitelist returns 415.

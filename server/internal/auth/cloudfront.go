@@ -22,7 +22,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
-// CloudFrontSigner generates signed cookies for CloudFront private distributions.
+// CloudFrontSigner signs individual public assets and retires legacy CDN cookies.
+// Protected attachments use revocable API access instead of storage credentials.
 type CloudFrontSigner struct {
 	keyPairID    string
 	privateKey   *rsa.PrivateKey
@@ -31,7 +32,7 @@ type CloudFrontSigner struct {
 }
 
 // NewCloudFrontSignerFromEnv creates a signer from environment variables.
-// Returns nil if CLOUDFRONT_KEY_PAIR_ID is not set (disables signed cookies).
+// Returns nil if CLOUDFRONT_KEY_PAIR_ID is not set (disables asset signing).
 //
 // Private key resolution order:
 //  1. AWS Secrets Manager (CLOUDFRONT_PRIVATE_KEY_SECRET — secret name/ARN)
@@ -44,7 +45,7 @@ type CloudFrontSigner struct {
 func NewCloudFrontSignerFromEnv() *CloudFrontSigner {
 	keyPairID := os.Getenv("CLOUDFRONT_KEY_PAIR_ID")
 	if keyPairID == "" {
-		slog.Info("CLOUDFRONT_KEY_PAIR_ID not set, signed cookies disabled")
+		slog.Info("CLOUDFRONT_KEY_PAIR_ID not set, CloudFront asset signing disabled")
 		return nil
 	}
 
@@ -66,7 +67,7 @@ func NewCloudFrontSignerFromEnv() *CloudFrontSigner {
 		return nil
 	}
 
-	slog.Info("CloudFront cookie signer initialized", "key_pair_id", keyPairID, "domain", domain)
+	slog.Info("CloudFront asset signer initialized", "key_pair_id", keyPairID, "domain", domain)
 	return &CloudFrontSigner{
 		keyPairID:    keyPairID,
 		privateKey:   rsaKey,
@@ -138,28 +139,19 @@ func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 	return rsaKey, nil
 }
 
-// SignedCookies generates the three CloudFront signed cookies with the given expiry.
-func (s *CloudFrontSigner) SignedCookies(expiry time.Time) []*http.Cookie {
-	policy := fmt.Sprintf(`{"Statement":[{"Resource":"https://%s/*","Condition":{"DateLessThan":{"AWS:EpochTime":%d}}}]}`, s.domain, expiry.Unix())
-
-	encodedPolicy := cfBase64Encode([]byte(policy))
-
-	h := sha1.New()
-	h.Write([]byte(policy))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, s.privateKey, crypto.SHA1, h.Sum(nil))
-	if err != nil {
-		slog.Error("failed to sign CloudFront policy", "error", err)
-		return nil
-	}
-	encodedSig := cfBase64Encode(sig)
-
-	cookieAttrs := func(name, value string) *http.Cookie {
+// ExpiredCookies removes the former deployment-wide CDN credentials. New
+// attachment access must go through the revocable API, not a cookie granting
+// every object in the CDN. Clearing a browser does not revoke copied cookies;
+// deployment must also retire their CDN policy/key before claiming revocation.
+func (s *CloudFrontSigner) ExpiredCookies() []*http.Cookie {
+	cookieAttrs := func(name string) *http.Cookie {
 		return &http.Cookie{
 			Name:     name,
-			Value:    value,
+			Value:    "",
 			Domain:   s.cookieDomain,
 			Path:     "/",
-			Expires:  expiry,
+			Expires:  time.Unix(1, 0),
+			MaxAge:   -1,
 			Secure:   true,
 			HttpOnly: true,
 			SameSite: http.SameSiteNoneMode,
@@ -167,14 +159,14 @@ func (s *CloudFrontSigner) SignedCookies(expiry time.Time) []*http.Cookie {
 	}
 
 	return []*http.Cookie{
-		cookieAttrs("CloudFront-Policy", encodedPolicy),
-		cookieAttrs("CloudFront-Signature", encodedSig),
-		cookieAttrs("CloudFront-Key-Pair-Id", s.keyPairID),
+		cookieAttrs("CloudFront-Policy"),
+		cookieAttrs("CloudFront-Signature"),
+		cookieAttrs("CloudFront-Key-Pair-Id"),
 	}
 }
 
-// SignedURL generates a CloudFront signed URL for the given resource URL.
-// Used by CLI/API clients that don't have browser cookies.
+// SignedURL generates a CloudFront signed URL for one asset. Callers must first
+// verify that the asset is public; private attachments must use the API instead.
 func (s *CloudFrontSigner) SignedURL(rawURL string, expiry time.Time) string {
 	policy := fmt.Sprintf(`{"Statement":[{"Resource":"%s","Condition":{"DateLessThan":{"AWS:EpochTime":%d}}}]}`, rawURL, expiry.Unix())
 

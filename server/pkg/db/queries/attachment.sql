@@ -49,6 +49,15 @@ WHERE id = $1 AND workspace_id = $2;
 SELECT * FROM attachment
 WHERE id = $1;
 
+-- name: AttachmentExistsAtStorageURL :one
+-- Raw local paths must not bypass attachment authorization. Match the same
+-- path across historical origins and case-insensitive local filesystems.
+SELECT EXISTS (
+  SELECT 1 FROM attachment
+  WHERE lower(regexp_replace(url, '^https?://[^/]+', '')) =
+        lower(regexp_replace(@storage_url::text, '^https?://[^/]+', ''))
+);
+
 -- name: ListAttachmentsByCommentIDs :many
 SELECT * FROM attachment
 WHERE comment_id = ANY($1::uuid[]) AND workspace_id = $2

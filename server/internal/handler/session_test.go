@@ -130,6 +130,30 @@ func TestRefreshSession_CookieModeDoesNotLeakTheToken(t *testing.T) {
 	}
 }
 
+func TestRefreshSession_RetiresBroadCDNCookies(t *testing.T) {
+	withCloudFrontSigner(t)
+	token := refreshSessionToken(t, auth.AuthRenewThreshold()/2, "sid-cdn-retirement")
+	res := testutil.Call(t, testHandler.RefreshSession, cookieRefreshRequest(t, token)).Want(http.StatusOK)
+	var resp RefreshSessionResponse
+	res.JSON(&resp)
+	if !resp.Renewed {
+		t.Fatal("API session did not renew")
+	}
+	count := 0
+	for _, cookie := range res.Result().Cookies() {
+		switch cookie.Name {
+		case "CloudFront-Policy", "CloudFront-Signature", "CloudFront-Key-Pair-Id":
+			count++
+			if cookie.Value != "" || cookie.MaxAge >= 0 || cookie.Expires.After(time.Now()) {
+				t.Fatalf("session refreshed a broad storage credential: %s", cookie.Name)
+			}
+		}
+	}
+	if count != 3 {
+		t.Fatalf("expired %d CDN cookies, want 3", count)
+	}
+}
+
 // Every machine credential the auth middleware accepts authenticates here
 // too. None of them may be exchanged for an interactive session: that would
 // turn a scoped, revocable token into an unscoped, unrevocable one.

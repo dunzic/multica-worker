@@ -10,12 +10,23 @@ import (
 
 // Group attachments inherit active participation, not workspace-wide visibility.
 func (h *Handler) authorizeTopicAttachment(w http.ResponseWriter, r *http.Request, att db.Attachment) bool {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return false
+	}
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(att.WorkspaceID))
+	return h.authorizeTopicAttachmentActor(w, r, att, actorType, actorID)
+}
+
+// Capability redemption passes its verified principal explicitly; public
+// requests must never select a group identity using actor headers.
+func (h *Handler) authorizeTopicAttachmentActor(w http.ResponseWriter, r *http.Request, att db.Attachment, actorType, actorID string) bool {
 	topicID := att.TopicID
 	if !topicID.Valid && !att.ChatMessageID.Valid {
 		return true
 	}
 	if topicID.Valid {
-		return h.authorizeTopicAttachmentID(w, r, att, topicID)
+		return h.authorizeTopicAttachmentID(w, r, att, topicID, actorType, actorID)
 	}
 	msg, err := h.Queries.GetMessageV2(r.Context(), att.ChatMessageID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -25,20 +36,15 @@ func (h *Handler) authorizeTopicAttachment(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "attachment access lookup failed")
 		return false
 	}
-	return h.authorizeTopicAttachmentID(w, r, att, msg.TopicID)
+	return h.authorizeTopicAttachmentID(w, r, att, msg.TopicID, actorType, actorID)
 }
 
-func (h *Handler) authorizeTopicAttachmentID(w http.ResponseWriter, r *http.Request, att db.Attachment, topicID pgtype.UUID) bool {
+func (h *Handler) authorizeTopicAttachmentID(w http.ResponseWriter, r *http.Request, att db.Attachment, topicID pgtype.UUID, actorType, actorID string) bool {
 	topic, err := h.Queries.GetTopic(r.Context(), topicID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return false
 	}
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return false
-	}
-	actorType, actorID := h.resolveActor(r, userID, uuidToString(att.WorkspaceID))
 	id, ok := parseUUIDOrBadRequest(w, actorID, "actor id")
 	if !ok {
 		return false

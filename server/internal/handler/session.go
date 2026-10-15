@@ -128,7 +128,7 @@ func (h *Handler) RefreshSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if h.CFSigner != nil {
-			for _, cookie := range h.CFSigner.SignedCookies(newExpiresAt) {
+			for _, cookie := range h.CFSigner.ExpiredCookies() {
 				http.SetCookie(w, cookie)
 			}
 		}

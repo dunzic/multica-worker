@@ -7,17 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// Phase 1 of MUL-5372 / GitHub #5999: bulk responses stop pre-signing
-// attachment download URLs for callers that advertise they can resolve the
-// stable path themselves. The whole design rests on the server default never
-// moving, so most of what these tests pin is what happens when a caller says
-// NOTHING.
+// The existing capability header remains parseable, but revocable access now
+// requires stable bulk URLs for every caller, including older clients.
 
 func loadTestAttachment(t *testing.T, id string) db.Attachment {
 	t.Helper()
@@ -31,8 +27,8 @@ func loadTestAttachment(t *testing.T, id string) db.Attachment {
 	return att
 }
 
-// withCloudFrontSigner installs a real signer so DownloadURL takes the signed
-// branch — the only mode where the new capability changes anything.
+// withCloudFrontSigner exercises a configured CDN deployment without issuing
+// protected storage credentials.
 func withCloudFrontSigner(t *testing.T) {
 	t.Helper()
 	orig := testHandler.CFSigner
@@ -48,10 +44,7 @@ func requestWithCapabilities(caps string) *http.Request {
 	return r
 }
 
-// TestAttachmentURLMode_DefaultsToSignedWithoutCapability is the compatibility
-// promise itself: a caller that does not advertise the capability — every
-// installed mobile build, every third-party script — must get exactly the
-// pre-signed URL it gets today.
+// Preserve request parsing; neither selection may bypass current permissions.
 func TestAttachmentURLMode_DefaultsToSignedWithoutCapability(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -87,9 +80,7 @@ func TestAttachmentURLMode_HonorsAdvertisedCapability(t *testing.T) {
 	}
 }
 
-// TestAttachmentToResponse_StableModeDropsSignature covers the actual payload
-// win: same attachment, same signer, two modes.
-func TestAttachmentToResponse_StableModeDropsSignature(t *testing.T) {
+func TestAttachmentToResponse_AllBulkModesUseProtectedURLs(t *testing.T) {
 	withCloudFrontSigner(t)
 
 	id := seedAttachmentURL(t, "https://static.example.test/ws/a.png", "a.png", "image/png", 1234)
@@ -98,15 +89,9 @@ func TestAttachmentToResponse_StableModeDropsSignature(t *testing.T) {
 	signed := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
 	stable := testHandler.attachmentToResponse(att, attachmentURLModeStable)
 
-	if !strings.Contains(signed.DownloadURL, "Signature=") {
-		t.Fatalf("signed mode should carry a signature, got %q", signed.DownloadURL)
-	}
 	want := "/api/attachments/" + id + "/download"
-	if stable.DownloadURL != want {
-		t.Errorf("stable download_url = %q, want %q", stable.DownloadURL, want)
-	}
-	if len(stable.DownloadURL) >= len(signed.DownloadURL) {
-		t.Errorf("stable mode did not shrink download_url (%d vs %d bytes)", len(stable.DownloadURL), len(signed.DownloadURL))
+	if stable.DownloadURL != want || signed.DownloadURL != want {
+		t.Fatalf("both list modes must reauthorize at %q: %+v %+v", want, stable, signed)
 	}
 
 	// Only download_url may move. url and markdown_url carry different
@@ -125,16 +110,13 @@ func TestAttachmentToResponse_StableModeDropsSignature(t *testing.T) {
 	}
 }
 
-// TestAttachmentToResponse_SignedModeRotatesButStableDoesNot documents why this
-// change exists at all: the signed value is a function of an expiry the server
-// re-derives per request, so identical content yields different bytes on every
-// read and defeats content-keyed caching. Stable mode has no such term.
-func TestAttachmentToResponse_SignedModeRotatesButStableDoesNot(t *testing.T) {
+func TestAttachmentToResponse_BulkURLsNeverRotateOrExposeStorage(t *testing.T) {
 	withCloudFrontSigner(t)
 
 	id := seedAttachmentURL(t, "https://static.example.test/ws/b.png", "b.png", "image/png", 10)
 	att := loadTestAttachment(t, id)
 
+	att.IssueID = parseUUID(capabilityTestAttachmentID)
 	stableA := testHandler.attachmentToResponse(att, attachmentURLModeStable)
 	stableB := testHandler.attachmentToResponse(att, attachmentURLModeStable)
 	if stableA.DownloadURL != stableB.DownloadURL {
@@ -144,29 +126,9 @@ func TestAttachmentToResponse_SignedModeRotatesButStableDoesNot(t *testing.T) {
 		t.Errorf("stable download_url leaked signature params: %q", stableA.DownloadURL)
 	}
 
-	// The rotation half. attachmentToResponse mints its expiry from time.Now()
-	// at second granularity, so calling it twice in a row would usually land in
-	// the same second and produce identical bytes — asserting on that directly
-	// would be a flaky test of a real property. Drive the signer with two
-	// explicit expiries instead: it proves the URL varies with the expiry term,
-	// which is exactly what makes the response unstable as the clock advances.
 	signed := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
-	if !strings.Contains(signed.DownloadURL, "Policy=") {
-		t.Fatalf("signed mode should embed a policy, got %q", signed.DownloadURL)
-	}
-	base := time.Now()
-	first := testHandler.CFSigner.SignedURL(att.Url, base.Add(30*time.Minute))
-	second := testHandler.CFSigner.SignedURL(att.Url, base.Add(30*time.Minute+time.Second))
-	if first == second {
-		t.Errorf("signed URL did not change with the expiry; rotation is the premise of this whole change")
-	}
-	if strings.Split(first, "?")[0] != strings.Split(second, "?")[0] {
-		t.Errorf("only the query should rotate, the resource path must be stable: %q vs %q", first, second)
-	}
-	// And re-signing with the SAME expiry must reproduce the same bytes —
-	// otherwise the rotation above would prove nothing about the clock.
-	if again := testHandler.CFSigner.SignedURL(att.Url, base.Add(30*time.Minute)); again != first {
-		t.Errorf("signing is not deterministic for a fixed expiry: %q vs %q", again, first)
+	if signed.DownloadURL != stableA.DownloadURL || signed.URL == att.Url || signed.AttachmentDownloadURL != "" {
+		t.Fatalf("bulk response must contain stable protected paths only: %+v", signed)
 	}
 }
 
@@ -215,7 +177,7 @@ func TestGetAttachmentByID_IgnoresStableCapability(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !strings.Contains(resp.DownloadURL, "Signature=") {
-		t.Errorf("single-attachment endpoint must always sign, even for stable-mode callers; got %q", resp.DownloadURL)
+	if !strings.Contains(resp.DownloadURL, "/signed-download?") || !strings.Contains(resp.DownloadURL, "sig=") {
+		t.Errorf("single-attachment endpoint must mint a revocable capability, even for stable-mode callers; got %q", resp.DownloadURL)
 	}
 }

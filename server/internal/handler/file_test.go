@@ -680,15 +680,15 @@ func TestAttachmentToResponse_NonCloudFrontUsesDownloadEndpoint(t *testing.T) {
 	}
 
 	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
-	if resp.URL != "http://rustfs:9000/test-bucket/private.txt" {
-		t.Fatalf("stored url changed: %q", resp.URL)
+	if resp.URL != "/api/attachments/"+id+"/download" || att.Url != "http://rustfs:9000/test-bucket/private.txt" {
+		t.Fatalf("response must hide storage URL without mutating it: %+v", resp)
 	}
 	if resp.DownloadURL != "/api/attachments/"+id+"/download" {
 		t.Fatalf("download_url = %q, want unified endpoint", resp.DownloadURL)
 	}
 }
 
-func TestGetAttachmentByID_AutoPublicEndpointReturnsPresignedDownloadURL(t *testing.T) {
+func TestGetAttachmentByID_AutoPublicEndpointReturnsRevocableURLs(t *testing.T) {
 	store := &mockStorageNoCdn{}
 	origStorage := testHandler.Storage
 	origCfg := testHandler.cfg
@@ -732,8 +732,8 @@ func TestGetAttachmentByID_AutoPublicEndpointReturnsPresignedDownloadURL(t *test
 	if err != nil {
 		t.Fatalf("parse download_url: %v", err)
 	}
-	if got := parsed.Query().Get("X-Amz-Signature"); got != "mock" {
-		t.Fatalf("download_url = %q, want S3 presigned URL", resp.DownloadURL)
+	if parsed.IsAbs() || parsed.Path != "/api/attachments/"+id+"/signed-download" || !verifyAttachmentCapability(id, attachmentCapabilitySubject{UserID: testUserID}, parsed.Query().Get("exp"), parsed.Query().Get("sig"), "", time.Now()) {
+		t.Fatalf("download_url = %q, want valid inline capability", resp.DownloadURL)
 	}
 	if got := parsed.Query().Get("response-content-disposition"); got != "" {
 		t.Fatalf("response-content-disposition = %q, want inline-loadable URL", got)
@@ -741,21 +741,18 @@ func TestGetAttachmentByID_AutoPublicEndpointReturnsPresignedDownloadURL(t *test
 	if want := "/api/attachments/" + id + "/download"; resp.MarkdownURL != want {
 		t.Fatalf("markdown_url = %q, want stable URL %q", resp.MarkdownURL, want)
 	}
-	// The single-attachment endpoint presigns the object twice: once inline for
-	// download_url (asserted above) and once with a forced attachment disposition
-	// for attachment_download_url.
-	if len(store.presignCalls) != 2 || store.presignCalls[0] != key || store.presignCalls[1] != key {
-		t.Fatalf("presign calls = %v, want [%s %s]", store.presignCalls, key, key)
+	if len(store.presignCalls) != 0 {
+		t.Fatalf("previews and downloads must both stay revocable: %v", store.presignCalls)
 	}
 	dl, err := url.Parse(resp.AttachmentDownloadURL)
 	if err != nil {
 		t.Fatalf("parse attachment_download_url: %v", err)
 	}
-	if got := dl.Query().Get("X-Amz-Signature"); got != "mock" {
-		t.Fatalf("attachment_download_url = %q, want an S3 presigned URL", resp.AttachmentDownloadURL)
+	if dl.IsAbs() || dl.Path != "/api/attachments/"+id+"/signed-download" || dl.Query().Get("uid") != testUserID {
+		t.Fatalf("attachment_download_url = %q, want a user-bound capability", resp.AttachmentDownloadURL)
 	}
-	if got := dl.Query().Get("response-content-disposition"); !strings.HasPrefix(got, "attachment") {
-		t.Fatalf("attachment_download_url response-content-disposition = %q, want a forced attachment disposition", got)
+	if dl.Query().Get("dl") != "1" {
+		t.Fatalf("attachment_download_url must force an attachment: %q", resp.AttachmentDownloadURL)
 	}
 }
 
@@ -799,22 +796,27 @@ func TestGetAttachmentForDownload_UsesAttachmentWorkspaceMembership(t *testing.T
 	})
 
 	var resp AttachmentResponse
-	testutil.Call(t, testHandler.GetAttachmentForDownload, request()).Want(http.StatusOK).JSON(&resp)
+	result := testutil.Call(t, testHandler.GetAttachmentForDownload, request()).Want(http.StatusOK).JSON(&resp)
+	if got := result.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	if resp.ID != id || !strings.Contains(resp.AttachmentDownloadURL, "/signed-download?") {
 		t.Fatalf("response missing attachment-specific signed URL: %+v", resp)
 	}
+	dl, err := url.Parse(resp.AttachmentDownloadURL)
+	if err != nil {
+		t.Fatalf("parse attachment_download_url: %v", err)
+	}
+	if dl.Query().Get("uid") != testUserID || dl.Query().Get("dl") != "1" {
+		t.Fatalf("attachment_download_url = %q, want a user-bound forced-download capability", resp.AttachmentDownloadURL)
+	}
+	if !verifyAttachmentCapability(id, attachmentCapabilitySubject{UserID: testUserID}, dl.Query().Get("exp"), dl.Query().Get("sig"), attachmentCapabilityDownloadIntent, time.Now()) {
+		t.Fatalf("attachment_download_url = %q, want a valid forced-download signature", resp.AttachmentDownloadURL)
+	}
 }
 
-// TestGetAttachmentByID_CloudFrontModeSignsForcedAttachmentDownloadURL pins the
-// CloudFront arm of GetAttachmentByID's download-URL switch — the one storage
-// mode still unexercised at this layer. It asserts attachment_download_url is a
-// CloudFront-signed URL carrying response-content-disposition=attachment, which
-// SignedURLWithContentDisposition sets on the URL BEFORE signing, so the
-// disposition is folded into the signed Resource (a client cannot strip or alter
-// it without invalidating the Signature — that property is unit-tested in
-// cloudfront_test.go). It also asserts the load-intent download_url sibling does
-// NOT force an attachment, so the two intents stay distinct.
-func TestGetAttachmentByID_CloudFrontModeSignsForcedAttachmentDownloadURL(t *testing.T) {
+// Both intents stay revocable, without forcing inline previews to download.
+func TestGetAttachmentByID_CloudFrontModeKeepsPreviewAndDownloadSeparate(t *testing.T) {
 	origStorage := testHandler.Storage
 	origCfg := testHandler.cfg
 	origSigner := testHandler.CFSigner
@@ -857,20 +859,11 @@ func TestGetAttachmentByID_CloudFrontModeSignsForcedAttachmentDownloadURL(t *tes
 	if err != nil {
 		t.Fatalf("parse attachment_download_url: %v", err)
 	}
-	if dl.Host != "static.example.test" {
-		t.Fatalf("attachment_download_url host = %q, want the CloudFront domain", dl.Host)
+	if dl.IsAbs() || dl.Path != "/api/attachments/"+id+"/signed-download" || dl.Query().Get("uid") != testUserID {
+		t.Fatalf("attachment_download_url = %q, want a user-bound capability", resp.AttachmentDownloadURL)
 	}
-	if got := dl.Query().Get("response-content-disposition"); got != `attachment; filename="cf report.md"` {
-		t.Fatalf("attachment_download_url response-content-disposition = %q, want a forced attachment disposition", got)
-	}
-	// Signed as a whole: Key-Pair-Id + Signature present. Because the disposition
-	// was set before signing, it is inside the signed Resource, so a client cannot
-	// strip or alter it without invalidating this Signature.
-	if got := dl.Query().Get("Key-Pair-Id"); got != "KTEST" {
-		t.Fatalf("attachment_download_url Key-Pair-Id = %q, want KTEST (CloudFront-signed)", got)
-	}
-	if dl.Query().Get("Signature") == "" {
-		t.Fatalf("attachment_download_url missing CloudFront Signature: %q", resp.AttachmentDownloadURL)
+	if dl.Query().Get("dl") != "1" {
+		t.Fatalf("attachment_download_url must force an attachment: %q", resp.AttachmentDownloadURL)
 	}
 
 	// The load-intent sibling must NOT force an attachment, or inline preview breaks.
@@ -878,16 +871,21 @@ func TestGetAttachmentByID_CloudFrontModeSignsForcedAttachmentDownloadURL(t *tes
 	if err != nil {
 		t.Fatalf("parse download_url: %v", err)
 	}
+	if inline.IsAbs() || inline.Query().Get("dl") != "" || !verifyAttachmentCapability(id, attachmentCapabilitySubject{UserID: testUserID}, inline.Query().Get("exp"), inline.Query().Get("sig"), "", time.Now()) {
+		t.Fatalf("download_url must be a valid inline capability: %q", resp.DownloadURL)
+	}
 	if got := inline.Query().Get("response-content-disposition"); strings.HasPrefix(got, "attachment") {
 		t.Fatalf("download_url must stay load-intent, got forced attachment disposition %q", got)
 	}
 }
 
-func TestDownloadAttachment_CloudFrontRedirectSignsAttachmentDisposition(t *testing.T) {
+func TestDownloadAttachment_CloudFrontStreamsWithAttachmentDisposition(t *testing.T) {
 	origStorage := testHandler.Storage
 	origCfg := testHandler.cfg
 	origSigner := testHandler.CFSigner
-	testHandler.Storage = &mockStorage{}
+	store := &mockStorage{}
+	store.put("https://static.example.test/downloads/cloudfront.md", []byte("cloudfront"))
+	testHandler.Storage = store
 	testHandler.cfg.AttachmentDownloadMode = "cloudfront"
 	testHandler.cfg.AttachmentFrameAncestors = []string{"https://app.example.test"}
 	testHandler.CFSigner = testCloudFrontSigner(t)
@@ -903,19 +901,11 @@ func TestDownloadAttachment_CloudFrontRedirectSignsAttachmentDisposition(t *test
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK || w.Body.String() != "cloudfront" || w.Header().Get("Location") != "" {
+		t.Fatalf("expected API stream, got %d %v %q", w.Code, w.Header(), w.Body.String())
 	}
-	loc := w.Header().Get("Location")
-	parsed, err := url.Parse(loc)
-	if err != nil {
-		t.Fatalf("parse Location: %v", err)
-	}
-	if got := parsed.Query().Get("response-content-disposition"); got != `attachment; filename="cloud front.md"` {
-		t.Fatalf("response-content-disposition = %q", got)
-	}
-	if got := parsed.Query().Get("Key-Pair-Id"); got != "KTEST" {
-		t.Fatalf("Key-Pair-Id = %q", got)
+	if got := w.Header().Get("Content-Disposition"); got != `attachment; filename="cloud front.md"` {
+		t.Fatalf("Content-Disposition = %q", got)
 	}
 	requireAttachmentPreviewCSP(t, w.Header(), "https://app.example.test")
 }
@@ -1112,7 +1102,7 @@ func TestDownloadAttachment_AutoInternalEndpointProxies(t *testing.T) {
 	}
 }
 
-func TestDownloadAttachment_AutoPublicEndpointPresigns(t *testing.T) {
+func TestDownloadAttachment_AutoPublicEndpointStreams(t *testing.T) {
 	store := &mockStorage{}
 	origStorage := testHandler.Storage
 	origCfg := testHandler.cfg
@@ -1128,31 +1118,21 @@ func TestDownloadAttachment_AutoPublicEndpointPresigns(t *testing.T) {
 	})
 
 	key := "downloads/public-private.txt"
+	store.put(key, []byte("0123456789"))
 	id := seedAttachmentURL(t, "https://s3.example.com/test-bucket/"+key, "public.txt", "text/plain", 10)
 
 	req, w := newDownloadRequest(t, id, testWorkspaceID)
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK || w.Body.String() != "0123456789" || w.Header().Get("Location") != "" {
+		t.Fatalf("expected API stream, got %d %v %q", w.Code, w.Header(), w.Body.String())
 	}
-	loc := w.Header().Get("Location")
-	if !strings.Contains(loc, "X-Amz-Signature=mock") {
-		t.Fatalf("Location = %q, want fake S3 signature", loc)
+	if got := w.Header().Get("Content-Disposition"); got != `attachment; filename="public.txt"` {
+		t.Fatalf("Content-Disposition = %q", got)
 	}
-	parsed, err := url.Parse(loc)
-	if err != nil {
-		t.Fatalf("parse Location: %v", err)
-	}
-	if got := parsed.Query().Get("response-content-disposition"); got != `attachment; filename="public.txt"` {
-		t.Fatalf("response-content-disposition = %q", got)
-	}
-	if len(store.presignCalls) != 1 || store.presignCalls[0] != key {
-		t.Fatalf("presign calls = %v, want [%s]", store.presignCalls, key)
-	}
-	if len(store.presignDispositions) != 1 || store.presignDispositions[0] != `attachment; filename="public.txt"` {
-		t.Fatalf("presign dispositions = %v", store.presignDispositions)
+	if len(store.presignCalls) != 0 {
+		t.Fatalf("revocable download must not presign: %v", store.presignCalls)
 	}
 	requireAttachmentPreviewCSP(t, w.Header(), "https://app.example.test")
 }
@@ -1749,7 +1729,7 @@ func TestIsTextPreviewable(t *testing.T) {
 //                                              to API endpoint to avoid
 //                                              re-opening MUL-3130
 
-func TestBuildMarkdownURL_PublicCdnAbsoluteURLReusedVerbatim(t *testing.T) {
+func TestBuildMarkdownURL_PublicCdnUsesProtectedAPIEndpoint(t *testing.T) {
 	origPublic := testHandler.cfg.PublicURL
 	origSigner := testHandler.CFSigner
 	origStorage := testHandler.Storage
@@ -1776,8 +1756,8 @@ func TestBuildMarkdownURL_PublicCdnAbsoluteURLReusedVerbatim(t *testing.T) {
 	}
 
 	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
-	if resp.MarkdownURL != "https://cdn.multica.test/uploads/abc.png" {
-		t.Fatalf("markdown_url = %q, want raw a.Url passthrough", resp.MarkdownURL)
+	if resp.MarkdownURL != "https://api.multica.test/api/attachments/"+id+"/download" {
+		t.Fatalf("markdown_url = %q, want protected stable API endpoint", resp.MarkdownURL)
 	}
 }
 
@@ -1967,7 +1947,7 @@ func TestIsDurablePublicURL(t *testing.T) {
 // policy the /api/attachments download endpoint uses. See MUL-3821 / #4477.
 func TestServeLocalUpload_RelaxesFrameAncestorsForPreview(t *testing.T) {
 	dir := t.TempDir()
-	key := "workspaces/ws-1/preview.pdf"
+	key := "public/preview.pdf"
 	full := filepath.Join(dir, filepath.FromSlash(key))
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
