@@ -119,6 +119,68 @@ resolution rather than choosing an entire side:
 | 2026-10-14 | Own repository `dunzic/aiwork`: `origin/devNew` at `6459e1c6f`, contained by `origin/feat/personal-global-assistant` at `26bc8ebeb`; workspace Chat v2 snapshot `8c056adb2`, batch attachments `4933639fd`, DOCX preview antecedent `0eecaf3c1` | Semantically adapted the workspace group/topic collaboration model, batch-file composer, and protected DOCX body-text preview as `4f87657cc` on `codex/restore-chat-collaboration-20261014`, based on `c3ab9a93e4d337f265ace65be49586b8ce6b670a`. User authorized commit and push to the fork; see publication scope below. No wholesale branch merge, main landing, release, installer or deployment. Rejected the superseded `feat/conversations-platform` schema at `ad74f43f9`; deferred unrelated personal/global assistant, voice and permission-overhaul changes. | Real isolated PostgreSQL fixtures cover upload, message binding, complete daemon claim, multiple agents, transactional completion, cancellation, privacy and cleanup. Four review fixes plus authenticated PDF preview and commit-ordered daemon wakeup are covered by the second-pass checks below. Real Chrome/Codex HR feedback and UI-sent follow-up passed; unrelated full-suite failures remain recorded separately. |
 | 2026-10-14 | Own repository `dunzic/aiwork`: Office preview `0eecaf3c1e9e`, current-modal port `aa599dd5fab5`, copied-file-card fix `a7628d0f9b0c`, slides-to-PDF `fee0d16b8da3` | Additive semantic adaptation committed as `a1bd2d551` on `codex/restore-chat-collaboration-20261014` after `535630ecc44f`; fork publication authorized on 2026-10-15 as recorded below. Keep the upstream viewer and original MD/CSV/JSON/PDF renderers; add private on-demand Word/Excel/PPT PDF rendering, shared across descriptions/comments/replies. Resolve copied references from trusted app/API origins through authenticated attachment ownership checks. Do not revive old browser parsers, synthesize attachment records, rewrite foreign/localhost hosts, create derived public files, or import the old FK/cascade migration/upload goroutines. | See Office preview verification and deployment gates below. No production access, migration, release, installer or deployment in this change. |
 
+## 2026-10-15 Permission candidate assessment and authorized adaptation
+
+After the assessment below, the user authorized local adaptation and regression
+for both permission candidates, including links embedded in issue descriptions,
+comments and replies. The execution plan is
+[Permission revocation and embedded attachment links](docs/engineering/permission-revocation-execution-plan.md).
+The user also authorized a separate architect agent to review the completed
+implementation after required self-tests, followed by fixes and independent
+re-review before any merge request. This is an explicit gate in the execution
+plan. Independent review identified cross-workspace and topic-scoped delivery
+gaps (R1), native-client URL compatibility (R2), and ongoing broad CDN cookie
+issuance (R3). The independent final review closed the R1/R3 application fixes
+for scoped handoff into controlled platform acceptance, not production release.
+The user explicitly limited this iteration to server and
+web/desktop work: mobile adaptation is not implemented, and R2 remains a
+release blocker, not an accepted compatibility regression.
+See the [verification record](docs/engineering/permission-revocation-verification.md)
+for exact results, the independently reproduced baseline test failure and native
+client/storage deployment gates. After that technical handoff, the user
+authorized committing this work, merging it into `main`, and publishing it to
+the owned `dunzic/multica-worker` repository. The reviewed implementation is
+commit `e869e6197a5824fb8e47af67f79fefae0cc4fc48`; the plan, verification record,
+and independent review accompany it in a separate documentation commit.
+The Git delivery does not authorize a tag, installer, or deployment and does
+not close R2. The source-only assessment below is retained as the intake
+baseline, not a passing test record.
+
+| Date | Source | Decision and local result | Verification |
+| --- | --- | --- | --- |
+| 2026-10-15 | PR 9249 at `f05b5519e4aac8e4dcd396e6ac0e63fe44d85ffe` | Semantically adapted as `e869e6197` on `codex/next-iteration-20261015`: primary-DB send authorization, post-commit revocation, bounded cohorts and relay revalidation. Extend beyond the candidate to per-frame source workspace/group/topic checks, topic-only task lifecycle context, and ID-only self-removal cleanup. Preserve participant-scoped and durable delivery. | Baseline socket failures and two independent replay failures reproduced and fixed; 101 passing realtime/DB race cases. Final tracked diff SHA-256 `1b2932517593d30c4b84e363e4bc6062f81fd55da62bcf7aa19b8e5e7a474a34` and all 13 new server files independently reviewed and matched again before commit; R1 technically closed. |
+| 2026-10-15 | PR 8896 at `1801c01ca9fa12eadb9782beec44e77167ad02fa` | Semantically adapted in the same permission change `e869e6197`: user and verified task-token binding; fresh source workspace/group checks for capability, stable and preview paths; private local paths and avatar boundaries. Stop all five broad CDN cookie issuance/renewal paths and expire browser cookies, retaining checked public-avatar signing. Mobile R2 explicitly deferred as a release blocker. | Independent review closed the R3 application change. Final shared frontend 167 passed, login/session/avatar race regression 38 passed, five Go packages 5,369 passed / 0 failed / 71 environment skips, with only the proven baseline manifest failure explicitly excluded; Go vet passed. Cleanup lifecycle instability remains recorded despite later passing. No production CDN or native-client acceptance claimed. |
+
+The fork remote was refreshed before this Git delivery: `origin/main` and local
+`main` were both `025e0e40e547c51e8bfc3724bb6788903dad1f70`, allowing a
+fast-forward without conflict resolution or changes to the reviewed code.
+Only `main` and `codex/next-iteration-20261015` are publication targets;
+`upstream`, unrelated branches, dependency caches, installers, and ignored test
+logs are excluded. Existing test evidence applies to the identical reviewed
+snapshot; this commit/merge step does not claim a new full test run.
+
+Do not reintroduce direct storage signatures or uploader-bound capability URLs
+in broadcasts to work around R2. Clearing browser cookies does not invalidate
+copied credentials: private storage/CDN policy retirement and mixed-version
+rollout remain deployment gates. Preserve source identity on any new
+topic-scoped task event; recipient snapshots are routing, not authorization.
+
+The fork at `025e0e40e` contains official `upstream/main` at `52b26900c`;
+the freshly fetched ancestry comparison reports zero missing official commits.
+The following are open community candidates, not omitted official updates.
+This assessment inspected the current source, PR patches and public discussion;
+it did not run new permission regressions or inspect the production deployment.
+
+| Date | Source | Decision and local result | Verification |
+| --- | --- | --- | --- |
+| 2026-10-15 | [Revoke workspace WebSocket access](https://github.com/multica-ai/multica/pull/9249), head `f05b5519e4aac8e4dcd396e6ac0e63fe44d85ffe` | High-priority candidate; not integrated. Existing removal revokes runtime/task access, invalidates membership cache and notifies clients; official `52b26900c` also gates new inbox recipients. These do not replace server-side revocation of already-open browser sockets. Preserve the fork's participant-scoped group delivery when adapting. | Current `hub.go` checks membership at connection authorization but its write pump does not revalidate it; member handlers publish removal without the candidate's socket invalidation. PR is open, authored by a repository collaborator, with no submitted review returned by the API. That is an intake signal, not acceptance or a merge-time promise. Require isolated real WebSocket/DB tests, missed-relay and rejoin cases, and group-privacy regression before integration. |
+| 2026-10-15 | [Make attachment download capabilities revocable](https://github.com/multica-ai/multica/pull/8896), head `1801c01ca9fa12eadb9782beec44e77167ad02fa` | High-priority semantic-adaptation candidate; not integrated. The fork already protects authenticated attachment reads and Office previews with workspace/group participation checks. Existing signed-download capabilities are a separate path: their user-unbound v1 token is checked without rechecking membership at redemption. The candidate's workspace-membership check alone is insufficient for this fork's group-removal case; also preserve/revalidate group/topic authorization for the bound principal. | Current capability handler and signing helpers compared with the PR patch; Office revocation test and topic access helper inspected, not rerun. Candidate changes capability format and routes downloads through the API in all storage modes. Require signed-link revocation, group-only removal, cross-workspace, native download/Range and coordinated-version rollout checks. Previously issued CDN preview links and already received bytes have separate boundaries. |
+
+No product source, tests, deployment, installer, commit or push was changed by
+this assessment. Public discussion reviewed here does not establish that either
+candidate is withheld for commercial reasons. Do not label existing group/Office
+fixes as missing, or label these additional revocation paths as already tested.
+
 ## 2026-10-15 Generic composer main integration
 
 | Date | Source | Decision and local result | Verification |
