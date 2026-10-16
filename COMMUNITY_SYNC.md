@@ -231,6 +231,11 @@ The follow-up explicitly checks out the tag, verifies its commit against the
 event SHA, and adds the checkout contract regression. Preserve `v0.6.4`
 unchanged as failed-attempt evidence and retry with the new `v0.6.5` patch tag.
 
+Native Windows CI then exposed CRLF sensitivity in the new workflow-routing
+test (not the product installer): literal LF job separators did not recognize
+Windows checkouts. Normalize CRLF in that test. The CLI release remains gated
+on Windows tests; do not bypass the test or claim publication from the tag.
+
 ## 2026-10-15 Permission candidate assessment and authorized adaptation
 
 After the assessment below, the user authorized local adaptation and regression

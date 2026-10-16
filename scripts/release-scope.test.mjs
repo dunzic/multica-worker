@@ -30,7 +30,7 @@ test("scope comes from an annotated tag at HEAD, never a commit message or light
 });
 
 test("every non-CLI publisher requires full scope before it can start", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   for (const name of ["docker-backend-build", "docker-backend-merge", "docker-web-build", "docker-web-merge", "desktop", "helm-chart"]) {
     const job = workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [a-z][a-z-]*:\n/)[0];
     assert.ok(job, `missing job ${name}`);
