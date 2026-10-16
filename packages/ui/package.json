@@ -25,6 +25,7 @@
     "./i18n-types": "./types/i18next.ts",
     "./styles/tokens.css": "./styles/tokens.css",
     "./styles/base.css": "./styles/base.css",
+    "./styles/fact-brand.css": "./styles/fact-brand.css",
     "./docs/button.md": "./docs/button.md",
     "./docs/button.zh.md": "./docs/button.zh.md",
     "./docs/dialog.md": "./docs/dialog.md",

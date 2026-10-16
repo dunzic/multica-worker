@@ -24,6 +24,7 @@ import { workspaceKeys } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
 import type { User } from "@multica/core/types";
 import { useT } from "../i18n";
+import { FactLoginFrame } from "./fact-brand";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -303,12 +304,11 @@ export function LoginPage({
 
   if (step === "cli_confirm" && existingUser) {
     return (
-      <div className="flex min-h-svh items-center justify-center">
+      <FactLoginFrame logo={logo}>
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
-            {logo && <div className="mx-auto mb-4">{logo}</div>}
             <CardTitle className="text-display-sm">
-              {t(($) => $.cli.title)}
+              <h1>{t(($) => $.cli.title)}</h1>
             </CardTitle>
             <CardDescription>
               {t(($) => $.cli.description, { email: existingUser.email })}
@@ -337,7 +337,7 @@ export function LoginPage({
             </Button>
           </CardContent>
         </Card>
-      </div>
+      </FactLoginFrame>
     );
   }
 
@@ -347,12 +347,11 @@ export function LoginPage({
 
   if (step === "code") {
     return (
-      <div className="flex min-h-svh items-center justify-center">
+      <FactLoginFrame logo={logo}>
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
-            {logo && <div className="mx-auto mb-4">{logo}</div>}
             <CardTitle className="text-display-sm">
-              {t(($) => $.verify.title)}
+              <h1>{t(($) => $.verify.title)}</h1>
             </CardTitle>
             <CardDescription>
               {t(($) => $.verify.description, { email })}
@@ -379,7 +378,7 @@ export function LoginPage({
               </InputOTPGroup>
             </InputOTP>
             {error && (
-              <p className="text-body text-destructive">{error}</p>
+              <p role="alert" className="text-body text-destructive">{error}</p>
             )}
             <div className="flex items-center gap-2 text-body text-muted-foreground">
               <button
@@ -409,7 +408,7 @@ export function LoginPage({
             </Button>
           </CardFooter>
         </Card>
-      </div>
+      </FactLoginFrame>
     );
   }
 
@@ -418,12 +417,11 @@ export function LoginPage({
   // -------------------------------------------------------------------------
 
   return (
-    <div className="flex min-h-svh items-center justify-center">
+    <FactLoginFrame logo={logo}>
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          {logo && <div className="mx-auto mb-4">{logo}</div>}
           <CardTitle className="text-display-sm">
-            {t(($) => $.signin.title)}
+            <h1>{t(($) => $.signin.title)}</h1>
           </CardTitle>
           <CardDescription>
             {t(($) => $.signin.description)}
@@ -442,16 +440,18 @@ export function LoginPage({
               <Label htmlFor="login-email">{t(($) => $.common.email)}</Label>
               <Input
                 id="login-email"
+                name="email"
                 type="email"
+                autoComplete="email"
+                spellCheck={false}
                 placeholder={t(($) => $.common.email_placeholder)}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                autoFocus
                 required
               />
             </div>
             {error && (
-              <p className="text-body text-destructive">{error}</p>
+              <p role="alert" className="text-body text-destructive">{error}</p>
             )}
           </form>
         </CardContent>
@@ -500,6 +500,6 @@ export function LoginPage({
           {extra && <div className="w-full pt-1 text-center">{extra}</div>}
         </CardFooter>
       </Card>
-    </div>
+    </FactLoginFrame>
   );
 }

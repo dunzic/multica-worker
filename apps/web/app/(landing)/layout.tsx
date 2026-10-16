@@ -19,22 +19,16 @@ const jsonLd = {
   "@graph": [
     {
       "@type": "Organization",
-      name: "Multica",
-      url: "https://www.multica.ai",
-      sameAs: ["https://github.com/multica-ai/multica"],
+      name: "智臻纪元智能科技",
+      alternateName: "The Fact Technology Company",
     },
     {
       "@type": "SoftwareApplication",
-      name: "Multica",
+      name: "FACT 数字员工协作平台",
       applicationCategory: "ProjectManagement",
       operatingSystem: "Web",
       description:
-        "Source-available project management platform that turns coding agents into real teammates.",
-      offers: {
-        "@type": "Offer",
-        price: "0",
-        priceCurrency: "USD",
-      },
+        "面向专业服务的人与数字员工协作平台。",
     },
   ],
 };

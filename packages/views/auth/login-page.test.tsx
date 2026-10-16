@@ -134,15 +134,18 @@ describe("LoginPage", () => {
     expect(screen.queryByText(/your session expired/i)).not.toBeInTheDocument();
   });
 
-  it("renders email form with 'Sign in to Multica' title", () => {
+  it("renders the FACT brand without changing the email login flow", () => {
     renderWithI18n(<LoginPage onSuccess={onSuccess} />);
     expect(
-      screen.getByText(/sign in to multica/i),
+      screen.getByRole("heading", { name: /sign in to fact/i }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/enter your email to get a login code/i),
     ).toBeInTheDocument();
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.getByText("Digital workforce platform")).toBeInTheDocument();
+    expect(screen.getByText("Professional partners.")).toBeInTheDocument();
+    expect(screen.getAllByText("The Fact Technology Company").length).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", { name: /continue/i }),
     ).toBeInTheDocument();
@@ -542,7 +545,7 @@ describe("LoginPage", () => {
     );
 
     expect(
-      screen.getByText(/sign in to multica/i),
+      screen.getByRole("heading", { name: /sign in to fact/i }),
     ).toBeInTheDocument();
   });
 
@@ -723,7 +726,7 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: /back/i }));
 
     expect(
-      screen.getByText(/sign in to multica/i),
+      screen.getByRole("heading", { name: /sign in to fact/i }),
     ).toBeInTheDocument();
   });
 
