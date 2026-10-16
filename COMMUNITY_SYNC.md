@@ -235,6 +235,9 @@ Native Windows CI then exposed CRLF sensitivity in the new workflow-routing
 test (not the product installer): literal LF job separators did not recognize
 Windows checkouts. Normalize CRLF in that test. The CLI release remains gated
 on Windows tests; do not bypass the test or claim publication from the tag.
+The web download/onboarding tests also retained two pre-fork Windows-command
+expectations. Corrected both to the owned installer URL; both focused component
+tests passed. No product login or onboarding behavior changed.
 
 ## 2026-10-15 Permission candidate assessment and authorized adaptation
 
