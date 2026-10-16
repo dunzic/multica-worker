@@ -37,6 +37,8 @@ try {
 
     $binDir = Join-Path $env:USERPROFILE ".multica\bin"
     New-Item -ItemType Directory -Force $binDir | Out-Null
+    & $source version --check-compatibility
+    if ($LASTEXITCODE -ne 0) { throw "CLI failed its offline version/baseline compatibility check. The installed CLI was not changed." }
     Copy-Item $source (Join-Path $binDir "multica.exe") -Force
     $exe = Join-Path $binDir "multica.exe"
     if (-not (Test-Path $configPath)) {

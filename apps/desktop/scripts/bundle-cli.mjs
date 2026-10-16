@@ -103,6 +103,9 @@ async function exists(p) {
 }
 
 if (hasGo()) {
+  execFileSync(process.execPath, [join(repoRoot, "scripts/check-distribution.mjs")], {
+    cwd: repoRoot, stdio: "inherit",
+  });
   const version = deriveVersion() || "dev";
   const commit = git("rev-parse", "--short", "HEAD") || "unknown";
   const buildCommit = git("rev-parse", "HEAD") || "unknown";

@@ -20,6 +20,8 @@ const ctx = vi.hoisted(() => ({
   quitAndInstall: vi.fn(),
   getVersion: vi.fn(() => "0.3.17"),
   userDataPath: "",
+  isPackaged: true,
+  platformSupportsUpdate: vi.fn(() => true),
 }));
 
 vi.mock("electron-updater", () => {
@@ -28,6 +30,9 @@ vi.mock("electron-updater", () => {
     autoInstallOnAppQuit: false,
     channel: undefined as string | undefined,
     allowDowngrade: false,
+    allowPrerelease: false,
+    setFeedURL: vi.fn(),
+    isUpdateSupported: ctx.platformSupportsUpdate,
     on: vi.fn((event: string, handler: Handler) => {
       const handlers = ctx.handlers.get(event) ?? [];
       handlers.push(handler);
@@ -43,6 +48,7 @@ vi.mock("electron-updater", () => {
 
 vi.mock("electron", () => ({
   app: {
+    get isPackaged() { return ctx.isPackaged; },
     getVersion: ctx.getVersion,
     getPath: vi.fn(() => ctx.userDataPath),
   },
@@ -53,36 +59,47 @@ vi.mock("electron", () => ({
 }));
 
 import {
-  configureMacX64UpdateChannel,
+  configureUpdateSource,
   setupAutoUpdater,
 } from "./updater";
 import { updaterPreferencesPath } from "./updater-preferences";
+import { autoUpdater } from "electron-updater";
 
-describe("macOS x64 update channel", () => {
-  it("does not touch established architecture paths", () => {
-    for (const [platform, arch] of [
-      ["darwin", "arm64"],
-      ["win32", "x64"],
-      ["win32", "arm64"],
-      ["linux", "arm64"],
-    ] as const) {
-      const updater = { channel: null, allowDowngrade: true };
-
-      configureMacX64UpdateChannel(updater, platform, arch);
-
-      expect(updater).toEqual({ channel: null, allowDowngrade: true });
-    }
+describe("owned desktop update source", () => {
+  it("rejects a version below the recorded baseline without weakening the platform gate", async () => {
+    const info = { version: "0.6.3", files: [], path: "test", sha512: "test", releaseDate: "2026-10-16" };
+    expect(() => autoUpdater.isUpdateSupported({ ...info, version: "0.6.2-rc.1" })).toThrow("below");
+    ctx.platformSupportsUpdate.mockReturnValueOnce(false);
+    await expect(Promise.resolve(autoUpdater.isUpdateSupported(info))).resolves.toBe(false);
+    expect(ctx.platformSupportsUpdate).toHaveBeenCalledWith(info);
+    await expect(Promise.resolve(autoUpdater.isUpdateSupported(info))).resolves.toBe(true);
   });
-
-  it("does not enable downgrades when selecting an architecture feed", () => {
-    const updater = { channel: null, allowDowngrade: true };
-
-    configureMacX64UpdateChannel(updater, "darwin", "x64");
-
-    expect(updater).toEqual({
-      channel: "latest-x64",
-      allowDowngrade: false,
+  it.each([
+    ["darwin", "arm64", null],
+    ["darwin", "x64", "latest-x64"],
+    ["win32", "x64", null],
+    ["win32", "arm64", "latest-arm64"],
+    ["linux", "x64", null],
+    ["linux", "arm64", null],
+  ] as const)("pins %s/%s to the owned stable feed without downgrades", (platform, arch, expectedChannel) => {
+    let channel: string | null = null;
+    const updater = {
+      setFeedURL: vi.fn(),
+      allowDowngrade: true,
+      allowPrerelease: true,
+      get channel() { return channel; },
+      set channel(value: string | null) {
+        channel = value;
+        this.allowDowngrade = true;
+      },
+    };
+    configureUpdateSource(updater, platform, arch);
+    expect(updater.setFeedURL).toHaveBeenCalledWith({
+      provider: "github", owner: "dunzic", repo: "multica-worker",
     });
+    expect(updater.channel).toBe(expectedChannel);
+    expect(updater.allowDowngrade).toBe(false);
+    expect(updater.allowPrerelease).toBe(false);
   });
 });
 
@@ -167,6 +184,8 @@ describe("setupAutoUpdater", () => {
     ctx.downloadUpdate.mockClear();
     ctx.quitAndInstall.mockClear();
     ctx.getVersion.mockClear();
+    ctx.getVersion.mockReturnValue("0.6.2");
+    ctx.isPackaged = true;
   });
 
   afterEach(() => {
@@ -232,6 +251,22 @@ describe("setupAutoUpdater", () => {
     });
 
     expect(ctx.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replace a local development package with a public release", async () => {
+    ctx.getVersion.mockReturnValue("0.6.2-135-g73be2734f-dirty");
+    setupAutoUpdater(() => null);
+    await invokeIpc("updater:get-preferences");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(ctx.checkForUpdates).not.toHaveBeenCalled();
+    await expect(invokeIpc("updater:check")).resolves.toMatchObject({ ok: false, error: expect.stringContaining("development") });
+    expect(ctx.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it("reports a release lookup failure instead of claiming the installation is up to date", async () => {
+    ctx.checkForUpdates.mockRejectedValueOnce(new Error("No published release"));
+    setupAutoUpdater(() => null);
+    await expect(invokeIpc("updater:check")).resolves.toEqual({ ok: false, error: "No published release" });
   });
 
   it("forwards update progress to a live renderer", () => {

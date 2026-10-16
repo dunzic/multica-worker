@@ -3,9 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Build a self-contained sandbox with stub `curl` and a tarball that the
-# release-binary fallback path will download. Each test supplies its own
-# `brew` stub to model a specific Homebrew failure mode.
+# Build a self-contained sandbox with stub `curl` and a release tarball.
+# No test may contact a release server or replace the user's installed CLI.
 _setup_sandbox() {
   local tmp="$1"
   local stub_bin="$tmp/stub-bin"
@@ -15,6 +14,7 @@ _setup_sandbox() {
 
   cat >"$payload_dir/multica" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${MULTICA_TEST_INCOMPATIBLE_BINARY:-}" == 1 && "$*" == *"--check-compatibility"* ]]; then exit 1; fi
 echo "multica v0.3.2 (commit: test)"
 STUB
   chmod +x "$payload_dir/multica"
@@ -22,8 +22,34 @@ STUB
 
   cat >"$stub_bin/curl" <<'STUB'
 #!/usr/bin/env bash
-if [[ "$*" == *"-sI"* ]]; then
-  printf 'HTTP/2 302\r\nlocation: https://github.com/dunzic/multica-worker/releases/tag/v0.3.2\r\n'
+if [[ -n "${MULTICA_TEST_RELEASE_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$MULTICA_TEST_RELEASE_LOG"
+fi
+if [[ "$*" == *"-sI"* || "$*" == *"-fsSI"* ]]; then
+  case "${MULTICA_TEST_RELEASE_MODE:-}" in
+    no-release)
+      printf 'HTTP/2 302\r\nlocation: https://github.com/dunzic/multica-worker/releases\r\n' ;;
+    invalid-tag)
+      printf 'HTTP/2 302\r\nlocation: https://github.com/dunzic/multica-worker/releases/tag/not-a-version\r\n' ;;
+    prerelease)
+      printf 'HTTP/2 302\r\nlocation: https://github.com/dunzic/multica-worker/releases/tag/v0.6.4-rc.1\r\n' ;;
+    leading-zero)
+      printf 'HTTP/2 302\r\nlocation: https://github.com/dunzic/multica-worker/releases/tag/v0.06.4\r\n' ;;
+    foreign-repository)
+      printf 'HTTP/2 302\r\nlocation: https://github.com/multica-ai/multica/releases/tag/v0.3.2\r\n' ;;
+    no-location)
+      printf 'HTTP/2 200\r\ncontent-type: text/html\r\n' ;;
+    network-error)
+      echo 'curl: (7) simulated connection failure' >&2
+      exit 7 ;;
+    http-error)
+      echo 'curl: (22) simulated HTTP 403' >&2
+      exit 22 ;;
+    mixed-case)
+      printf 'HTTP/2 302\r\nLoCaTiOn: https://github.com/dunzic/multica-worker/releases/tag/v0.3.2\r\n' ;;
+    *)
+      printf 'HTTP/2 302\r\nlocation: https://github.com/dunzic/multica-worker/releases/tag/v0.3.2\r\n' ;;
+  esac
   exit 0
 fi
 
@@ -50,6 +76,7 @@ if [[ -z "$out" ]]; then
   exit 2
 fi
 if [[ "$url" == *checksums.txt ]]; then
+  if [[ "${MULTICA_TEST_RELEASE_MODE:-}" == missing-checksums ]]; then exit 22; fi
   if command -v sha256sum >/dev/null; then
     hash=$(sha256sum "$MULTICA_TEST_ARCHIVE" | awk '{print $1}')
   else
@@ -62,21 +89,31 @@ if [[ "$url" == *checksums.txt ]]; then
     done
   done >"$out"
 else
+  if [[ "${MULTICA_TEST_RELEASE_MODE:-}" == missing-asset ]]; then exit 22; fi
   cp "$MULTICA_TEST_ARCHIVE" "$out"
 fi
 STUB
   chmod +x "$stub_bin/curl"
 }
 
-_run_installer() {
+_invoke_installer() {
   local tmp="$1"
-  local out="$tmp/install.out"
-  local err="$tmp/install.err"
-  if ! PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
+  shift
+  : >"$tmp/release.log"
+  PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
     HOME="$tmp/home" \
     MULTICA_BIN_DIR="$tmp/install-bin" \
     MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
-    bash "$ROOT_DIR/scripts/install.sh" >"$out" 2>"$err"; then
+    MULTICA_TEST_RELEASE_LOG="$tmp/release.log" \
+    env "$@" bash "$ROOT_DIR/scripts/install.sh" >"$tmp/install.out" 2>"$tmp/install.err"
+}
+
+_run_installer() {
+  local tmp="$1"
+  shift
+  local out="$tmp/install.out"
+  local err="$tmp/install.err"
+  if ! _invoke_installer "$tmp" "$@"; then
     echo "install.sh exited non-zero" >&2
     cat "$out" >&2 || true
     cat "$err" >&2 || true
@@ -97,6 +134,101 @@ _run_installer() {
   fi
   if grep -q "via Homebrew" "$out"; then
     echo "installer must not select a community Homebrew package" >&2
+    return 1
+  fi
+}
+
+test_incompatible_binary_preserves_existing_installation() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_sandbox "$tmp"
+  cp "$tmp/payload/multica" "$tmp/install-bin/multica"
+  if _invoke_installer "$tmp" MULTICA_TEST_INCOMPATIBLE_BINARY=1; then
+    echo "installer must reject an incompatible binary" >&2
+    return 1
+  fi
+  cmp "$tmp/payload/multica" "$tmp/install-bin/multica"
+  if [[ -e "$tmp/home/.bashrc" || -e "$tmp/home/.zshrc" ]]; then
+    echo "incompatibility must not change shell startup files" >&2
+    return 1
+  fi
+}
+
+test_invalid_release_metadata_stops_before_download() {
+  local tmp mode expected
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_sandbox "$tmp"
+  cp "$tmp/payload/multica" "$tmp/install-bin/multica"
+
+  while IFS='|' read -r mode expected; do
+    if _invoke_installer "$tmp" MULTICA_TEST_RELEASE_MODE="$mode"; then
+      echo "installer must reject $mode" >&2
+      return 1
+    fi
+    if ! grep -q "$expected" "$tmp/install.err"; then
+      echo "$mode: expected diagnostic: $expected" >&2
+      cat "$tmp/install.err" >&2
+      return 1
+    fi
+    if grep -q '/releases/download/' "$tmp/release.log"; then
+      echo "$mode: invalid metadata must not trigger an asset download" >&2
+      return 1
+    fi
+    cmp "$tmp/payload/multica" "$tmp/install-bin/multica"
+    if [[ -e "$tmp/home/.bashrc" || -e "$tmp/home/.zshrc" ]]; then
+      echo "$mode: failure must not modify shell startup files" >&2
+      return 1
+    fi
+  done <<'CASES'
+no-release|No published CLI release
+invalid-tag|Invalid release tag
+prerelease|Invalid release tag
+leading-zero|Invalid release tag
+foreign-repository|Unexpected release redirect
+no-location|Unexpected release redirect
+network-error|Could not check releases
+http-error|Could not check releases
+CASES
+}
+
+test_missing_release_assets_preserve_existing_installation() {
+  local tmp mode expected
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_sandbox "$tmp"
+  cp "$tmp/payload/multica" "$tmp/install-bin/multica"
+
+  while IFS='|' read -r mode expected; do
+    if _invoke_installer "$tmp" MULTICA_TEST_RELEASE_MODE="$mode"; then
+      echo "installer must reject $mode" >&2
+      return 1
+    fi
+    if ! grep -q "$expected" "$tmp/install.err"; then
+      echo "$mode: expected diagnostic: $expected" >&2
+      cat "$tmp/install.err" >&2
+      return 1
+    fi
+    cmp "$tmp/payload/multica" "$tmp/install-bin/multica"
+    if [[ -e "$tmp/home/.bashrc" || -e "$tmp/home/.zshrc" ]]; then
+      echo "$mode: failure must not modify shell startup files" >&2
+      return 1
+    fi
+  done <<'CASES'
+missing-asset|Could not download CLI asset
+missing-checksums|Could not download checksums
+CASES
+}
+
+test_release_redirect_headers_are_case_insensitive() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_sandbox "$tmp"
+  _run_installer "$tmp" MULTICA_TEST_RELEASE_MODE=mixed-case
+  if ! grep -q '/download/v0.3.2/multica-cli-0.3.2-' "$tmp/release.log"; then
+    echo 'expected a versioned CLI archive URL' >&2
     return 1
   fi
 }
@@ -558,10 +690,14 @@ STUB
 }
 
 test_installs_owned_binary_without_homebrew
+test_incompatible_binary_preserves_existing_installation
 test_replaces_same_version_community_binary
 test_corrupted_archive_is_not_installed
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
+test_invalid_release_metadata_stops_before_download
+test_missing_release_assets_preserve_existing_installation
+test_release_redirect_headers_are_case_insensitive
 test_with_server_uses_compose_published_ports
 test_with_server_fails_when_compose_port_is_unavailable
 echo "install.sh tests passed"

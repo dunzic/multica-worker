@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,12 +33,19 @@ for (const [platform, arch, goos, goarch, foreignCaller] of [
         mkdirSync(bin);
         mkdirSync(join(root, "server"));
         mkdirSync(caller);
+        mkdirSync(join(root, "scripts"));
+        mkdirSync(join(root, "server/internal/buildinfo"), { recursive: true });
+        for (const name of ["check-distribution.mjs", "release-compatibility.mjs"]) {
+          copyFileSync(new URL(`../../../scripts/${name}`, import.meta.url), join(root, "scripts", name));
+        }
+        copyFileSync(new URL("../../../server/internal/buildinfo/distribution.json", import.meta.url), join(root, "server/internal/buildinfo/distribution.json"));
         for (const name of ["bundle-cli.mjs", "package.mjs"]) {
           copyFileSync(join(scriptDir, name), join(scripts, name));
         }
         fakeExecutable(join(bin, "git"), `
 const args = process.argv.slice(2);
 if (args[0] === "describe") console.log("v9.9.9");
+else if (args[0] === "merge-base") process.exit(process.env.TEST_MISSING_REVISION === "true" ? 1 : 0);
 else if (args.join(" ") === "rev-parse --short HEAD") console.log("abc1234");
 else if (args.join(" ") === "rev-parse HEAD") {
   if (process.env.TEST_MISSING_REVISION === "true") process.exit(1);
@@ -55,11 +62,17 @@ else if (args[0] === "build") {
 } else process.exit(2);
 `);
         fakeExecutable(join(bin, "codesign"), "process.exit(0);\n");
-        execFileSync(process.execPath, [join(scripts, "bundle-cli.mjs"), "--target-platform", platform, "--target-arch", arch], {
+        const buildCli = () => execFileSync(process.execPath, [join(scripts, "bundle-cli.mjs"), "--target-platform", platform, "--target-arch", arch], {
           cwd: foreignCaller ? caller : root,
           env: { PATH: bin, HOME: root, TEST_SOURCE_ROOT: realpathSync(root), TEST_BUILD_RECORD: record, TEST_MISSING_REVISION: String(missingRevision) },
           stdio: "pipe",
         });
+        if (missingRevision) {
+          assert.throws(buildCli, /missing or is not contained/);
+          assert.equal(existsSync(record), false, "missing ancestry must block Go before building");
+          return;
+        }
+        buildCli();
         const build = JSON.parse(readFileSync(record, "utf8"));
         const flags = build.args[build.args.indexOf("-ldflags") + 1].split(" ");
         assert.ok(flags.includes("main.version=9.9.9"));

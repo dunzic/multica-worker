@@ -24,6 +24,7 @@ jobs:
     outputs:
       tag_name: ${{ steps.release_meta.outputs.tag_name }}
       is_stable: ${{ steps.release_meta.outputs.is_stable }}
+      release_scope: ${{ steps.scope.outputs.release_scope }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +51,15 @@ jobs:
           else
             echo "is_stable=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify offline distribution baseline and release version
+        run: node scripts/check-distribution.mjs --release --version "$GITHUB_REF_NAME"
+
+      - name: Read explicit publication scope from the annotated tag
+        id: scope
+        run: |
+          scope=$(node scripts/release-scope.mjs "$GITHUB_REF_NAME")
+          echo "release_scope=$scope" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -80,8 +90,56 @@ jobs:
         if: ${{ vars.ALLOW_VULN_BYPASS_FOR_TAG == github.ref_name }}
         run: echo "::warning::govulncheck was explicitly skipped for ${GITHUB_REF_NAME}; see .github/RELEASING.md"
 
-  release:
+  installer-verify:
     needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "~1.26.9"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Installer and release-contract regressions
+        run: node --test scripts/distribution-targets.test.mjs scripts/package-windows-cli.test.mjs scripts/release-compatibility.test.mjs scripts/release-scope.test.mjs
+      - name: POSIX installer regressions
+        if: runner.os != 'Windows'
+        run: |
+          bash scripts/install.test.sh
+          node --test apps/desktop/scripts/bundle-cli.node-test.mjs
+      - name: Windows PowerShell 5.1 installer regressions
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/install.ps1.test.ps1
+      - name: PowerShell 7 installer regressions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/install.ps1.test.ps1
+      - name: Build and execute native CLI metadata check
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          suffix=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=".exe"; fi
+          binary="$RUNNER_TEMP/multica-smoke$suffix"
+          commit=$(git rev-parse HEAD)
+          cd server
+          go build -ldflags "-X main.version=${GITHUB_REF_NAME#v} -X main.commit=${commit:0:9} -X main.buildCommit=$commit" -o "$binary" ./cmd/multica
+          "$binary" version --check-compatibility --expected-version "$GITHUB_REF_NAME"
+          "$binary" --help
+
+  release:
+    needs: [verify, installer-verify]
     # Publish only to the owned fork, never to the community repository.
     if: github.repository == 'dunzic/multica-worker'
     runs-on: ubuntu-latest
@@ -111,12 +169,57 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  cli-acceptance:
+    needs: [verify, release]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Last owned main before the installer repair. This is a real older
+      # source build, not a current binary relabeled to fake an upgrade.
+      - name: Checkout historical owned CLI for upgrade acceptance
+        uses: actions/checkout@v4
+        with:
+          ref: 73be2734f8e2cd096be5856e385ce8498151c798
+          path: .context/upgrade-source
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "~1.26.9"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Verify public one-line installation and real older-build upgrade
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          suffix=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=".exe"; fi
+          old_binary="$RUNNER_TEMP/multica-previous$suffix"
+          (
+            cd .context/upgrade-source
+            previous_version=$(git describe --tags --always)
+            previous_commit=$(git rev-parse HEAD)
+            cd server
+            go build -ldflags "-X main.version=$previous_version -X main.commit=${previous_commit:0:9} -X main.buildCommit=$previous_commit" -o "$old_binary" ./cmd/multica
+          )
+          node scripts/verify-cli-release.mjs "$GITHUB_REF_NAME" "$old_binary"
+
   # Multi-arch images are built natively per platform on dedicated runners
   # (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) and merged into a
   # manifest list. This avoids QEMU emulation, which was making the Next.js
   # arm64 build run for 30+ minutes per release.
   docker-backend-build:
     needs: verify
+    if: needs.verify.outputs.release_scope == 'full'
     strategy:
       fail-fast: false
       matrix:
@@ -186,6 +289,7 @@ jobs:
 
   docker-backend-merge:
     needs: [verify, docker-backend-build]
+    if: needs.verify.outputs.release_scope == 'full'
     runs-on: ubuntu-latest
     concurrency:
       group: release-docker-backend-${{ github.ref }}
@@ -234,6 +338,7 @@ jobs:
 
   docker-web-build:
     needs: verify
+    if: needs.verify.outputs.release_scope == 'full'
     strategy:
       fail-fast: false
       matrix:
@@ -303,6 +408,7 @@ jobs:
 
   docker-web-merge:
     needs: [verify, docker-web-build]
+    if: needs.verify.outputs.release_scope == 'full'
     runs-on: ubuntu-latest
     concurrency:
       group: release-docker-web-${{ github.ref }}
@@ -351,7 +457,7 @@ jobs:
 
   helm-chart:
     needs: [verify, docker-backend-merge, docker-web-merge]
-    if: github.repository_owner == 'multica-ai'
+    if: needs.verify.outputs.release_scope == 'full' && github.repository_owner == 'multica-ai'
     runs-on: ubuntu-latest
     concurrency:
       group: release-helm-chart-${{ github.ref }}
@@ -396,7 +502,8 @@ jobs:
   # can be signed + notarized with Apple Developer credentials that are
   # not (yet) wired into CI.
   desktop:
-    needs: release
+    needs: [verify, release]
+    if: needs.verify.outputs.release_scope == 'full'
     strategy:
       fail-fast: false
       matrix:

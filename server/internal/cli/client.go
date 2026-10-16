@@ -214,6 +214,9 @@ func NewAPIClient(baseURL, workspaceID, token string) *APIClient {
 // differ on every read and therefore defeat agent prompt caching.
 const clientCapabilities = "stable_attachment_urls"
 
+// CapabilityNames exposes the same protocol claims sent on CLI requests.
+func CapabilityNames() []string { return strings.Split(clientCapabilities, ",") }
+
 func (c *APIClient) setHeaders(req *http.Request) {
 	req.Header.Set("X-Client-Capabilities", clientCapabilities)
 	if c.Token != "" {

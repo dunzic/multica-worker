@@ -111,29 +111,25 @@ detect_os() {
 install_cli_binary() {
   info "Installing Multica CLI from GitHub Releases..."
 
-  # Get latest release tag
   local latest
-  latest=$(curl -sI "$REPO_WEB_URL/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n' || true)
-  if [ -z "$latest" ]; then
-    fail "Could not determine latest release. Check your network connection."
-  fi
+  latest=$(get_latest_version) || exit 1
 
   local version="${latest#v}"
-  local url="https://github.com/dunzic/multica-worker/releases/download/${latest}/multica-cli-${version}-${OS}-${ARCH}.tar.gz"
+  local asset="multica-cli-${version}-${OS}-${ARCH}.tar.gz"
+  local url="$REPO_WEB_URL/releases/download/${latest}/${asset}"
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
   info "Downloading $url ..."
-  if ! curl -fsSL "$url" -o "$tmp_dir/multica.tar.gz"; then
+  if ! curl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$tmp_dir/multica.tar.gz"; then
     rm -rf "$tmp_dir"
-    fail "Failed to download CLI binary."
+    fail "Could not download CLI asset '$asset'. Check your connection and confirm it is published at $REPO_WEB_URL/releases/tag/$latest. The installed CLI was not changed."
   fi
 
-  if ! curl -fsSL "$REPO_WEB_URL/releases/download/${latest}/checksums.txt" -o "$tmp_dir/checksums.txt"; then
+  if ! curl -fsSL --connect-timeout 10 --max-time 60 "$REPO_WEB_URL/releases/download/${latest}/checksums.txt" -o "$tmp_dir/checksums.txt"; then
     rm -rf "$tmp_dir"
     fail "Could not download checksums; refusing to install an unverified binary."
   fi
-  local asset="multica-cli-${version}-${OS}-${ARCH}.tar.gz"
   local expected actual
   expected=$(awk -v name="$asset" '$2 == name {print $1}' "$tmp_dir/checksums.txt")
   if command_exists sha256sum; then
@@ -150,6 +146,13 @@ install_cli_binary() {
   fi
 
   tar -xzf "$tmp_dir/multica.tar.gz" -C "$tmp_dir" multica
+
+  # The checksum binds bytes to this release; the binary must also report a
+  # matching version and satisfy its recorded offline compatibility baseline.
+  if ! "$tmp_dir/multica" version --check-compatibility --expected-version "$version"; then
+    rm -rf "$tmp_dir"
+    fail "Downloaded CLI failed its version/baseline compatibility check. The installed CLI was not changed."
+  fi
 
   # Install outside Homebrew so a community package-manager upgrade cannot
   # overwrite our binary. Scripted installs can override MULTICA_BIN_DIR.
@@ -188,8 +191,30 @@ add_to_path() {
 }
 
 get_latest_version() {
-  # grep exits 1 when no match; use `|| true` to avoid triggering pipefail
-  curl -sI "$REPO_WEB_URL/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n' || true
+  local headers location tag
+  if ! headers=$(curl -fsSI --connect-timeout 10 --max-time 30 "$REPO_WEB_URL/releases/latest"); then
+    warn "Could not check releases at $REPO_WEB_URL/releases/latest. Check your connection or GitHub availability and retry."
+    return 1
+  fi
+
+  location=$(printf '%s\n' "$headers" | awk 'tolower($1) == "location:" { sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); print }')
+  case "$location" in
+    "$REPO_WEB_URL/releases" | "$REPO_WEB_URL/releases/")
+      warn "No published CLI release is available at $REPO_WEB_URL/releases. This fork must publish its CLI archives and checksums.txt before installation; community binaries will not be substituted."
+      return 1
+      ;;
+    "$REPO_WEB_URL/releases/tag/"*) tag="${location#"$REPO_WEB_URL/releases/tag/"}" ;;
+    *)
+      warn "Unexpected release redirect from $REPO_WEB_URL/releases/latest; refusing to construct a download URL."
+      return 1
+      ;;
+  esac
+
+  if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    warn "Invalid release tag from $REPO_WEB_URL/releases/latest; expected a published vX.Y.Z version."
+    return 1
+  fi
+  printf '%s' "$tag"
 }
 
 get_selfhost_ref() {
@@ -199,7 +224,7 @@ get_selfhost_ref() {
   fi
 
   local latest
-  latest=$(get_latest_version)
+  latest=$(get_latest_version) || latest=""
   if [ -n "$latest" ]; then
     printf '%s' "$latest"
     return
@@ -475,7 +500,7 @@ main() {
         echo "                        (default: \$HOME/.multica/server)"
         echo "  MULTICA_BIN_DIR       Target directory for the CLI binary when"
         echo "                        installing from GitHub Releases"
-        echo "                        (default: /usr/local/bin, then \$HOME/.local/bin)"
+        echo "                        (default: \$HOME/.local/bin)"
         echo "  MULTICA_SELFHOST_REF  Git ref to check out for self-host assets"
         echo "                        (default: latest release tag, falling back to main)"
         echo ""

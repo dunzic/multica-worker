@@ -104,6 +104,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # Bundled CLI provenance is checked against local upstream ancestry.
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -864,14 +867,16 @@ jobs:
 
       - name: Test shell installers
         if: runner.os != 'Windows'
-        run: bash scripts/install.test.sh
+        run: |
+          bash scripts/install.test.sh
+          node --test apps/desktop/scripts/bundle-cli.node-test.mjs
 
       - uses: actions/setup-node@v6
         with:
           node-version: 22
 
       - name: Verify fork distribution targets
-        run: node --test scripts/distribution-targets.test.mjs scripts/package-windows-cli.test.mjs
+        run: node --test scripts/distribution-targets.test.mjs scripts/package-windows-cli.test.mjs scripts/release-compatibility.test.mjs scripts/release-scope.test.mjs
 
       - name: Test installer with Windows PowerShell 5.1
         if: runner.os == 'Windows'

@@ -26,6 +26,9 @@ for (const [name, files, selected] of [
   ["daemon dependency", ["server/internal/skill/service.go"], ["backend", "runtime"]],
   ["native test compilation dependency", ["server/pkg/db/generated/issues.sql.go"], ["backend", "sqlc", "runtime"]],
   ["Go dependencies", ["server/go.mod", "server/go.sum"], ["backend", "runtime"]],
+  ["offline distribution baseline", ["server/internal/buildinfo/distribution.json"], ["frontend", "backend", "runtime", "installer"]],
+  ["shared compatibility helper", ["scripts/release-compatibility.mjs"], ["frontend", "runtime", "quality", "installer"]],
+  ["offline packaging check", ["scripts/check-distribution.mjs"], ["frontend", "quality", "installer"]],
   ["Helm only", ["deploy/helm/multica/templates/deployment.yaml"], ["scripts"]],
   ["container entrypoint", ["docker/entrypoint.sh"], ["scripts"]],
   ["selfhost config", [".env.example"], ["scripts", "installer"]],
@@ -81,6 +84,15 @@ const headings = [...jobSource.matchAll(/^  ([\w-]+):$/gm)];
 const jobs = Object.fromEntries(headings.map((match, index) => [
   match[1], jobSource.slice(match.index, headings[index + 1]?.index),
 ]));
+
+test("desktop builds retain local ancestry and invalidate cross-package compatibility inputs", () => {
+  assert.match(jobs["frontend-build"], /fetch-depth: 0/);
+  const turbo = readFileSync(new URL("../turbo.json", import.meta.url), "utf8");
+  const globals = turbo.match(/"globalDependencies":\s*\[([^\]]+)\]/)?.[1] ?? "";
+  for (const input of ["server/internal/buildinfo/**", "scripts/release-compatibility.*", "scripts/check-distribution.mjs"]) {
+    assert.ok(globals.includes(JSON.stringify(input)), `missing global cache input: ${input}`);
+  }
+});
 function field(source, pattern) {
   const match = source.match(pattern);
   assert.ok(match, `Missing production field: ${pattern}`);

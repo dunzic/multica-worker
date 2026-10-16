@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { deriveVersion } from "../apps/desktop/scripts/package.mjs";
+import { checkDistribution } from "./check-distribution.mjs";
 
 export function packageWindowsCli(root, version = deriveVersion(root)) {
   if (!version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
@@ -58,5 +59,6 @@ export function packageWindowsCli(root, version = deriveVersion(root)) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  checkDistribution({ cwd: root });
   for (const archive of packageWindowsCli(root)) console.log(archive);
 }

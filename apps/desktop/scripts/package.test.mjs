@@ -10,9 +10,22 @@ import {
   envWithLocalBins,
   normalizeGitVersion,
   parsePackageArgs,
+  preparePublishArgs,
   resolveBuildMatrix,
   stripLeadingSeparator,
 } from "./package.mjs";
+
+describe("explicit publication gate", () => {
+  it("defaults local packaging to never publish", () => {
+    expect(preparePublishArgs([])).toEqual({ args: ["--publish", "never"], publishing: false });
+  });
+  it.each([["--publish", "always"], ["--publish=onTag"], ["-p", "onTagOrDraft"], ["-p=always"]])("recognizes explicit publication: %j", (...args) => {
+    expect(preparePublishArgs(args).publishing).toBe(true);
+  });
+  it.each([["--publish=never", "--publish", "always"], ["-p"], ["--publish=invalid"]])("rejects ambiguous or invalid publication flags: %j", (...args) => {
+    expect(() => preparePublishArgs(args)).toThrow("valid publish mode");
+  });
+});
 
 describe("packaging toolchain preflight", () => {
   it("rejects missing Go before clearing previous output or reusing a stale CLI", () => {

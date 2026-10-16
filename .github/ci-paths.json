@@ -1,5 +1,8 @@
 {
   "frontend": [
+    "scripts/check-distribution.mjs",
+    "server/internal/buildinfo/**",
+    "scripts/release-compatibility.*",
     ".github/actions/frontend-quality/**",
     "apps/web/**",
     "apps/desktop/**",
@@ -41,6 +44,7 @@
     "scripts/ci-scope.test.mjs"
   ],
   "runtime": [
+    "scripts/release-compatibility.*",
     "packages/core/runtimes/cli-version.ts",
     "scripts/agent-cli-command-names.txt",
     "scripts/go-test-with-agent-cli-guard.sh",
@@ -109,6 +113,11 @@
     "scripts/ci-scope.test.mjs"
   ],
   "installer": [
+    "scripts/release-scope.*",
+    "scripts/verify-cli-release.mjs",
+    "server/internal/buildinfo/**",
+    "scripts/release-compatibility.*",
+    "scripts/check-distribution.mjs",
     "scripts/distribution-targets.test.mjs",
     "scripts/package-windows-cli.mjs",
     "scripts/package-windows-cli.test.mjs",

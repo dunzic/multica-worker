@@ -2,20 +2,43 @@ import { app } from "electron";
 import { execFile } from "child_process";
 import { createHash } from "crypto";
 import { createReadStream, createWriteStream, existsSync } from "fs";
-import { chmod, mkdir, rename, rm } from "fs/promises";
+import { chmod, mkdir, mkdtemp, rename, rm } from "fs/promises";
 import { join, dirname } from "path";
 import { pipeline } from "stream/promises";
-import { tmpdir } from "os";
 import { Readable } from "stream";
 
 import { selectPlatformReleaseAssetName } from "./cli-release-asset";
+import { probeCompatibleCli } from "./cli-compatibility";
+import baseline from "../../../../server/internal/buildinfo/distribution.json";
+import { requireReleaseVersion } from "../../../../scripts/release-compatibility.mjs";
 
 // Desktop prefers the bundled `multica` CLI shipped inside the app for
 // same-repo builds, but it can also repair or bootstrap a managed copy in
 // userData on first launch when the bundled binary is missing or unusable.
 
-const GITHUB_LATEST_BASE =
-  "https://github.com/dunzic/multica-worker/releases/latest/download";
+const GITHUB_RELEASES = "https://github.com/dunzic/multica-worker/releases";
+
+async function latestReleaseTag(): Promise<string> {
+  const res = await fetch("https://api.github.com/repos/dunzic/multica-worker/releases/latest", {
+    headers: { Accept: "application/vnd.github+json" },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (res.status === 404) {
+    throw new Error(`No published CLI release is available at ${GITHUB_RELEASES}`);
+  }
+  if (!res.ok) throw new Error(`release lookup failed: ${res.status} ${res.statusText}`);
+  const release: unknown = await res.json();
+  if (
+    typeof release !== "object" || release === null ||
+    !("tag_name" in release) || typeof release.tag_name !== "string" ||
+    !/^v\d+\.\d+\.\d+$/.test(release.tag_name) ||
+    !("draft" in release) || release.draft !== false ||
+    !("prerelease" in release) || release.prerelease !== false
+  ) {
+    throw new Error("Invalid stable CLI release metadata; refusing to install");
+  }
+  return release.tag_name;
+}
 
 function binaryName(): string {
   return process.platform === "win32" ? "multica.exe" : "multica";
@@ -32,7 +55,7 @@ function run(cmd: string, args: string[], cwd?: string): Promise<void> {
 }
 
 async function downloadToFile(url: string, dest: string): Promise<void> {
-  const res = await fetch(url, { redirect: "follow" });
+  const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(300_000) });
   if (!res.ok || !res.body) {
     throw new Error(`download failed: ${res.status} ${res.statusText}`);
   }
@@ -44,9 +67,9 @@ async function downloadToFile(url: string, dest: string): Promise<void> {
 
 // Fetch goreleaser's published checksums.txt and parse it into a
 // filename → sha256 lookup. Format is `<hex>  <filename>` per line.
-async function fetchChecksums(): Promise<Map<string, string>> {
-  const url = `${GITHUB_LATEST_BASE}/checksums.txt`;
-  const res = await fetch(url, { redirect: "follow" });
+async function fetchChecksums(releaseBase: string): Promise<Map<string, string>> {
+  const url = `${releaseBase}/checksums.txt`;
+  const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(30_000) });
   if (!res.ok) {
     throw new Error(
       `checksums.txt fetch failed: ${res.status} ${res.statusText}`,
@@ -92,18 +115,25 @@ async function extractArchive(archive: string, dest: string): Promise<void> {
 
 async function installFresh(): Promise<string> {
   const target = managedCliPath();
-  const checksums = await fetchChecksums();
-  const assetName = selectPlatformReleaseAssetName(checksums.keys());
+  // Resolve latest once: a release published during the download must not
+  // switch the archive out from under its checksum manifest.
+  const tag = await latestReleaseTag();
+  requireReleaseVersion(tag, baseline);
+  const releaseBase = `${GITHUB_RELEASES}/download/${tag}`;
+  const checksums = await fetchChecksums(releaseBase);
+  const assetName = selectPlatformReleaseAssetName(checksums.keys(), tag.slice(1));
   const expectedChecksum = checksums.get(assetName);
   if (!expectedChecksum) {
     throw new Error(
       `no checksum for ${assetName} in checksums.txt — refusing to install unverified binary`,
     );
   }
-  const url = `${GITHUB_LATEST_BASE}/${assetName}`;
+  const url = `${releaseBase}/${assetName}`;
 
-  const workDir = join(tmpdir(), `multica-cli-${Date.now()}`);
-  await mkdir(workDir, { recursive: true });
+  await mkdir(dirname(target), { recursive: true });
+  // Keep staging on the target filesystem so rename is atomic on Unix and
+  // a locked Windows target fails without first deleting the working CLI.
+  const workDir = await mkdtemp(join(dirname(target), ".multica-cli-"));
 
   try {
     const archivePath = join(workDir, assetName);
@@ -123,18 +153,18 @@ async function installFresh(): Promise<string> {
       );
     }
 
-    await mkdir(dirname(target), { recursive: true });
-    await rm(target, { force: true }).catch(() => {});
-    await rename(extractedBin, target);
-    await chmod(target, 0o755);
+    await chmod(extractedBin, 0o755);
 
     // macOS: ad-hoc sign so spawning the child never hits a gatekeeper quirk.
     // Non-fatal: unsigned binaries still execute when the parent app is trusted.
     if (process.platform === "darwin") {
-      await run("codesign", ["-s", "-", "--force", target]).catch((err) => {
+      await run("codesign", ["-s", "-", "--force", extractedBin]).catch((err) => {
         console.warn("[cli-bootstrap] ad-hoc codesign failed:", err);
       });
     }
+
+    await probeCompatibleCli(extractedBin, { expectedReleaseVersion: tag });
+    await rename(extractedBin, target);
 
     console.log(`[cli-bootstrap] installed CLI at ${target}`);
     return target;

@@ -86,6 +86,23 @@ foreach ($required in @(
 # ---------------------------------------------------------------------------
 $definitions = Get-InstallerDefinitions
 
+# Release parsing must fail closed before constructing a download URL.
+foreach ($releaseCase in @(
+    @{ Value = @{ tag_name = 'v0.6.3'; draft = $false; prerelease = $false }; Expected = 'v0.6.3' }
+    @{ Value = @{ tag_name = 'v0.6.3'; draft = $true; prerelease = $false }; Expected = $null }
+    @{ Value = @{ tag_name = 'v0.6.3-rc.1'; draft = $false; prerelease = $true }; Expected = $null }
+    @{ Value = @{ tag_name = 'location: https://example.invalid'; draft = $false; prerelease = $false }; Expected = $null }
+    @{ Value = @{ tag_name = 'v0.06.3'; draft = $false; prerelease = $false }; Expected = $null }
+)) {
+    $script:stubRelease = [pscustomobject]$releaseCase.Value
+    $result = & {
+        Invoke-Expression $definitions
+        function Invoke-RestMethod { return $script:stubRelease }
+        Get-LatestVersion
+    }
+    if ($result -ne $releaseCase.Expected) { Fail-Test "Get-LatestVersion accepted invalid metadata or rejected a stable release" }
+}
+
 $portReaderCases = @(
     @{ Label = "loopback binding"; Output = @("127.0.0.1:9500"); Expected = "9500" }
     @{ Label = "wildcard binding"; Output = @("0.0.0.0:9600"); Expected = "9600" }

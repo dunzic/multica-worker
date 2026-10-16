@@ -220,6 +220,9 @@ func daemonCommonCapabilities() []string {
 	}
 }
 
+// AdvertisedCapabilities exposes implemented capabilities for build diagnostics.
+func AdvertisedCapabilities() []string { return daemonCommonCapabilities() }
+
 // SetToken sets the auth token for authenticated requests.
 func (c *Client) SetToken(token string) {
 	c.token = token

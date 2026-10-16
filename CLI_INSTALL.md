@@ -37,9 +37,17 @@ Install only from this fork, even if another Multica CLI has the same version:
 curl -fsSL https://raw.githubusercontent.com/dunzic/multica-worker/main/scripts/install.sh | bash
 ```
 
-The installer verifies SHA-256 and installs to `~/.local/bin`, outside Homebrew.
+The installer verifies SHA-256 and the CLI's embedded version/baseline metadata
+before installing to `~/.local/bin`, outside Homebrew.
 Open a new terminal before using the CLI. Do not use the community Homebrew tap.
 If no owned release is published, installation fails; it does not fall back to community binaries.
+
+`No published CLI release` means this fork has not published an installable
+release, not that the computer needs a different login. A branch push, server
+deployment, or locally built DMG is not a GitHub Release. The maintainer must
+publish the approved versioned CLI archives and matching `checksums.txt` under
+this fork. Do not substitute a community download or bypass verification.
+Network/HTTP failures and missing release assets have separate diagnostics.
 
 ### Option C: Windows (PowerShell)
 
@@ -143,6 +151,25 @@ Confirm:
 If the agents list is empty, tell the user:
 
 > "The Multica daemon is running but no AI agent CLIs were detected. Please install at least one supported CLI (`claude`, `codex`, `copilot`, `opencode`, `openclaw`, `hermes`, `pi`, `cursor-agent`, or `grok`), then restart the daemon with `multica --profile turingomni daemon stop && multica --profile turingomni daemon start`."
+
+---
+
+## Version and update verification
+
+```bash
+multica version --output json
+multica version --check-compatibility
+multica update
+```
+
+The JSON report distinguishes the package version, full build commit, absorbed
+upstream baseline, and implemented capabilities. The compatibility check is
+offline; it does not contact GitHub or log in. `multica update` contacts the
+owned release channel and validates the downloaded binary before replacement.
+Missing metadata or capabilities, an older baseline, a mismatched tag, or an
+invalid checksum stops the update. Local development builds are not eligible
+for public self-updates; keep their real Git-derived label and rebuild locally.
+The executable name remains `multica` / `multica.exe`.
 
 ---
 

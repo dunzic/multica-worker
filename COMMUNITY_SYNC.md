@@ -99,6 +99,13 @@ resolution rather than choosing an entire side:
    bundle version, embedded CLI version, and SHA-256. Ad-hoc signing is not Apple
    notarization and must be reported as such.
 
+   Update `server/internal/buildinfo/distribution.json` with the reviewed
+   absorbed release, release commit, intake commit, CLI minimum and required
+   capabilities. Run `node scripts/check-distribution.mjs` locally. Do not
+   derive the compatibility floor from GitHub's live latest release, relabel an
+   old binary, or remove a capability check to make packaging pass. Follow the
+   offline/publication gates in `.github/RELEASING.md`.
+
 8. Add a row to the decision ledger below. Include both source and resulting
    commits so a later scan can detect rebases and squash merges correctly.
 
@@ -106,6 +113,7 @@ resolution rather than choosing an entire side:
 
 | Date | Source | Decision and local result | Verification |
 | --- | --- | --- | --- |
+| 2026-10-16 | Official `v0.6.3` at `18fa9f728`; owned Releases API returned an empty list | Assessed only; no new upstream merge. Current absorbed baseline remains `v0.6.2` at `7ab92d7622ecd81d179a8d83ae2dea74835a5069`, through `52b26900c51f759b87707b4ea35fa9f141b83b52`. On `codex/fix-cli-installer-20261016`, repair malformed no-release redirects and add a checked-in offline compatibility record plus owned CLI/desktop update gates. Read AuditWorker Platform's updater as a reference only; no edits there. These are uncommitted local changes, not published packages or deployment. | Local Git ancestry and official/owned release checks; installer, semantic-version, compatibility and desktop/CLI regression checks. Full verification and publication/native acceptance boundaries are recorded below. |
 | 2026-09-28 | `upstream/main` through `fa5d470ae40a` | Absorbed by merge `4a70ce5dc9cf`; retained fork-specific features during conflict resolution. | Full Go suite, TypeScript typecheck, desktop/core tests, views tests and locale parity, Helm lint/render, Mac arm64 packaging. |
 | 2026-09-28 | Hermes development chain `be10b427d`..`4bd1b3344` | Skipped as already equivalent to official squash `138134d34104` on `upstream/main`; combined stable patch ID matched. | Patch-equivalence and ancestry checks. |
 | 2026-09-28 | Attachment-viewer chain `f5c91a9e0`..`26e473c10` | Skipped as already equivalent to official squash `6dc6a0b9a2db` on `upstream/main`; combined stable patch ID matched. | Patch-equivalence and ancestry checks. |
@@ -118,6 +126,102 @@ resolution rather than choosing an entire side:
 
 | 2026-10-14 | Own repository `dunzic/aiwork`: `origin/devNew` at `6459e1c6f`, contained by `origin/feat/personal-global-assistant` at `26bc8ebeb`; workspace Chat v2 snapshot `8c056adb2`, batch attachments `4933639fd`, DOCX preview antecedent `0eecaf3c1` | Semantically adapted the workspace group/topic collaboration model, batch-file composer, and protected DOCX body-text preview as `4f87657cc` on `codex/restore-chat-collaboration-20261014`, based on `c3ab9a93e4d337f265ace65be49586b8ce6b670a`. User authorized commit and push to the fork; see publication scope below. No wholesale branch merge, main landing, release, installer or deployment. Rejected the superseded `feat/conversations-platform` schema at `ad74f43f9`; deferred unrelated personal/global assistant, voice and permission-overhaul changes. | Real isolated PostgreSQL fixtures cover upload, message binding, complete daemon claim, multiple agents, transactional completion, cancellation, privacy and cleanup. Four review fixes plus authenticated PDF preview and commit-ordered daemon wakeup are covered by the second-pass checks below. Real Chrome/Codex HR feedback and UI-sent follow-up passed; unrelated full-suite failures remain recorded separately. |
 | 2026-10-14 | Own repository `dunzic/aiwork`: Office preview `0eecaf3c1e9e`, current-modal port `aa599dd5fab5`, copied-file-card fix `a7628d0f9b0c`, slides-to-PDF `fee0d16b8da3` | Additive semantic adaptation committed as `a1bd2d551` on `codex/restore-chat-collaboration-20261014` after `535630ecc44f`; fork publication authorized on 2026-10-15 as recorded below. Keep the upstream viewer and original MD/CSV/JSON/PDF renderers; add private on-demand Word/Excel/PPT PDF rendering, shared across descriptions/comments/replies. Resolve copied references from trusted app/API origins through authenticated attachment ownership checks. Do not revive old browser parsers, synthesize attachment records, rewrite foreign/localhost hosts, create derived public files, or import the old FK/cascade migration/upload goroutines. | See Office preview verification and deployment gates below. No production access, migration, release, installer or deployment in this change. |
+
+## 2026-10-16 CLI distribution repair and acceptance boundary
+
+The owned `releases/latest` redirected to the release listing because there
+were no public releases. The shell installer previously treated that entire
+Location header as a version. It now rejects listing/malformed/foreign
+redirects before downloading and reports the absence of an owned release.
+The official `v0.6.3` has CLI assets, but is not an authorized substitute for
+this fork's binaries and has not been merged by this repair.
+
+The local distribution manifest records actual absorbed ancestry. Packaging
+checks it offline; Go CLI and desktop share its version/capability requirements.
+Downloaded CLI bytes must pass checksum and executable metadata checks before
+replacement. Desktop bootstrap pins one release for both manifest and archive,
+and keeps the working CLI on failure. Desktop automatic updates stay on the
+owned architecture-specific channels without downgrade or prerelease opt-in.
+Development bundles retain their real version and do not self-update.
+
+Local verification completed on 2026-10-17 (no production traffic):
+
+- Shell installer suite passed, including missing release, malformed/foreign
+  redirects, unavailable assets, checksum failure and incompatible executable.
+  Downloads and user home directories are test fixtures, not a public install.
+- Four Node suites passed 78 tests: offline compatibility/ancestry, distribution
+  targets, Windows archive packaging and CI scope/cache wiring.
+- Desktop: 62 suites / 714 tests passed; node and renderer TypeScript checks
+  (`--composite false`, matching package scripts), changed-file ESLint and
+  Electron main/preload/renderer production build passed. Build warnings for
+  `::highlight` CSS and a mixed static/dynamic emoji-picker import remain;
+  these files were not changed here. Used installed test/tool binaries because
+  the pinned pnpm bootstrap was unavailable, not a successful root-wide pnpm run.
+- Go 1.26.9, isolated no-network container: complete `internal/buildinfo`,
+  `internal/cli` and `cmd/multica` packages passed with `-race`; focused daemon
+  update/capability tests passed. The real download/verify/replace path ran
+  against a loopback fixture, replacing only a temporary test executable;
+  corrupt bytes, mismatched versions and missing capabilities preserved it.
+- A native macOS ARM64 development CLI was compiled and its JSON metadata
+  executed locally; its public-release compatibility check correctly rejected
+  the development version. Windows amd64 CLI cross-compilation and PE inspection
+  passed, but the Windows executable was not run. No daemon/login/agent CLI was
+  started. Output is confined to ignored `.context/cli-distribution-20261016/`.
+- Offline source ancestry check and `git diff --check` passed. PowerShell tests,
+  full backend/database suites, real-agent tests, public installation and native
+  signed-desktop update tests were not run.
+
+At that preparation checkpoint, no tag, commit, push, release upload,
+signing-account change, installer rollout, server deployment, or scheduled
+community tracking had been performed.
+Local tests are not public installation acceptance. Real Windows PowerShell
+installation, signed/notarized macOS/Windows desktop updates, and the prior
+mobile/native permission gates remain outstanding. Publishing requires separate
+approval after review and the checks in `.github/RELEASING.md`.
+
+### 2026-10-17 review and CLI-only publication authorization
+
+The user authorized review, fixes, regression, main integration and push to the
+owned fork, then CLI publication and real one-line install/update verification.
+This does not authorize desktop/container publication, server deployment,
+mobile release or any change to signing accounts.
+
+Review findings fixed before main integration:
+
+- P1: version tags previously started CLI, desktop and container publishers
+  together. Annotated tags now require explicit `Release-Scope: cli|full`;
+  all non-CLI publishing jobs require `full`. A failing workflow-routing
+  regression was added first and passed after the fix.
+- P2: the POSIX stable installer accepted prerelease/leading-zero tags, unlike
+  Windows. Added failing cases and aligned stable-only validation before any
+  archive download.
+- P2: all 12 desktop bundler Node tests broke when the offline gate was added
+  without updating their source fixtures. They now exercise the real gate and
+  assert missing ancestry prevents compilation. These tests are included in
+  POSIX installer CI and the release gate, not only the desktop Vitest suite.
+
+Post-fix local results: 81 Node tests plus 12 bundler Node cases, the shell
+installer suite, 714 desktop Vitest cases (including 39 packaging cases), both
+desktop TypeScript projects and changed-file ESLint passed. Both workflow YAML
+files parsed with resolved job dependencies; offline ancestry and diff checks
+passed. The default complete Go wrapper with `--race` passed in a non-root,
+no-network Go 1.26.9 container; DB-backed cases skip without a test database.
+`go tool govulncheck ./...` completed with no vulnerabilities. An initial root
+container run hit privilege-dependent fixture failures, then passed after
+using a non-root container; no product sandbox gate was disabled.
+
+The existing main CI is not all green: its database migration/cleanup fixtures,
+frontend checks, sqlc drift and self-host script checks have prior failures.
+These are not waived as server/full-product acceptance. CLI publication retains
+the full default Go/vulnerability checks and adds native CLI metadata and
+installer checks on Linux, macOS and Windows before uploading. Online acceptance
+then installs from the public main-branch command in isolated profiles, repeats
+the install, upgrades the real pre-repair owned build and checks profile
+preservation. Its completion must be recorded separately from local mocks.
+
+Select the unused `v0.6.4` fork tag: local `v0.6.3` is an imported upstream tag
+and must not be moved. This fork release does not claim to absorb upstream
+`v0.6.3`; the recorded source baseline remains `v0.6.2` plus `52b26900c`.
 
 ## 2026-10-15 Permission candidate assessment and authorized adaptation
 

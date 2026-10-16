@@ -86,7 +86,11 @@ function Get-ComposePublishedPort {
 
 function Get-LatestVersion {
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/dunzic/multica-worker/releases/latest" -ErrorAction Stop
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/dunzic/multica-worker/releases/latest" -TimeoutSec 30 -ErrorAction Stop
+        if ($release.tag_name -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or
+            $release.draft -ne $false -or $release.prerelease -ne $false) {
+            return $null
+        }
         return $release.tag_name
     } catch {
         return $null
@@ -243,7 +247,7 @@ function Install-CliBinary {
 
     $latest = Get-LatestVersion
     if (-not $latest) {
-        Write-Fail "Could not determine latest release. Check your network connection."
+        Write-Fail "Could not find a published stable CLI release in dunzic/multica-worker. Check this fork's Releases and network connection; community binaries are not a substitute."
     }
 
     $version = $latest.TrimStart('v')
@@ -307,6 +311,11 @@ function Install-CliBinary {
         Write-Fail "multica.exe not found in downloaded archive."
     }
 
+    & $exeSrc version --check-compatibility --expected-version $version
+    if ($LASTEXITCODE -ne 0) {
+        Remove-Item $tmpDir -Recurse -Force
+        Write-Fail "Downloaded CLI failed its version/baseline compatibility check. The installed CLI was not changed."
+    }
     Copy-Item $exeSrc (Join-Path $binDir "multica.exe") -Force
     Remove-Item $tmpDir -Recurse -Force
 

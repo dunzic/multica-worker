@@ -1,0 +1,18 @@
+[
+  {"left":"0.6.2","right":"0.6.2","result":0},
+  {"left":"v0.6.3","right":"0.6.2","result":1},
+  {"left":"0.6.2","right":"0.6.3","result":-1},
+  {"left":"0.10.0","right":"0.9.99","result":1},
+  {"left":"0.6.3-rc.10","right":"0.6.3-rc.2","result":1},
+  {"left":"0.6.3-rc.1","right":"0.6.3","result":-1},
+  {"left":"0.6.3+fork.1","right":"v0.6.3+fork.2","result":0},
+  {"left":"0.6.3-alpha.1","right":"0.6.3-alpha.beta","result":-1},
+  {"left":"0.6.3-alpha","right":"0.6.3-alpha.1","result":-1},
+  {"left":"0.6.2-135-g73be2734f-dirty","right":"0.6.2","result":-1},
+  {"left":"0.06.3","right":"0.6.3","invalid":true},
+  {"left":"0.6.3-rc.01","right":"0.6.3","invalid":true},
+  {"left":"0.6","right":"0.6.3","invalid":true},
+  {"left":"0.6.3+","right":"0.6.3","invalid":true},
+  {"left":"0.6.3\n","right":"0.6.3","invalid":true},
+  {"left":"dev","right":"0.6.3","invalid":true}
+]

@@ -1,5 +1,10 @@
 import { autoUpdater, type UpdateDownloadedEvent } from "electron-updater";
 import { app, type BrowserWindow, ipcMain } from "electron";
+import baseline from "../../../../server/internal/buildinfo/distribution.json";
+import {
+  isDevelopmentVersion,
+  requireReleaseVersion,
+} from "../../../../scripts/release-compatibility.mjs";
 import type {
   ManualUpdateCheckResult,
   UpdaterPreferences,
@@ -17,39 +22,47 @@ import {
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
 
-// Windows arm64 ships its own update metadata channel because
-// electron-builder's `latest.yml` is not arch-suffixed on Windows — both
-// arches would otherwise collide on the same file in the GitHub Release.
-// See scripts/package.mjs (builderArgsForTarget) for the publish-side half
-// of this pact. Pin the channel here so arm64 clients fetch
-// `latest-arm64.yml` instead of the x64 metadata.
-if (process.platform === "win32" && process.arch === "arm64") {
-  autoUpdater.channel = "latest-arm64";
-}
-
-interface ChannelConfigurableUpdater {
+interface SourceConfigurableUpdater {
+  setFeedURL(options: { provider: "github"; owner: string; repo: string }): void;
   channel: string | null;
   allowDowngrade: boolean;
+  allowPrerelease: boolean;
 }
 
-export function configureMacX64UpdateChannel(
-  updater: ChannelConfigurableUpdater,
+export function configureUpdateSource(
+  updater: SourceConfigurableUpdater,
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
 ): void {
-  if (platform !== "darwin" || arch !== "x64") return;
+  // Runtime and packaging must both select the owned fork. An upstream
+  // app-update.yml must never replace this fork's customized application.
+  updater.setFeedURL({
+    provider: "github",
+    owner: "dunzic",
+    repo: "multica-worker",
+  });
 
-  // AppUpdater.channel enables allowDowngrade as a side effect. This channel
-  // isolates a CPU architecture, not a release train, so preserve normal
-  // monotonic version behavior after selecting the architecture feed.
-  updater.channel = "latest-x64";
+  // Keep these architecture feeds aligned with scripts/package.mjs.
+  if (platform === "win32" && arch === "arm64") {
+    updater.channel = "latest-arm64";
+  } else if (platform === "darwin" && arch === "x64") {
+    updater.channel = "latest-x64";
+  }
+  // Setting a channel enables allowDowngrade in electron-updater. CPU
+  // selection is not permission to replace a newer build with an older one.
   updater.allowDowngrade = false;
+  updater.allowPrerelease = false;
 }
 
-// electron-builder does not architecture-suffix macOS update metadata.
-// package.mjs publishes macOS x64 as `latest-x64-mac.yml`; the established
-// arm64 feed and runtime path remain unchanged.
-configureMacX64UpdateChannel(autoUpdater);
+configureUpdateSource(autoUpdater);
+
+// Preserve electron-updater's OS support gate. Reject incompatible metadata
+// before its automatic download, not after an update-available event.
+const platformSupportsUpdate = autoUpdater.isUpdateSupported;
+autoUpdater.isUpdateSupported = (info) => {
+  requireReleaseVersion(info.version, baseline);
+  return platformSupportsUpdate(info);
+};
 
 const STARTUP_CHECK_DELAY_MS = 5_000;
 const PERIODIC_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -87,6 +100,9 @@ function sendToLiveRenderer(
 // callers onto the same in-flight promise.
 let inFlightCheck: Promise<unknown> | null = null;
 function checkForUpdatesOnce(): Promise<unknown> {
+  if (!app.isPackaged || isDevelopmentVersion(app.getVersion())) {
+    return Promise.reject(new Error("Local development builds cannot install public updates; use a reviewed versioned package"));
+  }
   if (inFlightCheck) return inFlightCheck;
   const p = autoUpdater
     .checkForUpdates()
@@ -126,7 +142,7 @@ export function setupAutoUpdater(getMainWindow: () => BrowserWindow | null): voi
   const runAutomaticCheck = (errorMessage: string): void => {
     void preferencesReady
       .then(() => {
-        if (!automaticUpdatesEnabled) return;
+        if (!automaticUpdatesEnabled || !app.isPackaged || isDevelopmentVersion(app.getVersion())) return;
         return checkForUpdatesOnce();
       })
       .catch((err) => {

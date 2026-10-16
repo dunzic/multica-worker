@@ -1,5 +1,3 @@
-const RELEASE_ARCHIVE_PREFIX = "multica-cli-";
-
 function platformArchiveDescriptor(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
@@ -26,6 +24,7 @@ function platformArchiveDescriptor(
 
 export function selectPlatformReleaseAssetName(
   assetNames: Iterable<string>,
+  version: string,
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
 ): string {
@@ -39,24 +38,13 @@ export function selectPlatformReleaseAssetName(
   // back to the legacy `multica_<os>_<arch>.<ext>` so older releases that
   // only ship the legacy archive keep working.
   const suffix = `-${os}-${mappedArch}.${ext}`;
-  const matches = names.filter(
-    (name) =>
-      name.startsWith(RELEASE_ARCHIVE_PREFIX) && name.endsWith(suffix),
-  );
-
-  if (matches.length === 1) {
-    return matches[0];
-  }
-  if (matches.length > 1) {
-    throw new Error(
-      `multiple release assets matched current platform ${suffix}: ${matches.join(", ")}`,
-    );
-  }
+  const versionedName = `multica-cli-${version}${suffix}`;
+  if (names.includes(versionedName)) return versionedName;
 
   const legacyName = `multica_${os}_${mappedArch}.${ext}`;
   if (names.includes(legacyName)) {
     return legacyName;
   }
 
-  throw new Error(`no release asset found for current platform: ${suffix}`);
+  throw new Error(`no release asset found for version ${version} and current platform: ${suffix}`);
 }

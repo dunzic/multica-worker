@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "distribution": "dunzic/multica-worker",
+  "upstream": {
+    "repository": "multica-ai/multica",
+    "version": "0.6.2",
+    "release_commit": "7ab92d7622ecd81d179a8d83ae2dea74835a5069",
+    "commit": "52b26900c51f759b87707b4ea35fa9f141b83b52"
+  },
+  "minimum_cli_version": "0.6.2",
+  "required_cli_capabilities": [
+    "stable_attachment_urls",
+    "local-worktree-v1",
+    "group-topics-v1",
+    "platform-skill-v1"
+  ],
+  "api_requirements": {
+    "local_worktree": "local_worktree_supported",
+    "conversation_starters": "agent_conversation_starters_supported",
+    "issue_create_properties": "issue_create_properties_supported",
+    "comment_delete_keep_replies": "comment_delete_keep_replies_supported"
+  }
+}

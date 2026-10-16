@@ -18,10 +18,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/buildinfo"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 )
 
@@ -94,60 +94,14 @@ func IsReleaseVersion(v string) bool {
 	return true
 }
 
-// IsNewerVersion reports whether latest is strictly newer than current. Both
-// arguments may carry an optional "v" prefix; non-numeric tails are ignored
-// (a 4th component, pre-release tag, etc.). Returns false if either side
-// cannot be parsed — the caller treats that as "stay on current".
+// IsNewerVersion compares semantic versions without treating a development
+// checkout as a release. Stable-channel selection remains the caller's gate.
 func IsNewerVersion(latest, current string) bool {
-	l, ok := parseReleaseVersion(latest)
-	if !ok {
+	if buildinfo.IsDevelopmentVersion(latest) || buildinfo.IsDevelopmentVersion(current) {
 		return false
 	}
-	c, ok := parseReleaseVersion(current)
-	if !ok {
-		return false
-	}
-	for i := 0; i < 3; i++ {
-		if l[i] != c[i] {
-			return l[i] > c[i]
-		}
-	}
-	return false
-}
-
-// parseReleaseVersion extracts the three numeric components of v. Returns
-// (parts, true) on success; (_, false) when v is missing, malformed, or
-// carries any non-numeric tail (a dev-describe suffix, a 4th component, a
-// pre-release tag, etc.). The strict shape is intentional: this is the only
-// parser used by IsNewerVersion, and the autoUpdateLoop must never silently
-// downgrade a developer build to a public release just because the
-// dev-describe patch happened to look numeric after trimming.
-func parseReleaseVersion(v string) ([3]int, bool) {
-	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "v"))
-	if s == "" {
-		return [3]int{}, false
-	}
-	parts := strings.Split(s, ".")
-	if len(parts) != 3 {
-		return [3]int{}, false
-	}
-	var out [3]int
-	for i, p := range parts {
-		if p == "" {
-			return [3]int{}, false
-		}
-		for _, r := range p {
-			if r < '0' || r > '9' {
-				return [3]int{}, false
-			}
-		}
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return [3]int{}, false
-		}
-		out[i] = n
-	}
-	return out, true
+	comparison, err := buildinfo.CompareVersions(latest, current)
+	return err == nil && comparison > 0
 }
 
 type GitHubReleaseAsset struct {
@@ -384,6 +338,13 @@ func UpdateViaDownload(targetVersion string) (string, error) {
 
 // UpdateViaDownloadWithTimeout downloads the latest release binary with a caller-selected timeout.
 func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Duration) (string, error) {
+	baseline, err := buildinfo.Current()
+	if err != nil {
+		return "", err
+	}
+	if err := buildinfo.RequireReleaseVersion(targetVersion, baseline); err != nil {
+		return "", err
+	}
 	// Determine current binary path.
 	exePath, err := selfexec.Resolve()
 	if err != nil {
@@ -460,7 +421,11 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 
 	// Atomic replace: write to temp file, then rename over the original.
 	dir := filepath.Dir(exePath)
-	tmpFile, err := os.CreateTemp(dir, "multica-update-*")
+	pattern := "multica-update-*"
+	if runtime.GOOS == "windows" {
+		pattern += ".exe"
+	}
+	tmpFile, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
@@ -482,6 +447,25 @@ func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Dur
 	if err := os.Chmod(tmpPath, info.Mode()); err != nil {
 		os.Remove(tmpPath)
 		return "", fmt.Errorf("chmod temp file: %w", err)
+	}
+
+	// A checksum verifies bytes, not compatibility. Inspect the verified binary
+	// before replacing the working CLI; do not trust an asset's filename alone.
+	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	probe := exec.CommandContext(probeCtx, tmpPath, "version", "--output", "json")
+	probe.WaitDelay = time.Second
+	output, err := probe.Output()
+	var report buildinfo.CLIReport
+	if err == nil {
+		err = json.Unmarshal(output, &report)
+	}
+	if err == nil {
+		err = buildinfo.ValidateCLI(report, baseline, tag)
+	}
+	if err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("downloaded CLI compatibility check failed: %w", err)
 	}
 
 	// Replace the original binary. On Windows this moves the running executable

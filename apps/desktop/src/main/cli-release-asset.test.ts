@@ -11,7 +11,7 @@ describe("selectPlatformReleaseAssetName", () => {
       "multica-cli-1.2.3-darwin-amd64.tar.gz",
     ];
 
-    expect(selectPlatformReleaseAssetName(assetNames, "darwin", "x64")).toBe(
+    expect(selectPlatformReleaseAssetName(assetNames, "1.2.3", "darwin", "x64")).toBe(
       "multica-cli-1.2.3-darwin-amd64.tar.gz",
     );
   });
@@ -19,7 +19,7 @@ describe("selectPlatformReleaseAssetName", () => {
   it("falls back to the legacy archive name when only legacy is present", () => {
     const assetNames = ["checksums.txt", "multica_darwin_amd64.tar.gz"];
 
-    expect(selectPlatformReleaseAssetName(assetNames, "darwin", "x64")).toBe(
+    expect(selectPlatformReleaseAssetName(assetNames, "1.2.3", "darwin", "x64")).toBe(
       "multica_darwin_amd64.tar.gz",
     );
   });
@@ -32,7 +32,7 @@ describe("selectPlatformReleaseAssetName", () => {
       "multica-cli-1.2.3-linux-amd64.tar.gz",
     ];
 
-    expect(selectPlatformReleaseAssetName(assetNames, "darwin", "x64")).toBe(
+    expect(selectPlatformReleaseAssetName(assetNames, "1.2.3", "darwin", "x64")).toBe(
       "multica-cli-1.2.3-darwin-amd64.tar.gz",
     );
   });
@@ -43,7 +43,7 @@ describe("selectPlatformReleaseAssetName", () => {
       "multica-cli-1.2.3-linux-amd64.tar.gz",
     ];
 
-    expect(selectPlatformReleaseAssetName(assetNames, "win32", "x64")).toBe(
+    expect(selectPlatformReleaseAssetName(assetNames, "1.2.3", "win32", "x64")).toBe(
       "multica-cli-1.2.3-windows-amd64.zip",
     );
   });
@@ -52,9 +52,16 @@ describe("selectPlatformReleaseAssetName", () => {
     expect(() =>
       selectPlatformReleaseAssetName(
         ["multica-cli-1.2.3-linux-amd64.tar.gz", "multica_linux_amd64.tar.gz"],
+        "1.2.3",
         "darwin",
         "arm64",
       ),
     ).toThrow(/no release asset found/);
+  });
+
+  it("rejects another version's archive even when its platform matches", () => {
+    expect(() => selectPlatformReleaseAssetName(
+      ["multica-cli-1.2.2-darwin-arm64.tar.gz"], "1.2.3", "darwin", "arm64",
+    )).toThrow(/no release asset found/);
   });
 });

@@ -23,6 +23,8 @@ import type {
 } from "../shared/daemon-types";
 import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
+import { probeCompatibleCli } from "./cli-compatibility";
+import { getAppVersion } from "./app-version";
 import { decideVersionAction } from "./version-decision";
 import {
   deriveProfileName,
@@ -466,25 +468,9 @@ async function probeCliBinary(
   source: "bundled" | "managed" | "path",
 ): Promise<string | null> {
   try {
-    const stdout = await new Promise<string>((resolve, reject) => {
-      execFile(
-        bin,
-        ["version", "--output", "json"],
-        { timeout: 5_000 },
-        (err, out) => {
-          if (err) reject(err);
-          else resolve(out);
-        },
-      );
-    });
-    const parsed = JSON.parse(stdout) as { version?: string };
-    if (typeof parsed.version === "string" && parsed.version.length > 0) {
-      return parsed.version;
-    }
-    console.warn(
-      `[daemon] ignoring ${source} CLI at ${bin}: version output was missing or invalid`,
-    );
-    return null;
+    return await probeCompatibleCli(bin, source === "bundled"
+      ? { bundledDesktopVersion: getAppVersion() }
+      : {});
   } catch (err) {
     console.warn(`[daemon] ignoring ${source} CLI at ${bin}:`, err);
     return null;

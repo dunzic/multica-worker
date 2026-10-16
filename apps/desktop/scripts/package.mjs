@@ -358,6 +358,19 @@ export function builderArgsForTarget(
   return builderArgs;
 }
 
+export function preparePublishArgs(args) {
+  const modes = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--publish" || arg === "-p") modes.push(args[++i]);
+    else if (arg.startsWith("--publish=") || arg.startsWith("-p=")) modes.push(arg.slice(arg.indexOf("=") + 1));
+  }
+  if (modes.length > 1 || modes.some((mode) => !["always", "never", "onTag", "onTagOrDraft"].includes(mode))) {
+    throw new Error("Specify exactly one valid publish mode; use --publish never for local packages");
+  }
+  return { args: modes.length ? [...args] : [...args, "--publish", "never"], publishing: modes.length === 1 && modes[0] !== "never" };
+}
+
 function main() {
   const passthrough = stripLeadingSeparator(process.argv.slice(2));
   const parsed = parsePackageArgs(passthrough);
@@ -374,6 +387,15 @@ function main() {
     console.error("[package] Go is required to build a fresh bundled CLI; packaging stopped.");
     process.exit(1);
   }
+
+  // Verify the checked-in upstream baseline before clearing any previous
+  // package. Publishing additionally requires an exact clean release tag.
+  const publish = preparePublishArgs(parsed.sharedArgs);
+  parsed.sharedArgs = publish.args;
+  execFileSync(process.execPath, [
+    resolve(desktopRoot, "../../scripts/check-distribution.mjs"),
+    ...(publish.publishing ? ["--release", "--version", deriveVersion() ?? ""] : []),
+  ], { cwd: desktopRoot, stdio: "inherit" });
 
   // Step 0: start every release from an empty output directory. Stale
   // artifacts from a prior run would otherwise be repacked into this run's
