@@ -38,6 +38,8 @@ test("every non-CLI publisher requires full scope before it can start", () => {
   }
   assert.match(workflow, /release_scope: \$\{\{ steps\.scope\.outputs\.release_scope \}\}/);
   assert.match(workflow, /node scripts\/release-scope\.mjs/);
+  const verify = workflow.split("\n  verify:\n")[1].split("\n  installer-verify:\n")[0];
+  assert.match(verify, /ref: \$\{\{ github\.ref \}\}/, "checkout must preserve the annotated tag instead of reconstructing it from the peeled event SHA");
   const cliPublisher = workflow.split("\n  release:\n")[1].split("\n  cli-acceptance:\n")[0];
   assert.match(cliPublisher, /needs: \[verify, installer-verify\]/);
   assert.match(workflow, /node scripts\/verify-cli-release\.mjs/);

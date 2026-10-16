@@ -223,6 +223,14 @@ Select the unused `v0.6.4` fork tag: local `v0.6.3` is an imported upstream tag
 and must not be moved. This fork release does not claim to absorb upstream
 `v0.6.3`; the recorded source baseline remains `v0.6.2` plus `52b26900c`.
 
+The reviewed repair landed on owned main as `fa0004baacdd250d32c7dfab9d2b1b7c03666182`.
+The first `v0.6.4` tag run stopped before publication: checkout's implicit
+event-SHA handling replaced the runner's annotated tag with a lightweight ref.
+The source/tag themselves were correct; no artifact or image publisher ran.
+The follow-up explicitly checks out the tag, verifies its commit against the
+event SHA, and adds the checkout contract regression. Preserve `v0.6.4`
+unchanged as failed-attempt evidence and retry with the new `v0.6.5` patch tag.
+
 ## 2026-10-15 Permission candidate assessment and authorized adaptation
 
 After the assessment below, the user authorized local adaptation and regression

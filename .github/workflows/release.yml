@@ -29,6 +29,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # The default ref+peeled event SHA can replace an annotated local
+          # tag with a lightweight ref. Preserve the tag object and check SHA.
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: Validate tag name
@@ -58,6 +61,7 @@ jobs:
       - name: Read explicit publication scope from the annotated tag
         id: scope
         run: |
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$GITHUB_SHA^{commit}")"
           scope=$(node scripts/release-scope.mjs "$GITHUB_REF_NAME")
           echo "release_scope=$scope" >> "$GITHUB_OUTPUT"
 
