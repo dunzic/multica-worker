@@ -27,6 +27,11 @@ multica version
 
 ## Step 2: Install the Multica CLI
 
+The first verified public CLI release for this fork is
+[v0.6.6](https://github.com/dunzic/multica-worker/releases/tag/v0.6.6).
+The commands below follow the latest stable owned release, rather than pinning
+an older package. macOS/Linux/Windows archives are available for amd64 and ARM64.
+
 > **Windows users:** Skip to [Option C: Windows (PowerShell)](#option-c-windows-powershell) below.
 
 ### Option A: macOS / Linux
@@ -67,7 +72,7 @@ multica version
 
 **If this fails:**
 - Restart your terminal so the updated PATH takes effect.
-- For an offline ZIP, extract it and double-click `install.cmd`; then run `multica --profile turingomni login`.
+- Only a separately supplied `*-installer.zip` offline package contains `install.cmd`. The regular Release ZIP contains `multica.exe`, not an installer launcher; use the PowerShell command above for per-user installation and PATH setup.
 - If your execution policy blocks the script: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1` then re-run.
 
 ---

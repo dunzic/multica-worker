@@ -239,6 +239,41 @@ The web download/onboarding tests also retained two pre-fork Windows-command
 expectations. Corrected both to the owned installer URL; both focused component
 tests passed. No product login or onboarding behavior changed.
 
+### 2026-10-17 CLI publication and public-install acceptance completed
+
+- Published owned [CLI v0.6.6](https://github.com/dunzic/multica-worker/releases/tag/v0.6.6)
+  from `ebb71523350f294bb1cd6d33b039ceabde3f024e`, already on owned main.
+  [Release run 38944192724](https://github.com/dunzic/multica-worker/actions/runs/38944192724)
+  completed successfully: default Go race tests, vulnerability scan, three-OS
+  installer regressions/native binary metadata, publication and online acceptance.
+- The two earlier immutable tags `v0.6.4` and `v0.6.5` remain failed-attempt
+  records only. Neither created a public Release or uploaded installable assets.
+  No tag was moved, and no community repository was written.
+- Thirteen assets: six versioned CLI archives (macOS/Linux/Windows, amd64/arm64),
+  six byte-identical legacy-name archives for existing updaters, and
+  `checksums.txt`. All six versioned entries match GitHub's uploaded SHA-256
+  digests. The owned `/releases/latest` points to this non-draft stable release.
+- Real hosted runners passed public one-line installation, repeat installation,
+  older-source-build upgrade, already-current update and synthetic private
+  profile preservation: Windows x64 (job `117123180299`), macOS ARM64
+  (`117123180354`) and Linux x64 (`117123180425`). All installed/upgraded binaries
+  report `0.6.6` and full commit `ebb71523350f294bb1cd6d33b039ceabde3f024e`.
+  Windows installer regressions passed under PowerShell 5.1 and PowerShell 7.
+- The same public shell command and old-build update passed on the local Mac
+  ARM64 in an isolated temporary home. Its historical source build reports
+  `v0.6.2-135-g73be2734f`; hosted runners without imported upstream tags report
+  `73be2734f`. Both derive from the real owned pre-repair commit, not an older
+  public Release or a relabeled current binary. The user's installed CLI,
+  credentials, running daemon and shell profiles were not modified.
+- This is CLI-only publication. Desktop installers, Docker images, Helm and
+  mobile were not published, and no server was deployed. Windows ARM64, macOS
+  Intel and Linux ARM64 artifacts were cross-built/checksummed but not executed
+  on those native CPUs. CLI archives do not claim Developer ID notarization or
+  Windows Authenticode signing. Production login and real-agent execution were
+  not part of this installation/update acceptance. Prior database/sqlc/general
+  frontend failures and permission/mobile deployment gates remain separate;
+  the successful CLI Release workflow is not an all-green product-wide CI claim.
+
 ## 2026-10-15 Permission candidate assessment and authorized adaptation
 
 After the assessment below, the user authorized local adaptation and regression
