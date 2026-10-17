@@ -43,6 +43,7 @@ sed 's/^FRONTEND_PORT=.*/FRONTEND_PORT=3100/' .env.example >"$tmp_env"
 printf '\nBACKEND_PORT=9100\nSMTP_FROM_EMAIL=multica@example.com\n' >>"$tmp_env"
 printf 'MULTICA_LLM_API_KEY=llm-key-from-env\nMULTICA_LLM_BASE_URL=http://gateway.example/v1\nMULTICA_LLM_DEFAULT_MODEL=model-from-env\nMULTICA_LLM_MAX_RETRIES=3\n' >>"$tmp_env"
 printf 'DATABASE_REPLICA_URL=postgres://reader:secret@replica.example.com:5432/multica?sslmode=require\nDATABASE_REPLICA_MAX_CONNS=12\nDATABASE_REPLICA_MIN_CONNS=1\n' >>"$tmp_env"
+printf "MULTICA_ROLE_SOURCE_SECRET_KEY=test-current-key\nMULTICA_ROLE_SOURCE_SECRET_KEY_ID=v2\nMULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS='{\"v1\":\"test-previous-key\"}'\n" >>"$tmp_env"
 
 config="$(
   docker compose \
@@ -70,6 +71,10 @@ fi
 require_config "$config" 'DATABASE_REPLICA_URL: postgres://reader:secret@replica.example.com:5432/multica?sslmode=require'
 require_config "$config" 'DATABASE_REPLICA_MAX_CONNS: "12"'
 require_config "$config" 'DATABASE_REPLICA_MIN_CONNS: "1"'
+require_config "$config" 'MULTICA_ROLE_SOURCE_SECRET_KEY: test-current-key'
+require_config "$config" 'MULTICA_ROLE_SOURCE_SECRET_KEY_ID: v2'
+require_config "$config" 'MULTICA_ROLE_SOURCE_SECRET_PREVIOUS_KEYS:'
+require_config "$config" '"v1":"test-previous-key"'
 
 # The backend environment is an explicit allowlist, so a variable documented in
 # .env.example but missing here silently never reaches the container: the
