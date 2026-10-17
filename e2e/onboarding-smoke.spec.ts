@@ -10,14 +10,14 @@ import { waitForPageText } from "./helpers";
 // landing on /onboarding.
 
 const EMAIL = `onboarding-v3-${Date.now()}@localhost`;
-const SHOTS_DIR = "../shots-rail";
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test("onboarding — welcome → about you (answer path)", async ({ page }) => {
+test("onboarding — welcome → about you (answer path)", async ({ page }, testInfo) => {
   const api = new TestApiClient();
   await api.login(EMAIL, "OBv3 Tester");
   const token = api.getToken();
+  if (!token) throw new Error("Onboarding login did not return a token");
 
   await page.addInitScript((t) => {
     localStorage.setItem("multica_token", t);
@@ -27,7 +27,7 @@ test("onboarding — welcome → about you (answer path)", async ({ page }) => {
 
   // 1. Welcome screen
   await expect(page.getByRole("button", { name: "Continue on web" })).toBeVisible({ timeout: 15000 });
-  await page.screenshot({ path: `${SHOTS_DIR}/01-welcome.png`, fullPage: false });
+  await page.screenshot({ path: testInfo.outputPath("01-welcome.png"), fullPage: false });
 
   // Click Continue on web to advance to About you
   await page.getByRole("button", { name: "Continue on web" }).click();
@@ -49,7 +49,7 @@ test("onboarding — welcome → about you (answer path)", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByText("How did you hear about Multica?")).toHaveCount(0);
   await page.waitForTimeout(500);
-  await page.screenshot({ path: `${SHOTS_DIR}/02-about-you.png` });
+  await page.screenshot({ path: testInfo.outputPath("02-about-you.png") });
 
   // Answer both groups, then Continue → workspace step.
   await page.getByRole("radio", { name: /Engineer \/ developer/i }).click();
@@ -62,7 +62,7 @@ test("onboarding — welcome → about you (answer path)", async ({ page }) => {
     page.locator('[aria-current="step"]').filter({ hasText: "Workspace" }),
   ).toBeVisible();
   await page.waitForTimeout(600);
-  await page.screenshot({ path: `${SHOTS_DIR}/03-workspace.png` });
+  await page.screenshot({ path: testInfo.outputPath("03-workspace.png") });
 
   // 4. Runtime step — the rail should now show two completed steps and mark
   //    "Meet Mika" current.
@@ -72,13 +72,14 @@ test("onboarding — welcome → about you (answer path)", async ({ page }) => {
     page.locator('[aria-current="step"]').filter({ hasText: "Meet Mika" }),
   ).toBeVisible({ timeout: 20000 });
   await page.waitForTimeout(800);
-  await page.screenshot({ path: `${SHOTS_DIR}/06-runtime.png` });
+  await page.screenshot({ path: testInfo.outputPath("06-runtime.png") });
 });
 
-test("onboarding — one skip clears the whole questionnaire step", async ({ page }) => {
+test("onboarding — one skip clears the whole questionnaire step", async ({ page }, testInfo) => {
   const api = new TestApiClient();
   await api.login(`skip-${Date.now()}@localhost`, "Skipper");
   const token = api.getToken();
+  if (!token) throw new Error("Onboarding login did not return a token");
 
   await page.addInitScript((t) => localStorage.setItem("multica_token", t), token);
   await page.goto("/onboarding", { waitUntil: "domcontentloaded" });
@@ -91,10 +92,10 @@ test("onboarding — one skip clears the whole questionnaire step", async ({ pag
   await page.getByRole("button", { name: "Skip" }).click();
   await expect(page.getByRole("heading", { name: /Name your workspace/i })).toBeVisible({ timeout: 10000 });
   await page.waitForTimeout(600);
-  await page.screenshot({ path: `${SHOTS_DIR}/04-after-skip.png` });
+  await page.screenshot({ path: testInfo.outputPath("04-after-skip.png") });
 });
 
-test("onboarding — zh-Hans renders Chinese labels", async ({ page, context, baseURL }) => {
+test("onboarding — zh-Hans renders Chinese labels", async ({ page, context, baseURL }, testInfo) => {
   await context.addCookies([
     {
       name: "multica-locale",
@@ -105,6 +106,7 @@ test("onboarding — zh-Hans renders Chinese labels", async ({ page, context, ba
   const api = new TestApiClient();
   await api.login(`zh-${Date.now()}@localhost`, "中文用户");
   const token = api.getToken();
+  if (!token) throw new Error("Onboarding login did not return a token");
 
   await page.addInitScript((t) => localStorage.setItem("multica_token", t), token);
   await page.goto("/onboarding", { waitUntil: "domcontentloaded" });
@@ -120,5 +122,5 @@ test("onboarding — zh-Hans renders Chinese labels", async ({ page, context, ba
   await expect(page.getByText("简单介绍一下你自己。")).toBeVisible({ timeout: 10000 });
   await expect(page.getByText("哪一项最符合你？")).toBeVisible();
   await page.waitForTimeout(500);
-  await page.screenshot({ path: `${SHOTS_DIR}/05-about-you-zh.png` });
+  await page.screenshot({ path: testInfo.outputPath("05-about-you-zh.png") });
 });

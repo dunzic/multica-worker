@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render as renderWithTestingLibrary,
+  screen,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { chatKeys } from "@multica/core/chat/queries";
 import type { Attachment, TaskMessagePayload } from "@multica/core/types";
 import type { ReactElement } from "react";
+import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import enChat from "../../locales/en/chat.json";
 import zhHansAgents from "../../locales/zh-Hans/agents.json";
 import zhHansChat from "../../locales/zh-Hans/chat.json";
@@ -52,6 +58,25 @@ import { ChatMessageList } from "./chat-message-list";
 
 const TEST_RESOURCES = { en: { chat: enChat } };
 const TASK_ID = "6af44cbe-80ab-4dfe-b07d-bd3cfd588f4d";
+
+// Attachments navigate through the same platform adapter in web and desktop.
+// Keep the real provider mounted across rerenders, just as both app shells do.
+function render(ui: ReactElement) {
+  const navigation: NavigationAdapter = {
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    pathname: "/acme/chat",
+    searchParams: new URLSearchParams(),
+    hash: "",
+    getShareableUrl: (path) => `https://app.example${path}`,
+  };
+  return renderWithTestingLibrary(ui, {
+    wrapper: ({ children }) => (
+      <NavigationProvider value={navigation}>{children}</NavigationProvider>
+    ),
+  });
+}
 
 function taskMsg(
   seq: number,

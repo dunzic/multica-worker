@@ -81,6 +81,15 @@ function mockAgent(ownerId: string, workspaceId: string) {
 async function mockApis(page: Page, ownerId: string) {
   const captured: { allowlist?: unknown } = {};
 
+  await page.route("**/api/config", async (route) => {
+    const response = await route.fetch();
+    const config = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...config, feature_flags: { ...config.feature_flags, composio_mcp_apps: true } },
+    });
+  });
+
   await page.route("**/api/integrations/composio/toolkits", (route) =>
     route.fulfill({
       status: 200,
@@ -161,8 +170,9 @@ test.describe("Agent MCP tab (creator-only)", () => {
     });
     await waitForPageText(page, "MCP Test Agent");
 
-    // The creator-only tab entry is present and opens the connection list.
-    const tab = page.getByRole("button", { name: "MCP Apps" });
+    // MCP Apps now lives under Capabilities; ownership still gates the entry.
+    await page.getByRole("tab", { name: "Capabilities", exact: true }).click();
+    const tab = page.getByRole("tab", { name: "MCP Apps", exact: true });
     await expect(tab).toBeVisible({ timeout: 15000 });
     await tab.click();
 
@@ -184,10 +194,11 @@ test.describe("Agent MCP tab (creator-only)", () => {
     });
     await waitForPageText(page, "MCP Test Agent");
 
-    // Other tabs render, but the creator-only MCP Apps entry must not.
-    await expect(page.getByRole("button", { name: "Activity" })).toBeVisible({
+    // Other capability tabs render, but the creator-only entry must not.
+    await page.getByRole("tab", { name: "Capabilities", exact: true }).click();
+    await expect(page.getByRole("tab", { name: "Skills", exact: true })).toBeVisible({
       timeout: 15000,
     });
-    await expect(page.getByRole("button", { name: "MCP Apps" })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "MCP Apps", exact: true })).toHaveCount(0);
   });
 });

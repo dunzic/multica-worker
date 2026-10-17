@@ -14,6 +14,7 @@ export MULTICA_DEV_HOME="$tmp_dir/dev"
 export MULTICA_DEV_WORKSPACES_PARENT="$tmp_dir/workspaces-parent"
 export MULTICA_DEV_DESKTOP_APP_DATA="$tmp_dir/app-data"
 export MULTICA_DEV_PROFILES_HOME="$tmp_dir/profiles"
+export MULTICA_DEV_TMPDIR="$tmp_dir/tmp"
 
 fake_bin="$tmp_dir/bin"
 mkdir -p "$fake_bin"

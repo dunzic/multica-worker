@@ -233,6 +233,11 @@ describe("IssueLimitUpgradeDialog", () => {
     renderPrompt({ layered: true });
     const user = await openPrompt();
 
+    // The primitive transfers focus asynchronously. Send Escape to the
+    // recovery dialog only once it owns focus, not to the underlying opener.
+    await waitFor(() =>
+      expect(queryRecoveryDialog()?.contains(document.activeElement)).toBe(true),
+    );
     await user.keyboard("{Escape}");
 
     await waitFor(() => expect(queryRecoveryDialog()).not.toBeInTheDocument());

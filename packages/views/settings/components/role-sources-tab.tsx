@@ -2266,6 +2266,7 @@ export function RoleSourcesTab() {
             {holdScope === "snapshot" ? (
               <div className="space-y-2">
                 <Label htmlFor="legal-hold-snapshot">{t(($) => $.role_sources.legal_hold_snapshot_digest)}</Label>
+                {/* eslint-disable-next-line no-restricted-syntax -- SHA-256 digest syntax is a locale-independent technical value. */}
                 <Input id="legal-hold-snapshot" value={holdSnapshotDigest} onChange={(event) => setHoldSnapshotDigest(event.target.value)} placeholder="sha256:…" autoComplete="off" />
               </div>
             ) : null}
@@ -2294,6 +2295,7 @@ export function RoleSourcesTab() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="legal-hold-reference">{t(($) => $.role_sources.legal_hold_reference_digest)}</Label>
+              {/* eslint-disable-next-line no-restricted-syntax -- SHA-256 digest syntax is a locale-independent technical value. */}
               <Input id="legal-hold-reference" value={holdReferenceDigest} onChange={(event) => setHoldReferenceDigest(event.target.value)} placeholder="sha256:…" autoComplete="off" />
               <p className="text-caption text-muted-foreground">{t(($) => $.role_sources.legal_hold_reference_hint)}</p>
             </div>
@@ -2346,6 +2348,7 @@ export function RoleSourcesTab() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="legal-hold-release-reference">{t(($) => $.role_sources.legal_hold_reference_digest)}</Label>
+              {/* eslint-disable-next-line no-restricted-syntax -- SHA-256 digest syntax is a locale-independent technical value. */}
               <Input id="legal-hold-release-reference" value={releaseReferenceDigest} onChange={(event) => setReleaseReferenceDigest(event.target.value)} placeholder="sha256:…" autoComplete="off" />
             </div>
           </div>

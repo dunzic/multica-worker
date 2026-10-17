@@ -362,6 +362,67 @@ export class TestApiClient {
     return this.authedFetch(`/api/attachments/${id}/${action}`, { signal });
   }
 
+  /** For an isolated test workspace, removed with deleteWorkspace after the test.
+   * The inert cloud runtime never launches a real agent. */
+  async createChatSessionFixture() {
+    if (!this.workspaceId || !this.email) throw new Error("Chat fixture requires a workspace and user");
+    const client = new pg.Client(DATABASE_URL);
+    await client.connect();
+    let agentId: string;
+    try {
+      await client.query("BEGIN");
+      const runtime = await client.query<{ id: string }>(
+        `INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
+         VALUES ($1, 'E2E chat runtime', 'cloud', 'e2e_chat_runtime', 'online', 'E2E chat runtime', '{}'::jsonb, now())
+         RETURNING id`,
+        [this.workspaceId],
+      );
+      const agent = await client.query<{ id: string }>(
+        `INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id)
+         SELECT $1, 'E2E Chat Agent', '', 'cloud', '{}'::jsonb, $2, 'workspace', 1, id FROM "user" WHERE email = $3
+         RETURNING id`,
+        [this.workspaceId, runtime.rows[0].id, this.email],
+      );
+      if (agent.rows.length !== 1) throw new Error("E2E chat owner missing");
+      agentId = agent.rows[0].id;
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      await client.end();
+    }
+    // Use the public create path so an empty first-party session has the
+    // durable explicitly-created marker required by the visibility gate.
+    const res = await this.authedFetch("/api/chat/sessions", {
+      method: "POST",
+      body: JSON.stringify({ agent_id: agentId, title: "E2E Chat Attachment Session" }),
+    });
+    if (!res.ok) throw new Error(`create chat session failed: ${res.status} ${await res.text()}`);
+    const session = (await res.json()) as { id: string };
+    return session;
+  }
+
+  async uploadChatAttachment(sessionId: string, filename: string, bytes: Uint8Array) {
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(bytes)], { type: "image/png" }), filename);
+    form.append("chat_session_id", sessionId);
+    const res = await this.authedFetch("/api/upload-file", { method: "POST", body: form });
+    if (!res.ok) throw new Error(`chat upload failed: ${res.status} ${await res.text()}`);
+    const attachment = (await res.json()) as {
+      id: string; url: string; chat_session_id: string | null; chat_message_id: string | null;
+    };
+    this.createdAttachmentIds.push(attachment.id);
+    return attachment;
+  }
+
+  async sendChatMessage(sessionId: string, content: string, attachmentIds: string[]) {
+    return this.authedFetch(`/api/chat/sessions/${sessionId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content, attachment_ids: attachmentIds }),
+    });
+  }
+
   /** Adds an existing user to this client's workspace and returns the member id. */
   async addMemberByEmail(email: string, role: "admin" | "member" = "member"): Promise<string> {
     if (!this.workspaceId) throw new Error("Cannot add a member before a workspace is selected");
@@ -393,7 +454,16 @@ export class TestApiClient {
   /** Deletes this client's workspace; only for workspaces a test created. */
   async deleteWorkspace() {
     if (!this.workspaceId) return;
-    await this.authedFetch(`/api/workspaces/${this.workspaceId}`, { method: "DELETE" });
+    const res = await this.authedFetch(`/api/workspaces/${this.workspaceId}`, { method: "DELETE" });
+    if (!res.ok && res.status !== 404) throw new Error(`delete workspace failed: ${res.status} ${await res.text()}`);
+  }
+
+  async updateWorkspaceName(name: string) {
+    if (!this.workspaceId) throw new Error("No workspace selected");
+    const res = await this.authedFetch(`/api/workspaces/${this.workspaceId}`, {
+      method: "PATCH", body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error(`update workspace failed: ${res.status} ${await res.text()}`);
   }
 
   /** Server-side issue search, for comparing against what the UI shows. */

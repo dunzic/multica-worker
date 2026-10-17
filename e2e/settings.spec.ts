@@ -1,41 +1,38 @@
 import { test, expect } from "@playwright/test";
-import { loginAsDefault, waitForPageText } from "./helpers";
+import { createTestApi, loginAsDefault, waitForPageText } from "./helpers";
 
 test.describe("Settings", () => {
   test("updating workspace name reflects in sidebar immediately", async ({
     page,
   }) => {
     const workspaceSlug = await loginAsDefault(page);
-
-    // Read the current workspace name from the sidebar
-    const sidebarName = page.getByRole("button", { name: /E2E Workspace/ }).first();
-    const originalName = (await sidebarName.innerText()).split("\n").pop()?.trim() ?? "E2E Workspace";
+    const api = await createTestApi();
+    const workspace = (await api.getWorkspaces()).find((item) => item.slug === workspaceSlug)!;
 
     await page.goto(`/${workspaceSlug}/settings?tab=workspace`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, "General");
 
-    // Change workspace name
-    const nameInput = page
-      .locator('input[type="text"]')
-      .first();
-    await nameInput.clear();
+    const nameInput = page.getByRole("textbox", { name: "Name", exact: true });
     const newName = "Renamed WS " + Date.now();
-    await nameInput.fill(newName);
-
-    // Save
-    await page.locator("button", { hasText: "Save" }).click();
-
-    await expect(page.getByText("Workspace settings saved").first()).toBeVisible({ timeout: 5000 });
-
-    // Sidebar should reflect the new name WITHOUT page refresh
-    await expect(page.getByRole("button", { name: new RegExp(newName) }).first()).toBeVisible();
-
-    // Restore original name so other tests aren't affected
-    await nameInput.clear();
-    await nameInput.fill(originalName.trim());
-    await page.locator("button", { hasText: "Save" }).click();
-    await expect(page.getByText("Workspace settings saved").first()).toBeVisible({ timeout: 5000 });
-    await expect(page.getByRole("button", { name: new RegExp(originalName) }).first()).toBeVisible();
+    try {
+      // Details now auto-save. Verify the actual write, not a retired Save button.
+      const saved = page.waitForResponse((response) =>
+        new URL(response.url()).pathname === `/api/workspaces/${workspace.id}` &&
+        response.request().method() === "PATCH" &&
+        response.request().postDataJSON()?.name === newName,
+      );
+      await nameInput.fill(newName);
+      await nameInput.blur();
+      const response = await saved;
+      expect(response.status()).toBe(200);
+      expect((await response.json()).name).toBe(newName);
+      // The sidebar must update before a reload, and the value must persist after one.
+      await expect(page.getByRole("button", { name: new RegExp(newName) }).first()).toBeVisible();
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(nameInput).toHaveValue(newName);
+    } finally {
+      await api.updateWorkspaceName(workspace.name);
+    }
   });
 
   // Composio connect flow, fully mocked at the network boundary so it runs
@@ -46,8 +43,15 @@ test.describe("Settings", () => {
   test("connecting a Composio toolkit shows a toast and refreshes the list", async ({
     page,
   }) => {
+    await page.route("**/api/config", async (route) => {
+      const response = await route.fetch();
+      const config = await response.json();
+      await route.fulfill({ response, json: {
+        ...config, feature_flags: { ...config.feature_flags, composio_mcp_apps: true },
+      } });
+    });
     const workspaceSlug = await loginAsDefault(page);
-    const settingsUrl = `/${workspaceSlug}/settings?tab=integrations&integration=composio`;
+    const settingsUrl = `/${workspaceSlug}/settings?tab=apps`;
 
     // Stateful: connections is empty until the (mocked) connect flow lands.
     let connected = false;
@@ -101,13 +105,15 @@ test.describe("Settings", () => {
     });
 
     await page.goto(settingsUrl, { waitUntil: "domcontentloaded" });
-    await waitForPageText(page, "Composio");
+    await expect(page.getByRole("heading", { name: "Connected apps", exact: true })).toBeVisible();
 
     // Notion starts disconnected → click Connect.
     await page.getByRole("button", { name: /^Connect$/ }).first().click();
 
     // Success toast from the simulated callback redirect.
-    await expect(page.getByText("Connected").first()).toBeVisible({ timeout: 10000 });
+    await expect(
+      page.locator("[data-sonner-toast]").getByText("Connected", { exact: true }),
+    ).toBeVisible({ timeout: 10000 });
 
     // List refreshed without a manual reload: the Notion card now offers
     // Disconnect, and the one-shot ?connected param has been stripped.
