@@ -262,6 +262,18 @@ beforeEach(() => {
 });
 
 describe("ChatPage URL synchronization", () => {
+  it.each([null, "session-1"])(
+    "persists URL selection %s even when the pre-workspace store already matches",
+    (sessionId) => {
+      // A cold boot can read the old unscoped selection before the workspace
+      // is resolved. Rehydration must read the URL's choice from its scoped
+      // storage, not erase it just because the in-memory value matched.
+      storeRef.current = { activeSessionId: sessionId };
+      renderPage(sessionId ? `session=${sessionId}` : "");
+      expect(mockSetActiveSession).toHaveBeenCalledWith(sessionId);
+    },
+  );
+
   it.each(["/globex/issues", "/acme/issues"])(
     "does not redirect back to chat when the retained page observes %s",
     (pathname) => {

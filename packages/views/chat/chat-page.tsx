@@ -99,9 +99,9 @@ export function ChatPage() {
   }, [c.activeSessionId]);
 
   // Two-way sync between the URL (`?session=`) and the chat store's
-  // activeSessionId. Both effects read the LIVE store value via
+  // activeSessionId. The store→URL effect reads the LIVE store value via
   // `useChatStore.getState()` rather than the render-captured `c.activeSessionId`.
-  // That is what keeps them from fighting on mount: a naive mirror effect fires
+  // That keeps the effects from fighting on mount: a naive mirror effect fires
   // with the stale (null) snapshot and "corrects" the URL by stripping the
   // session before the URL→store effect has applied — breaking deep links and
   // making selection / new-chat feel unresponsive. Reading getState() sees the
@@ -111,9 +111,10 @@ export function ChatPage() {
   // URL → store: deep link, refresh, notification click, back/forward.
   useEffect(() => {
     if (!isCurrentChatRoute || getCurrentSlug() !== workspaceSlug) return;
-    if (urlSession !== useChatStore.getState().activeSessionId) {
-      c.setActiveSession(urlSession);
-    }
+    // Persist even if the in-memory value already matches: it may have been
+    // loaded before the workspace namespace was known. A queued workspace
+    // rehydration must see this URL selection, including an explicit clear.
+    c.setActiveSession(urlSession);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile URL/route changes, not store updates
   }, [isCurrentChatRoute, workspaceSlug, urlSession]);
 
