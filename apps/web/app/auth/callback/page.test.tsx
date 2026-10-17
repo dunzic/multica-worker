@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import type { SupportedLocale } from "@multica/core/i18n";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { paths } from "@multica/core/paths";
@@ -111,9 +112,11 @@ import CallbackPage from "./page";
 
 function renderCallback(locale: SupportedLocale = "en") {
   return render(
-    <I18nProvider locale={locale} resources={RESOURCES}>
-      <CallbackPage />
-    </I18nProvider>,
+    <StrictMode>
+      <I18nProvider locale={locale} resources={RESOURCES}>
+        <CallbackPage />
+      </I18nProvider>
+    </StrictMode>,
   );
 }
 
@@ -212,9 +215,11 @@ describe("CallbackPage", () => {
     ).toBeInTheDocument();
 
     view.rerender(
-      <I18nProvider locale="ja" resources={RESOURCES}>
-        <CallbackPage />
-      </I18nProvider>,
+      <StrictMode>
+        <I18nProvider locale="ja" resources={RESOURCES}>
+          <CallbackPage />
+        </I18nProvider>
+      </StrictMode>,
     );
 
     expect(
@@ -273,6 +278,8 @@ describe("CallbackPage", () => {
       expect(mockPush).toHaveBeenCalledWith(paths.onboarding());
     });
     expect(mockListMyInvitations).toHaveBeenCalled();
+    expect(mockLoginWithGoogle).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledTimes(1);
   });
 
   it("unonboarded user with pending invitations lands on /invitations", async () => {

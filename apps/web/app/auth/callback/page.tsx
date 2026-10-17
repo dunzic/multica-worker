@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { sanitizeNextUrl, useAuthStore } from "@multica/core/auth";
@@ -31,6 +31,7 @@ function CallbackContent() {
   const loginWithGoogle = useAuthStore((s) => s.loginWithGoogle);
   const [error, setError] = useState<CallbackError | null>(null);
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
+  const exchangedCode = useRef<string | null>(null);
 
   useEffect(() => {
     const code = searchParams.get("code");
@@ -49,6 +50,11 @@ function CallbackContent() {
       setError({ kind: "missing_code" });
       return;
     }
+
+    // OAuth codes are single-use. Effect replay (Strict Mode or changed
+    // dependencies) must not race a second exchange against the first one.
+    if (exchangedCode.current === code) return;
+    exchangedCode.current = code;
 
     const state = searchParams.get("state") || "";
     const stateParts = state.split(",");
