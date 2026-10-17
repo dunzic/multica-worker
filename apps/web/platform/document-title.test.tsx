@@ -8,7 +8,7 @@
  * navigation behavior of `document.title`.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 
 const route = vi.hoisted(() => ({ pathname: "/acme/issues", search: "" }));
 vi.mock("next/navigation", () => ({
@@ -85,6 +85,25 @@ describe("formatDocumentTitle", () => {
 });
 
 describe("WorkspaceDocumentTitle", () => {
+  it("restores a route title after streamed metadata arrives, but stops on unmount", async () => {
+    open("/acme/inbox");
+    presentation.title = "Inbox";
+    const view = render(<WorkspaceDocumentTitle />);
+
+    // Next.js can commit root metadata after the route's passive effects.
+    document.title = SITE_TITLE;
+    await waitFor(() => expect(document.title).toBe("Inbox | Multica"));
+
+    const replacement = document.createElement("title");
+    replacement.textContent = SITE_TITLE;
+    document.head.querySelector("title")!.replaceWith(replacement);
+    await waitFor(() => expect(document.title).toBe("Inbox | Multica"));
+
+    view.unmount();
+    document.title = "Login";
+    await Promise.resolve();
+    expect(document.title).toBe("Login");
+  });
   it("names the tab after the open issue", () => {
     open("/acme/issues/MUL-123");
     presentation.title = "MUL-123: Fix login";
