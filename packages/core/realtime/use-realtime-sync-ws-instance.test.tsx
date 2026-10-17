@@ -47,6 +47,7 @@ function createMockWs(): WSClient {
     on: vi.fn(() => () => {}),
     onAny: vi.fn(() => () => {}),
     onReconnect: vi.fn(() => () => {}),
+    onDisconnect: vi.fn(() => vi.fn()),
   } as unknown as WSClient;
 }
 
@@ -656,5 +657,156 @@ describe("useRealtimeSync — member:removed", () => {
     expect(forgetLocalSearchIndex).toHaveBeenCalledWith("ws-1");
     // Let the relocate lookup settle before the test tears down.
     await waitFor(() => expect(qc.getQueryData(workspaceKeys.list())).toEqual([]));
+  });
+});
+
+describe("useRealtimeSync — unexpected disconnect membership recheck", () => {
+  let qc: QueryClient;
+  let stores: RealtimeSyncStores;
+  let listWorkspaces: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    stores = createStores();
+    listWorkspaces = vi.fn().mockResolvedValue([{ id: "ws-2", slug: "other" }]);
+    setApiInstance({ listWorkspaces } as unknown as ApiClient);
+    vi.mocked(getCurrentWsId).mockReturnValue("ws-1");
+    vi.mocked(forgetLocalSearchIndex).mockClear();
+    defaultStorage.setItem("multica_issue_draft:test-ws", "lost draft");
+    defaultStorage.setItem("multica_issue_draft:other", "keep draft");
+  });
+
+  afterEach(() => {
+    cleanup();
+    qc.clear();
+    unmarkWorkspaceDeletePending("ws-1");
+    vi.mocked(getCurrentWsId).mockReturnValue("ws-1");
+    vi.mocked(forgetLocalSearchIndex).mockClear();
+    localStorage.clear();
+  });
+
+  function mount() {
+    const ws = createMockWs();
+    const hook = renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    const disconnect = vi.mocked(ws.onDisconnect).mock.calls[0]?.[0];
+    expect(disconnect).toBeDefined();
+    return { ws, disconnect: disconnect!, ...hook };
+  }
+
+  it("forgets only the revoked workspace without requiring a removal frame", async () => {
+    qc.setQueryData(workspaceKeys.list(), [{ id: "ws-1", slug: "test-ws" }]);
+    const cancel = vi.spyOn(qc, "cancelQueries");
+    const { disconnect } = mount();
+    await disconnect();
+    expect(cancel).toHaveBeenCalledWith({ queryKey: workspaceKeys.list(), exact: true });
+    expect(listWorkspaces).toHaveBeenCalledTimes(1);
+    expect(forgetLocalSearchIndex).toHaveBeenCalledExactlyOnceWith("ws-1");
+    expect(defaultStorage.getItem("multica_issue_draft:test-ws")).toBeNull();
+    expect(defaultStorage.getItem("multica_issue_draft:other")).toBe("keep draft");
+  });
+
+  it("retains data after a network disconnect when membership is unchanged", async () => {
+    listWorkspaces.mockResolvedValue([{ id: "ws-1", slug: "test-ws" }]);
+    await mount().disconnect();
+    expect(forgetLocalSearchIndex).not.toHaveBeenCalled();
+    expect(defaultStorage.getItem("multica_issue_draft:test-ws")).toBe("lost draft");
+  });
+
+  it.each([new Error("offline"), new Error("Malformed response from GET /api/workspaces")])(
+    "does not infer revocation from a failed membership read: %s", async (error) => {
+      listWorkspaces.mockRejectedValue(error);
+      await mount().disconnect();
+      expect(listWorkspaces).toHaveBeenCalledTimes(1);
+      expect(forgetLocalSearchIndex).not.toHaveBeenCalled();
+      expect(defaultStorage.getItem("multica_issue_draft:test-ws")).toBe("lost draft");
+    },
+  );
+
+  it("leaves self-initiated deletion to its mutation owner", async () => {
+    const { disconnect } = mount();
+    markWorkspaceDeletePending("ws-1");
+    await disconnect();
+    expect(listWorkspaces).not.toHaveBeenCalled();
+    expect(forgetLocalSearchIndex).not.toHaveBeenCalled();
+  });
+
+  it("ignores a disposed socket and unsubscribes on unmount", async () => {
+    const { ws, disconnect, unmount } = mount();
+    unmount();
+    await disconnect();
+    expect(listWorkspaces).not.toHaveBeenCalled();
+    expect(vi.mocked(ws.onDisconnect).mock.results[0]!.value).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not use an in-flight membership snapshot from before revocation", async () => {
+    let finishOld!: (value: unknown[]) => void;
+    const oldRequest = qc.fetchQuery({
+      queryKey: workspaceKeys.list(),
+      queryFn: () => new Promise<unknown[]>((resolve) => { finishOld = resolve; }),
+    }).catch(() => undefined);
+    await mount().disconnect();
+    finishOld([{ id: "ws-1", slug: "test-ws" }]);
+    await oldRequest;
+    expect(listWorkspaces).toHaveBeenCalledTimes(1);
+    expect(forgetLocalSearchIndex).toHaveBeenCalledExactlyOnceWith("ws-1");
+    expect(qc.getQueryData(workspaceKeys.list())).toEqual([{ id: "ws-2", slug: "other" }]);
+  });
+
+  it("ignores an old socket after switching workspaces", async () => {
+    const { disconnect } = mount();
+    vi.mocked(getCurrentWsId).mockReturnValue("ws-2");
+    await disconnect();
+    expect(listWorkspaces).not.toHaveBeenCalled();
+    expect(forgetLocalSearchIndex).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat cleanup when the explicit removal frame arrived first", async () => {
+    const { ws, disconnect } = mount();
+    const removed = vi.mocked(ws.on).mock.calls.find(([event]) => event === "member:removed")![1];
+    removed({ user_id: "u1", workspace_id: "ws-1" });
+    await waitFor(() => expect(qc.getQueryData(workspaceKeys.list())).toBeDefined());
+    await disconnect();
+    expect(listWorkspaces).toHaveBeenCalledTimes(1);
+    expect(forgetLocalSearchIndex).toHaveBeenCalledExactlyOnceWith("ws-1");
+  });
+
+  it("deduplicates close events and discards a result from a previous account", async () => {
+    let resolve!: (value: unknown[]) => void;
+    listWorkspaces.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const { disconnect } = mount();
+    const pending = disconnect();
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(1));
+    await disconnect();
+    vi.spyOn(stores.authStore, "getState").mockReturnValue({ user: { id: "another-user" } } as ReturnType<typeof stores.authStore.getState>);
+    resolve([]);
+    await pending;
+    expect(listWorkspaces).toHaveBeenCalledTimes(1);
+    expect(forgetLocalSearchIndex).not.toHaveBeenCalled();
+  });
+
+  it("finishes scoped cleanup if a refreshed list unmounts the old workspace", async () => {
+    let resolve!: (value: unknown[]) => void;
+    listWorkspaces.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const { disconnect, unmount } = mount();
+    const pending = disconnect();
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(1));
+    unmount();
+    vi.mocked(getCurrentWsId).mockReturnValue("ws-2");
+    resolve([{ id: "ws-2", slug: "other" }]);
+    await pending;
+    expect(forgetLocalSearchIndex).toHaveBeenCalledExactlyOnceWith("ws-1");
+    expect(defaultStorage.getItem("multica_issue_draft:other")).toBe("keep draft");
+  });
+
+  it("does not clear a new account's drafts while the old index deletion settles", async () => {
+    let finishCleanup!: () => void;
+    vi.mocked(forgetLocalSearchIndex).mockImplementationOnce(() => new Promise<void>((resolve) => { finishCleanup = resolve; }));
+    const pending = mount().disconnect();
+    await waitFor(() => expect(forgetLocalSearchIndex).toHaveBeenCalledWith("ws-1"));
+    vi.spyOn(stores.authStore, "getState").mockReturnValue({ user: { id: "another-user" } } as ReturnType<typeof stores.authStore.getState>);
+    defaultStorage.setItem("multica_issue_draft:test-ws", "new account draft");
+    finishCleanup();
+    await pending;
+    expect(defaultStorage.getItem("multica_issue_draft:test-ws")).toBe("new account draft");
   });
 });

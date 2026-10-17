@@ -32,6 +32,7 @@ function fakeWS() {
       },
       on: () => () => undefined,
       onReconnect: () => () => undefined,
+      onDisconnect: () => () => undefined,
     } as unknown as WSClient,
     emit: (type: string) => anyHandler?.({ type, payload: {} }),
   };

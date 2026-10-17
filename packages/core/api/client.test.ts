@@ -10,6 +10,29 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient workspace membership responses", () => {
+  it.each([null, {}, { workspaces: [] }, [null], [{ name: "Missing identity" }]])(
+    "rejects malformed membership data instead of treating it as an empty list: %j",
+    async (body) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body))));
+      const client = new ApiClient("https://api.example.test");
+      await expect(client.listWorkspaces()).rejects.toThrow("Malformed response from GET /api/workspaces");
+    },
+  );
+
+  it("accepts an authoritative empty list and defaults optional workspace fields", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response("[]"))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "ws-1", slug: "acme", name: "Acme" }]))));
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listWorkspaces()).resolves.toEqual([]);
+    await expect(client.listWorkspaces()).resolves.toEqual([{
+      id: "ws-1", slug: "acme", name: "Acme", description: null, context: null,
+      settings: {}, repos: [], issue_prefix: "", avatar_url: null, created_at: "", updated_at: "",
+    }]);
+  });
+});
+
 describe("ApiClient role-source runtime evidence", () => {
   const scan = {
     id: "scan-1",

@@ -48,6 +48,7 @@ export class WSClient {
   // on each connect() so a fresh connection logs once again.
   private badFrameLogged = false;
   private onReconnectCallbacks = new Set<() => void>();
+  private onDisconnectCallbacks = new Set<() => void>();
   private anyHandlers = new Set<(msg: WSMessage) => void>();
   private logger: Logger;
 
@@ -158,6 +159,13 @@ export class WSClient {
 
     this.ws.onclose = () => {
       this.scheduleReconnect();
+      for (const cb of this.onDisconnectCallbacks) {
+        try {
+          cb();
+        } catch {
+          // One subscriber must not suppress other disconnect handlers.
+        }
+      }
     };
 
     this.ws.onerror = () => {
@@ -223,6 +231,7 @@ export class WSClient {
     this.handlers.clear();
     this.anyHandlers.clear();
     this.onReconnectCallbacks.clear();
+    this.onDisconnectCallbacks.clear();
   }
 
   on(event: WSEventType, handler: EventHandler) {
@@ -246,6 +255,14 @@ export class WSClient {
     this.onReconnectCallbacks.add(callback);
     return () => {
       this.onReconnectCallbacks.delete(callback);
+    };
+  }
+
+  /** Unexpected closure only; disconnect() during teardown does not notify. */
+  onDisconnect(callback: () => void) {
+    this.onDisconnectCallbacks.add(callback);
+    return () => {
+      this.onDisconnectCallbacks.delete(callback);
     };
   }
 

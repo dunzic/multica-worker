@@ -37,6 +37,7 @@ function createRecordingWs(): {
     }),
     onAny: vi.fn(() => () => {}),
     onReconnect: vi.fn(() => () => {}),
+    onDisconnect: vi.fn(() => () => {}),
   } as unknown as WSClient;
   return { ws, handlers };
 }

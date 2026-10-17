@@ -38,6 +38,7 @@ function createMockWs(handlers: Handlers): WSClient {
     }),
     onAny: vi.fn(() => () => {}),
     onReconnect: vi.fn(() => () => {}),
+    onDisconnect: vi.fn(() => () => {}),
   } as unknown as WSClient;
 }
 

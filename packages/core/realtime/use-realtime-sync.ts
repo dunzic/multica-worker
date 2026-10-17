@@ -787,6 +787,12 @@ export function useRealtimeSync(
   useEffect(() => {
     if (!ws) return;
 
+    const subscribedWorkspaceId = getCurrentWsId();
+    const subscribedSlug = getCurrentSlug();
+    const subscribedUserId = authStore.getState().user?.id;
+    let workspaceLossHandled = false;
+    let membershipCheckPending = false;
+
     const refreshMap: Record<string, () => void> = {
       inbox: () => {
         const wsId = getCurrentWsId();
@@ -1339,6 +1345,45 @@ export function useRealtimeSync(
       }
     };
 
+    // Revocation closes the socket immediately; its removal frame is only
+    // best-effort. A revoked member cannot reconnect successfully, so waiting
+    // for onReconnect alone would leave its persisted search copy behind.
+    const unsubDisconnect = ws.onDisconnect(async () => {
+      if (disposed || membershipCheckPending || workspaceLossHandled || !subscribedWorkspaceId ||
+          !subscribedUserId || getCurrentWsId() !== subscribedWorkspaceId ||
+          authStore.getState().user?.id !== subscribedUserId ||
+          isWorkspaceDeletePending(subscribedWorkspaceId)) return;
+      membershipCheckPending = true;
+      try {
+        // Do not reuse a list request that started before the revocation.
+        await qc.cancelQueries({ queryKey: workspaceKeys.list(), exact: true });
+        if (disposed || authStore.getState().user?.id !== subscribedUserId) return;
+        const wsList = await qc.fetchQuery({ ...workspaceListOptions(), staleTime: 0, retry: false });
+        if (workspaceLossHandled || authStore.getState().user?.id !== subscribedUserId ||
+            isWorkspaceDeletePending(subscribedWorkspaceId) ||
+            wsList.some((workspace) => workspace.id === subscribedWorkspaceId)) return;
+        workspaceLossHandled = true;
+        // The refreshed list may already have unmounted the old layout. Finish
+        // confirmed, scoped cleanup even then, but never redirect the new one.
+        await forgetLocalSearchIndex(subscribedWorkspaceId);
+        if (authStore.getState().user?.id !== subscribedUserId) return;
+        if (subscribedSlug) clearWorkspaceStorage(defaultStorage, subscribedSlug);
+        if (!disposed && getCurrentWsId() === subscribedWorkspaceId &&
+            authStore.getState().user?.id === subscribedUserId) {
+          onToast?.("You were removed from this workspace", "info");
+          if (typeof window !== "undefined") {
+            window.location.assign(resolvePostAuthDestination(wsList, hasOnboardedRef.current));
+          }
+        }
+      } catch (error) {
+        // Network/server/schema errors are not proof of lost membership.
+        // The next failed connection or successful reconnect will recheck.
+        logger.warn("workspace membership recheck failed", error);
+      } finally {
+        membershipCheckPending = false;
+      }
+    });
+
     const unsubWsUpdated = ws.on("workspace:updated", (p) => {
       applyWorkspaceUpdatedToCache(qc, p as WorkspaceUpdatedPayload);
     });
@@ -1351,6 +1396,7 @@ export function useRealtimeSync(
       // CancelledError + reload combo this guard exists to prevent. This
       // handler only serves deletes initiated elsewhere (other user/device).
       if (isWorkspaceDeletePending(workspace_id)) return;
+      if (workspace_id === subscribedWorkspaceId) workspaceLossHandled = true;
       // Any deleted workspace, not only the current one: its local search
       // copy must not outlive it.
       void forgetLocalSearchIndex(workspace_id);
@@ -1371,6 +1417,10 @@ export function useRealtimeSync(
       const myUserId = authStore.getState().user?.id;
       if (user_id === myUserId) {
         const lostWsId = workspace_id || getCurrentWsId();
+        if (lostWsId === subscribedWorkspaceId) {
+          if (workspaceLossHandled) return;
+          workspaceLossHandled = true;
+        }
         if (lostWsId) void forgetLocalSearchIndex(lostWsId);
         const slug = getCurrentSlug();
         const wsId = getCurrentWsId();
@@ -1835,6 +1885,7 @@ export function useRealtimeSync(
       }),
     );
     return () => {
+      unsubDisconnect();
       collaborationUnsubscribes.forEach((unsubscribe) => unsubscribe());
       unsubAny();
       unsubIssueUpdated();

@@ -521,6 +521,7 @@ import {
   PluginInstallationSchema,
   PluginPreviewSchema,
   WorkspaceMcpServerListSchema,
+  WorkspaceListSchema,
   WorkspaceMcpServerSchema,
   ShareLinkSchema,
   ShareLinkListResponseSchema,
@@ -3492,7 +3493,13 @@ export class ApiClient {
 
   // Workspaces
   async listWorkspaces(): Promise<Workspace[]> {
-    return this.fetch("/api/workspaces");
+    const raw = await this.fetch<unknown>("/api/workspaces");
+    const parsed = parseWithFallback<Workspace[] | null>(raw, WorkspaceListSchema, null, {
+      endpoint: "GET /api/workspaces",
+    });
+    // An invalid response is not evidence that membership was revoked.
+    if (parsed === null) throw new Error("Malformed response from GET /api/workspaces");
+    return parsed;
   }
 
   async getWorkspace(id: string): Promise<Workspace> {

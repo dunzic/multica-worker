@@ -243,6 +243,39 @@ describe("WSClient", () => {
       });
     }
 
+    it("notifies unexpected disconnects even before a reconnect can authenticate", () => {
+      const ws = new WSClient("ws://example.test/ws");
+      const listener = vi.fn();
+      ws.onDisconnect(() => { throw new Error("subscriber failed"); });
+      const unsubscribe = ws.onDisconnect(listener);
+      ws.connect();
+
+      simulateDisconnect();
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
+      unsubscribe();
+      vi.runOnlyPendingTimers();
+      simulateDisconnect();
+      expect(listener).toHaveBeenCalledTimes(1);
+      ws.disconnect();
+    });
+
+    it("does not notify intentional disconnects and clears old lifecycle listeners", () => {
+      const ws = new WSClient("ws://example.test/ws");
+      const listener = vi.fn();
+      ws.onDisconnect(listener);
+      ws.connect();
+      ws.disconnect();
+      simulateDisconnect();
+      expect(listener).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+
+      ws.connect();
+      simulateDisconnect();
+      expect(listener).not.toHaveBeenCalled();
+      ws.disconnect();
+    });
+
     it("uses ~1000ms base delay for the first reconnect attempt", () => {
       // Pin Math.random so jitter is deterministic: random()=0.5 → jitter=0.
       vi.stubGlobal(

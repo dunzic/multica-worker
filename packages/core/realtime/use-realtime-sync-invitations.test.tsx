@@ -67,6 +67,7 @@ it.each(["invitation:accepted", "invitation:declined"] as const)(
       },
       onAny: () => () => {},
       onReconnect: () => () => {},
+      onDisconnect: () => () => {},
     } as unknown as WSClient;
     const stores = {
       authStore: { getState: () => ({ user: { id: "u1" } }) },
@@ -122,6 +123,7 @@ it.each(["invitation:accepted", "invitation:declined"] as const)(
       },
       onAny: () => () => {},
       onReconnect: () => () => {},
+      onDisconnect: () => () => {},
     } as unknown as WSClient;
     const stores = {
       authStore: { getState: () => ({ user: { id: "u1" } }) },

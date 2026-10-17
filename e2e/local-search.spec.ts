@@ -12,6 +12,14 @@ function isSearchIndexChanges(res: Response): boolean {
   return res.url().includes("/api/search-index/changes") && res.ok();
 }
 
+function isRealtimeFrame(payload: string | Buffer, type: string): boolean {
+  try {
+    return JSON.parse(String(payload))?.type === type;
+  } catch {
+    return false;
+  }
+}
+
 async function openSearch(page: Page) {
   await page.keyboard.press("ControlOrMeta+k");
   await expect(page.getByPlaceholder(SEARCH_PLACEHOLDER)).toBeVisible();
@@ -109,36 +117,62 @@ test.describe("Local search index", () => {
     await expect.poll(() => searchIndexDatabases(page)).toEqual([]);
   });
 
-  test("deletes a workspace's local copy when the user is removed from it", async ({ page }) => {
-    const run = Date.now().toString(36);
-    const owner = new TestApiClient();
-    await owner.login(`e2e-owner-${run}@multica.ai`, "E2E Owner");
-    const shared = await owner.ensureWorkspace(`E2E Shared ${run}`, `e2e-shared-${run}`);
-    await owner.markUserOnboarded();
-    await owner.createIssue(`shared ${run} issue`);
-    try {
-      const memberId = await owner.addMemberByEmail(api.getEmail());
-      await loginAsDefault(page);
+  for (const dropRemovalNotice of [false, true]) {
+    test(`deletes a workspace's local copy when the user is removed from it${dropRemovalNotice ? " without a removal frame" : ""}`, async ({ page }) => {
+      const run = Date.now().toString(36);
+      const owner = new TestApiClient();
+      await owner.login(`e2e-owner-${run}@multica.ai`, "E2E Owner");
+      const shared = await owner.ensureWorkspace(`E2E Shared ${run}`, `e2e-shared-${run}`);
+      await owner.markUserOnboarded();
+      await owner.createIssue(`shared ${run} issue`);
+      try {
+        const memberId = await owner.addMemberByEmail(api.getEmail());
+        await loginAsDefault(page);
 
-      const synced = page.waitForResponse(isSearchIndexChanges, { timeout: 45_000 });
-      await page.goto(`/${shared.slug}/issues`, { waitUntil: "domcontentloaded" });
-      await synced;
-      const sharedCopy = (names: string[]) => names.some((name) => name.endsWith(`:${shared.id}`));
-      await expect.poll(async () => sharedCopy(await searchIndexDatabases(page))).toBe(true);
+        // HTTP index catch-up can beat the WebSocket authentication handshake.
+        // Establish the real authenticated subscription before revocation. The
+        // server may close it without delivering the best-effort removal notice.
+        // The second case deterministically drops only that frame, keeping real
+        // authentication, writes, membership checks and connection closure.
+        let authenticated: Promise<unknown>;
+        if (dropRemovalNotice) {
+          let confirmAuthentication!: () => void;
+          authenticated = new Promise<void>((resolve) => { confirmAuthentication = resolve; });
+          await page.routeWebSocket((url) => url.searchParams.get("workspace_slug") === shared.slug, (route) => {
+            const server = route.connectToServer();
+            server.onMessage((frame) => {
+              if (isRealtimeFrame(frame, "auth_ack")) confirmAuthentication();
+              if (!isRealtimeFrame(frame, "member:removed")) route.send(frame);
+            });
+          });
+        } else {
+          authenticated = page.waitForEvent("websocket", {
+            predicate: (socket) => new URL(socket.url()).searchParams.get("workspace_slug") === shared.slug,
+          }).then((socket) => socket.waitForEvent("framereceived", {
+            predicate: (frame) => isRealtimeFrame(frame.payload, "auth_ack"),
+          }));
+        }
+        const synced = page.waitForResponse(isSearchIndexChanges, { timeout: 45_000 });
+        await page.goto(`/${shared.slug}/issues`, { waitUntil: "domcontentloaded" });
+        await synced;
+        await authenticated;
+        const sharedCopy = (names: string[]) => names.some((name) => name.endsWith(`:${shared.id}`));
+        await expect.poll(async () => sharedCopy(await searchIndexDatabases(page))).toBe(true);
 
-      await owner.removeMember(memberId);
+        await owner.removeMember(memberId);
 
-      // The client relocates to a workspace the user still has; the removed
-      // workspace's copy must not survive on the device. A read that fails
-      // mid-navigation counts as "still there", so polling continues until a
-      // successful read confirms the deletion.
-      const unreadable = [`multica-search-index:unreadable:${shared.id}`];
-      await expect
-        .poll(async () => sharedCopy(await searchIndexDatabases(page).catch(() => unreadable)), { timeout: 20_000 })
-        .toBe(false);
-    } finally {
-      await owner.cleanup();
-      await owner.deleteWorkspace();
-    }
-  });
+        // The client relocates to a workspace the user still has; the removed
+        // workspace's copy must not survive on the device. A read that fails
+        // mid-navigation counts as "still there", so polling continues until a
+        // successful read confirms the deletion.
+        const unreadable = [`multica-search-index:unreadable:${shared.id}`];
+        await expect
+          .poll(async () => sharedCopy(await searchIndexDatabases(page).catch(() => unreadable)), { timeout: 20_000 })
+          .toBe(false);
+      } finally {
+        await owner.cleanup();
+        await owner.deleteWorkspace();
+      }
+    });
+  }
 });

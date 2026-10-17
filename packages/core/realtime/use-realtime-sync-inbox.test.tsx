@@ -74,6 +74,7 @@ it("refreshes an inactive Inbox after inbox:new then issue:updated (MUL-7286)", 
     },
     onAny: () => () => {},
     onReconnect: () => () => {},
+    onDisconnect: () => () => {},
   } as unknown as WSClient;
   const stores = {
     authStore: { getState: () => ({ user: { id: "u1" } }) },

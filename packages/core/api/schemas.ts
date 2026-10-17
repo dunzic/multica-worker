@@ -4057,6 +4057,22 @@ export const WorkspaceMcpServerSchema = z.object({
 
 export const WorkspaceMcpServerListSchema = z.array(WorkspaceMcpServerSchema);
 
+// Membership decisions require a complete, valid list. Never silently drop a
+// malformed row or coerce the whole response to an empty membership list.
+export const WorkspaceListSchema = z.array(z.object({
+  id: z.string().min(1),
+  slug: z.string().min(1),
+  name: z.string(),
+  description: z.string().nullable().default(null),
+  context: z.string().nullable().default(null),
+  settings: z.record(z.string(), z.unknown()).default({}),
+  repos: z.array(z.object({ url: z.string(), description: z.string().optional() }).loose()).default([]),
+  issue_prefix: z.string().default(""),
+  avatar_url: z.string().nullable().default(null),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose());
+
 export const EMPTY_WORKSPACE_MCP_SERVER: WorkspaceMcpServer = {
   id: "",
   workspace_id: "",
