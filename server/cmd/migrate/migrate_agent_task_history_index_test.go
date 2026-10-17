@@ -20,13 +20,31 @@ func TestAgentTaskHistoryIndexMigrationAndPagePlans(t *testing.T) {
 		`CREATE TABLE agent_task_queue (
     id UUID PRIMARY KEY, agent_id UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL,
     status TEXT NOT NULL, escalation_for_task_id UUID, started_at TIMESTAMPTZ,
-    result TEXT
+    result TEXT, topic_id UUID
   )`,
+		`CREATE TABLE conversation (id UUID PRIMARY KEY, workspace_id UUID NOT NULL)`,
+		`CREATE TABLE topic (id UUID PRIMARY KEY, conversation_id UUID NOT NULL)`,
+		`CREATE TABLE conversation_participant (
+    conversation_id UUID NOT NULL, principal_type TEXT NOT NULL,
+    principal_id UUID NOT NULL, left_at TIMESTAMPTZ,
+    PRIMARY KEY (conversation_id, principal_type, principal_id)
+  )`,
+		`CREATE TABLE member (
+    workspace_id UUID NOT NULL, user_id UUID NOT NULL,
+    PRIMARY KEY (workspace_id, user_id)
+  )`,
+		`INSERT INTO conversation VALUES (md5('conversation')::uuid, md5('workspace')::uuid)`,
+		`INSERT INTO topic VALUES (md5('topic')::uuid, md5('conversation')::uuid)`,
+		`INSERT INTO conversation_participant VALUES (md5('conversation')::uuid, 'member', md5('viewer')::uuid, NULL)`,
+		`INSERT INTO member VALUES (md5('workspace')::uuid, md5('viewer')::uuid)`,
 		`INSERT INTO agent_task_queue (id, agent_id, created_at, status, result)
    SELECT md5('task-' || n)::uuid, md5('agent')::uuid,
      '2026-09-01T00:00:00Z'::timestamptz + n * interval '1 second',
      'completed', repeat('x', 128)
    FROM generate_series(1, 18165) AS n`,
+		// Exercise the group-visibility subplan as well as ordinary task rows.
+		`UPDATE agent_task_queue SET topic_id = md5('topic')::uuid
+   WHERE extract(second FROM created_at)::int % 3 = 0`,
 		`ANALYZE agent_task_queue`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
@@ -63,6 +81,9 @@ func TestAgentTaskHistoryIndexMigrationAndPagePlans(t *testing.T) {
 	for _, before := range []string{"'infinity'", "'2026-09-01T02:00:00Z'"} {
 		query := strings.NewReplacer(
 			"@agent_id", "md5('agent')::uuid",
+			"@viewer_workspace_id", "md5('workspace')::uuid",
+			"@principal_type", "'member'",
+			"@principal_id", "md5('viewer')::uuid",
 			"@before_created_at", before,
 			"@before_id", "'ffffffff-ffff-ffff-ffff-ffffffffffff'",
 			"@page_limit", "201",

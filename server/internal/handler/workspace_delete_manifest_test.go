@@ -12,6 +12,7 @@ const (
 	workspaceDelete       workspaceDeleteAction = "delete"
 	workspaceDeleteDetach workspaceDeleteAction = "detach"
 	workspaceDeleteKeep   workspaceDeleteAction = "keep"
+	workspaceDeleteRetain workspaceDeleteAction = "retain"
 	workspaceDeleteSettle workspaceDeleteAction = "settle"
 )
 
@@ -22,6 +23,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"activity_log":                       workspaceDelete,
 	"agent":                              workspaceDelete,
 	"agent_builder_draft":                workspaceDelete,
+	"agent_email_approval":               workspaceDelete,
+	"agent_email_policy_state":           workspaceDelete,
+	"agent_email_policy_version":         workspaceDelete,
+	"agent_email_quota_reservation":      workspaceDelete,
 	"agent_invocation_target":            workspaceDelete,
 	"agent_runtime":                      workspaceDelete,
 	"agent_skill":                        workspaceDelete,
@@ -64,6 +69,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_group_presence":            workspaceDelete,
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
+	"email_delivery_recipient":           workspaceDelete,
+	"email_message":                      workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
 	"github_installation":                workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
@@ -106,17 +113,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"notification_preference":            workspaceDelete,
 	"personal_access_token":              workspaceDeleteKeep,
 	"pinned_item":                        workspaceDelete,
-	"plugin_binding":                     workspaceDelete,
-	"plugin_artifact_file":               workspaceDeleteKeep,
-	"plugin_capability_snapshot":         workspaceDelete,
-	"plugin_contribution":                workspaceDeleteKeep,
-	"plugin_execution_manifest":          workspaceDelete,
-	"plugin_grant":                       workspaceDelete,
-	"plugin_health":                      workspaceDelete,
-	"plugin_identity":                    workspaceDeleteKeep,
 	"plugin_installation":                workspaceDelete,
-	"plugin_release":                     workspaceDeleteKeep,
-	"plugin_workspace_capability_state":  workspaceDelete,
 	"plugin_hook_schedule":               workspaceDelete,
 	"plugin_invocation":                  workspaceDelete,
 	"plugin_storage":                     workspaceDelete,
@@ -162,27 +159,30 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"role_source_apply":                  workspaceDelete,
 	"role_source_apply_failure":          workspaceDelete,
 	"role_source_artifact":               workspaceDelete,
-	"role_source_artifact_delete_intent": workspaceDeleteKeep,
-	"role_source_artifact_purge_receipt": workspaceDeleteKeep,
-	"role_source_artifact_integrity":     workspaceDelete,
-	"role_source_audit_event":            workspaceDelete,
-	"role_source_capability_version":     workspaceDelete,
-	"role_source_legal_hold":             workspaceDelete,
-	"role_source_legal_hold_release":     workspaceDelete,
-	"role_source_retention_candidate":    workspaceDelete,
-	"role_source_retention_policy":       workspaceDelete,
-	"role_source_object_mapping":         workspaceDelete,
-	"role_source_outbox":                 workspaceDelete,
-	"role_source_outbox_replay":          workspaceDelete,
-	"role_source_plan":                   workspaceDelete,
-	"role_source_plan_approval":          workspaceDelete,
-	"role_source_scan_request":           workspaceDelete,
-	"role_source_secret_transfer":        workspaceDelete,
-	"role_source_runtime_attestation":    workspaceDelete,
-	"role_source_snapshot":               workspaceDelete,
-	"role_source_snapshot_artifact":      workspaceDelete,
-	"role_source_task_pin":               workspaceDelete,
-	"workspace_share_link":               workspaceDelete,
+	// Workspace IDs are provenance, not lifetime ownership: pending object
+	// deletion and immutable purge evidence must survive workspace teardown.
+	"role_source_artifact_delete_intent":          workspaceDeleteRetain,
+	"role_source_artifact_purge_receipt":          workspaceDeleteRetain,
+	"role_source_artifact_integrity":              workspaceDelete,
+	"role_source_audit_event":                     workspaceDelete,
+	"role_source_capability_version":              workspaceDelete,
+	"role_source_legal_hold":                      workspaceDelete,
+	"role_source_legal_hold_release":              workspaceDelete,
+	"role_source_retention_candidate":             workspaceDelete,
+	"role_source_retention_policy":                workspaceDelete,
+	"role_source_object_mapping":                  workspaceDelete,
+	"role_source_outbox":                          workspaceDelete,
+	"role_source_outbox_replay":                   workspaceDelete,
+	"role_source_plan":                            workspaceDelete,
+	"role_source_plan_approval":                   workspaceDelete,
+	"role_source_scan_request":                    workspaceDelete,
+	"role_source_secret_transfer":                 workspaceDelete,
+	"role_source_runtime_attestation":             workspaceDelete,
+	"role_source_runtime_attestation_observation": workspaceDelete,
+	"role_source_snapshot":                        workspaceDelete,
+	"role_source_snapshot_artifact":               workspaceDelete,
+	"role_source_task_pin":                        workspaceDelete,
+	"workspace_share_link":                        workspaceDelete,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {
@@ -260,7 +260,7 @@ WHERE table_schema = 'public'
 			if hasWorkspaceID {
 				t.Errorf("KEEP table %s gained workspace_id; classify its teardown behavior", table)
 			}
-		case workspaceDeleteDetach, workspaceDeleteSettle:
+		case workspaceDeleteDetach, workspaceDeleteSettle, workspaceDeleteRetain:
 			if !hasWorkspaceID {
 				t.Errorf("%s table %s lost workspace_id; update its teardown selector", action, table)
 			}

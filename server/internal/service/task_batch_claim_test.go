@@ -288,7 +288,9 @@ func TestClaimTasksForRuntimes_EmptyReclaimDefersHintForRetry(t *testing.T) {
 		t.Fatalf("read deferred hint: %v", err)
 	}
 	retryAt := time.UnixMilli(int64(score))
-	if retryAt.Before(now.Add(ReclaimCheckRetryInterval)) || retryAt.After(time.Now().Add(ReclaimCheckRetryInterval+time.Second)) {
+	// Redis stores deadlines in milliseconds; compare at the same precision.
+	earliestRetry := now.Add(ReclaimCheckRetryInterval).Truncate(time.Millisecond)
+	if retryAt.Before(earliestRetry) || retryAt.After(time.Now().Add(ReclaimCheckRetryInterval+time.Second)) {
 		t.Fatalf("retry hint = %v, want approximately one retry interval after the check", retryAt)
 	}
 	if due := svc.ReclaimCheck.DueRuntimeIDs(ctx, []string{rt1}, retryAt.Add(-time.Millisecond)); len(due) != 0 {
