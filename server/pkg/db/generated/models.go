@@ -229,15 +229,15 @@ type AgentTaskQueue struct {
 	BranchName                pgtype.Text `json:"branch_name"`
 	DurableWorkDir            pgtype.Text `json:"durable_work_dir"`
 	ChannelContextRevision    pgtype.Int8 `json:"channel_context_revision"`
-	EmailAgentConfigDigest    pgtype.Text `json:"email_agent_config_digest"`
 	CommentThreadID           pgtype.UUID `json:"comment_thread_id"`
 	CancelledByType           pgtype.Text `json:"cancelled_by_type"`
 	CancelledByID             pgtype.UUID `json:"cancelled_by_id"`
 	CancelledByName           pgtype.Text `json:"cancelled_by_name"`
-	EmailAgentPolicyVersionID pgtype.UUID `json:"email_agent_policy_version_id"`
-	EmailAgentApprovalID      pgtype.UUID `json:"email_agent_approval_id"`
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
 	TopicID                   pgtype.UUID `json:"topic_id"`
+	EmailAgentConfigDigest    pgtype.Text `json:"email_agent_config_digest"`
+	EmailAgentPolicyVersionID pgtype.UUID `json:"email_agent_policy_version_id"`
+	EmailAgentApprovalID      pgtype.UUID `json:"email_agent_approval_id"`
 }
 
 type AgentToLabel struct {
@@ -645,10 +645,10 @@ type ChatMessage struct {
 	ChannelOutboundInstallationID pgtype.UUID        `json:"channel_outbound_installation_id"`
 	ChannelOutboundChatID         pgtype.Text        `json:"channel_outbound_chat_id"`
 	ChannelOutboundMessageIds     []string           `json:"channel_outbound_message_ids"`
+	ChannelTypingSettled          bool               `json:"channel_typing_settled"`
 	TopicID                       pgtype.UUID        `json:"topic_id"`
 	SenderType                    pgtype.Text        `json:"sender_type"`
 	SenderID                      pgtype.UUID        `json:"sender_id"`
-	ChannelTypingSettled          bool               `json:"channel_typing_settled"`
 }
 
 type ChatPinnedAgent struct {
