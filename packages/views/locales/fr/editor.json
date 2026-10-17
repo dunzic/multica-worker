@@ -212,6 +212,8 @@
     "uploading": "Envoi de {{filename}}"
   },
   "upload": {
+    "too_many_files": "Jusqu’à {{count}} fichiers par message. Retirez un fichier avant d’en ajouter.",
+    "batch_too_large": "Les pièces jointes dépassent {{size}} Mio par message. Retirez des fichiers avant de réessayer.",
     "failed": "Impossible d'envoyer {{filename}} : {{reason}}",
     "in_progress": "Envoi…",
     "interrupted": "Envoi interrompu — le fichier n'a pas été enregistré. Joignez-le de nouveau.",

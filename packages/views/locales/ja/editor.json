@@ -201,6 +201,8 @@
     "uploading": "{{filename}} をアップロード中"
   },
   "upload": {
+    "too_many_files": "1メッセージにつき最大 {{count}} ファイルです。追加する前にファイルを削除してください。",
+    "batch_too_large": "添付ファイルの合計が {{size}} MiB を超えています。一部を削除して再試行してください。",
     "failed": "{{filename}} をアップロードできませんでした: {{reason}}",
     "in_progress": "アップロード中…",
     "interrupted": "アップロードが中断されました—ファイルは保存されていません。もう一度添付してください。",

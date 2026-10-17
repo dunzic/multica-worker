@@ -476,6 +476,28 @@ describe("paste-as-file", () => {
     return handled;
   }
 
+  it("registers all 100 pasted files before any network result and retains reverse-order completions", async () => {
+    const pending = Array.from({ length: 100 }, () => deferred<UploadResult | null>());
+    let next = 0;
+    const handler = vi.fn(() => pending[next++]!.promise);
+    const editor = makePasteEditor({ handler });
+    const files = pending.map((_, i) => new File(["synthetic"], `file-${i}.txt`, { type: "text/plain" }));
+    expect(paste(editor, { files })).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(100);
+    const names = () => {
+      const result: string[] = [];
+      editor.state.doc.descendants((node) => { if (node.type.name === "fileCard") result.push(node.attrs.filename); });
+      return result;
+    };
+    expect(names()).toEqual(files.map((f) => f.name));
+    for (let i = 99; i >= 0; i--) {
+      pending[i]!.resolve(makeUpload({ id: `file-${i}`, filename: files[i]!.name, link: `/files/${i}`, content_type: "text/plain" }));
+      await Promise.resolve();
+    }
+    expect(names()).toEqual(files.map((f) => f.name));
+    for (let i = 0; i < 100; i++) expect(editor.getMarkdown()).toContain(`/files/${i}`);
+  });
+
   it("uploads an over-threshold plain-text paste as pasted-text.txt and keeps it out of the body", async () => {
     const upload = deferred<UploadResult | null>();
     const handler = vi.fn((_file: File) => upload.promise);

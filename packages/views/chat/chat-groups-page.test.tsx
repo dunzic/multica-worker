@@ -99,12 +99,19 @@ describe("group chat wiring", () => {
     expect(mocks.replace).toHaveBeenCalledWith("/test/chat/groups?conversation=group&topic=topic");
   });
   it("keeps oversized batches in the draft and explains how to split them", async () => {
-    mocks.attachmentIds = Array.from({ length: 21 }, (_, i) => String(i));
+    mocks.attachmentIds = Array.from({ length: 101 }, (_, i) => String(i));
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Send batch" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("20 files per message");
+    expect(await screen.findByRole("alert")).toHaveTextContent("100 files per message");
     expect(mocks.send).not.toHaveBeenCalled();
     expect(mocks.commit).not.toHaveBeenCalled();
+  });
+  it.each([21, 100])("sends %i attachments as exactly one message", async (count) => {
+    mocks.attachmentIds = Array.from({ length: count }, (_, i) => String(i));
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Send batch" }));
+    await waitFor(() => expect(mocks.commit).toHaveBeenCalledOnce());
+    expect(mocks.send).toHaveBeenCalledExactlyOnceWith("topic", "screen", mocks.attachmentIds);
   });
   it("sends all batch ids and only clears the draft after success", async () => {
     mount();

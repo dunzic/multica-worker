@@ -56,6 +56,7 @@ import {
   type UploadResult,
 } from "@multica/core/hooks/use-file-upload";
 import { MAX_FILE_SIZE } from "@multica/core/constants/upload";
+import { getUploadLimitError, type UploadBatchLimits } from "@multica/core/drafts/upload-limits";
 import { useT } from "../i18n";
 import type { UploadGate } from "./use-upload-gate";
 import type { ContentEditorRef } from "./content-editor";
@@ -263,6 +264,8 @@ export function useCoordinatedUploads(
      * draft, so composers with a pinnable editor register the LOADED key.
      */
     liveRegistryKey?: string;
+    /** Optional aggregate limits for this composer's pending and uploaded files. */
+    limits?: UploadBatchLimits;
   },
 ): CoordinatedUploads {
   const { t } = useT("editor");
@@ -272,6 +275,8 @@ export function useCoordinatedUploads(
   resolveUploadTargetRef.current = opts?.resolveUploadTarget;
   const resolveUploadContextRef = useRef(opts?.resolveUploadContext);
   resolveUploadContextRef.current = opts?.resolveUploadContext;
+  const limitsRef = useRef(opts?.limits);
+  limitsRef.current = opts?.limits;
 
   // Liveness of THIS mount, read by settle closures it created: while true,
   // the editor that started the upload will do the inline swap itself; once
@@ -397,10 +402,24 @@ export function useCoordinatedUploads(
 
       const pastedText = pastedTextSource(file);
 
-      if (file.size > MAX_FILE_SIZE) {
+      const limits = limitsRef.current;
+      const current = target ? target.getUploads() : localUploadsRef.current;
+      const limitError = limits ? getUploadLimitError(
+        [
+          ...current
+            .filter((u) => u.status === "uploading" || u.status === "uploaded")
+            .map((u) => u.size),
+          file.size,
+        ],
+        limits,
+      ) : null;
+      let reason: string | null = null;
+      if (file.size > MAX_FILE_SIZE) reason = "File exceeds 100 MB limit";
+      else if (limits && limitError === "count") reason = t(($) => $.upload.too_many_files, { count: limits.maxFiles });
+      else if (limits && limitError === "size") reason = t(($) => $.upload.batch_too_large, { size: limits.maxBytes / (1024 * 1024) });
+      if (reason) {
         // Never enters the coordinator, and never enters the draft either —
         // see the settle handler below for why a failure leaves no placeholder.
-        const reason = "File exceeds 100 MB limit";
         if (pastedText !== undefined) {
           // A paste has no on-disk copy to re-attach from, so the text goes
           // back into the composer instead of being lost with the upload.
@@ -413,7 +432,10 @@ export function useCoordinatedUploads(
       if (target) {
         target.addUpload(placeholder);
       } else {
-        setLocalUploads((prev) => [...prev, placeholder]);
+        // Reserve synchronously: a multi-file pick can invoke this repeatedly
+        // before React renders, and every invocation must see prior reservations.
+        localUploadsRef.current = [...localUploadsRef.current, placeholder];
+        setLocalUploads(localUploadsRef.current);
       }
 
       return new Promise<UploadResult | null>((resolve) => {

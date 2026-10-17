@@ -1,6 +1,6 @@
 {
   "groups": {
-    "attachment_limit": "1 件のメッセージにつき最大 20 ファイルです。多い場合は分けて送信してください。",
+    "attachment_limit": "1メッセージにつき最大 {{count}} ファイル、合計 {{size}} MiB。アップロードは自動で順番に処理されます。",
     "info": "グループ情報",
     "save": "保存",
     "promote": "admin に設定",

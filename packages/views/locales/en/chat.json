@@ -1,6 +1,6 @@
 {
   "groups": {
-    "attachment_limit": "Up to 20 files per message. Split larger batches across messages.",
+    "attachment_limit": "Up to {{count}} files per message, {{size}} MiB total. Uploads are queued automatically.",
     "info": "Group info",
     "save": "Save",
     "promote": "Make admin",

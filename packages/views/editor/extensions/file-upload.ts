@@ -320,9 +320,10 @@ export function createFileUploadExtension(
       const handleFiles = async (files: File[]) => {
         const handler = onUploadFileRef.current;
         if (!handler) return false;
-        for (const file of files) {
-          await uploadAndInsertFile(editor, file, handler);
-        }
+        // Register the whole selection before yielding. The shared coordinator
+        // bounds network concurrency; every placeholder reserves its draft,
+        // workspace and capacity even if navigation happens while queued.
+        await Promise.all(files.map((file) => uploadAndInsertFile(editor, file, handler)));
         return true;
       };
 

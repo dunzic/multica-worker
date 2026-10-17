@@ -1,0 +1,162 @@
+{
+  "feature": "通用对话：每条消息最多 100 个文件",
+  "date": "2026-10-18",
+  "branch": "codex/chat-100-attachments-20261018",
+  "base_commit": "972035c31bbf148f896b1623f25b430cfc1a3bc8",
+  "status": "implemented_reviewed_locally_verified",
+  "scope": [
+    "网页和桌面端共用的单人/群组 ChatInput",
+    "文件选择、粘贴、拖放入口",
+    "单人消息和群组话题消息的服务端附件绑定"
+  ],
+  "policy": {
+    "max_files_per_message": 100,
+    "max_total_bytes_per_message": 524288000,
+    "existing_single_upload_request_limit_bytes": 104857600,
+    "single_upload_note": "保留现有 100 MiB 上传请求体上限（包含 multipart 开销）；前端单文件检查与服务端消息元数据校验也保留 100 MiB 上限。",
+    "max_concurrent_uploads_per_client_renderer": 3,
+    "queue": "FIFO，排队中的文件立即登记占位并计入文件数/容量；全部上传结束后一次发送，不拆成多条消息。",
+    "admission": "第 101 个文件或容量超限会提示对应文件并拒绝加入，保留已接受的文件；发送失败或超限时保留草稿。",
+    "failure_recovery": "单文件上传失败提示文件名，失败文件可重新选择上传；发送失败保留正文及已上传附件后重试。"
+  },
+  "code_review": {
+    "reviewer": "primary agent manual code review",
+    "examined": [
+      "前后端限额一致性",
+      "容量预占与原子回滚",
+      "工作区/群组隔离",
+      "上传队列、退出登录及延迟完成",
+      "多文件粘贴及草稿保留",
+      "网页/桌面共用边界与 API 兼容"
+    ],
+    "resolved_findings": [
+      {
+        "issue": "排队期间切换工作区可能使后续请求读取新的全局工作区。",
+        "resolution": "入队时固定工作区 slug；ApiClient 显式使用原工作区或空上下文。",
+        "evidence": "队列与 API 的 3 个新增回归先失败，修复后通过。"
+      },
+      {
+        "issue": "粘贴入口逐个等待网络完成才登记下一个文件，不能同时固定整批文件的归属和容量。",
+        "resolution": "同步登记整批占位，由公共协调器控制最多 3 个网络上传；100 文件反向完成后全部保留。",
+        "evidence": "新增真实 Tiptap 测试修复前只登记 1 个，修复后 100 个均通过；Chrome 粘贴 100 文件端到端通过。"
+      }
+    ],
+    "unresolved_blocking_findings": []
+  },
+  "verification": {
+    "environment": "本机 Chrome + 当前网页/API + 专用数据库 multica_ci_regression_20261017_992；合成文件，无真实模型/Agent 执行。",
+    "backend": [
+      {
+        "command": "go test ./internal/handler ./internal/service -count=1",
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/backend-regression.log"
+      },
+      {
+        "command": "go test ./internal/handler -run 'TestChatAttachmentCapacity|TestCollaboration' -count=1 -v",
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/backend-targeted.log"
+      },
+      {
+        "command": "go test -race ./internal/handler -run 'TestChatAttachmentCapacity|TestCollaborationConcurrentRemovalRejectsWaitingSend|TestCollaborationBatchSendAndPinnedClaim' -count=1",
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/backend-race.log"
+      },
+      {
+        "command": "go vet ./internal/handler ./internal/service",
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/go-vet.log"
+      }
+    ],
+    "frontend_full_suites": [
+      {
+        "package": "core",
+        "files": 175,
+        "tests": 2328,
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/core-regression.log"
+      },
+      {
+        "package": "views",
+        "files": 480,
+        "tests": 6127,
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/views-regression.log",
+        "note": "全量运行早于末次粘贴入口修订；最终版本另通过编辑器全目录及定向回归，见下。"
+      },
+      {
+        "package": "web",
+        "files": 37,
+        "tests": 286,
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/web-regression.log"
+      },
+      {
+        "package": "desktop",
+        "files": 62,
+        "tests": 714,
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/desktop-regression.log"
+      }
+    ],
+    "final_targeted_suites": [
+      {
+        "package": "views/editor",
+        "files": 84,
+        "tests": 1647,
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/editor-regression-final.log"
+      },
+      {
+        "package": "views chat/editor regressions",
+        "files": 5,
+        "tests": 111,
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/views-targeted-final.log"
+      },
+      {
+        "package": "core queue/limits/API",
+        "files": 3,
+        "tests": 185,
+        "result": "passed",
+        "evidence": ".context/chat-batch-20261018/core-targeted-final.log"
+      }
+    ],
+    "e2e": {
+      "command": "playwright test e2e/chat-batch-attachments.spec.ts e2e/chat-attachments.spec.ts",
+      "result": "4 passed",
+      "evidence": ".context/chat-batch-20261018/e2e-final.log",
+      "cases": [
+        "选择 100 文件：并发不超过 3、拒绝第 101 个文件、只提交一条消息、数据库绑定全部 ID 和文件名、刷新显示 100 个预览入口。",
+        "粘贴 100 文件：浏览器 ClipboardEvent、真实上传与存储、一条消息和全部附件绑定、刷新完整展示。",
+        "拖放 100 文件：浏览器 DragEvent、真实上传与存储、一条消息和全部附件绑定、刷新完整展示。",
+        "原有单人对话附件 HTTP 集成：上传会话归属和发送后的消息绑定。"
+      ],
+      "screenshots": ".context/chat-batch-20261018/e2e-final/"
+    },
+    "capacity_and_permissions": [
+      "单人/群组：100 个文件、合计 500 MiB 元数据边界接受；101 个文件、合计超限、单文件超限和非法大小拒绝。",
+      "拒绝时消息、任务、附件绑定在同一事务回滚；不遗留半条消息。",
+      "100 个群组附件完整进入固定触发消息的 Agent claim，不误用后续消息。",
+      "现有工作区、群组附件权限及并发移除成员回归通过。",
+      "退出登录不启动排队任务，不回写忽略 abort 的延迟成功；上传失败释放队列槽位。"
+    ],
+    "static_checks": {
+      "core_typecheck": "passed",
+      "views_typecheck": "passed",
+      "web_typecheck": "passed",
+      "desktop_renderer_typecheck": "passed using repository --composite false command",
+      "changed_core_views_editor_eslint": "passed",
+      "knip": "passed",
+      "diff_check": "passed",
+      "database_schema_changes": "none; sqlc regeneration not needed"
+    }
+  },
+  "boundaries": [
+    "容量边界使用隔离数据库中的合成元数据，不代表实际完成 500 MiB 网络吞吐压测。",
+    "浏览器粘贴/拖放测试覆盖真实组件事件和 HTTP 上传，但不代表操作系统文件管理器剪贴板的跨平台原生验收。",
+    "未运行真实 Agent 对 100 份简历进行筛选；不以附件验证代替 HR 业务验收。",
+    "未进行原生 Windows/macOS 安装包或移动端验收。",
+    "本记录为本地开发及回归验收快照；未打包或部署，代码提交及推送不代表现网与已安装桌面端已经更新。"
+  ],
+  "cleanup": "已停止本轮临时 API 容器与网页进程；保留隔离测试数据库、日志和截图；仅移除本次 next dev 自动生成的 apps/web/AGENTS.md 和 CLAUDE.md；未触碰既有 .pnpm-store/。"
+}

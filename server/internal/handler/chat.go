@@ -852,7 +852,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 
 	var req SendChatMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024*1024)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -864,6 +864,10 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// Pre-validate attachment ids early so invalid input returns 400 before
 	// any state mutation. The actual link runs after CreateChatMessage so we
 	// have a message_id to back-fill into the attachment rows.
+	if len(req.AttachmentIDs) > service.MaxChatMessageAttachments {
+		writeError(w, http.StatusBadRequest, "a message supports at most 100 attachments")
+		return
+	}
 	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
 	if !ok {
 		return
@@ -959,6 +963,8 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
 	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrChatAttachmentCapacity):
+			writeError(w, http.StatusRequestEntityTooLarge, err.Error())
 		case errors.Is(err, service.ErrChatSessionArchived):
 			writeError(w, http.StatusConflict, "chat session is archived")
 		case errors.Is(err, service.ErrChatTaskAgentArchived):

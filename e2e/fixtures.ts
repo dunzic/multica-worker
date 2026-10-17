@@ -538,6 +538,24 @@ export class TestApiClient {
     return this.token;
   }
 
+  async createGroupChatFixture(title: string) {
+    const me = await this.authedFetch("/api/me");
+    if (!me.ok) throw new Error(`Read group creator: ${me.status}`);
+    const user = (await me.json()) as { id: string };
+    const response = await this.authedFetch("/api/v2/conversations", {
+      method: "POST",
+      body: JSON.stringify({ kind: "group", title, participants: [{ type: "member", id: user.id }] }),
+    });
+    if (!response.ok) throw new Error(`Create group: ${response.status} ${await response.text()}`);
+    const conversation = (await response.json()) as { id: string };
+    const created = await this.authedFetch(`/api/v2/conversations/${conversation.id}/topics`, {
+      method: "POST", body: JSON.stringify({ title: "Batch upload" }),
+    });
+    if (!created.ok) throw new Error(`Create topic: ${created.status} ${await created.text()}`);
+    const topic = (await created.json()) as { id: string };
+    return { conversationId: conversation.id, topicId: topic.id };
+  }
+
   getEmail() {
     if (!this.email) {
       throw new Error("Test API client is not logged in");

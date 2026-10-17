@@ -201,6 +201,8 @@
     "uploading": "{{filename}} 업로드 중"
   },
   "upload": {
+    "too_many_files": "메시지당 최대 {{count}}개 파일입니다. 추가하기 전에 파일을 제거하세요.",
+    "batch_too_large": "메시지의 첨부 파일이 총 {{size}} MiB를 초과합니다. 일부 파일을 제거하고 다시 시도하세요.",
     "failed": "{{filename}}을(를) 업로드하지 못했어요: {{reason}}",
     "in_progress": "업로드 중…",
     "interrupted": "업로드가 중단되었어요 — 파일이 저장되지 않았어요. 다시 첨부해 주세요.",

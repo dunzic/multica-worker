@@ -2334,6 +2334,9 @@ func (s *TaskService) SendDirectChatMessage(
 	uploaderType string,
 	uploaderID pgtype.UUID,
 ) (*DirectChatSendResult, error) {
+	if len(attachmentIDs) > MaxChatMessageAttachments {
+		return nil, ErrChatAttachmentCapacity
+	}
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
 	overlay := s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)
@@ -2474,6 +2477,9 @@ func (s *TaskService) SendDirectChatMessage(
 				return fmt.Errorf("link chat attachments: %w", err)
 			}
 			out.BoundAttachmentIDs = bound
+			if err := ValidateChatMessageAttachments(ctx, qtx, session.WorkspaceID, msg.ID); err != nil {
+				return err
+			}
 
 			// An explicitly empty /new Chat can receive its first turn from a
 			// first-party client. For an attachment-only turn, initialize the

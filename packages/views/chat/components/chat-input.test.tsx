@@ -897,6 +897,34 @@ describe("ChatInput project context", () => {
 });
 
 describe("ChatInput attachment wiring", () => {
+  it.each([
+    { count: 100, size: 1, accepted: true, succeeds: true },
+    { count: 100, size: 1, accepted: true, succeeds: false },
+    { count: 101, size: 1, accepted: false, succeeds: true },
+    { count: 6, size: 100 * 1024 * 1024, accepted: false, succeeds: true },
+  ])("validates a restored batch and only clears on success: %j", async ({ count, size, accepted, succeeds }) => {
+    const state = useChatStore.getState();
+    const attachments = Array.from({ length: count }, (_, i) => makeUpload({ id: `batch-${i}`, link: `/api/attachments/batch-${i}/download`, filename: `${i}.txt`, size_bytes: size }));
+    const body = attachments.map((a) => `!file[${a.filename}](${a.link})`).join("\n\n");
+    state.inputDrafts["__draft_new__"] = body;
+    state.inputDraftAttachments["__draft_new__"] = attachments.map((attachment) => ({ clientUploadId: attachment.id, status: "uploaded", filename: attachment.filename, size, attachment }));
+    const onSend = vi.fn().mockResolvedValue(succeeds);
+    renderInput({ onSend });
+    await act(async () => {
+      const buttons = screen.getAllByRole("button");
+      fireEvent.click(buttons[buttons.length - 1]!);
+    });
+    expect(onSend).toHaveBeenCalledTimes(accepted ? 1 : 0);
+    if (accepted) expect(onSend.mock.calls[0]![1]).toEqual(attachments.map((a) => a.id));
+    if (!accepted || !succeeds) {
+      expect(state.inputDrafts["__draft_new__"]).toBe(body);
+      expect(state.inputDraftAttachments["__draft_new__"]).toHaveLength(count);
+      expect(editorState.cleared).toBe(0);
+    } else {
+      expect(editorState.cleared).toBe(1);
+    }
+  });
+
   it("routes dropped files through the coordinator upload", async () => {
     renderInput();
     expect(dropHandlers.onDrop).not.toBeNull();

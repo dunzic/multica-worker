@@ -208,6 +208,8 @@
     "uploading": "正在上传 {{filename}}"
   },
   "upload": {
+    "too_many_files": "每条消息最多 {{count}} 个文件，请先移除文件再添加。",
+    "batch_too_large": "本条消息的附件合计超过 {{size}} MiB，请移除部分文件后重试。",
     "failed": "{{filename}} 上传失败：{{reason}}",
     "in_progress": "上传中…",
     "interrupted": "上传已中断——文件未保存。请重新添加。",

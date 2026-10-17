@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { CHAT_ATTACHMENT_LIMITS } from "@multica/core/constants/upload";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { conversationsOptions, topicsOptions, topicMessagesOptions, topicRunsOptions, isTopicRunActive, useCancelTopicRun, useCreateConversation, useCreateTopic, useSendTopicMessage } from "@multica/core/chat-v2";
@@ -104,7 +105,7 @@ export function ChatGroupsPage() {
                 disabled={send.isPending}
                 onSend={async (content, attachmentIds, commit) => {
                   setError(null);
-                  if ((attachmentIds?.length ?? 0) > 20) { setError(t(($) => $.groups.attachment_limit)); return false; }
+                  if ((attachmentIds?.length ?? 0) > CHAT_ATTACHMENT_LIMITS.maxFiles) { setError(t(($) => $.groups.attachment_limit, { count: CHAT_ATTACHMENT_LIMITS.maxFiles, size: CHAT_ATTACHMENT_LIMITS.maxBytes / (1024 * 1024) })); return false; }
                   try { await send.mutateAsync({ id: topicId, content, attachmentIds }); commit(); return true; }
                   catch { setError(t(($) => $.groups.send_failed)); return false; }
                 }}
@@ -112,7 +113,7 @@ export function ChatGroupsPage() {
               <div className={`${CHAT_GUTTER} shrink-0 pb-3 text-caption text-muted-foreground`}>
                 <div className={CHAT_COLUMN}>
                   {conversation.kind === "group" && <p>{t(($) => $.groups.mention_hint)}</p>}
-                  <p>{t(($) => $.groups.attachment_limit)}</p>
+                  <p>{t(($) => $.groups.attachment_limit, { count: CHAT_ATTACHMENT_LIMITS.maxFiles, size: CHAT_ATTACHMENT_LIMITS.maxBytes / (1024 * 1024) })}</p>
                 </div>
               </div>
             </>}

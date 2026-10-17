@@ -23,6 +23,8 @@ import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
+import { CHAT_ATTACHMENT_LIMITS } from "@multica/core/constants/upload";
+import { getUploadLimitError } from "@multica/core/drafts/upload-limits";
 import { createLogger } from "@multica/core/logger";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { MentionItem } from "../../editor/extensions/mention-suggestion";
@@ -321,6 +323,7 @@ export function ChatInput({
     resolveUploadTarget: () => makeUploadBinding(editorDraftKeyRef.current),
     resolveUploadContext: () => ({ topicId: uploadTopicId && editorDraftKeyRef.current.startsWith("group:") ? editorDraftKeyRef.current.slice("group:".length) : uploadTopicId }),
     liveRegistryKey: `chat:${loadedDraftKey}`,
+    limits: CHAT_ATTACHMENT_LIMITS,
   });
 
   // Move the editor from the draft it holds to the draft that is selected.
@@ -486,11 +489,22 @@ export function ChatInput({
       }
       // Only send attachment IDs for uploads still present in the content.
       // Edits / deletions that remove the markdown URL also drop the binding.
-      const activeIds: string[] = [];
-      for (const attachment of draftAttachments) {
-        if (isAttachmentReferenced(content, attachment)) activeIds.push(attachment.id);
+      const activeAttachments = [...new Map(
+        draftAttachments
+          .filter((attachment) => isAttachmentReferenced(content, attachment))
+          .map((attachment) => [attachment.id, attachment]),
+      ).values()];
+      const uniqueActiveIds = activeAttachments.map((attachment) => attachment.id);
+      const limitError = getUploadLimitError(
+        activeAttachments.map((attachment) => attachment.size_bytes),
+        CHAT_ATTACHMENT_LIMITS,
+      );
+      if (limitError) {
+        toast.error(limitError === "count"
+          ? tEditor(($) => $.upload.too_many_files, { count: CHAT_ATTACHMENT_LIMITS.maxFiles })
+          : tEditor(($) => $.upload.batch_too_large, { size: CHAT_ATTACHMENT_LIMITS.maxBytes / (1024 * 1024) }));
+        return false;
       }
-      const uniqueActiveIds = Array.from(new Set(activeIds));
       // Capture draft key BEFORE onSend — creating a new session mutates
       // activeSessionId synchronously, so reading it after onSend would point
       // at the new session and leave the old draft orphaned.
@@ -547,7 +561,7 @@ export function ChatInput({
         content,
         uniqueActiveIds.length > 0 ? uniqueActiveIds : undefined,
         commitInput,
-        draftAttachments.filter((attachment) => uniqueActiveIds.includes(attachment.id)),
+        activeAttachments,
       );
       // Owner rejected the send (or threw, which useComposerSubmit also treats
       // as a rejection): the draft was never committed, so it stays put for

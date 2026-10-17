@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -760,9 +761,6 @@ type SendMessageRequest struct {
 	AttachmentIDs []string `json:"attachment_ids,omitempty"`
 }
 
-// Bound attachment fan-out per group message; larger batches can use multiple messages.
-const maxTopicMessageAttachments = 20
-
 type SendMessageResponse struct {
 	TaskIDs []string    `json:"task_ids"`
 	Message MessageWire `json:"message"`
@@ -805,8 +803,8 @@ func (h *Handler) SendTopicMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "content or attachments required")
 		return
 	}
-	if len(req.AttachmentIDs) > maxTopicMessageAttachments {
-		writeError(w, http.StatusBadRequest, "too many attachments")
+	if len(req.AttachmentIDs) > service.MaxChatMessageAttachments {
+		writeError(w, http.StatusBadRequest, "a message supports at most 100 attachments")
 		return
 	}
 	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
@@ -914,6 +912,14 @@ func (h *Handler) SendTopicMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(linked) != len(attachmentIDs) {
 			writeError(w, http.StatusBadRequest, "attachments invalid or already linked")
+			return
+		}
+		if err := service.ValidateChatMessageAttachments(r.Context(), q, conv.WorkspaceID, msg.ID); err != nil {
+			if errors.Is(err, service.ErrChatAttachmentCapacity) {
+				writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+			} else {
+				writeError(w, http.StatusInternalServerError, "could not validate attachment capacity")
+			}
 			return
 		}
 	}

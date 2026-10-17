@@ -1,6 +1,6 @@
 {
   "groups": {
-    "attachment_limit": "每条消息最多 20 个文件，更多文件请分批发送。",
+    "attachment_limit": "每条消息最多 {{count}} 个文件，合计不超过 {{size}} MiB，上传会自动排队。",
     "info": "群组信息",
     "save": "保存",
     "promote": "设为 admin",

@@ -4114,7 +4114,7 @@ export class ApiClient {
   // File Upload & Attachments
   async uploadFile(
     file: File,
-    opts?: { issueId?: string; commentId?: string; chatSessionId?: string; topicId?: string },
+    opts?: { issueId?: string; commentId?: string; chatSessionId?: string; topicId?: string; workspaceSlug?: string | null },
     // Optional abort signal so a module-level upload coordinator (MUL-5181)
     // can cancel an in-flight upload on logout. When aborted, `fetch` rejects
     // with an AbortError, which the coordinator distinguishes from a real
@@ -4133,9 +4133,16 @@ export class ApiClient {
     this.logger.info("→ POST /api/upload-file", { rid });
 
     const credentialUsed = this.getToken();
+    const headers = this.authHeaders();
+    // Queued uploads retain the workspace from selection time, including an
+    // explicit null for uploads started outside workspace context.
+    if (opts?.workspaceSlug !== undefined) {
+      delete headers["X-Workspace-Slug"];
+      if (opts.workspaceSlug) headers["X-Workspace-Slug"] = opts.workspaceSlug;
+    }
     const res = await fetch(`${this.baseUrl}/api/upload-file`, {
       method: "POST",
-      headers: this.authHeaders(),
+      headers,
       body: formData,
       credentials: "include",
       signal,

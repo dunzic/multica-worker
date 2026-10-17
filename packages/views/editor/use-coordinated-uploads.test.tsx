@@ -6,6 +6,8 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import type { DraftUpload } from "@multica/core/drafts";
 import type { UploadContext, UploadResult } from "@multica/core/hooks/use-file-upload";
 import type { Attachment } from "@multica/core/types";
+import { CHAT_ATTACHMENT_LIMITS } from "@multica/core/constants/upload";
+import type { UploadBatchLimits } from "@multica/core/drafts/upload-limits";
 import enCommon from "../locales/en/common.json";
 import enEditor from "../locales/en/editor.json";
 import { markPastedTextFile, PASTED_TEXT_FILENAME } from "./extensions/file-upload";
@@ -136,19 +138,54 @@ function UploadHost({
   expose,
   selectedTopic,
   resolveContext,
+  limits,
 }: {
-  binding: UploadDraftBinding;
+  binding?: UploadDraftBinding;
   expose: (upload: (file: File) => Promise<UploadResult | null>) => void;
   selectedTopic?: string;
   resolveContext?: () => UploadContext;
+  limits?: UploadBatchLimits;
 }) {
   const editorRef = useRef<ContentEditorRef | null>(null);
-  const { handleUpload } = useCoordinatedUploads(binding, [], { topicId: selectedTopic }, inertGate, editorRef, { resolveUploadContext: resolveContext });
+  const { handleUpload } = useCoordinatedUploads(binding, [], { topicId: selectedTopic }, inertGate, editorRef, { resolveUploadContext: resolveContext, limits });
   useEffect(() => {
     expose(handleUpload);
   }, [handleUpload, expose]);
   return null;
 }
+
+describe("batch upload admission", () => {
+  it.each(["persisted", "local"])("reserves all 100 slots synchronously for a %s draft", async (mode) => {
+    mockApiUploadFile.mockReset().mockImplementation(async (file: File) => ({ id: file.name, url: `/files/${file.name}`, filename: file.name, size_bytes: file.size }));
+    const { binding } = makeRecordingBinding(`probe:batch-${mode}`);
+    let upload!: (file: File) => Promise<UploadResult | null>;
+    const view = render(<I18nProvider locale="en" resources={TEST_RESOURCES}><UploadHost binding={mode === "persisted" ? binding : undefined} limits={CHAT_ATTACHMENT_LIMITS} expose={(fn) => { upload = fn; }} /></I18nProvider>);
+    let results: Array<UploadResult | null> = [];
+    await act(async () => {
+      results = await Promise.all(Array.from({ length: 101 }, (_, i) => upload(new File(["x"], `file-${i}.txt`))));
+    });
+    expect(mockApiUploadFile).toHaveBeenCalledTimes(100);
+    expect(results.filter(Boolean)).toHaveLength(100);
+    expect(results[100]).toBeNull();
+    view.unmount();
+  });
+
+  it("reserves pending bytes and rejects aggregate or single-file overflow before uploading", async () => {
+    mockApiUploadFile.mockReset().mockImplementation(async (file: File) => ({ id: file.name, url: `/files/${file.name}`, filename: file.name, size_bytes: file.size }));
+    const { binding } = makeRecordingBinding("probe:bytes");
+    let upload!: (file: File) => Promise<UploadResult | null>;
+    const view = render(<I18nProvider locale="en" resources={TEST_RESOURCES}><UploadHost binding={binding} limits={CHAT_ATTACHMENT_LIMITS} expose={(fn) => { upload = fn; }} /></I18nProvider>);
+    const sizedFile = (name: string, size: number) => Object.defineProperty(new File(["x"], name), "size", { value: size });
+    await act(async () => {
+      expect(await upload(sizedFile("oversized.txt", 100 * 1024 * 1024 + 1))).toBeNull();
+      const results = await Promise.all(Array.from({ length: 6 }, (_, i) => upload(sizedFile(`${i}.txt`, 100 * 1024 * 1024))));
+      expect(results.filter(Boolean)).toHaveLength(5);
+      expect(results[5]).toBeNull();
+    });
+    expect(mockApiUploadFile).toHaveBeenCalledTimes(5);
+    view.unmount();
+  });
+});
 
 /**
  * Paste-as-file recovery lives here, not in a composer test, because the hook

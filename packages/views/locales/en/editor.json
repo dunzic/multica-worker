@@ -212,6 +212,8 @@
     "uploading": "Uploading {{filename}}"
   },
   "upload": {
+    "too_many_files": "Up to {{count}} files per message. Remove a file before adding more.",
+    "batch_too_large": "Attachments exceed {{size}} MiB per message. Remove files before retrying.",
     "failed": "Couldn't upload {{filename}}: {{reason}}",
     "in_progress": "Uploading…",
     "interrupted": "Upload interrupted — the file wasn’t saved. Attach it again.",

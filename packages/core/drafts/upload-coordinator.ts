@@ -1,6 +1,8 @@
 import type { ApiClient } from "../api/client";
 import type { Attachment } from "../types";
 import { createLogger } from "../logger";
+import { MAX_CONCURRENT_UPLOADS } from "../constants/upload";
+import { getCurrentSlug } from "../platform/workspace-storage";
 
 /**
  * Module-level file-upload coordinator (MUL-5181, L2).
@@ -52,66 +54,92 @@ export interface StartUploadArgs {
   onSettled: (outcome: UploadOutcome) => void;
 }
 
-const controllers = new Map<string, AbortController>();
+interface UploadJob {
+  args: StartUploadArgs;
+  controller: AbortController;
+  workspaceSlug: string | null;
+}
 
-/**
- * Start an upload owned by this module. Returns immediately; the outcome is
- * delivered through `onSettled`. Safe to call for a `clientUploadId` already in
- * flight (the newer controller replaces the map entry — callers mint unique
- * ids, so this is a defensive no-op in practice).
- */
-export function startUpload({
-  clientUploadId,
-  file,
-  api,
-  ctx,
-  onSettled,
-}: StartUploadArgs): void {
-  const controller = new AbortController();
-  controllers.set(clientUploadId, controller);
+// Map insertion order is the FIFO queue; active requests keep their slot until
+// they actually settle, including after cancellation. This bounds transport
+// concurrency across composers in this client, not just within one file pick.
+const jobs = new Map<string, UploadJob>();
+const active = new Set<UploadJob>();
 
-  void (async () => {
-    try {
-      const attachment = await api.uploadFile(
-        file,
-        {
-          issueId: ctx?.issueId,
-          commentId: ctx?.commentId,
-          chatSessionId: ctx?.chatSessionId,
-          topicId: ctx?.topicId,
-        },
-        controller.signal,
-      );
-      onSettled({ clientUploadId, status: "uploaded", attachment });
-    } catch (err) {
-      // An abort is not a failure: leave the placeholder untouched. It stays
-      // `uploading` for the rest of the session and is dropped on the next
-      // load. Every other error surfaces.
-      if (controller.signal.aborted || (err instanceof Error && err.name === "AbortError")) {
-        logger.info("upload aborted", { clientUploadId });
-        return;
-      }
-      onSettled({
+function pumpUploads(): void {
+  for (const job of jobs.values()) {
+    if (active.size >= MAX_CONCURRENT_UPLOADS) break;
+    if (active.has(job)) continue;
+    active.add(job);
+    void runUpload(job);
+  }
+}
+
+async function runUpload(job: UploadJob): Promise<void> {
+  const { clientUploadId, file, api, ctx, onSettled } = job.args;
+  const { controller } = job;
+  let outcome: UploadOutcome | undefined;
+  try {
+    const attachment = await api.uploadFile(
+      file,
+      {
+        issueId: ctx?.issueId,
+        commentId: ctx?.commentId,
+        chatSessionId: ctx?.chatSessionId,
+        topicId: ctx?.topicId,
+        workspaceSlug: job.workspaceSlug,
+      },
+      controller.signal,
+    );
+    outcome = { clientUploadId, status: "uploaded", attachment };
+  } catch (err) {
+    if (!(err instanceof Error && err.name === "AbortError")) {
+      outcome = {
         clientUploadId,
         status: "failed",
         error: err instanceof Error ? err : new Error("Upload failed"),
+      };
+    }
+  } finally {
+    const stillOwned = jobs.get(clientUploadId) === job;
+    if (stillOwned) jobs.delete(clientUploadId);
+    active.delete(job);
+    // Logout/removal may race an API implementation that ignores abort. Such
+    // a completion must never write into the next session's drafts.
+    try {
+      if (stillOwned && !controller.signal.aborted && outcome)
+        onSettled(outcome);
+    } catch (err) {
+      logger.error("upload result callback failed", {
+        clientUploadId,
+        error: String(err),
       });
     } finally {
-      // Only drop the entry if it is still ours — a racing re-start under the
-      // same id must not have its controller evicted by our finally.
-      if (controllers.get(clientUploadId) === controller) {
-        controllers.delete(clientUploadId);
-      }
+      pumpUploads();
     }
-  })();
+  }
+}
+
+/**
+ * Queue an upload owned by this module. Returns immediately; the outcome is
+ * delivered through `onSettled`. A duplicate queued/active ID is a no-op.
+ */
+export function startUpload(args: StartUploadArgs): void {
+  if (jobs.has(args.clientUploadId)) return;
+  jobs.set(args.clientUploadId, {
+    args,
+    controller: new AbortController(),
+    workspaceSlug: getCurrentSlug(),
+  });
+  pumpUploads();
 }
 
 /** Abort a single tracked upload, if present. */
 export function abortUpload(clientUploadId: string): void {
-  const controller = controllers.get(clientUploadId);
-  if (!controller) return;
-  controllers.delete(clientUploadId);
-  controller.abort();
+  const job = jobs.get(clientUploadId);
+  if (!job) return;
+  jobs.delete(clientUploadId);
+  job.controller.abort();
 }
 
 /**
@@ -119,15 +147,14 @@ export function abortUpload(clientUploadId: string): void {
  * no in-flight upload can bind an attachment under the next session.
  */
 export function abortAll(): void {
-  if (controllers.size === 0) return;
-  logger.info("aborting all uploads", { count: controllers.size });
-  for (const controller of controllers.values()) {
-    controller.abort();
-  }
-  controllers.clear();
+  if (jobs.size === 0) return;
+  logger.info("aborting all uploads", { count: jobs.size });
+  const cancelled = [...jobs.values()];
+  jobs.clear();
+  for (const job of cancelled) job.controller.abort();
 }
 
 /** Test-only: number of uploads currently tracked. */
 export function __trackedUploadCountForTest(): number {
-  return controllers.size;
+  return jobs.size;
 }

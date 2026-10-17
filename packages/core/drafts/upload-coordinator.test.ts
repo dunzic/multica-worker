@@ -1,6 +1,8 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api/client";
 import type { Attachment } from "../types";
+import { setCurrentWorkspace } from "../platform/workspace-storage";
 import {
   startUpload,
   abortAll,
@@ -68,9 +70,147 @@ function abortableApi(): {
 
 afterEach(() => {
   abortAll();
+  setCurrentWorkspace(null, null);
 });
 
 describe("upload coordinator", () => {
+  it("keeps a queued upload in its original workspace after navigation", async () => {
+    setCurrentWorkspace("original", "ws-original");
+    const running = Array.from({ length: 3 }, () => abortableApi());
+    running.forEach((item, i) =>
+      startUpload({
+        clientUploadId: `active-${i}`,
+        file: file(),
+        api: item.api,
+        onSettled: () => {},
+      }),
+    );
+    const queued = abortableApi();
+    startUpload({
+      clientUploadId: "queued",
+      file: file(),
+      api: queued.api,
+      onSettled: () => {},
+    });
+    setCurrentWorkspace("destination", "ws-destination");
+    running[0]!.resolve(makeAttachment("first"));
+    await tick();
+    expect(queued.api.uploadFile).toHaveBeenCalledWith(
+      expect.any(File),
+      expect.objectContaining({ workspaceSlug: "original" }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("queues 100 files FIFO with no more than three active requests", async () => {
+    const pending: Array<() => void> = [];
+    const settled: UploadOutcome[] = [];
+    let active = 0;
+    let peak = 0;
+    const uploadFile = vi.fn(
+      (f: File) =>
+        new Promise<Attachment>((resolve) => {
+          peak = Math.max(peak, ++active);
+          pending.push(() => {
+            active--;
+            resolve(makeAttachment(f.name));
+          });
+        }),
+    );
+    for (let i = 0; i < 100; i++) {
+      startUpload({
+        clientUploadId: `batch-${i}`,
+        file: new File(["x"], String(i)),
+        api: { uploadFile },
+        onSettled: (o) => settled.push(o),
+      });
+    }
+    expect(uploadFile).toHaveBeenCalledTimes(3);
+    expect(__trackedUploadCountForTest()).toBe(100);
+    for (let i = 0; i < 100; i++) {
+      pending[i]!();
+      await tick();
+    }
+    expect(peak).toBe(3);
+    expect(settled).toHaveLength(100);
+    expect(uploadFile.mock.calls.map(([f]) => f.name)).toEqual(
+      Array.from({ length: 100 }, (_, i) => String(i)),
+    );
+    expect(__trackedUploadCountForTest()).toBe(0);
+  });
+
+  it("does not start cancelled queued files or publish a late success after logout", async () => {
+    const running = Array.from({ length: 3 }, () => abortableApi());
+    const queued = abortableApi();
+    const settled = vi.fn();
+    running.forEach((item, i) =>
+      startUpload({
+        clientUploadId: `active-${i}`,
+        file: file(),
+        api: item.api,
+        onSettled: settled,
+      }),
+    );
+    startUpload({
+      clientUploadId: "queued",
+      file: file(),
+      api: queued.api,
+      onSettled: settled,
+    });
+    expect(queued.api.uploadFile).not.toHaveBeenCalled();
+    abortUpload("queued");
+    abortAll();
+    await tick();
+    expect(queued.api.uploadFile).not.toHaveBeenCalled();
+    expect(settled).not.toHaveBeenCalled();
+
+    let resolve!: (att: Attachment) => void;
+    startUpload({
+      clientUploadId: "ignores-abort",
+      file: file(),
+      api: {
+        uploadFile: () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      },
+      onSettled: settled,
+    });
+    abortAll();
+    resolve(makeAttachment("too-late"));
+    await tick();
+    expect(settled).not.toHaveBeenCalled();
+    expect(__trackedUploadCountForTest()).toBe(0);
+  });
+
+  it("releases a slot after failure and deduplicates an already queued upload ID", async () => {
+    const running = Array.from({ length: 3 }, () => abortableApi());
+    const queued = abortableApi();
+    running.forEach((item, i) =>
+      startUpload({
+        clientUploadId: `active-${i}`,
+        file: file(),
+        api: item.api,
+        onSettled: () => {},
+      }),
+    );
+    const args = {
+      clientUploadId: "queued",
+      file: file(),
+      api: queued.api,
+      onSettled: vi.fn(),
+    };
+    startUpload(args);
+    startUpload(args);
+    expect(queued.api.uploadFile).not.toHaveBeenCalled();
+    running[0]!.reject(new Error("network failure"));
+    await tick();
+    expect(queued.api.uploadFile).toHaveBeenCalledTimes(1);
+    queued.resolve(makeAttachment("queued"));
+    await tick();
+    expect(args.onSettled).toHaveBeenCalledOnce();
+  });
+
   it("delivers the attachment on success and stops tracking", async () => {
     const { api, resolve } = abortableApi();
     const settled: UploadOutcome[] = [];
@@ -88,7 +228,10 @@ describe("upload coordinator", () => {
     await tick();
 
     expect(settled).toHaveLength(1);
-    expect(settled[0]).toMatchObject({ clientUploadId: "c1", status: "uploaded" });
+    expect(settled[0]).toMatchObject({
+      clientUploadId: "c1",
+      status: "uploaded",
+    });
     expect(settled[0]).toHaveProperty("attachment.id", "att-1");
     expect(__trackedUploadCountForTest()).toBe(0);
   });
@@ -104,7 +247,12 @@ describe("upload coordinator", () => {
     });
     expect(api.uploadFile).toHaveBeenCalledWith(
       expect.any(File),
-      { issueId: undefined, commentId: "cmt-9", chatSessionId: "sess-3" },
+      {
+        issueId: undefined,
+        commentId: "cmt-9",
+        chatSessionId: "sess-3",
+        workspaceSlug: null,
+      },
       expect.any(AbortSignal),
     );
   });
@@ -113,12 +261,20 @@ describe("upload coordinator", () => {
     const { api, reject } = abortableApi();
     const settled: UploadOutcome[] = [];
 
-    startUpload({ clientUploadId: "c1", file: file(), api, onSettled: (o) => settled.push(o) });
+    startUpload({
+      clientUploadId: "c1",
+      file: file(),
+      api,
+      onSettled: (o) => settled.push(o),
+    });
     reject(new Error("boom"));
     await tick();
 
     expect(settled).toHaveLength(1);
-    expect(settled[0]).toMatchObject({ clientUploadId: "c1", status: "failed" });
+    expect(settled[0]).toMatchObject({
+      clientUploadId: "c1",
+      status: "failed",
+    });
     expect((settled[0] as { error: Error }).error.message).toBe("boom");
     expect(__trackedUploadCountForTest()).toBe(0);
   });
@@ -127,7 +283,12 @@ describe("upload coordinator", () => {
     const { api } = abortableApi();
     const settled: UploadOutcome[] = [];
 
-    startUpload({ clientUploadId: "c1", file: file(), api, onSettled: (o) => settled.push(o) });
+    startUpload({
+      clientUploadId: "c1",
+      file: file(),
+      api,
+      onSettled: (o) => settled.push(o),
+    });
     abortUpload("c1");
     await tick();
 
@@ -140,8 +301,18 @@ describe("upload coordinator", () => {
     const b = abortableApi();
     const settled: UploadOutcome[] = [];
 
-    startUpload({ clientUploadId: "c1", file: file(), api: a.api, onSettled: (o) => settled.push(o) });
-    startUpload({ clientUploadId: "c2", file: file(), api: b.api, onSettled: (o) => settled.push(o) });
+    startUpload({
+      clientUploadId: "c1",
+      file: file(),
+      api: a.api,
+      onSettled: (o) => settled.push(o),
+    });
+    startUpload({
+      clientUploadId: "c2",
+      file: file(),
+      api: b.api,
+      onSettled: (o) => settled.push(o),
+    });
     expect(__trackedUploadCountForTest()).toBe(2);
 
     abortAll();

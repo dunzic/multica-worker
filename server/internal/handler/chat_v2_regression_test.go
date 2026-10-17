@@ -32,7 +32,7 @@ func collaborationFixture(t *testing.T) (string, string, string) {
 func TestCollaborationBatchSendAndPinnedClaim(t *testing.T) {
 	_, topic, agentID := collaborationFixture(t)
 	ids := []string{}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 100; i++ {
 		id := dbfx.Insert(t, "attachment", testutil.Cols{"workspace_id": testWorkspaceID, "topic_id": topic, "uploader_type": "member", "uploader_id": testUserID, "filename": fmt.Sprintf("candidate-%d.pdf", i), "url": fmt.Sprintf("https://example.test/resume-%d.pdf", i), "content_type": "application/pdf", "size_bytes": 12})
 		ids = append(ids, id)
 	}
@@ -54,8 +54,8 @@ func TestCollaborationBatchSendAndPinnedClaim(t *testing.T) {
 	if err := testPool.QueryRow(context.Background(), "SELECT count(*) FROM attachment WHERE chat_message_id=$1", sent.Message.ID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 3 {
-		t.Fatalf("bound %d of 3 résumés", count)
+	if count != 100 {
+		t.Fatalf("bound %d of 100 files", count)
 	}
 	if _, err := testHandler.Queries.CreateMessageV2(context.Background(), db.CreateMessageV2Params{TopicID: parseUUID(topic), SenderType: strToText("member"), SenderID: parseUUID(testUserID), Content: "A later, unrelated request"}); err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestCollaborationBatchSendAndPinnedClaim(t *testing.T) {
 	if err := testHandler.enrichTopicClaim(context.Background(), task, &claim); err != nil {
 		t.Fatal(err)
 	}
-	if len(claim.ChatMessageAttachments) != 3 {
+	if len(claim.ChatMessageAttachments) != 100 {
 		t.Fatalf("claim attachments = %d", len(claim.ChatMessageAttachments))
 	}
 	if !strings.Contains(claim.ChatMessage, "Screen these files") || strings.Contains(claim.ChatMessage, "A later, unrelated request") {
