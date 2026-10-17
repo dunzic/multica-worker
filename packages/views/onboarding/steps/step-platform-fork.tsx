@@ -49,8 +49,8 @@ type DialogState = "cli" | null;
 
 // Single canonical download destination — the /download page owns
 // OS + arch detection, the All-Platforms matrix, release-note links,
-// and the CLI / Cloud alternates. Kept in sync with landing-hero.tsx
-// and landing footer nav, both of which target the same path.
+// and the CLI / Cloud alternates. The landing page and footer nav target
+// the same path.
 const DOWNLOAD_PAGE_URL = "/download";
 
 export function StepPlatformFork({

@@ -25,7 +25,6 @@ const directionalRadius = "(?:t|r|b|l|s|e|x|y|tl|tr|br|bl|ss|se|es|ee)";
 const fixedCssLength = /^(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|%|cm|mm|in|pt|pc|q|vh|vw|vmin|vmax|ch|ex|lh|rlh|cap|ic)$/;
 
 const microGeometryAllowlist = new Set([
-  "apps/web/features/landing/components/features-section.tsx:rounded-[2px]",
   "packages/ui/components/ui/chart.tsx:rounded-[2px]",
   "packages/views/common/task-transcript/run-timeline.tsx:rounded-[3px]",
   "packages/views/dashboard/components/errors-tab.tsx:rounded-[2px]",

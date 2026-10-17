@@ -39,13 +39,13 @@ Run these from the repository root:
 
 | Scope | Checks |
 | --- | --- |
-| Frontend excluding mobile | `pnpm typecheck`, `pnpm lint`, `pnpm test` |
+| Frontend excluding mobile | `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm knip` |
 | Go backend | `make test` |
 | End-to-end | `pnpm exec playwright test` |
 | Combined web/backend verification | `make check` |
 | Mobile | Commands in [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md#verification) |
 
-Root frontend commands and `make check` do not verify mobile. Docs-only changes can use link/reference checks and `git diff --check`; state that code tests were not run.
+Root frontend commands and `make check` do not verify mobile. The shared frontend CI quality action treats knip findings as failures; declare non-imported tool entry points in `knip.jsonc` instead of suppressing live dependencies. Docs-only changes can use link/reference checks and `git diff --check`; state that code tests were not run.
 
 ## State Rules
 

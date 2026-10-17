@@ -61,16 +61,20 @@
     // export and knip picks that directory back up; the script reads the same
     // manifest, so the two stay in step without overlapping.
     "packages/ui": {
-      "entry": ["eslint.config.mjs"],
-      "project": ["**/*.{ts,tsx}"]
+      // Playwright bundles this browser fixture through esbuild's entryPoints,
+      // not a static import. Keep both the bundler and its input in the graph.
+      "entry": ["eslint.config.mjs", "test/shimmer-text-bundle.mjs", "test/shimmer-text-fixture.tsx"],
+      "project": ["**/*.{ts,tsx,mjs}"]
     },
     "packages/views": {
-      "entry": ["eslint.config.mjs"],
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/core": {
       "entry": ["eslint.config.mjs"],
       "project": ["**/*.{ts,tsx}"]
+    },
+    "packages/plugin-sdk": {
+      "entry": ["eslint.config.mjs"]
     },
 
     "packages/eslint-config": {},
