@@ -727,7 +727,17 @@ func (q *Queries) DeleteChatDraftRestoresBySystemRuntimeAgents(ctx context.Conte
 }
 
 const deleteChatSession = `-- name: DeleteChatSession :exec
-DELETE FROM chat_session WHERE id = $1 AND workspace_id = $2
+WITH report_attachments AS (
+  SELECT a.id FROM attachment a WHERE a.workspace_id = $2
+    AND (a.chat_session_id = $1 OR a.chat_message_id IN (SELECT id FROM chat_message WHERE chat_session_id = $1))
+), deleted_report_changes AS (
+  DELETE FROM report_feedback_change WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM report_attachments)
+), deleted_report_rows AS (
+  DELETE FROM report_feedback_row WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM report_attachments)
+), deleted_report_schemas AS (
+  DELETE FROM report_feedback_schema WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM report_attachments)
+)
+DELETE FROM chat_session WHERE chat_session.id = $1 AND chat_session.workspace_id = $2
 `
 
 type DeleteChatSessionParams struct {
@@ -749,11 +759,19 @@ func (q *Queries) DeleteChatSession(ctx context.Context, arg DeleteChatSessionPa
 }
 
 const deleteUserChatMessageByTask = `-- name: DeleteUserChatMessageByTask :one
-DELETE FROM chat_message
-WHERE task_id = $1
-  AND role = 'user'
-  AND message_kind <> 'onboarding_kickoff'
-RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, topic_id, sender_type, sender_id
+WITH target_messages AS (
+ SELECT m.id FROM chat_message m WHERE m.task_id = $1 AND m.role = 'user' AND m.message_kind <> 'onboarding_kickoff'
+), report_attachments AS (
+ SELECT id, workspace_id FROM attachment WHERE chat_message_id IN (SELECT id FROM target_messages)
+), deleted_report_changes AS (
+ DELETE FROM report_feedback_change f USING report_attachments a WHERE f.attachment_id = a.id AND f.workspace_id = a.workspace_id
+), deleted_report_rows AS (
+ DELETE FROM report_feedback_row f USING report_attachments a WHERE f.attachment_id = a.id AND f.workspace_id = a.workspace_id
+), deleted_report_schemas AS (
+ DELETE FROM report_feedback_schema f USING report_attachments a WHERE f.attachment_id = a.id AND f.workspace_id = a.workspace_id
+)
+DELETE FROM chat_message WHERE chat_message.id IN (SELECT id FROM target_messages)
+RETURNING chat_message.id, chat_message.chat_session_id, chat_message.role, chat_message.content, chat_message.task_id, chat_message.created_at, chat_message.failure_reason, chat_message.elapsed_ms, chat_message.message_kind, chat_message.channel_media_pending_until, chat_message.channel_ingested, chat_message.quick_actions, chat_message.channel_context_revision, chat_message.channel_outbound_type, chat_message.channel_outbound_installation_id, chat_message.channel_outbound_chat_id, chat_message.channel_outbound_message_ids, chat_message.channel_typing_settled, chat_message.topic_id, chat_message.sender_type, chat_message.sender_id
 `
 
 // Deletes the MEMBER-TYPED input of a cancelled/edited turn.

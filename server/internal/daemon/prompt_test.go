@@ -10,6 +10,19 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
+func TestChatReportFeedbackKeepsPresentationSeparateFromPersistence(t *testing.T) {
+	prompt := buildChatPrompt(Task{ChatSessionID: "report-session", ChatMessage: "Create a quality report"})
+	for _, want := range []string{"multica attachment feedback --help", "up to 20 typed fields", "sandboxed presentation", "not HTML checkboxes or localStorage", "do not prefill human decisions or overwrite existing feedback", "successful API readback", "never replace it with a fake persistent form"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("missing report feedback boundary %q", want)
+		}
+	}
+	channelPrompt := buildChatPrompt(Task{ChatSessionID: "report-channel", ChatChannelType: "slack", ChatMessage: "Create a quality report"})
+	if strings.Contains(channelPrompt, "multica attachment feedback") {
+		t.Fatal("native report feedback controls advertised inside an external channel")
+	}
+}
+
 // TestBuildQuickCreatePromptRules locks in the rules that govern how the
 // quick-create agent is allowed to translate raw user input into the issue
 // description body. Each substring corresponds to a concrete failure mode

@@ -481,6 +481,20 @@ const deleteIssue = `-- name: DeleteIssue :exec
 WITH target AS (
     SELECT issue.id FROM issue WHERE issue.id = $1 AND issue.workspace_id = $2
 ),
+target_report_attachments AS (
+ SELECT a.id FROM attachment a WHERE a.workspace_id = $2 AND (
+   a.issue_id IN (SELECT target.id FROM target) OR a.comment_id IN (SELECT c.id FROM comment c WHERE c.issue_id IN (SELECT target.id FROM target))
+ )
+),
+cleared_report_feedback_changes AS (
+ DELETE FROM report_feedback_change WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM target_report_attachments)
+),
+cleared_report_feedback_rows AS (
+ DELETE FROM report_feedback_row WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM target_report_attachments)
+),
+cleared_report_feedback_schemas AS (
+ DELETE FROM report_feedback_schema WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM target_report_attachments)
+),
 cleared_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id IN (SELECT target.id FROM target))
 ),

@@ -96,8 +96,17 @@ WHERE comment_id = $1;
 -- name: DeleteCommentAttachments :many
 -- Part of the comment delete transaction: removes the deleted comment's
 -- attachments and returns their storage URLs for cleanup after commit.
+WITH target_attachments AS (
+ SELECT id FROM attachment WHERE comment_id = @comment_id AND workspace_id = @workspace_id
+), deleted_feedback_changes AS (
+ DELETE FROM report_feedback_change WHERE report_feedback_change.workspace_id = @workspace_id AND attachment_id IN (SELECT id FROM target_attachments)
+), deleted_feedback_rows AS (
+ DELETE FROM report_feedback_row WHERE report_feedback_row.workspace_id = @workspace_id AND attachment_id IN (SELECT id FROM target_attachments)
+), deleted_feedback_schemas AS (
+ DELETE FROM report_feedback_schema WHERE report_feedback_schema.workspace_id = @workspace_id AND attachment_id IN (SELECT id FROM target_attachments)
+)
 DELETE FROM attachment
-WHERE comment_id = @comment_id AND workspace_id = @workspace_id
+WHERE attachment.comment_id = @comment_id AND attachment.workspace_id = @workspace_id
 RETURNING url;
 
 -- name: LinkAttachmentsToComment :exec

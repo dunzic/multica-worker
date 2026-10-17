@@ -303,6 +303,15 @@ deleted_hourly AS (
 deleted_attachments AS (
     DELETE FROM attachment WHERE workspace_id = $1
 ),
+deleted_report_feedback_changes AS (
+    DELETE FROM report_feedback_change WHERE workspace_id = $1
+),
+deleted_report_feedback_rows AS (
+    DELETE FROM report_feedback_row WHERE workspace_id = $1
+),
+deleted_report_feedback_schemas AS (
+    DELETE FROM report_feedback_schema WHERE workspace_id = $1
+),
 deleted_channel_outbound_cards AS (
     DELETE FROM channel_outbound_card_message
     WHERE chat_session_id IN (SELECT id FROM ws_sessions)

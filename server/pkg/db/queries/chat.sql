@@ -472,7 +472,17 @@ FOR UPDATE;
 -- so the daemon does not keep running work whose result has nowhere to
 -- land. workspace_id in the WHERE clause is a SQL-layer tenant guard; see
 -- DeleteIssue.
-DELETE FROM chat_session WHERE id = $1 AND workspace_id = $2;
+WITH report_attachments AS (
+  SELECT a.id FROM attachment a WHERE a.workspace_id = $2
+    AND (a.chat_session_id = $1 OR a.chat_message_id IN (SELECT id FROM chat_message WHERE chat_session_id = $1))
+), deleted_report_changes AS (
+  DELETE FROM report_feedback_change WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM report_attachments)
+), deleted_report_rows AS (
+  DELETE FROM report_feedback_row WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM report_attachments)
+), deleted_report_schemas AS (
+  DELETE FROM report_feedback_schema WHERE workspace_id = $2 AND attachment_id IN (SELECT id FROM report_attachments)
+)
+DELETE FROM chat_session WHERE chat_session.id = $1 AND chat_session.workspace_id = $2;
 
 -- name: TouchChatSession :exec
 UPDATE chat_session SET updated_at = now()
@@ -775,11 +785,19 @@ RETURNING task.*;
 -- member the product's internal prompt as their restored draft, and silently
 -- drop what they actually typed. Callers release the kickoff separately
 -- (ReleaseOnboardingKickoffFromTask) so the next send re-adopts it.
-DELETE FROM chat_message
-WHERE task_id = $1
-  AND role = 'user'
-  AND message_kind <> 'onboarding_kickoff'
-RETURNING *;
+WITH target_messages AS (
+ SELECT m.id FROM chat_message m WHERE m.task_id = $1 AND m.role = 'user' AND m.message_kind <> 'onboarding_kickoff'
+), report_attachments AS (
+ SELECT id, workspace_id FROM attachment WHERE chat_message_id IN (SELECT id FROM target_messages)
+), deleted_report_changes AS (
+ DELETE FROM report_feedback_change f USING report_attachments a WHERE f.attachment_id = a.id AND f.workspace_id = a.workspace_id
+), deleted_report_rows AS (
+ DELETE FROM report_feedback_row f USING report_attachments a WHERE f.attachment_id = a.id AND f.workspace_id = a.workspace_id
+), deleted_report_schemas AS (
+ DELETE FROM report_feedback_schema f USING report_attachments a WHERE f.attachment_id = a.id AND f.workspace_id = a.workspace_id
+)
+DELETE FROM chat_message WHERE chat_message.id IN (SELECT id FROM target_messages)
+RETURNING chat_message.*;
 
 -- name: ReleaseOnboardingKickoffFromTask :exec
 -- Hands an adopted kickoff on to the session's next un-started turn when its

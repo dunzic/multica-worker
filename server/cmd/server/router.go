@@ -2376,6 +2376,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// from the attachment row.
 			r.Get("/api/attachments/{id}/content", h.GetAttachmentContent)
 			r.Get("/api/attachments/{id}/office-preview", h.GetAttachmentOfficePreview)
+			r.Get("/api/attachments/{id}/report-feedback", h.GetReportFeedback)
+			r.Put("/api/attachments/{id}/report-feedback/schema", h.PutReportFeedbackSchema)
+			r.Put("/api/attachments/{id}/report-feedback/rows/{rowID}", h.PutReportFeedbackRow)
+			r.Post("/api/attachments/{id}/report-feedback/rows/{rowID}/archive", h.ArchiveReportFeedbackRow)
+			r.Get("/api/attachments/{id}/report-feedback/history", h.ListReportFeedbackHistory)
 			r.Delete("/api/attachments/{id}", h.DeleteAttachment)
 
 			// Comments

@@ -1553,6 +1553,42 @@ type QuickAction struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ReportFeedbackChange struct {
+	ID           int64              `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AttachmentID pgtype.UUID        `json:"attachment_id"`
+	RowID        pgtype.UUID        `json:"row_id"`
+	Kind         string             `json:"kind"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	ActorName    string             `json:"actor_name"`
+	BeforeData   []byte             `json:"before_data"`
+	AfterData    []byte             `json:"after_data"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type ReportFeedbackRow struct {
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	AttachmentID       pgtype.UUID        `json:"attachment_id"`
+	ID                 pgtype.UUID        `json:"id"`
+	Label              string             `json:"label"`
+	SourceAttachmentID pgtype.UUID        `json:"source_attachment_id"`
+	Values             []byte             `json:"values"`
+	Revision           int64              `json:"revision"`
+	ArchivedAt         pgtype.Timestamptz `json:"archived_at"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ReportFeedbackSchema struct {
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AttachmentID pgtype.UUID        `json:"attachment_id"`
+	Fields       []byte             `json:"fields"`
+	Revision     int64              `json:"revision"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RoleSource struct {
 	ID                    pgtype.UUID        `json:"id"`
 	WorkspaceID           pgtype.UUID        `json:"workspace_id"`

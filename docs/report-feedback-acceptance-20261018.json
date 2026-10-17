@@ -1,0 +1,134 @@
+{
+  "feature": "通用报告展示与可编辑反馈区",
+  "date": "2026-10-18",
+  "branch": "codex/report-feedback-20261017",
+  "base_commit": "efb57f802c6570174171b3e60e03cf2b28452eec",
+  "status": "local_regression_passed",
+  "snapshot_scope": "Local validation before Git publication; subsequent commits and remote refs record publication, not deployment.",
+  "state_at_validation": {
+    "committed": false,
+    "pushed": false,
+    "deployed": false
+  },
+  "usage_guide": "report-feedback-usage.md",
+  "contract": {
+    "scope": "Shared web/desktop attachment viewer; not an HR-specific component",
+    "fields": {
+      "maximum_per_report": 20,
+      "types": ["text", "number", "date", "boolean", "select", "multi_select"],
+      "definition": "Stable field ID, editable label, type, required flag and choice options. Definitions and typed values use JSONB, not 20 fixed database columns.",
+      "evolution": "Once records exist, existing types, fields and options cannot be removed or reinterpreted. Optional fields and choices may be added. Archived records still protect the schema."
+    },
+    "records": "Record name, typed values, optional source attachment ID and revision; paginated in pages of 50, not limited to 20 records or files",
+    "persistence": "PostgreSQL report_feedback_schema, report_feedback_row and report_feedback_change; data and attributed before/after history commit in one transaction",
+    "presentation": "Existing attachment storage and sandboxed HTML preview. No new public HTML host, same-origin iframe access or HTML-to-database bridge.",
+    "collaboration": "Permission-checked polling every 5 seconds while open; per-record and schema revision checks; HTTP 409 preserves local input instead of overwriting newer values",
+    "permissions": "Every endpoint inherits the attachment's current workspace and conversation authorization. Writes recheck access after locking. Linked source files keep their own permissions; narrower conversation sources cannot be linked into broader reports.",
+    "human_operations": "Authorized readers can add/edit records; uploader or workspace owner/admin configures fields and archives records",
+    "agent_operations": "Verified task credentials can initialize their own uploaded report and seed new records only. They cannot overwrite existing records or schemas. CLI: multica attachment feedback --help.",
+    "historical_reports": "Existing static checkboxes are not migrated or interpreted as human decisions. Configure fields and create records explicitly.",
+    "migrations": [611, 612, 613, 614]
+  },
+  "review": {
+    "method": "Manual source and architecture review, web-design-guidelines UI review, targeted regression tests and real-browser verification",
+    "unresolved_blocking_findings": [],
+    "fixed_findings": [
+      {
+        "id": "RF-01",
+        "priority": "P1",
+        "file": "packages/core/api/client.ts:4479",
+        "finding": "A desktop tab's global workspace slug could override the report attachment's explicit workspace ID.",
+        "resolution": "Clear the higher-priority inherited slug on all five operations; regression first reproduced the wrong workspace header and then passed."
+      },
+      {
+        "id": "RF-02",
+        "priority": "P2",
+        "file": "packages/views/reports/report-feedback-panel.tsx:262",
+        "finding": "A transient refresh error could discard an open draft.",
+        "resolution": "Keep drafts and show a stale-data warning for transient errors; still remove private cached data and drafts on 401/403/404."
+      },
+      {
+        "id": "RF-03",
+        "priority": "P2",
+        "file": "packages/views/reports/report-feedback-panel.tsx:258",
+        "finding": "Collaborator archival could unmount a record editor and silently lose its unsaved input.",
+        "resolution": "Retain the active local draft until explicitly dismissed; server revisions reject stale writes."
+      },
+      {
+        "id": "RF-04",
+        "priority": "P2",
+        "file": "server/pkg/db/queries/issue.sql:481",
+        "finding": "Historical comment-only attachment ownership could leave report feedback behind during deletion.",
+        "resolution": "Include direct issue and comment attachment ownership. Test cleanup for attachment, issue/comment, comment, chat session, cancelled user message, system agent and runtime deletion."
+      },
+      {
+        "id": "RF-05",
+        "priority": "P2",
+        "file": "packages/views/editor/attachment-preview-modal.tsx:894",
+        "finding": "The narrow-screen toolbar overlapped the filename after adding the feedback control.",
+        "resolution": "Wrap the toolbar onto a separate row and contain panel scrolling; visually verified at 390px and 1500px."
+      }
+    ]
+  },
+  "verification": {
+    "database": "Dedicated local multica_ci_regression_20261017_992; no production data used",
+    "tools": "Go 1.26.9 and sqlc 1.31.1 in isolated containers; installed workspace TypeScript, ESLint, Vitest and Playwright tools",
+    "sqlc": "Regenerated successfully",
+    "migrations": "611-614 applied successfully to the isolated database; concurrent indexes each have their own migration; no new foreign keys or cascades",
+    "backend": {
+      "status": "passed",
+      "command": "go test -p 2 ./internal/handler ./internal/reportfeedback ./internal/service ./internal/daemon ./internal/daemon/execenv ./cmd/migrate ./cmd/multica -count=1",
+      "packages": 7,
+      "execution": "Non-root container with init; fake/missing agent executables only",
+      "evidence": ".context/report-feedback-20261017/backend-regression.log"
+    },
+    "race": {
+      "status": "passed",
+      "command": "go test -race ./internal/handler -run TestReportFeedback -count=1 -v",
+      "test_groups": 10,
+      "covers": ["typed persistence", "stale and concurrent writes", "audit rollback", "pagination", "schema evolution", "workspace/group isolation", "source scope", "task credential write limits", "removal during lock wait", "7 deletion ownership paths"],
+      "evidence": ".context/report-feedback-20261017/feedback-handler-race.log"
+    },
+    "agent_prompt": "TestChatReportFeedbackKeepsPresentationSeparateFromPersistence passed; native feedback instructions do not advertise controls in external-channel replies",
+    "go_vet": "Passed for reportfeedback, handler, cmd/multica and daemon",
+    "core": { "status": "passed", "files": 174, "tests": 2315, "evidence": ".context/report-feedback-20261017/core-regression.log" },
+    "views": { "status": "passed", "files": 480, "tests": 6118, "command": "vitest run --maxWorkers=2", "evidence": ".context/report-feedback-20261017/views-regression-final.log" },
+    "typecheck": "core, views, web and desktop renderer passed",
+    "lint": "New core/view code, API client and modified preview components/tests passed",
+    "dependency_check": "Root knip passed again before commit and merge",
+    "pre_publication_recheck": {
+      "scope": "Targeted checks rerun for publication; full backend/frontend/browser results above are retained from the completed feature regression, not claimed as rerun during publication",
+      "core": { "files": 1, "tests": 11, "status": "passed" },
+      "views": { "files": 3, "tests": 110, "status": "passed" },
+      "documents": "Usage guide read back; both JSON examples and acceptance JSON parsed; relative acceptance link verified"
+    },
+    "translations": "Matching report feedback keys in en, zh-Hans, ja, ko and fr",
+    "browser": {
+      "status": "passed",
+      "test": "e2e/report-feedback.spec.ts",
+      "environment": "Real Chrome; synthetic users and generic quality report; local web/API and isolated database",
+      "covers": ["Issue comment attachment entry", "preview modal and nested field/record dialogs", "HTML sandbox remains allow-scripts only", "refresh/readback in standalone preview", "original file preview vs download", "two-person edits", "409 keeps unsaved text", "attributed before/after history", "390px layout", "workspace removal hides data and denies API access"],
+      "evidence": ".context/report-feedback-20261017/e2e-final/",
+      "screenshots_reviewed": ["report-with-feedback.png", "report-with-audited-feedback.png", "report-feedback-narrow.png"]
+    },
+    "initial_failures": [
+      "Root-level Vitest invocation lacked package DOM setup; rerun with each package's own configuration.",
+      "Existing preview sequence test mock lacked the new translated toolbar label; mock updated and full suite passed.",
+      "Three unrelated role-source UI tests timed out under concurrent full-suite load; full views suite passed with two workers and unchanged test timeouts.",
+      "Root/no-init runtime test container failed privilege and process cleanup expectations; non-root/init rerun passed.",
+      "Browser test locators were narrowed to a specific history entry and actual workspace-revocation behavior; final full scenario passed."
+    ]
+  },
+  "not_verified": [
+    "Production deployment and production business-data acceptance",
+    "Native Windows/macOS installer execution or packaging",
+    "Mobile support or mobile compatibility regression",
+    "Live model/Agent generation and feedback-seeding acceptance; no real Agent run or resume batch rerun"
+  ],
+  "release_requirements": [
+    "Deployment and artifact publication require separate authorization; Git publication does not deploy or update installed runtimes.",
+    "Apply migrations and deploy matching backend/web versions.",
+    "Build and release updated desktop/CLI/runtime artifacts when those clients need the new UI or Agent feedback commands.",
+    "Validate production permissions and live Agent report creation with a separately authorized test scenario."
+  ]
+}

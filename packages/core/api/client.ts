@@ -1,4 +1,8 @@
 import type { ZodType } from "zod";
+import {
+  ReportFeedbackPageSchema, ReportHistoryPageSchema, ReportSchemaSavedSchema, ReportRowSchema, ReportArchivedSchema,
+  type ReportFeedbackPage, type ReportHistoryPage, type ReportField, type ReportRow, type SaveReportRow,
+} from "../report-feedback/schema";
 import type { Conversation, Topic, MessageV2, Principal, SendMessageV2Response } from "../types/chat-v2";
 import { ConversationSchema, TopicSchema, ParticipantSchema, ConversationListSchema, TopicListSchema, MessageListSchema, SendMessageSchema, TopicRunListSchema, type TopicRun } from "../chat-v2/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
@@ -4470,6 +4474,79 @@ export class ApiClient {
 
   async deleteAttachment(id: string): Promise<void> {
     await this.fetch(`/api/attachments/${id}`, { method: "DELETE" });
+  }
+
+  // A report's attachment workspace is authoritative, even if another desktop
+  // tab changed the singleton. Clear the higher-priority default slug header.
+  async getReportFeedback(wsId: string, id: string, after = "", signal?: AbortSignal): Promise<ReportFeedbackPage> {
+    const raw = await this.fetch<unknown>(
+      `/api/attachments/${encodeURIComponent(id)}/report-feedback?after=${encodeURIComponent(after)}`,
+      { signal, headers: { "X-Workspace-ID": wsId, "X-Workspace-Slug": "" } },
+    );
+    const parsed = parseWithFallback<ReportFeedbackPage | null>(raw, ReportFeedbackPageSchema, null, {
+      endpoint: "GET report-feedback",
+    });
+    if (!parsed) throw new Error("Invalid report feedback response");
+    return parsed;
+  }
+
+  async getReportFeedbackHistory(wsId: string, id: string, before = "", signal?: AbortSignal): Promise<ReportHistoryPage> {
+    const raw = await this.fetch<unknown>(
+      `/api/attachments/${encodeURIComponent(id)}/report-feedback/history?before=${encodeURIComponent(before)}`,
+      { signal, headers: { "X-Workspace-ID": wsId, "X-Workspace-Slug": "" } },
+    );
+    const parsed = parseWithFallback<ReportHistoryPage | null>(raw, ReportHistoryPageSchema, null, {
+      endpoint: "GET report-feedback/history",
+    });
+    if (!parsed) throw new Error("Invalid report history response");
+    return parsed;
+  }
+
+  async saveReportFeedbackSchema(wsId: string, id: string, fields: ReportField[], revision: number): Promise<void> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${encodeURIComponent(id)}/report-feedback/schema`, {
+      method: "PUT",
+      headers: { "X-Workspace-ID": wsId, "X-Workspace-Slug": "" },
+      body: JSON.stringify({ fields, expected_revision: revision }),
+    });
+    if (!parseWithFallback(raw, ReportSchemaSavedSchema, null, { endpoint: "PUT report-feedback/schema" })) {
+      throw new Error("Invalid report schema response");
+    }
+  }
+
+  async saveReportFeedbackRow(wsId: string, id: string, rowId: string, input: SaveReportRow): Promise<ReportRow> {
+    const raw = await this.fetch<unknown>(
+      `/api/attachments/${encodeURIComponent(id)}/report-feedback/rows/${encodeURIComponent(rowId)}`,
+      {
+        method: "PUT",
+        headers: { "X-Workspace-ID": wsId, "X-Workspace-Slug": "" },
+        body: JSON.stringify({
+          expected_revision: input.expectedRevision,
+          schema_revision: input.schemaRevision,
+          label: input.label,
+          source_attachment_id: input.sourceAttachmentId,
+          values: input.values,
+        }),
+      },
+    );
+    const parsed = parseWithFallback<ReportRow | null>(raw, ReportRowSchema, null, {
+      endpoint: "PUT report-feedback/rows",
+    });
+    if (!parsed) throw new Error("Invalid report record response");
+    return parsed;
+  }
+
+  async archiveReportFeedbackRow(wsId: string, id: string, rowId: string, revision: number): Promise<void> {
+    const raw = await this.fetch<unknown>(
+      `/api/attachments/${encodeURIComponent(id)}/report-feedback/rows/${encodeURIComponent(rowId)}/archive`,
+      {
+        method: "POST",
+        headers: { "X-Workspace-ID": wsId, "X-Workspace-Slug": "" },
+        body: JSON.stringify({ expected_revision: revision }),
+      },
+    );
+    if (!parseWithFallback(raw, ReportArchivedSchema, null, { endpoint: "POST report-feedback/archive" })) {
+      throw new Error("Invalid report archive response");
+    }
   }
 
   // Fetches the raw bytes of a text-previewable attachment.

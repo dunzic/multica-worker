@@ -1337,6 +1337,9 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	var deleted db.DeleteAttachmentRow
 	deleteParams := db.DeleteAttachmentParams{ID: att.ID, WorkspaceID: att.WorkspaceID}
 	err = h.withAttachmentOwnerLock(r.Context(), att, func(qtx *db.Queries) error {
+		if err := qtx.DeleteReportFeedbackForAttachment(r.Context(), db.DeleteReportFeedbackForAttachmentParams{WorkspaceID: att.WorkspaceID, AttachmentID: att.ID}); err != nil {
+			return err
+		}
 		var deleteErr error
 		deleted, deleteErr = qtx.DeleteAttachment(r.Context(), deleteParams)
 		return deleteErr

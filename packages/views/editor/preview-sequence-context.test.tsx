@@ -47,6 +47,7 @@ vi.mock("./readonly-content", () => ({
 vi.mock("sonner", () => ({ toast: { error: toastErrorMock } }));
 
 const STRINGS: Record<string, Record<string, string>> = {
+  report_feedback: { title: "Report feedback" },
   image: {
     download: "Download",
     view: "View",

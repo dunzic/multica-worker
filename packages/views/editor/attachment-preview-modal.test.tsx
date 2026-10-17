@@ -126,6 +126,7 @@ vi.mock("../i18n", () => ({
   useT: () => ({
     t: (sel: (s: Record<string, Record<string, string>>) => string) =>
       sel({
+        report_feedback: { title: "Report feedback" },
         image: {
           download: "Download",
           copy_image: "Copy image",
@@ -649,6 +650,23 @@ describe("AttachmentPreviewModal — controls", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("keeps the report viewer open while a feedback dialog handles Escape", () => {
+    const onClose = vi.fn();
+    const att = makeAttachment({ filename: "manual.pdf", content_type: "application/pdf" });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={onClose} />);
+    const childDialog = document.createElement("div");
+    childDialog.dataset.reportFeedbackDialog = "true";
+    document.body.appendChild(childDialog);
+    try {
+      act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      childDialog.remove();
+    }
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("Download button invokes useDownloadAttachment with the attachment id", () => {

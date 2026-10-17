@@ -350,8 +350,17 @@ func (q *Queries) DeleteAttachmentsBySourceContext(ctx context.Context, arg Dele
 }
 
 const deleteCommentAttachments = `-- name: DeleteCommentAttachments :many
+WITH target_attachments AS (
+ SELECT id FROM attachment WHERE comment_id = $1 AND workspace_id = $2
+), deleted_feedback_changes AS (
+ DELETE FROM report_feedback_change WHERE report_feedback_change.workspace_id = $2 AND attachment_id IN (SELECT id FROM target_attachments)
+), deleted_feedback_rows AS (
+ DELETE FROM report_feedback_row WHERE report_feedback_row.workspace_id = $2 AND attachment_id IN (SELECT id FROM target_attachments)
+), deleted_feedback_schemas AS (
+ DELETE FROM report_feedback_schema WHERE report_feedback_schema.workspace_id = $2 AND attachment_id IN (SELECT id FROM target_attachments)
+)
 DELETE FROM attachment
-WHERE comment_id = $1 AND workspace_id = $2
+WHERE attachment.comment_id = $1 AND attachment.workspace_id = $2
 RETURNING url
 `
 

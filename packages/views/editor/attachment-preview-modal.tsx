@@ -89,6 +89,7 @@ import {
   RotateCw,
   Smartphone,
   Tablet,
+  TableProperties,
   WrapText,
   X,
   type LucideIcon,
@@ -136,6 +137,7 @@ import { CodeBlockStatic } from "./code-block-static";
 import { TablePreview } from "./table-preview";
 import { StructuredTree } from "./structured-tree";
 import { OfficePreview } from "./office-preview";
+import { ReportFeedbackPanel } from "../reports/report-feedback-panel";
 import {
   HTML_VIEWPORTS,
   HtmlViewportFrame,
@@ -493,6 +495,8 @@ export function AttachmentPreviewModal({
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
+      // Native feedback dialogs own dismissal and keyboard navigation.
+      if (e.defaultPrevented || document.querySelector('[data-report-feedback-dialog="true"]')) return;
       // A menu opened from the chrome (the version switcher) owns its keys:
       // Escape closes the menu, not the viewer, and arrows move its focus.
       if (e.target instanceof Element && e.target.closest('[role="menu"]')) return;
@@ -760,6 +764,9 @@ function PreviewPanel({
   const toggleWrap = () => setWrapChoice(!wrap);
   const [htmlViewport, setHtmlViewport] = useState<HtmlViewport>("fill");
   const [htmlSource, setHtmlSource] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const feedbackAttachment = source.kind === "full" ? source.attachment : null;
+  const canShowFeedback = !!feedbackAttachment?.workspace_id && !!kind && !["image", "video", "audio"].includes(kind);
   // An HTML file's address: shown in the top bar, loaded by the stage. Held
   // here, per file, so it survives the source view, which unmounts the frame.
   const htmlLocation = useHtmlPreviewLocation(
@@ -889,7 +896,7 @@ function PreviewPanel({
       {/* Three columns so the counter stays centered on the window while a
           long filename truncates before reaching it. */}
       <header
-        className="dark @container grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 pl-3 pr-2 text-foreground"
+        className="dark @container grid min-h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 pl-3 pr-2 text-foreground lg:h-14 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:py-0"
         style={surface === "viewer" ? DRAG : undefined}
       >
         <div className="flex min-w-0 items-center gap-2.5">
@@ -929,7 +936,7 @@ function PreviewPanel({
             : null}
         </span>
         <div
-          className="flex items-center justify-self-end gap-0.5"
+          className="col-span-2 flex max-w-full items-center gap-0.5 overflow-x-auto lg:col-span-1 lg:justify-self-end lg:overflow-visible"
           style={NO_DRAG}
         >
           {/* Standalone preview keeps the original gate — no controls until
@@ -1032,6 +1039,15 @@ function PreviewPanel({
           <ChromeButton label={t(($) => $.image.download)} onClick={onDownload}>
             <Download className="size-4" />
           </ChromeButton>
+          {canShowFeedback && (
+            <ChromeButton
+              label={t(($) => $.report_feedback.title)}
+              pressed={feedbackOpen}
+              onClick={() => setFeedbackOpen((v) => !v)}
+            >
+              <TableProperties className="size-4" />
+            </ChromeButton>
+          )}
           {(onOpenOverview || info) && <ChromeDivider />}
           {onOpenOverview && (
             <ChromeButton
@@ -1062,7 +1078,7 @@ function PreviewPanel({
           )}
         </div>
       </header>
-      <div className="flex min-h-0 flex-1">
+      <div className={cn("flex min-h-0 flex-1", feedbackOpen && canShowFeedback && "flex-col lg:flex-row")}>
         {/* The stage. In a sequence its sides are 64px gutters holding the
             prev / next buttons, so a fitted image or a page never runs under
             them. */}
@@ -1116,6 +1132,15 @@ function PreviewPanel({
             </>
           )}
         </motion.div>
+        {feedbackOpen && canShowFeedback && feedbackAttachment && (
+          <aside className="dark min-h-0 max-h-[55%] min-w-0 shrink-0 overflow-y-auto overscroll-contain border-t border-border bg-background text-foreground lg:max-h-none lg:w-[min(48%,48rem)] lg:border-t-0 lg:border-l">
+            <ReportFeedbackPanel
+              key={feedbackAttachment.id}
+              wsId={feedbackAttachment.workspace_id}
+              attachmentId={feedbackAttachment.id}
+            />
+          </aside>
+        )}
         {info?.open && (
           // A column beside the stage rather than a layer over it: the file
           // re-fits into what is left instead of hiding under the panel.

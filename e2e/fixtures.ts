@@ -362,6 +362,13 @@ export class TestApiClient {
     return this.authedFetch(`/api/attachments/${id}/${action}`, { signal });
   }
 
+  /** Uses the same workspace/auth boundary as report previews. */
+  async reportFeedbackResponse(id: string, action = "", method = "GET", body?: unknown) {
+    return this.authedFetch(`/api/attachments/${encodeURIComponent(id)}/report-feedback${action ? "/" + action : ""}`, {
+      method, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  }
+
   /** For an isolated test workspace, removed with deleteWorkspace after the test.
    * The inert cloud runtime never launches a real agent. */
   async createChatSessionFixture() {
