@@ -36,6 +36,8 @@ import {
 
 let router: DataRouter | null = null;
 let initialized = false;
+let unsubscribeRouter: (() => void) | null = null;
+let unsubscribeStore: (() => void) | null = null;
 
 /** Navigations the Coordinator itself started and hasn't seen commit yet. */
 let pendingTokens = 0;
@@ -282,7 +284,7 @@ function handleReloadGenerationChange(generation: number): void {
 
 /**
  * Wire the Coordinator: store → router reconciliation and router-side
- * protocol-error detection. Idempotent — the host calls it on mount.
+ * protocol-error detection. Idempotent — the host checks before rendering.
  */
 export function initTabCoordinator(): void {
   if (initialized) return;
@@ -290,7 +292,7 @@ export function initTabCoordinator(): void {
 
   const r = getAppRouter();
 
-  r.subscribe(() => {
+  unsubscribeRouter = r.subscribe(() => {
     if (pendingTokens > 0) {
       // A navigation the Coordinator started. Consume the token.
       pendingTokens--;
@@ -320,7 +322,7 @@ export function initTabCoordinator(): void {
   });
 
   let prevGeneration = useTabStore.getState().mountGeneration;
-  useTabStore.subscribe((state) => {
+  unsubscribeStore = useTabStore.subscribe((state) => {
     if (state.mountGeneration !== prevGeneration) {
       prevGeneration = state.mountGeneration;
       handleReloadGenerationChange(state.mountGeneration);
@@ -340,8 +342,13 @@ export function initTabCoordinator(): void {
   reconcile();
 }
 
-/** Test-only: reset module state between cases. */
-export function __resetTabCoordinatorForTests(): void {
+/** Release module-owned subscriptions before replacing the coordinator. */
+function disposeTabCoordinator(): void {
+  unsubscribeStore?.();
+  unsubscribeRouter?.();
+  unsubscribeStore = null;
+  unsubscribeRouter = null;
+  router?.dispose();
   router = null;
   initialized = false;
   pendingTokens = 0;
@@ -352,4 +359,13 @@ export function __resetTabCoordinatorForTests(): void {
   lastActiveTabId = null;
   lastActiveUrl = null;
   externalScrollSources.clear();
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(disposeTabCoordinator);
+}
+
+/** Test-only: exercise the same cleanup used by module replacement. */
+export function __resetTabCoordinatorForTests(): void {
+  disposeTabCoordinator();
 }

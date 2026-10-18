@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { RouterProvider } from "react-router-dom";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { RouterProvider, type DataRouter } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { ScrollRestorationProvider } from "@multica/views/platform";
 import { useActiveGroup, useTabStore } from "@/stores/tab-store";
@@ -33,39 +33,39 @@ export function TabContent() {
   const generation = useTabStore((s) => s.mountGeneration);
   const qc = useQueryClient();
 
-  // Wire the Coordinator before the first host mount so the router already
-  // projects the active session's URL when RouterProvider first renders.
-  // useState's initializer is the earliest once-per-tree hook slot; the call
-  // is idempotent.
-  useState(() => {
-    initTabCoordinator();
-    return true;
-  });
+  // Fast Refresh can replace the Coordinator while preserving this tree's
+  // hook state. Recheck its idempotent initialization before reading the
+  // router, rather than relying on a once-only useState initializer.
+  initTabCoordinator();
+  const router = getAppRouter();
+  // RouterProvider initializes its rendered state from its router only on
+  // mount. A replacement router needs a new host, but normal URL/title
+  // updates must not remount the page or discard local editing state.
+  const routerHost = useMemo(() => ({ router, key: crypto.randomUUID() }), [router]);
 
   useEffect(() => {
     registerCoordinatorQueryClient(qc);
-  }, [qc]);
+  }, [qc, router]);
 
   // Sync document.title when switching tabs within the active workspace.
+  const activeTab = group?.tabs.find((tab) => tab.id === group.activeTabId);
   useEffect(() => {
-    if (!group) return;
-    const tab = group.tabs.find((t) => t.id === group.activeTabId);
-    if (tab) document.title = tab.title;
-  }, [group?.activeTabId, group?.tabs]);
+    if (activeTab) document.title = activeTab.title;
+  }, [activeTab]);
 
   if (!group) return null;
 
   return (
     <ActiveTabHost
-      key={`${group.activeTabId}:${generation}`}
+      key={`${routerHost.key}:${group.activeTabId}:${generation}`}
       tabId={group.activeTabId}
+      router={routerHost.router}
     />
   );
 }
 
-function ActiveTabHost({ tabId }: { tabId: string }) {
+function ActiveTabHost({ tabId, router }: { tabId: string; router: DataRouter }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const router = getAppRouter();
   const scrollAdapter = useMemo(
     () => createScrollRestorationAdapter(tabId),
     [tabId],
