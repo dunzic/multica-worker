@@ -5,6 +5,7 @@
     "cancel": "Cancel",
     "save": "Save",
     "saving": "Saving…",
+    "saved": "Feedback saved",
     "discard_title": "Discard unsaved changes?",
     "discard_description": "These edits have not been saved. Other collaborators will not see them.",
     "keep_editing": "Keep editing",

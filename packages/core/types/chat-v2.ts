@@ -33,6 +33,7 @@ export interface Conversation {
   archived_at?: string | null;
   created_at: string;
   updated_at: string;
+  last_message?: { content: string; created_at: string } | null;
 }
 
 export interface Topic {

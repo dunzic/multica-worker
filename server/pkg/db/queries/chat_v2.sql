@@ -55,6 +55,24 @@ WHERE  c.workspace_id    = $1
   AND  (sqlc.narg('kind')::text IS NULL OR c.kind = sqlc.narg('kind')::text)
 ORDER BY c.updated_at DESC;
 
+-- name: ListConversationSummariesByMember :many
+-- One bounded projection per accessible conversation, never full histories.
+-- Recheck membership here as well so a concurrent removal fails closed.
+SELECT c.id AS conversation_id, latest.content, latest.created_at
+FROM conversation c
+JOIN conversation_participant p ON p.conversation_id = c.id
+CROSS JOIN LATERAL (
+    SELECT left(m.content, 240)::text AS content, m.created_at
+    FROM chat_message m
+    JOIN topic t ON t.id = m.topic_id
+    WHERE t.conversation_id = c.id AND t.archived_at IS NULL
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+) latest
+WHERE c.workspace_id = $1
+  AND p.principal_type = 'member' AND p.principal_id = $2 AND p.left_at IS NULL
+  AND c.id = ANY($3::uuid[]);
+
 -- name: UpdateConversationTitle :one
 UPDATE conversation SET title = $2, updated_at = now()
 WHERE id = $1

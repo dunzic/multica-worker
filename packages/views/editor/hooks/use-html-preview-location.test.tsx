@@ -25,6 +25,49 @@ afterEach(() => {
 });
 
 describe("useHtmlPreviewLocation", () => {
+  it("accepts one foreground attachment action only from the current frame and scope", async () => {
+    const activation = { isActive: false };
+    Object.defineProperty(navigator, "userActivation", { configurable: true, value: activation });
+    const { iframe } = mountFrame();
+    const other = mountFrame().iframe;
+    let complete!: () => void;
+    const onAction = vi.fn(() => new Promise<void>((resolve) => { complete = resolve; }));
+    const config = { baseUrl: "https://app.example", origins: ["https://app.example"], onAction };
+    const { result, rerender } = renderHook(({ scope }) => useHtmlPreviewLocation("", scope, config), { initialProps: { scope: "report" } });
+    act(() => result.current.frameRef(iframe));
+    const data = { __multicaAttachment: 1, scope: "report:0", href: "/api/attachments/01a14afb-f2bb-7464-82b4-e5088732ed18/download" };
+    const port = { onmessage: null as ((event: MessageEvent) => void) | null, start: vi.fn(), close: vi.fn() };
+    const connect = (source: Window | null, scope: string) => {
+      const event = new MessageEvent("message", { data: { __multicaAttachment: 1, type: "connect", scope }, source });
+      Object.defineProperty(event, "ports", { value: [port] });
+      act(() => window.dispatchEvent(event));
+    };
+    connect(other.contentWindow, "report:0");
+    connect(iframe.contentWindow, "old:0");
+    expect(port.start).not.toHaveBeenCalled();
+    connect(iframe.contentWindow, "report:0");
+    expect(port.start).toHaveBeenCalledOnce();
+    const throughPort = (value = data) => act(() => port.onmessage!(new MessageEvent("message", { data: value })));
+    throughPort();
+    post(iframe.contentWindow, data);
+    expect(onAction).not.toHaveBeenCalled();
+    activation.isActive = true;
+    post(other.contentWindow, data);
+    // Even an activated report cannot issue public-channel attachment commands.
+    post(iframe.contentWindow, data);
+    post(iframe.contentWindow, { ...data, scope: "old:0" });
+    throughPort({ ...data, scope: "old:0" });
+    expect(onAction).not.toHaveBeenCalled();
+    throughPort();
+    rerender({ scope: "report" });
+    throughPort();
+    expect(onAction).toHaveBeenCalledOnce();
+    await act(async () => { complete(); });
+    rerender({ scope: "next-report" });
+    throughPort();
+    expect(onAction).toHaveBeenCalledOnce();
+    expect(port.close).toHaveBeenCalledOnce();
+  });
   it("loads the document at the initial address", () => {
     const { result } = renderHook(() => useHtmlPreviewLocation("?s=ia"));
     expect(result.current.address).toBe("?s=ia");

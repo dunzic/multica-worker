@@ -14,6 +14,9 @@ import { useIsCompact } from "@multica/ui/hooks/use-mobile";
 import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { getCurrentSlug } from "@multica/core/platform";
 import { useChatStore } from "@multica/core/chat";
+import { useWorkspaceId } from "@multica/core/hooks";
+import { conversationsOptions } from "@multica/core/chat-v2";
+import { CreateGroupDialog, GroupConversationPane } from "./group-conversation-pane";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
@@ -22,7 +25,6 @@ import { useQuery } from "@tanstack/react-query";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { useNavigation } from "../navigation";
-import { AppLink } from "../navigation";
 import { useT } from "../i18n";
 import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
@@ -59,14 +61,18 @@ import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
  */
 export function ChatPage() {
   const { t } = useT("chat");
-  const { pathname, searchParams, replace } = useNavigation();
+  const { pathname, searchParams, replace, push } = useNavigation();
   const workspaceSlug = useRequiredWorkspaceSlug();
+  const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
+  const groupsQuery = useQuery(conversationsOptions(wsId));
+  const groups = groupsQuery.isError ? [] : (groupsQuery.data ?? []).filter((group) => group.workspace_id === wsId && group.kind === "group");
+  const groupId = searchParams.get("conversation");
   // App Router can retain this page after navigation. Once the URL belongs
   // to another route, this instance must stop reconciling shared chat state.
   // Also check the live workspace mirror in each effect: the incoming layout
   // can rehydrate the store before this page observes the destination URL.
-  const isCurrentChatRoute = pathname === wsPaths.chat();
+  const isCurrentChatRoute = pathname === wsPaths.chat() && !groupId;
   const isCompact = useIsCompact();
 
   const c = useChatController({
@@ -150,6 +156,7 @@ export function ChatPage() {
     supersedeAgentIntent();
     c.handleSelectSession(session);
     setComposingNew(false);
+    push(`${wsPaths.chat()}?session=${session.id}`);
   };
 
   // Single archive path for both entry points (thread-list row + conversation
@@ -177,6 +184,7 @@ export function ChatPage() {
     if (agent) c.handleStartNewChat(agent);
     else c.handleNewChat();
     setComposingNew(true);
+    if (groupId || pathname !== wsPaths.chat()) push(wsPaths.chat());
   };
 
   const changeProjectContext = (projectId: string | null) => {
@@ -233,17 +241,21 @@ export function ChatPage() {
   const listHeader = (
     <PageHeader>
       <h1 className="flex-1 text-body font-semibold">{t(($) => $.page.title)}</h1>
-      <AppLink href={wsPaths.chatGroups()}>{t(($) => $.groups.title)}</AppLink>
+      <CreateGroupDialog key={wsId} onCreated={(id) => { setComposingNew(false); push(`${wsPaths.chat()}?conversation=${id}`); }} />
       {newChatButton}
     </PageHeader>
   );
 
   const listBody = (
     <div className="px-2 py-1">
+      {groupsQuery.isPending && <p role="status" className="p-2 text-caption text-muted-foreground">{t(($) => $.groups.loading)}</p>}
+      {groupsQuery.isError && <div role="alert" className="p-2 text-caption text-destructive"><p>{t(($) => $.groups.load_failed)}</p><Button size="sm" variant="outline" onClick={() => void groupsQuery.refetch()}>{t(($) => $.groups.retry)}</Button></div>}
       <ChatThreadList
         sessions={c.sessions}
         agents={c.agents}
-        activeSessionId={c.activeSessionId}
+        activeSessionId={isCurrentChatRoute ? c.activeSessionId : null}
+        groups={groups}
+        activeGroupId={groupId}
         onSelectSession={handleSelect}
         onArchive={handleArchive}
       />
@@ -257,7 +269,7 @@ export function ChatPage() {
   // `@container`: the conversation column's gutter (CHAT_GUTTER) widens with
   // THIS pane, which the user resizes independently of the browser window.
   const queuedTasks = c.pendingTask?.queued_tasks ?? [];
-  const conversation = (
+  const conversation = groupId ? <GroupConversationPane key={`${wsId}:${groupId}`} /> : (
     <div className="flex flex-1 flex-col min-h-0 @container">
       {c.currentSession && (
         <ChatSessionHeader
@@ -332,6 +344,7 @@ export function ChatPage() {
       />
 
       <ChatInput
+        key={wsId}
         onSend={c.handleSend}
         restoreDraftRequest={c.restoreDraftRequest}
         conversationStarterRequest={c.conversationStarterRequest}
@@ -364,7 +377,7 @@ export function ChatPage() {
 
   // -- Compact: list / conversation toggle -----------------------------------
   if (isCompact) {
-    if (c.activeSessionId || composingNew) {
+    if (groupId || (isCurrentChatRoute && (c.activeSessionId || composingNew))) {
       return (
         <div className="flex flex-1 flex-col min-h-0">
           <div className="flex h-12 shrink-0 items-center border-b px-2">
@@ -374,6 +387,7 @@ export function ChatPage() {
               onClick={() => {
                 c.setActiveSession(null);
                 setComposingNew(false);
+                push(wsPaths.chat());
               }}
               className="gap-1.5 text-muted-foreground"
             >
@@ -397,7 +411,7 @@ export function ChatPage() {
   // there is a chat target — an open thread or a new chat whose agent was just
   // picked via ⊕. With nothing selected there is no agent, so we show a neutral
   // prompt instead of an orphaned compose box. -------------------------------
-  const hasTarget = !!c.activeSessionId || composingNew;
+  const hasTarget = !!groupId || (isCurrentChatRoute && (!!c.activeSessionId || composingNew));
   return (
     <ResizablePanelGroup
       orientation="horizontal"

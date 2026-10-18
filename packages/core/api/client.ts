@@ -826,8 +826,8 @@ function isReplayableBody(body: BodyInit | null | undefined): boolean {
 }
 
 export class ApiClient {
-  async listConversationsV2(): Promise<Conversation[]> {
-    return parseWithFallback(await this.fetch<unknown>("/api/v2/conversations"), ConversationListSchema, [] as Conversation[], { endpoint: "listConversationsV2" });
+  async listConversationsV2(wsId: string, signal?: AbortSignal): Promise<Conversation[]> {
+    return parseWithFallback(await this.fetch<unknown>("/api/v2/conversations", { signal, headers: { "X-Workspace-ID": wsId, "X-Workspace-Slug": "" } }), ConversationListSchema, [] as Conversation[], { endpoint: "listConversationsV2" });
   }
   async updateConversationV2(id: string, title: string): Promise<Conversation> {
     const result = parseWithFallback<Conversation | null>(await this.fetch<unknown>(`/api/v2/conversations/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }), ConversationSchema, null, { endpoint: "updateConversationV2" });
@@ -844,8 +844,8 @@ export class ApiClient {
   async removeConversationParticipantV2(id: string, principal: Principal): Promise<void> {
     await this.fetch(`/api/v2/conversations/${id}/participants/${principal.type}/${principal.id}`, { method: "DELETE" });
   }
-  async createConversationV2(data: { kind: "group" | "dm"; title?: string; participants: Principal[] }): Promise<Conversation> {
-    const result = parseWithFallback<Conversation | null>(await this.fetch<unknown>("/api/v2/conversations", { method: "POST", body: JSON.stringify(data) }), ConversationSchema, null, { endpoint: "createConversationV2" });
+  async createConversationV2(wsId: string, data: { kind: "group" | "dm"; title?: string; participants: Principal[] }): Promise<Conversation> {
+    const result = parseWithFallback<Conversation | null>(await this.fetch<unknown>("/api/v2/conversations", { method: "POST", headers: { "X-Workspace-ID": wsId, "X-Workspace-Slug": "" }, body: JSON.stringify(data) }), ConversationSchema, null, { endpoint: "createConversationV2" });
     if (!result) throw new Error("Invalid conversation response");
     return result;
   }

@@ -379,6 +379,16 @@ describe("ChatInput draft isolation across a composer switch (real debounce)", (
     expect(store().inputDrafts).toEqual({ __new__: "half a thought" });
   });
 
+  it("adopts an empty target topic even when both persisted draft props are still empty", () => {
+    const { rerender } = render(element({ draftKeyOverride: "group:one" }));
+    type("Unflushed topic one draft");
+    mockSetContent.mockClear();
+    rerender(element({ draftKeyOverride: "group:two" }));
+    expect(store().inputDrafts["group:one"]).toBe("Unflushed topic one draft");
+    expect(store().inputDrafts["group:two"]).toBeUndefined();
+    expect(mockSetContent).toHaveBeenCalledWith("", expect.objectContaining({ emitUpdate: false }));
+  });
+
   // An in-flight upload PINS the editor to the source document: Guard 0 in
   // ContentEditor refuses to setContent over an `uploading` node (doing so
   // strands the upload's finalize and the file vanishes). So while the upload

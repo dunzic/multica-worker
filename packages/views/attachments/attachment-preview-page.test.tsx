@@ -11,6 +11,7 @@ import { hashString } from "../editor/utils/hash-string";
 import { buildScrollBridge } from "../editor/utils/iframe-scroll-bridge";
 import { withFragmentNavShim } from "../editor/utils/iframe-fragment-nav";
 import { withLocationBridge } from "../editor/utils/iframe-location-bridge";
+import { withAttachmentBridge } from "../editor/utils/iframe-attachment-bridge";
 
 const htmlText = "<html><body><h1>Report</h1></body></html>";
 
@@ -24,7 +25,7 @@ const { getAttachmentMock, getAttachmentTextContentMock, resolvePreviewMock, rep
 }));
 
 vi.mock("../navigation", () => ({
-  useNavigation: () => ({ replace: replaceMock }),
+  useNavigation: () => ({ replace: replaceMock, getShareableUrl: (path: string) => `https://app.example${path}` }),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -33,6 +34,7 @@ vi.mock("@multica/core/api", () => ({
     getAttachment: getAttachmentMock,
     getAttachmentTextContent: getAttachmentTextContentMock,
     getBaseUrl: () => "",
+    getReportFeedback: async () => ({ fields: [], rows: [] }),
   },
   PreviewTooLargeError: class extends Error {},
   PreviewUnsupportedError: class extends Error {},
@@ -166,7 +168,7 @@ describe("AttachmentPreviewPage", () => {
     const iframe = await screen.findByTitle("report.html");
     // The address bridge and the fragment-nav shim, but no scroll bridge.
     expect(iframe.getAttribute("srcdoc")).toBe(
-      withLocationBridge(withFragmentNavShim(htmlText), ""),
+      withLocationBridge(withAttachmentBridge(withFragmentNavShim(htmlText), "att-1:0", "https://app.example/", ["https://app.example"]), ""),
     );
   });
 
@@ -174,7 +176,7 @@ describe("AttachmentPreviewPage", () => {
     renderPage(<AttachmentPreviewPage attachmentId="att-1" initialAddress="?s=ia" />);
     const iframe = await screen.findByTitle("report.html");
     expect(iframe.getAttribute("srcdoc")).toBe(
-      withLocationBridge(withFragmentNavShim(htmlText), "?s=ia"),
+      withLocationBridge(withAttachmentBridge(withFragmentNavShim(htmlText), "att-1:0", "https://app.example/", ["https://app.example"]), "?s=ia"),
     );
     expect(screen.getByRole("textbox", { name: "Address" })).toHaveValue("?s=ia");
   });
@@ -193,7 +195,7 @@ describe("AttachmentPreviewPage", () => {
     );
     const iframe = await screen.findByTitle("report.html");
     expect(iframe.getAttribute("srcdoc")).toBe(
-      withLocationBridge(withFragmentNavShim(htmlText), "?s=kept"),
+      withLocationBridge(withAttachmentBridge(withFragmentNavShim(htmlText), "att-1:0", "https://app.example/", ["https://app.example"]), "?s=kept"),
     );
 
     const input = screen.getByRole("textbox", { name: "Address" });

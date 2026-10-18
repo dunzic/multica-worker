@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { readAttachmentAction, withAttachmentBridge, type HtmlAttachmentAction } from "../utils/iframe-attachment-bridge";
 import {
   HTML_PREVIEW_LOCATION_KEY,
   readHtmlPreviewLocationMessage,
@@ -38,6 +39,11 @@ export function useHtmlPreviewLocation(
   initialAddress = "",
   /** The document's identity; another one starts over at `initialAddress`. */
   scope = "",
+  attachments?: {
+    baseUrl: string;
+    origins: readonly string[];
+    onAction: (action: HtmlAttachmentAction) => Promise<void>;
+  },
 ): HtmlPreviewLocation {
   const [state, setState] = useState({
     scope,
@@ -56,6 +62,50 @@ export function useHtmlPreviewLocation(
   }
   const { address, loaded, key } = current;
   const frameElRef = useRef<HTMLIFrameElement | null>(null);
+  const actionPending = useRef(false);
+  const attachmentActionsRef = useRef(attachments);
+  useLayoutEffect(() => { attachmentActionsRef.current = attachments; });
+  const attachmentBaseUrl = attachments?.baseUrl;
+  const attachmentOrigins = JSON.stringify(attachments?.origins ?? []);
+  const attachmentScope = `${scope}:${key}`;
+  useLayoutEffect(() => {
+    if (!attachmentBaseUrl) return;
+    let disposed = false;
+    let port: MessagePort | undefined;
+    const onMessage = (event: MessageEvent) => {
+      const frame = frameElRef.current?.contentWindow;
+      if (!frame || event.source !== frame || port) return;
+      const data = event.data;
+      if (!data || data.__multicaAttachment !== 1 || data.type !== "connect" || data.scope !== attachmentScope || event.ports.length !== 1) return;
+      // The injected bridge connects before any document script executes.
+      // Do not accept attachment commands over the document's public channel:
+      // opening a report can leave the parent transiently activated, too.
+      const connectedPort = event.ports[0];
+      if (!connectedPort) return;
+      port = connectedPort;
+      port.onmessage = (message: MessageEvent) => {
+        if (disposed || frameElRef.current?.contentWindow !== frame || !navigator.userActivation?.isActive || actionPending.current) return;
+        const actions = attachmentActionsRef.current;
+        if (!actions) return;
+        const action = readAttachmentAction(message.data, attachmentScope, actions.baseUrl, actions.origins);
+        if (!action) return;
+        actionPending.current = true;
+        // Recheck source and target authorization. Never send credentials or
+        // file data back through either the public or private channel.
+        void actions.onAction(action).catch(() => undefined).finally(() => {
+          if (!disposed) actionPending.current = false;
+        });
+      };
+      port.start();
+    };
+    actionPending.current = false;
+    window.addEventListener("message", onMessage);
+    return () => {
+      disposed = true;
+      port?.close();
+      window.removeEventListener("message", onMessage);
+    };
+  }, [attachmentBaseUrl, attachmentOrigins, attachmentScope]);
   // Latest address for the stable callbacks below; updated during render,
   // which is idempotent across re-renders.
   const addressRef = useRef(address);
@@ -115,8 +165,11 @@ export function useHtmlPreviewLocation(
   }, []);
 
   const withAddress = useCallback(
-    (html: string) => withLocationBridge(html, loaded),
-    [loaded],
+    (html: string) => withLocationBridge(
+      attachments ? withAttachmentBridge(html, attachmentScope, attachments.baseUrl, attachments.origins) : html,
+      loaded,
+    ),
+    [loaded, attachments, attachmentScope],
   );
 
   return { address, frameKey: key, withAddress, frameRef, navigate, reload };

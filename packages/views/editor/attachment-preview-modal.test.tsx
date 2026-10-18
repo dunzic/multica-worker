@@ -35,6 +35,7 @@ const {
   getAttachmentTextContentMock,
   getAttachmentMock,
   getAttachmentBlobMock,
+  getReportFeedbackMock,
   downloadMock,
   getBaseUrlMock,
   FakePreviewTooLargeError,
@@ -58,6 +59,7 @@ const {
     // upgrade to, so the picked URL stands.
     getAttachmentMock: vi.fn((): Promise<Attachment> => Promise.reject(new Error("no re-sign"))),
     getAttachmentBlobMock: vi.fn(),
+    getReportFeedbackMock: vi.fn(async (): Promise<{ fields: { id: string }[]; rows: unknown[] }> => ({ fields: [], rows: [] })),
     downloadMock: vi.fn(),
     // Default to the web shape (empty base, same-origin). Tests covering
     // the desktop-renderer / standalone-shell case override per-test.
@@ -72,6 +74,7 @@ vi.mock("@multica/core/api", () => ({
     getAttachmentTextContent: getAttachmentTextContentMock,
     getAttachment: getAttachmentMock,
     getAttachmentBlob: getAttachmentBlobMock,
+    getReportFeedback: getReportFeedbackMock,
     getBaseUrl: getBaseUrlMock,
   },
   PreviewTooLargeError: FakePreviewTooLargeError,
@@ -80,6 +83,10 @@ vi.mock("@multica/core/api", () => ({
 
 vi.mock("./use-download-attachment", () => ({
   useDownloadAttachment: () => downloadMock,
+}));
+
+vi.mock("../reports/report-feedback-panel", () => ({
+  ReportFeedbackPanel: ({ attachmentId }: { attachmentId: string }) => <div data-testid="feedback-panel">{attachmentId}</div>,
 }));
 
 // Module-level flags toggled per-test: simulate desktop (openInNewTab
@@ -126,7 +133,7 @@ vi.mock("../i18n", () => ({
   useT: () => ({
     t: (sel: (s: Record<string, Record<string, string>>) => string) =>
       sel({
-        report_feedback: { title: "Report feedback" },
+        report_feedback: { title: "Report feedback", load_failed: "Report access has changed" },
         image: {
           download: "Download",
           copy_image: "Copy image",
@@ -181,6 +188,7 @@ import {
 } from "./attachment-preview-modal";
 import { withFragmentNavShim } from "./utils/iframe-fragment-nav";
 import { withLocationBridge } from "./utils/iframe-location-bridge";
+import { withAttachmentBridge } from "./utils/iframe-attachment-bridge";
 import { __resetInlineMediaBlobCacheForTests } from "./hooks/use-inline-media-url";
 import { renderHook, act as hookAct } from "@testing-library/react";
 
@@ -190,7 +198,7 @@ function render(ui: ReactElement) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
-  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return { ...rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>), queryClient: qc };
 }
 
 function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
@@ -230,6 +238,7 @@ beforeEach(() => {
   __resetInlineMediaBlobCacheForTests();
   getAttachmentMock.mockRejectedValue(new Error("no re-sign"));
   getAttachmentBlobMock.mockReset();
+  getReportFeedbackMock.mockResolvedValue({ fields: [], rows: [] });
   // Drops any body a test queued but never consumed (a media kind skips the
   // text fetch), so it cannot answer the next test's request.
   getAttachmentTextContentMock.mockReset();
@@ -247,6 +256,45 @@ afterEach(() => {
 });
 
 describe("AttachmentPreviewModal — dispatch", () => {
+  it("makes report feedback a visible text action without forcing ordinary files to configure it", async () => {
+    render(<ClosablePreview attachment={makeAttachment({ filename: "notes.txt", content_type: "text/plain" })} />);
+    const button = screen.getByRole("button", { name: "Report feedback" });
+    expect(button).toHaveTextContent("Report feedback");
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("feedback-panel")).toHaveTextContent("att-1");
+  });
+  it("opens configured feedback initially but keeps the reader's explicit collapse", async () => {
+    getReportFeedbackMock.mockResolvedValue({ fields: [{ id: "review" }], rows: [] });
+    render(<ClosablePreview attachment={makeAttachment({ filename: "notes.txt", content_type: "text/plain" })} />);
+    const button = screen.getByRole("button", { name: "Report feedback" });
+    await waitFor(() => expect(button).toHaveAttribute("aria-expanded", "true"));
+    fireEvent.click(button);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+  });
+  it("keeps the automatically opened feedback panel mounted during transient refresh failure", async () => {
+    getReportFeedbackMock.mockResolvedValue({ fields: [{ id: "review" }], rows: [] });
+    const { queryClient } = render(<ClosablePreview attachment={makeAttachment({ filename: "notes.txt", content_type: "text/plain" })} />);
+    await screen.findByTestId("feedback-panel");
+    getReportFeedbackMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["report-feedback"] }); });
+    await waitFor(() => expect(queryClient.getQueryState(["report-feedback", "ws-1", "att-1", "rows"])?.error).toBeInstanceOf(TypeError));
+    expect(screen.getByTestId("feedback-panel")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Report feedback" })).toHaveAttribute("aria-expanded", "true");
+  });
+  it("removes cached report content and feedback after permission is revoked", async () => {
+    getReportFeedbackMock.mockResolvedValue({ fields: [{ id: "review" }], rows: [] });
+    getAttachmentTextContentMock.mockResolvedValue({ text: "Private report evidence", originalContentType: "text/plain" });
+    const { queryClient } = render(<ClosablePreview attachment={makeAttachment({ filename: "notes.txt", content_type: "text/plain" })} />);
+    await screen.findByText("Private report evidence");
+    getReportFeedbackMock.mockRejectedValue(Object.assign(new Error("Not found"), { status: 404 }));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["report-feedback"] }); });
+    await waitFor(() => expect(screen.queryByText("Private report evidence")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("feedback-panel")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Report access has changed");
+  });
   it("renders an <img> centered in the modal for image content types", () => {
     const att = makeAttachment({ filename: "shot.png", content_type: "image/png" });
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
@@ -347,7 +395,7 @@ describe("AttachmentPreviewModal — dispatch", () => {
       // front (utils/iframe-location-bridge.ts) and the fragment-nav shim
       // appended at the end (utils/iframe-fragment-nav.ts).
       expect(frame?.getAttribute("srcdoc")).toBe(
-        withLocationBridge(withFragmentNavShim("<p>hi</p>"), ""),
+        withLocationBridge(withAttachmentBridge(withFragmentNavShim("<p>hi</p>"), "att-1:0", "https://app.example/", ["https://app.example"]), ""),
       );
     });
   });
@@ -366,7 +414,7 @@ describe("AttachmentPreviewModal — dispatch", () => {
 
     const frame = document.querySelector("iframe[sandbox]") as HTMLIFrameElement;
     expect(frame.getAttribute("srcdoc")).toBe(
-      withLocationBridge(withFragmentNavShim("<p>hi</p>"), "?s=overview"),
+      withLocationBridge(withAttachmentBridge(withFragmentNavShim("<p>hi</p>"), "att-1:1", "https://app.example/", ["https://app.example"]), "?s=overview"),
     );
     expect((input as HTMLInputElement).value).toBe("?s=overview");
   });
@@ -391,7 +439,7 @@ describe("AttachmentPreviewModal — dispatch", () => {
 
     expect(screen.getByLabelText("Address")).toHaveValue("?s=ia");
     expect(document.querySelector("iframe[sandbox]")?.getAttribute("srcdoc")).toBe(
-      withLocationBridge(withFragmentNavShim("<p>hi</p>"), "?s=ia"),
+      withLocationBridge(withAttachmentBridge(withFragmentNavShim("<p>hi</p>"), "att-1:1", "https://app.example/", ["https://app.example"]), "?s=ia"),
     );
   });
 

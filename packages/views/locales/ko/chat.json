@@ -1,5 +1,9 @@
 {
   "groups": {
+    "retry": "다시 시도",
+    "loading": "대화 불러오는 중…",
+    "numbered_topic": "주제 {{number}}",
+    "group_label": "그룹",
     "attachment_limit": "메시지당 최대 {{count}}개 파일, 총 {{size}} MiB입니다. 업로드는 자동으로 대기열에서 처리됩니다.",
     "info": "그룹 정보",
     "save": "저장",

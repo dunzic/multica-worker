@@ -329,7 +329,7 @@ export interface ChatState {
   setSelectedAgentId: (id: string) => void;
   setSelectedProjectId: (id: string | null) => void;
   /** sessionId accepts a real session UUID or DRAFT_NEW_SESSION. */
-  setInputDraft: (sessionId: string, draft: string) => void;
+  setInputDraft: (sessionId: string, draft: string, workspaceSlug?: string | null) => void;
   /** Append a markdown fragment to a draft slot's text (upload write-back). */
   appendToInputDraft: (sessionId: string, markdown: string) => void;
   setInputDraftAttachments: (sessionId: string, uploads: DraftUpload[]) => void;
@@ -493,9 +493,17 @@ export function createChatStore(options: ChatStoreOptions) {
       writePendingSendRestores(storage, wsKey(PENDING_SEND_RESTORES_KEY), next);
       set({ pendingSendRestores: next });
     },
-    setInputDraft: (sessionId, draft) => {
+    setInputDraft: (sessionId, draft, workspaceSlug = getCurrentSlug()) => {
       // Debug level — onUpdate fires on every keystroke.
       logger.debug("setInputDraft", { sessionId, length: draft.length });
+      // A departing editor may flush after the workspace mirror has moved.
+      // Preserve its text in its original namespace without exposing it in
+      // the newly selected workspace's in-memory drafts.
+      if (workspaceSlug !== getCurrentSlug()) {
+        const key = workspaceSlug ? `${DRAFTS_KEY}:${workspaceSlug}` : DRAFTS_KEY;
+        writeDrafts(storage, key, { ...readDrafts(storage, key), [sessionId]: draft });
+        return;
+      }
       const next = { ...get().inputDrafts, [sessionId]: draft };
       writeDrafts(storage, wsKey(DRAFTS_KEY), next);
       set({ inputDrafts: next });

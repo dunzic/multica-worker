@@ -877,6 +877,57 @@ func (q *Queries) ListConversationRecipientUsers(ctx context.Context, conversati
 	return items, nil
 }
 
+const listConversationSummariesByMember = `-- name: ListConversationSummariesByMember :many
+SELECT c.id AS conversation_id, latest.content, latest.created_at
+FROM conversation c
+JOIN conversation_participant p ON p.conversation_id = c.id
+CROSS JOIN LATERAL (
+    SELECT left(m.content, 240)::text AS content, m.created_at
+    FROM chat_message m
+    JOIN topic t ON t.id = m.topic_id
+    WHERE t.conversation_id = c.id AND t.archived_at IS NULL
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+) latest
+WHERE c.workspace_id = $1
+  AND p.principal_type = 'member' AND p.principal_id = $2 AND p.left_at IS NULL
+  AND c.id = ANY($3::uuid[])
+`
+
+type ListConversationSummariesByMemberParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	PrincipalID pgtype.UUID   `json:"principal_id"`
+	Column3     []pgtype.UUID `json:"column_3"`
+}
+
+type ListConversationSummariesByMemberRow struct {
+	ConversationID pgtype.UUID        `json:"conversation_id"`
+	Content        string             `json:"content"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+// One bounded projection per accessible conversation, never full histories.
+// Recheck membership here as well so a concurrent removal fails closed.
+func (q *Queries) ListConversationSummariesByMember(ctx context.Context, arg ListConversationSummariesByMemberParams) ([]ListConversationSummariesByMemberRow, error) {
+	rows, err := q.db.Query(ctx, listConversationSummariesByMember, arg.WorkspaceID, arg.PrincipalID, arg.Column3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListConversationSummariesByMemberRow{}
+	for rows.Next() {
+		var i ListConversationSummariesByMemberRow
+		if err := rows.Scan(&i.ConversationID, &i.Content, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConversationsByMember = `-- name: ListConversationsByMember :many
 SELECT c.id, c.workspace_id, c.kind, c.title, c.dm_signature, c.created_by, c.archived_at, c.created_at, c.updated_at
 FROM   conversation c

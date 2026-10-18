@@ -1,5 +1,9 @@
 {
   "groups": {
+    "retry": "重试",
+    "loading": "正在加载对话…",
+    "numbered_topic": "话题 {{number}}",
+    "group_label": "群聊",
     "attachment_limit": "每条消息最多 {{count}} 个文件，合计不超过 {{size}} MiB，上传会自动排队。",
     "info": "群组信息",
     "save": "保存",

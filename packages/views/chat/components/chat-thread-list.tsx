@@ -13,6 +13,7 @@ import {
   PinOff,
   Square,
   Trash2,
+  Users,
 } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -26,6 +27,9 @@ import {
   useSetChatSessionPinned,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import { mergeChatThreads, type Conversation } from "@multica/core/chat-v2";
+import { useActorName } from "@multica/core/workspace/hooks";
+import { AppLink } from "../../navigation";
 import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
 import {
@@ -57,6 +61,8 @@ function formatChatTime(dateStr: string, locale: string): string {
 function toPreview(content: string): string {
   return content
     .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!file\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/!?\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/[#*`>~]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -84,6 +90,8 @@ export function ChatThreadList({
   activeSessionId,
   onSelectSession,
   onArchive,
+  groups = [],
+  activeGroupId,
 }: {
   sessions: ChatSession[];
   agents: Agent[];
@@ -93,9 +101,12 @@ export function ChatThreadList({
   // aware (desktop advances to the next chat; mobile drops back to the list)
   // and routes through the shared controller — see ChatPage.handleArchive.
   onArchive: (session: ChatSession) => void;
+  groups?: Conversation[];
+  activeGroupId?: string | null;
 }) {
   const { t } = useT("chat");
   const locale = useLocale();
+  const { getActorName } = useActorName();
   const wsId = useWorkspaceId();
   // Null-safe slug (not useWorkspacePaths, which throws): the list renders in
   // tests outside a workspace route; without a slug the web modifier-click
@@ -114,9 +125,9 @@ export function ChatThreadList({
   // archived chats fill the "Archived" view. Both sorted pinned-first (then by
   // activity) so the list stays ordered even after an optimistic pin/archive or
   // a WS patch mutates the flat cache in place.
-  const historySessions = useMemo(
-    () => sortChatSessions(sessions.filter((s) => s.status !== "archived")),
-    [sessions],
+  const historyThreads = useMemo(
+    () => mergeChatThreads(sessions, groups),
+    [sessions, groups],
   );
   const archivedSessions = useMemo(
     () => sortChatSessions(sessions.filter((s) => s.status === "archived")),
@@ -514,7 +525,7 @@ export function ChatThreadList({
     </button>
   );
 
-  if (historySessions.length === 0) {
+  if (historyThreads.length === 0) {
     return (
       <>
         <div className="px-2 py-1.5 text-caption text-muted-foreground">
@@ -527,7 +538,25 @@ export function ChatThreadList({
 
   return (
     <>
-      {historySessions.map(renderRow)}
+      {historyThreads.map((thread) => {
+        if (thread.kind === "direct") return renderRow(thread.session);
+        const group = thread.conversation;
+        const title = group.title?.trim() || t(($) => $.groups.untitled);
+        const activity = (Date.parse(group.last_message?.created_at ?? "") || 0) > (Date.parse(group.updated_at) || 0) ? group.last_message!.created_at : group.updated_at;
+        const participants = group.participants.map((p) => getActorName(p.principal_type, p.principal_id)).join(", ");
+        return <AppLink
+          key={`group:${group.id}`}
+          href={slug ? `${paths.workspace(slug).chat()}?conversation=${encodeURIComponent(group.id)}` : "#"}
+          aria-current={activeGroupId === group.id ? "page" : undefined}
+          className={cn("mb-1 flex min-w-0 items-center gap-3 rounded-md px-2 py-3 outline-none focus-visible:ring-2 focus-visible:ring-ring", activeGroupId === group.id ? "bg-accent hover:bg-accent" : "hover:bg-accent/50")}
+        >
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted"><Users className="size-4" role="img" aria-label={t(($) => $.groups.group_label)} /></span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-body font-medium">{title}</span><time className="shrink-0 text-micro text-muted-foreground" dateTime={activity}>{formatChatTime(activity, locale)}</time></span>
+            <span className="mt-1 block truncate text-caption text-muted-foreground">{group.last_message?.content ? toPreview(group.last_message.content) : participants}</span>
+          </span>
+        </AppLink>;
+      })}
       {archivedEntry}
     </>
   );

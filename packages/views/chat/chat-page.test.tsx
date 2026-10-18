@@ -14,6 +14,14 @@ import {
 } from "../navigation";
 
 const TEST_RESOURCES = { en: { common: enCommon, chat: enChat } };
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/chat-v2", () => ({
+  conversationsOptions: () => ({ queryKey: ["test-groups"], queryFn: async () => [] }),
+}));
+vi.mock("./group-conversation-pane", () => ({
+  CreateGroupDialog: () => <button>Create group</button>,
+  GroupConversationPane: () => <div>group-conversation</div>,
+}));
 
 // These tests target the page-level URL wiring (`?agent=` / `?session=`), so
 // the conversation internals are stubbed and the controller is replaced with
@@ -262,6 +270,16 @@ beforeEach(() => {
 });
 
 describe("ChatPage URL synchronization", () => {
+  it.each(["/acme/chat", "/acme/chat/groups"])("keeps a group deep link and the unified list at %s", (pathname) => {
+    storeRef.current = { activeSessionId: "remembered-direct" };
+    const view = renderPage("conversation=group&topic=topic");
+    view.rerender({ pathname });
+    expect(screen.getByText("group-conversation")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
+    expect(view.replace).not.toHaveBeenCalled();
+    act(() => mockSetActiveSession("other-direct"));
+    expect(view.replace).not.toHaveBeenCalled();
+  });
   it.each([null, "session-1"])(
     "persists URL selection %s even when the pre-workspace store already matches",
     (sessionId) => {

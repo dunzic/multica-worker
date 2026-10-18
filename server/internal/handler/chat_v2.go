@@ -66,14 +66,20 @@ type ParticipantWire struct {
 }
 
 type ConversationWire struct {
-	ID           string            `json:"id"`
-	WorkspaceID  string            `json:"workspace_id"`
-	Kind         string            `json:"kind"`
-	Title        *string           `json:"title,omitempty"`
-	Participants []ParticipantWire `json:"participants"`
-	ArchivedAt   *string           `json:"archived_at,omitempty"`
-	CreatedAt    string            `json:"created_at"`
-	UpdatedAt    string            `json:"updated_at"`
+	ID           string                   `json:"id"`
+	WorkspaceID  string                   `json:"workspace_id"`
+	Kind         string                   `json:"kind"`
+	Title        *string                  `json:"title,omitempty"`
+	Participants []ParticipantWire        `json:"participants"`
+	ArchivedAt   *string                  `json:"archived_at,omitempty"`
+	CreatedAt    string                   `json:"created_at"`
+	UpdatedAt    string                   `json:"updated_at"`
+	LastMessage  *ConversationSummaryWire `json:"last_message,omitempty"`
+}
+
+type ConversationSummaryWire struct {
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
 }
 
 type TopicWire struct {
@@ -245,9 +251,26 @@ func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ids := make([]pgtype.UUID, 0, len(convs))
+	for _, c := range convs {
+		ids = append(ids, c.ID)
+	}
+	summaries, err := h.Queries.ListConversationSummariesByMember(r.Context(), db.ListConversationSummariesByMemberParams{
+		WorkspaceID: parseUUID(workspaceID), PrincipalID: parseUUID(userID), Column3: ids,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list conversation summaries")
+		return
+	}
+	byID := make(map[pgtype.UUID]*ConversationSummaryWire, len(summaries))
+	for _, summary := range summaries {
+		byID[summary.ConversationID] = &ConversationSummaryWire{Content: summary.Content, CreatedAt: timestampToString(summary.CreatedAt)}
+	}
 	out := make([]ConversationWire, 0, len(convs))
 	for _, c := range convs {
-		out = append(out, h.hydrateConversation(r, c))
+		wire := h.hydrateConversation(r, c)
+		wire.LastMessage = byID[c.ID]
+		out = append(out, wire)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

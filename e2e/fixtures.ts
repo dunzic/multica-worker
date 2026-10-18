@@ -362,6 +362,56 @@ export class TestApiClient {
     return this.authedFetch(`/api/attachments/${id}/${action}`, { signal });
   }
 
+  /** Collaboration fixtures use the actual permission-filtered API. */
+  async currentUserId(): Promise<string> {
+    const response = await this.authedFetch("/api/me");
+    if (!response.ok) throw new Error(`read test user failed: ${response.status}`);
+    const user = await response.json() as { id: string };
+    return user.id;
+  }
+
+  async createGroup(title: string, memberIds: string[]) {
+    const response = await this.authedFetch("/api/v2/conversations", {
+      method: "POST", body: JSON.stringify({ kind: "group", title, participants: memberIds.map((id) => ({ type: "member", id })) }),
+    });
+    if (!response.ok) throw new Error(`create test group failed: ${response.status}`);
+    return await response.json() as { id: string };
+  }
+
+  async groupTopics(id: string) {
+    const response = await this.authedFetch(`/api/v2/conversations/${id}/topics`);
+    if (!response.ok) throw new Error(`list test topics failed: ${response.status}`);
+    return await response.json() as { id: string; title: string | null }[];
+  }
+
+  async createGroupTopic(id: string, title: string) {
+    const response = await this.authedFetch(`/api/v2/conversations/${id}/topics`, { method: "POST", body: JSON.stringify({ title }) });
+    if (!response.ok) throw new Error(`create test topic failed: ${response.status}`);
+    return await response.json() as { id: string };
+  }
+
+  async sendGroupMessage(topicId: string, content: string, attachmentIds: string[] = []) {
+    const response = await this.authedFetch(`/api/v2/topics/${topicId}/messages`, { method: "POST", body: JSON.stringify({ content, attachment_ids: attachmentIds }) });
+    if (!response.ok) throw new Error(`send test group message failed: ${response.status}`);
+    return await response.json() as { message: { id: string }; task_ids: string[] };
+  }
+
+  async uploadTopicAttachment(topicId: string, filename: string, bytes: Uint8Array) {
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(bytes)]), filename);
+    form.append("topic_id", topicId);
+    const response = await this.authedFetch("/api/upload-file", { method: "POST", body: form });
+    if (!response.ok) throw new Error(`upload test topic attachment failed: ${response.status}`);
+    const attachment = await response.json() as { id: string; markdown_url: string };
+    this.createdAttachmentIds.push(attachment.id);
+    return attachment;
+  }
+
+  async removeGroupParticipant(conversationId: string, userId: string) {
+    const response = await this.authedFetch(`/api/v2/conversations/${conversationId}/participants/member/${userId}`, { method: "DELETE" });
+    if (!response.ok) throw new Error(`remove test group participant failed: ${response.status}`);
+  }
+
   /** Uses the same workspace/auth boundary as report previews. */
   async reportFeedbackResponse(id: string, action = "", method = "GET", body?: unknown) {
     return this.authedFetch(`/api/attachments/${encodeURIComponent(id)}/report-feedback${action ? "/" + action : ""}`, {

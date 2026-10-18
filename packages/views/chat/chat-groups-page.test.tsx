@@ -5,7 +5,7 @@ import { I18nextProvider } from "react-i18next";
 import i18next from "i18next";
 import { initReactI18next } from "react-i18next";
 import enChat from "../locales/en/chat.json";
-import { ChatGroupsPage } from "./chat-groups-page";
+import { GroupConversationPane } from "./group-conversation-pane";
 
 const mocks = vi.hoisted(() => ({
   commit: vi.fn(),
@@ -38,7 +38,7 @@ vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: () => ({ queryKey: ["agents"], queryFn: async () => [] }),
 }));
 vi.mock("../navigation", () => ({
-  useNavigation: () => ({ searchParams: new URLSearchParams(mocks.query), replace: mocks.replace }),
+  useNavigation: () => ({ pathname: "/test/chat/groups", searchParams: new URLSearchParams(mocks.query), replace: mocks.replace, push: mocks.replace }),
   AppLink: ({ children, ...props }: React.ComponentProps<"a">) => <a {...props}>{children}</a>,
 }));
 vi.mock("../layout/page-header", () => ({ PageHeader: ({ children }: { children: React.ReactNode }) => <header>{children}</header> }));
@@ -54,7 +54,7 @@ function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const i18n = i18next.createInstance();
   i18n.use(initReactI18next).init({ lng: "en", resources: { en: { chat: enChat } }, initAsync: false });
-  return render(<I18nextProvider i18n={i18n}><QueryClientProvider client={client}><ChatGroupsPage /></QueryClientProvider></I18nextProvider>);
+  return render(<I18nextProvider i18n={i18n}><QueryClientProvider client={client}><GroupConversationPane /></QueryClientProvider></I18nextProvider>);
 }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -67,6 +67,29 @@ beforeEach(() => {
   mocks.send.mockResolvedValue({ message: { id: "m" }, task_ids: ["run"] });
 });
 describe("group chat wiring", () => {
+  it("hides the sole unnamed default topic without hiding the group or composer", async () => {
+    mocks.topics.mockResolvedValue([{ id: "topic", conversation_id: "group", title: "" }]);
+    mount();
+    await screen.findByRole("button", { name: "Send batch" });
+    expect(screen.getByRole("heading", { name: "HR" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Topics" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Untitled")).not.toBeInTheDocument();
+  });
+  it("names empty topics separately when a group has multiple topics", async () => {
+    mocks.topics.mockResolvedValue([{ id: "topic", conversation_id: "group", title: "" }, { id: "second", conversation_id: "group", title: "" }]);
+    mount();
+    expect(await screen.findByRole("link", { name: "Topic 1" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Topic 2" })).toHaveAttribute("href", "/test/chat?conversation=group&topic=second");
+  });
+  it("keeps unnamed topic numbers stable when activity order changes", async () => {
+    mocks.topics.mockResolvedValue([
+      { id: "second", conversation_id: "group", title: "", created_at: "2026-10-18T02:00:00Z" },
+      { id: "topic", conversation_id: "group", title: "", created_at: "2026-10-18T01:00:00Z" },
+    ]);
+    mount();
+    expect(await screen.findByRole("link", { name: "Topic 1" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Topic 2" })).toHaveAttribute("href", "/test/chat?conversation=group&topic=second");
+  });
   it("keeps the composer generic and directly in the height-constrained conversation", async () => {
     mount();
     const input = await screen.findByRole("button", { name: "Send batch" });

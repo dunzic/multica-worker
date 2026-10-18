@@ -17,6 +17,7 @@ import enIssues from "../../locales/en/issues.json";
 
 const setActiveSession = vi.fn();
 const archiveMutate = vi.fn();
+vi.mock("@multica/core/workspace/hooks", () => ({ useActorName: () => ({ getActorName: (_type: string, id: string) => id }) }));
 
 vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: ({ actorId }: { actorId: string }) => (
@@ -180,6 +181,14 @@ describe("ChatThreadList no_response preview (MUL-4351)", () => {
 });
 
 describe("ChatThreadList agent identity", () => {
+  it("shows attachment names instead of raw markdown URLs in message summaries", () => {
+    renderList(null, { renderedSessions: [makeSession({ id: "file", last_message: {
+      content: "Report: !file[delivery-review.html](https://app.example/api/attachments/file/download)",
+      role: "user", created_at: "2026-07-08T03:00:00Z",
+    } })] });
+    expect(screen.getByText("You: Report: delivery-review.html")).toBeInTheDocument();
+    expect(screen.queryByText(/https:\/\/app\.example/)).not.toBeInTheDocument();
+  });
   it("shows and bounds the resolved agent name without replacing the preview", () => {
     const longName = "A very long agent name that must not take over the conversation row";
     const longNameAgent = { id: "agent-1", name: longName } as unknown as Agent;

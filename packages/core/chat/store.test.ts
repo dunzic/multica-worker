@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createChatStore, DRAFT_NEW_SESSION } from "./store";
 import type { StorageAdapter } from "../types";
 import type { Attachment } from "../types";
+import { setCurrentWorkspace } from "../platform/workspace-storage";
 
 function memStorage(): StorageAdapter {
   const m = new Map<string, string>();
@@ -15,6 +16,21 @@ function memStorage(): StorageAdapter {
     },
   };
 }
+
+it("flushes a departing editor only into its original workspace namespace", async () => {
+  const storage = memStorage();
+  setCurrentWorkspace("draft-source", "source-id");
+  const store = createChatStore({ storage });
+  store.getState().setInputDraft("source-session", "Existing source draft");
+  setCurrentWorkspace("draft-target", "target-id");
+  await Promise.resolve();
+  store.getState().setInputDraft("target-session", "Target draft");
+  store.getState().setInputDraft("source-session", "Last keystroke preserved", "draft-source");
+  expect(store.getState().inputDrafts).toEqual({ "target-session": "Target draft" });
+  expect(JSON.parse(storage.getItem("multica:chat:drafts:draft-source")!)).toEqual({ "source-session": "Last keystroke preserved" });
+  setCurrentWorkspace(null, null);
+  await Promise.resolve();
+});
 
 function makeAttachment(id: string): Attachment {
   return {

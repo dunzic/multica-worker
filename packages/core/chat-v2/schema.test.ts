@@ -4,6 +4,12 @@ import { parseWithFallback } from "../api/schema";
 import { ConversationListSchema, MessageSchema, SendMessageSchema } from "./schema";
 
 describe("chat collaboration response compatibility", () => {
+  it("keeps valid summaries and discards a malformed optional summary without hiding the group", () => {
+    const group = { id: "c", workspace_id: "ws", kind: "group" };
+    const summary = { content: "Latest update", created_at: "2026-10-18T01:00:00Z" };
+    expect(ConversationListSchema.parse([{ ...group, last_message: summary }])[0]?.last_message).toEqual(summary);
+    expect(ConversationListSchema.parse([{ ...group, last_message: { content: 1 } }])[0]?.last_message).toBeNull();
+  });
   it("defaults missing participants and tolerates a newer kind", () => {
     const value = ConversationListSchema.parse([{ id: "c", workspace_id: "ws", kind: "future" }]);
     expect(value[0]?.participants).toEqual([]);

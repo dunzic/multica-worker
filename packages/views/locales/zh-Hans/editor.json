@@ -1,5 +1,6 @@
 {
   "report_feedback": {
+    "saved": "反馈已保存",
     "refresh_failed": "暂时无法获取更新，当前数据可能不是最新；正在编辑的内容已保留。",
     "title": "报告反馈",
     "cancel": "取消",

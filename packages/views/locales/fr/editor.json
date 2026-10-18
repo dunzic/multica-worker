@@ -1,5 +1,6 @@
 {
   "report_feedback": {
+    "saved": "Retour enregistré",
     "refresh_failed": "Impossible d’actualiser les données. Elles peuvent être anciennes ; votre saisie est conservée.",
     "title": "Retour sur le rapport",
     "cancel": "Annuler",

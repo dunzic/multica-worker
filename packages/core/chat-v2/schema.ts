@@ -10,6 +10,7 @@ export const ConversationSchema = z.object({
   id: z.string().min(1), workspace_id: z.string(), kind: z.string(),
   title: z.string().nullable().optional(), participants: z.array(ParticipantSchema).default([]),
   archived_at: z.string().nullable().optional(), created_at: z.string().default(""), updated_at: z.string().default(""),
+  last_message: z.object({ content: z.string(), created_at: z.string() }).nullish().catch(null),
 });
 export const TopicSchema = z.object({
   id: z.string().min(1), conversation_id: z.string(), title: z.string().nullable().optional(),

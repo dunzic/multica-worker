@@ -8,13 +8,21 @@ function response(body: unknown) {
   return new ApiClient("https://example.test");
 }
 describe("chat v2 API response boundary", () => {
+  it("pins conversation reads and creates to the initiating workspace", async () => {
+    const client = response([]);
+    await client.listConversationsV2("origin-workspace");
+    expect(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({ "X-Workspace-ID": "origin-workspace", "X-Workspace-Slug": "" }));
+    const creator = response({ id: "group", workspace_id: "origin-workspace", kind: "group" });
+    await creator.createConversationV2("origin-workspace", { kind: "group", title: "Delivery", participants: [] });
+    expect(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).toEqual(expect.objectContaining({ "X-Workspace-ID": "origin-workspace", "X-Workspace-Slug": "" }));
+  });
   it.each(["conversations", "topics", "messages", "runs"] as const)("falls back for malformed %s reads", async (kind) => {
     const client = response({ unexpected: true });
-    const value = kind === "conversations" ? await client.listConversationsV2() : kind === "topics" ? await client.listTopicsV2("c") : kind === "runs" ? await client.listTopicRunsV2("t") : await client.listTopicMessagesV2("t");
+    const value = kind === "conversations" ? await client.listConversationsV2("ws") : kind === "topics" ? await client.listTopicsV2("c") : kind === "runs" ? await client.listTopicRunsV2("t") : await client.listTopicMessagesV2("t");
     expect(value).toEqual([]);
   });
   it("rejects malformed create without returning an empty destination", async () => {
-    await expect(response({ id: 7 }).createConversationV2({ kind: "group", title: "HR", participants: [] })).rejects.toThrow("Invalid conversation response");
+    await expect(response({ id: 7 }).createConversationV2("ws", { kind: "group", title: "HR", participants: [] })).rejects.toThrow("Invalid conversation response");
   });
   it("rejects malformed topic and message mutations", async () => {
     const client = response(null);

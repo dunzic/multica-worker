@@ -22,6 +22,7 @@ import { SubmitButton } from "@multica/ui/components/common/submit-button";
 import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
+import { getCurrentSlug } from "@multica/core/platform";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { CHAT_ATTACHMENT_LIMITS } from "@multica/core/constants/upload";
 import { getUploadLimitError } from "@multica/core/drafts/upload-limits";
@@ -251,6 +252,7 @@ export function ChatInput({
   // `draftKey` answers "what is selected"; this answers "what is loaded". Every
   // write the editor drives must use the latter.
   const editorDraftKeyRef = useRef(draftKey);
+  const draftWorkspaceSlug = getCurrentSlug();
 
   // Write a document into a draft slot: text, plus a prune of the attachments
   // its body no longer references (deleting an image's markdown drops the
@@ -261,6 +263,10 @@ export function ChatInput({
   // belongs to the selected draft, not the loaded one.
   const commitDraft = useCallback(
     (key: string, markdown: string) => {
+      if (draftWorkspaceSlug !== getCurrentSlug()) {
+        setInputDraft(key, markdown, draftWorkspaceSlug);
+        return;
+      }
       setInputDraft(key, markdown);
       const uploads =
         useChatStore.getState().inputDraftAttachments[key] ?? EMPTY_UPLOADS;
@@ -276,7 +282,7 @@ export function ChatInput({
         setInputDraftAttachments(key, referenced);
       }
     },
-    [setInputDraft, setInputDraftAttachments],
+    [setInputDraft, setInputDraftAttachments, draftWorkspaceSlug],
   );
   // Submit gate. `uploading` disables the SubmitButton the instant an upload
   // starts; `isBlocked()` is re-read inside handleSend for the paths that skip
@@ -340,10 +346,10 @@ export function ChatInput({
   //    (`uploadGate.uploading` is a dep). Blocking navigation instead would be
   //    a worse trade — the user waits on a network round-trip to change tabs.
   //
-  // Case 2 also has to force the adopt afterwards: ContentEditor's sync effect
-  // CONSUMED the value change while Guard 0 was up (lastSyncedValueRef
-  // advances before the guard), so it will never re-run for that value and the
-  // target draft would never load on its own.
+  // Always adopt after a switch, even without an upload: both persisted values
+  // may still be empty inside the debounce window, so a prop-value sync alone
+  // would never clear the previous topic's text. Uploads likewise consume the
+  // value change while Guard 0 is up and need an explicit adopt after settling.
   //
   // useLayoutEffect, not useEffect, for two ordering reasons: passive effects
   // run child-first, so a passive flush here would land AFTER ContentEditor's
@@ -369,13 +375,15 @@ export function ChatInput({
     }
     editorDraftKeyRef.current = draftKey;
     setLoadedDraftKey(draftKey);
-    if (!deferredAdoptRef.current) return;
+    // Lazy creation re-keys a new direct conversation without changing the
+    // document. Preserve that existing transition until an upload has settled.
+    if (loadedKey === DRAFT_NEW_SESSION && !draftKeyOverride && !deferredAdoptRef.current) return;
     deferredAdoptRef.current = false;
     const incoming = useChatStore.getState().inputDrafts[draftKey] ?? "";
-    logger.debug("input.draft adopting after upload settled", { key: draftKey });
+    logger.debug("input.draft adopting selected draft", { key: draftKey });
     editorRef.current?.adoptContent(incoming);
     setIsEmpty(!incoming.trim());
-  }, [draftKey, uploadGate.uploading, commitDraft]);
+  }, [draftKey, draftKeyOverride, uploadGate.uploading, commitDraft]);
 
   // Grab keyboard focus when the owner bumps `focusRequest` (a new chat was
   // started) so the user can type immediately. The editor's `focus()` latches
@@ -772,6 +780,7 @@ export function ChatInput({
             onUploadingChange={uploadGate.onUploadingChange}
             attachments={draftAttachments}
             debounceMs={100}
+            flushPendingOnUnmount
             mentionMode={contextItems ? "context" : "default"}
             mentionContextItems={contextItems}
             enableSlashCommands

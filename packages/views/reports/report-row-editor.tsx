@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   type ReportField,
   type ReportFeedbackPage,
@@ -221,6 +222,7 @@ export function ReportRowEditor({
           setDraft(null);
           draftOpen.current = false;
           onEditingRowChange?.(null);
+          toast.success(t(($) => $.report_feedback.saved));
         } catch (e) {
           setConflict(isReportConflict(e));
           setError(

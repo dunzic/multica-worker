@@ -1,5 +1,9 @@
 {
   "groups": {
+    "retry": "Réessayer",
+    "loading": "Chargement des conversations…",
+    "numbered_topic": "Sujet {{number}}",
+    "group_label": "Groupe",
     "attachment_limit": "Jusqu’à {{count}} fichiers par message, {{size}} Mio au total. Les envois sont automatiquement mis en file d’attente.",
     "info": "Informations du groupe",
     "save": "Enregistrer",

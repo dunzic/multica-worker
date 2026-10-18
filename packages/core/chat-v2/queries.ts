@@ -24,7 +24,7 @@ export function useCancelTopicRun(wsId: string) {
 }
 
 export const conversationsOptions = (wsId: string) => queryOptions({
-  queryKey: collaborationKeys.conversations(wsId), queryFn: () => api.listConversationsV2(), enabled: !!wsId,
+  queryKey: collaborationKeys.conversations(wsId), queryFn: ({ signal }) => api.listConversationsV2(wsId, signal), enabled: !!wsId,
 });
 export const topicsOptions = (wsId: string, id: string) => queryOptions({
   queryKey: collaborationKeys.topics(wsId, id), queryFn: () => api.listTopicsV2(id), enabled: !!wsId && !!id,
@@ -36,7 +36,7 @@ export const topicMessagesOptions = (wsId: string, id: string) => queryOptions({
 export function useCreateConversation(wsId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { kind: "group" | "dm"; title?: string; participants: Principal[] }) => api.createConversationV2(data),
+    mutationFn: (data: { kind: "group" | "dm"; title?: string; participants: Principal[] }) => api.createConversationV2(wsId, data),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: collaborationKeys.all(wsId) }),
   });
 }

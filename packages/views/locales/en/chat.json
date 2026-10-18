@@ -1,5 +1,9 @@
 {
   "groups": {
+    "retry": "Retry",
+    "loading": "Loading conversations…",
+    "numbered_topic": "Topic {{number}}",
+    "group_label": "Group",
     "attachment_limit": "Up to {{count}} files per message, {{size}} MiB total. Uploads are queued automatically.",
     "info": "Group info",
     "save": "Save",

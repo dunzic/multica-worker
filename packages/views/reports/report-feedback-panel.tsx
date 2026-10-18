@@ -285,9 +285,12 @@ export function ReportFeedbackPanel({
       aria-label={t(($) => $.report_feedback.title)}
     >
       {query.isError && (
-        <p role="alert" className="text-destructive">
-          {t(($) => $.report_feedback.refresh_failed)}
-        </p>
+        <div role="alert" className="flex flex-wrap items-center gap-2 text-destructive">
+          <p>{t(($) => $.report_feedback.refresh_failed)}</p>
+          <Button variant="outline" disabled={query.isFetching} aria-busy={query.isFetching} onClick={() => void query.refetch()}>
+            {t(($) => $.attachment.preview_retry)}
+          </Button>
+        </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-heading-sm font-semibold">
@@ -353,7 +356,7 @@ export function ReportFeedbackPanel({
                 </caption>
                 <thead className="bg-muted">
                   <tr>
-                    <th scope="col" className="min-w-40 p-3 text-left">
+                    <th scope="col" className="sticky left-0 z-10 min-w-56 bg-muted p-3 text-left">
                       {t(($) => $.report_feedback.record_name)}
                     </th>
                     {page.fields.map((f) => (
@@ -365,9 +368,6 @@ export function ReportFeedbackPanel({
                         {f.label}
                       </th>
                     ))}
-                    <th scope="col" className="min-w-40 p-3 text-left">
-                      {t(($) => $.report_feedback.actions)}
-                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -375,9 +375,14 @@ export function ReportFeedbackPanel({
                     <tr key={row.id} className="border-t border-border">
                       <th
                         scope="row"
-                        className="max-w-72 p-3 text-left align-top font-medium break-words"
+                        className="sticky left-0 z-10 min-w-56 max-w-72 bg-background p-3 text-left align-top font-medium break-words"
                       >
                         {row.label}
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {page.canEdit && editable && <ReportRowEditor wsId={wsId} attachmentId={attachmentId} page={page} row={row} onEditingRowChange={setEditingRow} />}
+                          {page.canManage && <ArchiveRecord wsId={wsId} attachmentId={attachmentId} row={row} />}
+                        </div>
+                        <RecordSources id={row.sourceAttachmentId} />
                       </th>
                       {page.fields.map((f) => (
                         <td
@@ -393,27 +398,6 @@ export function ReportFeedbackPanel({
                             : displayReportValue(row.values[f.id])}
                         </td>
                       ))}
-                      <td className="p-3 align-top">
-                        <div className="flex flex-wrap gap-2">
-                          {page.canEdit && editable && (
-                            <ReportRowEditor
-                              wsId={wsId}
-                              attachmentId={attachmentId}
-                              page={page}
-                              row={row}
-                              onEditingRowChange={setEditingRow}
-                            />
-                          )}
-                          {page.canManage && (
-                            <ArchiveRecord
-                              wsId={wsId}
-                              attachmentId={attachmentId}
-                              row={row}
-                            />
-                          )}
-                        </div>
-                        <RecordSources id={row.sourceAttachmentId} />
-                      </td>
                     </tr>
                   ))}
                 </tbody>

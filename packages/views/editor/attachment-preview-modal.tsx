@@ -52,6 +52,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -59,6 +60,11 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { Button } from "@multica/ui/components/ui/button";
+import { useInfiniteQuery } from "@tanstack/react-query";
+import { reportFeedbackOptions } from "@multica/core/report-feedback";
+import { isReportAccessDenied } from "../reports/report-form-dialog";
+import { useHtmlAttachmentActions } from "./hooks/use-html-attachment-actions";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
 import {
@@ -764,14 +770,30 @@ function PreviewPanel({
   const toggleWrap = () => setWrapChoice(!wrap);
   const [htmlViewport, setHtmlViewport] = useState<HtmlViewport>("fill");
   const [htmlSource, setHtmlSource] = useState(false);
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const feedbackAttachment = source.kind === "full" ? source.attachment : null;
   const canShowFeedback = !!feedbackAttachment?.workspace_id && !!kind && !["image", "video", "audio"].includes(kind);
+  const feedbackQuery = useInfiniteQuery(reportFeedbackOptions(
+    canShowFeedback ? feedbackAttachment!.workspace_id : "",
+    canShowFeedback ? feedbackAttachment!.id : "",
+  ));
+  const feedbackRegionId = useId();
+  const [feedbackChoice, setFeedbackChoice] = useState<{ id: string; open: boolean } | null>(null);
+  const feedbackAccessDenied = feedbackQuery.isError && isReportAccessDenied(feedbackQuery.error);
+  // A transient polling failure must not unmount an open editing draft.
+  // A permission refusal, however, removes both the report and its feedback.
+  const feedbackOpen = !feedbackAccessDenied && (feedbackChoice?.id === state.attachmentId
+    ? feedbackChoice.open
+    : (feedbackQuery.data?.pages[0]?.fields.length ?? 0) > 0);
+  const attachmentActions = useHtmlAttachmentActions(
+    kind === "html" ? state.attachmentId ?? "" : "",
+    feedbackAttachment?.workspace_id ?? "",
+  );
   // An HTML file's address: shown in the top bar, loaded by the stage. Held
   // here, per file, so it survives the source view, which unmounts the frame.
   const htmlLocation = useHtmlPreviewLocation(
     initialHtmlAddress,
     state.attachmentId ?? "",
+    attachmentActions,
   );
   const htmlAddress = htmlLocation.address;
   useEffect(() => {
@@ -939,6 +961,18 @@ function PreviewPanel({
           className="col-span-2 flex max-w-full items-center gap-0.5 overflow-x-auto lg:col-span-1 lg:justify-self-end lg:overflow-visible"
           style={NO_DRAG}
         >
+          {canShowFeedback && (
+            <ChromeButton
+              label={t(($) => $.report_feedback.title)}
+              pressed={feedbackOpen}
+              expanded={feedbackOpen}
+              controls={feedbackRegionId}
+              showLabel
+              onClick={() => setFeedbackChoice({ id: state.attachmentId ?? "", open: !feedbackOpen })}
+            >
+              <TableProperties className="size-4" />
+            </ChromeButton>
+          )}
           {/* Standalone preview keeps the original gate — no controls until
               the image is measured, and none at all for content that has no
               intrinsic size to drive. In a sequence they stay mounted
@@ -1039,15 +1073,6 @@ function PreviewPanel({
           <ChromeButton label={t(($) => $.image.download)} onClick={onDownload}>
             <Download className="size-4" />
           </ChromeButton>
-          {canShowFeedback && (
-            <ChromeButton
-              label={t(($) => $.report_feedback.title)}
-              pressed={feedbackOpen}
-              onClick={() => setFeedbackOpen((v) => !v)}
-            >
-              <TableProperties className="size-4" />
-            </ChromeButton>
-          )}
           {(onOpenOverview || info) && <ChromeDivider />}
           {onOpenOverview && (
             <ChromeButton
@@ -1097,7 +1122,12 @@ function PreviewPanel({
             },
           }}
         >
-          {kind === "image" ? (
+          {feedbackAccessDenied ? (
+            <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-4 text-body text-muted-foreground">
+              <p>{t(($) => $.report_feedback.load_failed)}</p>
+              <Button variant="outline" disabled={feedbackQuery.isFetching} onClick={() => void feedbackQuery.refetch()}>{t(($) => $.attachment.preview_retry)}</Button>
+            </div>
+          ) : kind === "image" ? (
             <ImagePreview
               state={state}
               mediaUrl={mediaUrl}
@@ -1133,7 +1163,7 @@ function PreviewPanel({
           )}
         </motion.div>
         {feedbackOpen && canShowFeedback && feedbackAttachment && (
-          <aside className="dark min-h-0 max-h-[55%] min-w-0 shrink-0 overflow-y-auto overscroll-contain border-t border-border bg-background text-foreground lg:max-h-none lg:w-[min(48%,48rem)] lg:border-t-0 lg:border-l">
+          <aside id={feedbackRegionId} aria-label={t(($) => $.report_feedback.title)} className="dark min-h-0 max-h-[55%] min-w-0 shrink-0 overflow-y-auto overscroll-contain border-t border-border bg-background text-foreground lg:max-h-none lg:w-[min(42%,48rem)] lg:border-t-0 lg:border-l">
             <ReportFeedbackPanel
               key={feedbackAttachment.id}
               wsId={feedbackAttachment.workspace_id}
@@ -1166,6 +1196,9 @@ function ChromeButton({
   label,
   shortcut,
   pressed,
+  expanded,
+  controls,
+  showLabel,
   disabled,
   onClick,
   children,
@@ -1175,6 +1208,9 @@ function ChromeButton({
   shortcut?: string;
   /** Toggle buttons pass their state; plain actions leave it unset. */
   pressed?: boolean;
+  expanded?: boolean;
+  controls?: string;
+  showLabel?: boolean;
   disabled?: boolean;
   onClick: () => void;
   children: ReactNode;
@@ -1185,15 +1221,19 @@ function ChromeButton({
       className={cn(
         "flex size-8 items-center justify-center rounded-md transition-colors enabled:hover:bg-secondary enabled:hover:text-foreground disabled:opacity-40",
         pressed ? "bg-secondary text-foreground" : "text-muted-foreground",
+        showLabel && "w-auto shrink-0 gap-1.5 px-2 text-caption",
       )}
       title={shortcut ? `${label} (${shortcut})` : label}
       aria-label={label}
       aria-keyshortcuts={shortcut}
       aria-pressed={pressed}
+      aria-expanded={expanded}
+      aria-controls={controls}
       disabled={disabled}
       onClick={onClick}
     >
       {children}
+      {showLabel && <span className="whitespace-nowrap">{label}</span>}
     </button>
   );
 }

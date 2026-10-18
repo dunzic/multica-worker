@@ -220,6 +220,19 @@ describe("generic report feedback", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(mocks.save).not.toHaveBeenCalled();
   });
+  it("offers an explicit retry after a transient refresh failure without clearing saved rows", async () => {
+    mount();
+    await screen.findByText("Deliverable A");
+    mocks.get.mockRejectedValue(new TypeError("Failed to fetch"));
+    await act(async () => { await client.invalidateQueries(); });
+    expect(await screen.findByRole("alert")).toHaveTextContent(en.report_feedback.refresh_failed);
+    expect(screen.getByText("Initial note")).toBeInTheDocument();
+    mocks.get.mockResolvedValue(structuredClone(page));
+    fireEvent.click(screen.getByRole("button", { name: en.attachment.preview_retry }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(screen.getByText("Initial note")).toBeInTheDocument();
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
   it("keeps unsaved input when a collaborator archives its record", async () => {
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Edit record" }));
