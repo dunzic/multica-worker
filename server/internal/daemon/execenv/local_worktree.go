@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -937,12 +938,28 @@ func captureUserSnapshot(gitRoot, envRoot, headSHA string, logger *slog.Logger) 
 	// It is scratch space, not task state: the env root is handed to the agent.
 	defer os.Remove(indexPath)
 	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	rebuildIndex := func() error {
+		// A failed copy can leave a partial index, or one with an unsafe stat
+		// timestamp. Never let git reuse it, even if its bytes are parseable.
+		if err := os.Remove(indexPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("clear unusable snapshot index: %w", err)
+		}
+		if out, err := runGitEnv(gitRoot, env, "read-tree", headSHA); err != nil {
+			return fmt.Errorf("git read-tree: %s: %w", strings.TrimSpace(out), err)
+		}
+		return nil
+	}
 
 	// Seed from the user's own index so git can trust its stat cache instead of
 	// re-hashing the whole repository on every turn. A missing or torn copy is
 	// not a failure — read-tree rebuilds a correct index, merely a colder one —
 	// so the fallback runs on any error from the add, not just from the copy.
 	seeded := seedSnapshotIndex(gitRoot, indexPath)
+	if !seeded {
+		if err := rebuildIndex(); err != nil {
+			return "", err
+		}
+	}
 	addArgs := append([]string{"add", "-A", "--"}, snapshotExcludes()...)
 	if out, err := runGitEnv(gitRoot, env, addArgs...); err != nil {
 		if !seeded {
@@ -952,8 +969,8 @@ func captureUserSnapshot(gitRoot, envRoot, headSHA string, logger *slog.Logger) 
 			logger.Debug("execenv: snapshot index seeded from the repository index was unusable; rebuilding it",
 				"git_root", gitRoot, "output", strings.TrimSpace(out), "error", err)
 		}
-		if out, resetErr := runGitEnv(gitRoot, env, "read-tree", headSHA); resetErr != nil {
-			return "", fmt.Errorf("git read-tree: %s: %w", strings.TrimSpace(out), resetErr)
+		if err := rebuildIndex(); err != nil {
+			return "", err
 		}
 		if out, retryErr := runGitEnv(gitRoot, env, addArgs...); retryErr != nil {
 			return "", fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), retryErr)
@@ -986,7 +1003,35 @@ func seedSnapshotIndex(gitRoot, path string) bool {
 	if !filepath.IsAbs(src) {
 		src = filepath.Join(gitRoot, src)
 	}
-	return copyFile(src, path) == nil
+	in, err := os.Open(src)
+	if err != nil {
+		return false
+	}
+	defer in.Close()
+	// Read the timestamp from the same open file as the bytes: git may replace
+	// the index by rename while we copy it. Git uses this timestamp to detect
+	// racily clean entries. Giving the copy a newer timestamp can hide an
+	// equal-size edit whose file stat still matches the cached entry.
+	info, err := in.Stat()
+	if err != nil {
+		return false
+	}
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return false
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil {
+		return false
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		return false
+	}
+	// A coarser destination filesystem must not round the timestamp forward.
+	// The caller discards failed seeds and rebuilds a cold private index.
+	copied, err := os.Stat(path)
+	return err == nil && !copied.ModTime().After(info.ModTime())
 }
 
 // snapshotExcludes keeps the daemon's own sidecars out of the user's snapshot.

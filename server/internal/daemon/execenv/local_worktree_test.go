@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1262,6 +1263,149 @@ func TestPrepareLocalWorktreePreservesOtherDraftsWhenNormalizationConflicts(t *t
 				}
 			})
 		}
+	}
+}
+
+func TestCaptureUserSnapshotPreservesRacyTrackedEdits(t *testing.T) {
+	repo := newTestRepo(t)
+	// Model a filesystem/editor where an equal-size edit retains Git's cached
+	// stat fields. The index timestamp must still force a content comparison.
+	gitRun(t, repo, "config", "core.trustctime", "false")
+	gitRun(t, repo, "config", "core.checkStat", "minimal")
+	path := filepath.Join(repo, "notes.txt")
+	stamp := time.Unix(time.Now().Unix()-3600, 0)
+	writeFile(t, path, "original notes\n")
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "notes.txt")
+	gitRun(t, repo, "commit", "-m", "initial notes")
+	head := gitRun(t, repo, "rev-parse", "HEAD")
+	index := filepath.Join(repo, ".git", "index")
+	if err := os.Chtimes(index, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, "old user notes\n")
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	envRoot := t.TempDir()
+	snapshot, err := captureUserSnapshot(repo, envRoot, head, worktreeTestLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitRun(t, repo, "show", snapshot+":notes.txt"); got != "old user notes" {
+		t.Errorf("snapshot lost the equal-size user edit: %q", got)
+	}
+	after, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) || !info.ModTime().Equal(stamp) {
+		t.Error("capture changed the user's index bytes or timestamp")
+	}
+	if got := readFile(t, path); got != "old user notes\n" {
+		t.Errorf("capture changed the user's file: %q", got)
+	}
+	if got := gitRun(t, repo, "rev-parse", "HEAD"); got != head {
+		t.Error("capture moved the user's HEAD")
+	}
+	if _, err := os.Stat(filepath.Join(envRoot, snapshotIndexFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("private snapshot index was not removed: %v", err)
+	}
+}
+
+func TestSeedSnapshotIndexPreservesTimestamp(t *testing.T) {
+	for _, linked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("linked_%t", linked), func(t *testing.T) {
+			repo := newTestRepo(t)
+			if linked {
+				worktree := filepath.Join(t.TempDir(), "linked")
+				gitRun(t, repo, "worktree", "add", "--detach", worktree, "HEAD")
+				repo = worktree
+			}
+			index := gitRun(t, repo, "rev-parse", "--git-path", "index")
+			if !filepath.IsAbs(index) {
+				index = filepath.Join(repo, index)
+			}
+			stamp := time.Unix(time.Now().Unix()-3600, 0)
+			if err := os.Chtimes(index, stamp, stamp); err != nil {
+				t.Fatal(err)
+			}
+			before := readFile(t, index)
+			private := filepath.Join(t.TempDir(), "private-index")
+			if !seedSnapshotIndex(repo, private) {
+				t.Fatal("index seed failed")
+			}
+			for _, path := range []string{index, private} {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if readFile(t, path) != before || !info.ModTime().Equal(stamp) {
+					t.Errorf("index bytes or timestamp changed: %s", path)
+				}
+			}
+		})
+	}
+}
+
+func TestCaptureUserSnapshotRebuildsUnusableIndex(t *testing.T) {
+	for _, state := range []string{"missing", "corrupt", "copy_failure"} {
+		t.Run(state, func(t *testing.T) {
+			repo := newTestRepo(t)
+			head := gitRun(t, repo, "rev-parse", "HEAD")
+			index := filepath.Join(repo, ".git", "index")
+			if state != "corrupt" {
+				if err := os.Remove(index); err != nil {
+					t.Fatal(err)
+				}
+				if state == "copy_failure" {
+					// Opening a directory succeeds on Unix but copying it fails
+					// after creating the private index. Windows may reject open.
+					if err := os.Mkdir(index, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					writeFile(t, filepath.Join(index, "untouched"), "user state")
+				}
+			} else {
+				writeFile(t, index, "partial index")
+			}
+			writeFile(t, filepath.Join(repo, "tracked.txt"), "current user draft\n")
+			writeFile(t, filepath.Join(repo, "new.txt"), "new user draft\n")
+			envRoot := t.TempDir()
+			snapshot, err := captureUserSnapshot(repo, envRoot, head, worktreeTestLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for path, want := range map[string]string{"tracked.txt": "current user draft", "new.txt": "new user draft"} {
+				if got := gitRun(t, repo, "show", snapshot+":"+path); got != want {
+					t.Errorf("snapshot %s = %q, want %q", path, got, want)
+				}
+			}
+			if state == "missing" {
+				if _, err := os.Stat(index); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("capture recreated the user's index: %v", err)
+				}
+			} else if state == "copy_failure" {
+				if got := readFile(t, filepath.Join(index, "untouched")); got != "user state" {
+					t.Errorf("capture changed the user's index path: %q", got)
+				}
+			} else if got := readFile(t, index); got != "partial index" {
+				t.Errorf("capture changed the user's index: %q", got)
+			}
+			if _, err := os.Stat(filepath.Join(envRoot, snapshotIndexFileName)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("private index was not removed: %v", err)
+			}
+		})
 	}
 }
 
