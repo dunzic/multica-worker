@@ -80,6 +80,8 @@
   "scripts": [
     "scripts/generate-reserved-slugs.mjs",
     "scripts/selfhost-config.test.sh",
+    "scripts/selfhost-cli.py",
+    "scripts/selfhost-cli.test.py",
     "scripts/drop-database.sh",
     "scripts/remove-worktree.sh",
     "scripts/worktree-db.test.sh",

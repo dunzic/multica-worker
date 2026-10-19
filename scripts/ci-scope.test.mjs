@@ -32,6 +32,8 @@ for (const [name, files, selected] of [
   ["Helm only", ["deploy/helm/multica/templates/deployment.yaml"], ["scripts"]],
   ["container entrypoint", ["docker/entrypoint.sh"], ["scripts"]],
   ["selfhost config", [".env.example"], ["scripts", "installer"]],
+  ["selfhost CLI validator", ["scripts/selfhost-cli.py"], ["scripts"]],
+  ["selfhost CLI tests", ["scripts/selfhost-cli.test.py"], ["scripts"]],
   ["shell installer", ["scripts/install.sh"], ["scripts", "installer"]],
   ["PowerShell installer", ["scripts/install.ps1.test.ps1"], ["installer"]],
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],
@@ -84,6 +86,11 @@ const headings = [...jobSource.matchAll(/^  ([\w-]+):$/gm)];
 const jobs = Object.fromEntries(headings.map((match, index) => [
   match[1], jobSource.slice(match.index, headings[index + 1]?.index),
 ]));
+
+test("script checks run the self-host CLI provenance and candidate tests", () => {
+  assert.match(jobs["script-checks"], /^        run: python3 scripts\/selfhost-cli\.test\.py -v$/m);
+  assert.doesNotMatch(jobs["script-checks"], /continue-on-error:/);
+});
 
 test("desktop builds retain local ancestry and invalidate cross-package compatibility inputs", () => {
   assert.match(jobs["frontend-build"], /fetch-depth: 0/);

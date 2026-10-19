@@ -905,6 +905,9 @@ jobs:
       - name: Test self-host env derivation
         run: bash scripts/selfhost-config.test.sh
 
+      - name: Test self-host CLI provenance and candidate validation
+        run: python3 scripts/selfhost-cli.test.py -v
+
       - name: Test worktree database cleanup
         run: bash scripts/worktree-db.test.sh
 
